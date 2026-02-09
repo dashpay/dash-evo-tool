@@ -18,6 +18,7 @@ import { CreateAssetLockScreen } from "@/screens/CreateAssetLockScreen";
 import { AssetLockDetailScreen } from "@/screens/AssetLockDetailScreen";
 import { IdentitiesScreen } from "@/screens/IdentitiesScreen";
 import { commands } from "@/bindings";
+import { DpnsActiveContestsScreen } from "@/screens/DpnsActiveContestsScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -139,7 +140,7 @@ const contractsIndexRoute = createRoute({
 const contractsDpnsActiveRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-active",
-  component: () => <PlaceholderScreen title="DPNS Active Contests" />,
+  component: DpnsActiveContestsScreen,
 });
 
 const contractsDpnsPastRoute = createRoute({

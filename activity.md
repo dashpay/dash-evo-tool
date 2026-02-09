@@ -531,3 +531,10 @@
 **Files changed:** src/frontend/components/identity/RegisterDpnsNameScreen.tsx, src/frontend/components/identity/RegisterDpnsNameScreen.test.tsx, src/frontend/screens/IdentitiesScreen.tsx
 **Tests added:** 58 (12 validateDpnsName, 10 isContestedName, 36 component tests covering form rendering, validation, contested detection, button states, submit, back, advanced options, registering state, success states, error state, info sections, preselected identity)
 **Sub-tasks created:** 0
+
+## Run 77 — 2026-02-09
+**Task:** 5.1d Wire DpnsActiveContestsScreen
+**What was done:** Created `DpnsActiveContestsScreen` screen component that composes `ActiveContestsTable` + `VoteCastingDialog`, wired to `contestStore`. Features: header with title/description, Refresh button (with spinning icon when refreshing, disabled during refresh), Register Name button (navigates to /identities), Cast/Schedule Votes button (disabled when no votes selected, shows count badge). Loads contest data and voting identities on mount. Subscribes to real-time Tauri events for contest updates. Shows error toasts from store errors. Vote toggling through the table updates store state. Vote casting dialog opens with selected votes and loaded voting identities. Replaced the placeholder route in routes.tsx with the real screen component.
+**Files changed:** src/frontend/screens/DpnsActiveContestsScreen.tsx, src/frontend/screens/DpnsActiveContestsScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
+**Tests added:** 28 (screen-level tests covering rendering, data loading, action buttons, vote toggling, vote casting dialog, error handling, filter integration, sort integration, multiple contests)
+**Sub-tasks created:** 0

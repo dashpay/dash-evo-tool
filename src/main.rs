@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use dash_evo_tool::*;
 
 use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};
@@ -30,6 +32,8 @@ fn load_icon() -> egui::IconData {
     let image = image::load_from_memory(icon_bytes)
         .expect("Failed to load icon")
         .to_rgba8();
+    // Windows can ignore overly large icons; keep a reasonable size.
+    let image = image::imageops::resize(&image, 64, 64, image::imageops::FilterType::Lanczos3);
     let (width, height) = image.dimensions();
     egui::IconData {
         rgba: image.into_raw(),

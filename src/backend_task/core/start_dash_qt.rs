@@ -133,7 +133,7 @@ fn signal_term(child: &Child) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn signal_term(child: &Child) -> Result<(), String> {
+fn signal_term(_child: &Child) -> Result<(), String> {
     // TODO: Implement graceful termination for Dash-Qt on Windows.
     tracing::warn!(
         "SIGTERM signal is not supported on Windows. Dash-Qt process will not be gracefully terminated."

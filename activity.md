@@ -211,3 +211,10 @@
 **Files changed:** src/frontend/index.css, tasks.md, activity.md
 **Tests added:** 0 (CSS-only change — visual theming)
 **Sub-tasks created:** 0
+
+## Run 31 — 2026-02-09
+**Task:** 2.1b Set up typography
+**What was done:** Installed `@fontsource-variable/noto-sans` and `@fontsource-variable/jetbrains-mono` npm packages for self-hosted variable web fonts (critical for offline Tauri desktop app). Imported both font CSS files in `index.css` to register all `@font-face` declarations with unicode-range subsetting (Latin, Latin-ext, Cyrillic, Greek, Vietnamese, Devanagari for Noto Sans; Latin, Latin-ext, Cyrillic, Greek, Vietnamese for JetBrains Mono). Configured Tailwind `@theme inline` with `--font-sans` ("Noto Sans Variable" + system-ui fallback) and `--font-mono` ("JetBrains Mono Variable" + ui-monospace fallback) matching the egui theme's Noto Sans usage. Applied `font-sans antialiased` to body with OpenType feature settings (`cv02`, `cv03`, `cv04`, `cv11`) for improved glyph rendering. Applied `font-mono` to `code`, `kbd`, `samp`, `pre` elements. Created comprehensive `.prose` component class for rich text areas (headings h1-h3, paragraphs, lists, code blocks, links, blockquotes, tables, horizontal rules) — used for JSON display, log output, and documentation areas. All checks pass: lint, typecheck, 36 tests, Vite build (258KB JS + 57KB CSS, font woff2 files bundled as assets).
+**Files changed:** package.json, package-lock.json, src/frontend/index.css, tasks.md, activity.md
+**Tests added:** 0 (CSS/typography setup — visual change only)
+**Sub-tasks created:** 0

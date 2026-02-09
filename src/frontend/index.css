@@ -1,10 +1,16 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "@fontsource-variable/noto-sans";
+@import "@fontsource-variable/jetbrains-mono";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* === Typography (matching egui Noto Sans + JetBrains Mono) === */
+  --font-sans: "Noto Sans Variable", "Noto Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "Cascadia Code", "Fira Code", monospace;
+
   /* === Border Radius (16px base, matching egui theme) === */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -218,6 +224,71 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+  code, kbd, samp, pre {
+    @apply font-mono;
+  }
+}
+
+/* === Prose: rich text areas (JSON, logs, code, descriptions) === */
+@layer components {
+  .prose {
+    @apply text-base leading-7 text-foreground;
+  }
+  .prose h1 {
+    @apply text-2xl font-bold mt-6 mb-4;
+  }
+  .prose h2 {
+    @apply text-xl font-semibold mt-5 mb-3;
+  }
+  .prose h3 {
+    @apply text-lg font-semibold mt-4 mb-2;
+  }
+  .prose p {
+    @apply my-3;
+  }
+  .prose ul, .prose ol {
+    @apply my-3 pl-6;
+  }
+  .prose ul {
+    @apply list-disc;
+  }
+  .prose ol {
+    @apply list-decimal;
+  }
+  .prose li {
+    @apply my-1;
+  }
+  .prose code {
+    @apply font-mono text-sm bg-muted px-1.5 py-0.5 rounded-sm;
+  }
+  .prose pre {
+    @apply font-mono text-sm bg-muted p-4 rounded-md overflow-x-auto my-4;
+  }
+  .prose pre code {
+    @apply bg-transparent p-0;
+  }
+  .prose a {
+    @apply text-primary underline underline-offset-2 hover:text-primary/80;
+  }
+  .prose strong {
+    @apply font-semibold;
+  }
+  .prose blockquote {
+    @apply border-l-4 border-border pl-4 italic my-4 text-muted-foreground;
+  }
+  .prose hr {
+    @apply my-6 border-border;
+  }
+  .prose table {
+    @apply w-full my-4 text-sm;
+  }
+  .prose th {
+    @apply text-left font-semibold px-3 py-2 border-b border-border;
+  }
+  .prose td {
+    @apply px-3 py-2 border-b border-border;
   }
 }

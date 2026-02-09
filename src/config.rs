@@ -72,7 +72,7 @@ impl Config {
 
         // Write to a temporary file in the same directory first, then rename
         // atomically. This prevents corruption if the write fails partway through.
-        let tmp_file_path = env_file_path.with_extension("env.tmp");
+        let tmp_file_path = env_file_path.with_file_name(".env.tmp");
 
         let mut env_file =
             File::create(&tmp_file_path).map_err(|e| ConfigError::LoadError(e.to_string()))?;
@@ -172,12 +172,26 @@ impl Config {
                 .map_err(|e| ConfigError::LoadError(e.to_string()))?;
         }
 
-        // Flush all buffered data to disk before renaming
+        // Sync all data to disk before renaming to ensure crash-safety
         env_file
-            .flush()
+            .sync_all()
             .map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
-        // Atomically replace the old config with the new one
+        // On Windows, rename fails if the target already exists, so remove it first.
+        #[cfg(target_os = "windows")]
+        {
+            if env_file_path.exists() {
+                std::fs::remove_file(&env_file_path).map_err(|e| {
+                    let _ = std::fs::remove_file(&tmp_file_path);
+                    ConfigError::LoadError(format!(
+                        "Failed to remove old config file before rename: {}",
+                        e
+                    ))
+                })?;
+            }
+        }
+
+        // Replace the old config with the new one
         std::fs::rename(&tmp_file_path, &env_file_path).map_err(|e| {
             // Clean up the temp file on rename failure
             let _ = std::fs::remove_file(&tmp_file_path);

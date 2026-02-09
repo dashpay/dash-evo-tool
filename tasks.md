@@ -599,7 +599,7 @@
   Reference egui components: `src/ui/components/amount_input.rs` (581 lines), `src/ui/components/confirmation_dialog.rs`, `src/ui/components/wallet_unlock_popup.rs`, `src/ui/components/identity_selector.rs`
   Write component tests for each.
 
-- [ ] **2.5 Implement welcome/onboarding screen** (P1)
+- [x] **2.5 Implement welcome/onboarding screen** (P1)
   Port the welcome screen that appears on first launch:
   - Action cards: "Load Wallet", "Create Wallet", "Import Identity", "Just Browse"
   - Each action navigates to the appropriate screen
@@ -1030,7 +1030,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 41 |
-| Remaining | 36 |
+| Completed | 42 |
+| Remaining | 35 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

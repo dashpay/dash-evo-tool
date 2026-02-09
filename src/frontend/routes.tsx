@@ -1,11 +1,14 @@
+import { useEffect } from "react";
 import {
   createRootRoute,
   createRoute,
   createRouter,
   Outlet,
-  redirect,
+  useNavigate,
 } from "@tanstack/react-router";
 import { AppLayout } from "./AppLayout";
+import { WelcomeScreen } from "@/screens/WelcomeScreen";
+import { commands } from "@/bindings";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -20,24 +23,58 @@ function PlaceholderScreen({ title }: { title: string }) {
   );
 }
 
-// Root route with the app layout shell
+// Root route — just renders children (either welcome or app shell)
 const rootRoute = createRootRoute({
+  component: Outlet,
+});
+
+// Welcome route — full-page, no sidebar or chrome
+const welcomeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/welcome",
+  component: WelcomeScreen,
+});
+
+// App layout route — wraps all authenticated/main routes with sidebar + top bar
+const appLayoutRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: "app",
   component: AppLayout,
 });
 
-// Index route — redirect to identities by default
+// Index route — checks onboarding, redirects accordingly
+function IndexRedirect() {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    commands
+      .settingsGet()
+      .then((result) => {
+        if (result.status === "ok" && !result.data.onboardingCompleted) {
+          navigate({ to: "/welcome", replace: true });
+        } else {
+          navigate({ to: "/identities", replace: true });
+        }
+      })
+      .catch(() => {
+        // Backend not available (browser-only mode) — skip onboarding
+        navigate({ to: "/identities", replace: true });
+      });
+  }, [navigate]);
+
+  return null;
+}
+
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  beforeLoad: () => {
-    throw redirect({ to: "/identities" });
-  },
+  component: IndexRedirect,
 });
 
-// === Main section routes ===
+// === Main section routes (children of appLayoutRoute) ===
 
 const dashpayRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appLayoutRoute,
   path: "/dashpay",
   component: () => <Outlet />,
 });
@@ -73,13 +110,13 @@ const dashpaySearchRoute = createRoute({
 });
 
 const identitiesRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appLayoutRoute,
   path: "/identities",
   component: () => <PlaceholderScreen title="Identities" />,
 });
 
 const contractsRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appLayoutRoute,
   path: "/contracts",
   component: () => <Outlet />,
 });
@@ -115,7 +152,7 @@ const contractsDpnsScheduledRoute = createRoute({
 });
 
 const tokensRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appLayoutRoute,
   path: "/tokens",
   component: () => <Outlet />,
 });
@@ -139,13 +176,13 @@ const tokensCreatorRoute = createRoute({
 });
 
 const walletsRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appLayoutRoute,
   path: "/wallets",
   component: () => <PlaceholderScreen title="Wallets" />,
 });
 
 const toolsRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appLayoutRoute,
   path: "/tools",
   component: () => <Outlet />,
 });
@@ -205,7 +242,7 @@ const toolsAddressBalanceRoute = createRoute({
 });
 
 const settingsRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => appLayoutRoute,
   path: "/settings",
   component: () => <PlaceholderScreen title="Settings" />,
 });
@@ -213,39 +250,42 @@ const settingsRoute = createRoute({
 // Build the route tree
 const routeTree = rootRoute.addChildren([
   indexRoute,
-  dashpayRoute.addChildren([
-    dashpayIndexRoute,
-    dashpayProfileRoute,
-    dashpayContactsRoute,
-    dashpayPaymentsRoute,
-    dashpaySearchRoute,
+  welcomeRoute,
+  appLayoutRoute.addChildren([
+    dashpayRoute.addChildren([
+      dashpayIndexRoute,
+      dashpayProfileRoute,
+      dashpayContactsRoute,
+      dashpayPaymentsRoute,
+      dashpaySearchRoute,
+    ]),
+    identitiesRoute,
+    contractsRoute.addChildren([
+      contractsIndexRoute,
+      contractsDpnsActiveRoute,
+      contractsDpnsPastRoute,
+      contractsDpnsOwnedRoute,
+      contractsDpnsScheduledRoute,
+    ]),
+    tokensRoute.addChildren([
+      tokensIndexRoute,
+      tokensSearchRoute,
+      tokensCreatorRoute,
+    ]),
+    walletsRoute,
+    toolsRoute.addChildren([
+      toolsIndexRoute,
+      toolsProofLogRoute,
+      toolsTransitionRoute,
+      toolsDocumentRoute,
+      toolsProofVisualizerRoute,
+      toolsMnListRoute,
+      toolsContractRoute,
+      toolsGroveStarkRoute,
+      toolsAddressBalanceRoute,
+    ]),
+    settingsRoute,
   ]),
-  identitiesRoute,
-  contractsRoute.addChildren([
-    contractsIndexRoute,
-    contractsDpnsActiveRoute,
-    contractsDpnsPastRoute,
-    contractsDpnsOwnedRoute,
-    contractsDpnsScheduledRoute,
-  ]),
-  tokensRoute.addChildren([
-    tokensIndexRoute,
-    tokensSearchRoute,
-    tokensCreatorRoute,
-  ]),
-  walletsRoute,
-  toolsRoute.addChildren([
-    toolsIndexRoute,
-    toolsProofLogRoute,
-    toolsTransitionRoute,
-    toolsDocumentRoute,
-    toolsProofVisualizerRoute,
-    toolsMnListRoute,
-    toolsContractRoute,
-    toolsGroveStarkRoute,
-    toolsAddressBalanceRoute,
-  ]),
-  settingsRoute,
 ]);
 
 export const router = createRouter({ routeTree });

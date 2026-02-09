@@ -71,11 +71,24 @@ pub struct TransferPlatformCreditsInput {
     pub fee_payer_index: u16,
 }
 
-// NOTE: FundPlatformAddressFromAssetLock is not exposed yet because
-// AssetLockProof requires dedicated DTO serialization. The proof typically
-// comes from a prior CreateRegistrationAssetLock/CreateTopUpAssetLock task
-// result and would be passed through the event system. This will be
-// implemented when the full asset lock workflow is wired up.
+/// Input for funding a platform address from an existing asset lock.
+///
+/// Uses an index into the wallet's `unused_asset_locks` array rather than
+/// passing the full `AssetLockProof` across IPC (proofs are large and complex).
+/// The frontend obtains the asset lock list via `wallet_list_all` or
+/// `wallet_get_hd` and displays them in a dropdown.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FundPlatformFromAssetLockInput {
+    /// Wallet seed hash (hex).
+    pub wallet_seed_hash: WalletSeedHashDto,
+    /// Index into the wallet's `unused_asset_locks` array.
+    pub asset_lock_index: usize,
+    /// Destination platform address (Bech32m format: tevo1.../evo1... or base58).
+    pub destination_address: String,
+    /// Optional amount in credits. `None` means use the full asset lock amount.
+    pub amount: Option<CreditsDto>,
+}
 
 /// Input for withdrawing from a platform address to Core.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -469,6 +482,80 @@ pub fn wallet_fund_platform_address_from_utxos(
     Ok(DispatchTaskResponse { task_id })
 }
 
+/// Fund a platform address from an existing asset lock.
+///
+/// Dispatches `WalletTask::FundPlatformAddressFromAssetLock`. The asset lock
+/// proof is looked up from the wallet's in-memory state using the provided
+/// index. Result via `TaskResultEvent`.
+#[tauri::command]
+#[specta::specta]
+pub fn wallet_fund_platform_from_asset_lock(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    input: FundPlatformFromAssetLockInput,
+) -> Result<DispatchTaskResponse, String> {
+    use dash_sdk::dpp::address_funds::PlatformAddress;
+    use dash_sdk::dpp::dashcore::address::NetworkUnchecked;
+    use std::collections::BTreeMap;
+
+    let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
+    let ctx = state.current_context();
+    let wallet_arc = ctx
+        .wallet_by_seed_hash(&seed_hash)
+        .ok_or_else(|| format!("Wallet not found for seed hash {}", input.wallet_seed_hash))?;
+
+    // Read the asset lock proof and address from wallet state
+    let (asset_lock_proof, asset_lock_address) = {
+        let wallet = wallet_arc
+            .read()
+            .map_err(|e| format!("Failed to read wallet: {e}"))?;
+        let asset_lock = wallet
+            .unused_asset_locks
+            .get(input.asset_lock_index)
+            .ok_or_else(|| {
+                format!(
+                    "Asset lock index {} out of range (wallet has {} asset locks)",
+                    input.asset_lock_index,
+                    wallet.unused_asset_locks.len()
+                )
+            })?;
+        let (_, addr, _, _, proof_opt) = asset_lock;
+        let proof = proof_opt
+            .as_ref()
+            .ok_or_else(|| "Asset lock proof not yet available for this lock".to_string())?;
+        (Box::new(proof.clone()), addr.clone())
+    };
+
+    // Parse the destination platform address
+    let platform_addr = if input.destination_address.starts_with("evo1")
+        || input.destination_address.starts_with("tevo1")
+    {
+        let (addr, _network) = PlatformAddress::from_bech32m_string(&input.destination_address)
+            .map_err(|e| format!("Invalid Bech32m address: {e}"))?;
+        addr
+    } else {
+        let addr = input
+            .destination_address
+            .parse::<dash_sdk::dpp::dashcore::Address<NetworkUnchecked>>()
+            .map_err(|e| format!("Invalid address {}: {e}", input.destination_address))?
+            .assume_checked();
+        PlatformAddress::try_from(addr).map_err(|e| format!("Invalid platform address: {e}"))?
+    };
+
+    // Build outputs map
+    let mut outputs: BTreeMap<PlatformAddress, Option<u64>> = BTreeMap::new();
+    outputs.insert(platform_addr, input.amount);
+
+    let task = BackendTask::WalletTask(WalletTask::FundPlatformAddressFromAssetLock {
+        seed_hash,
+        asset_lock_proof,
+        asset_lock_address,
+        outputs,
+    });
+    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
+    Ok(DispatchTaskResponse { task_id })
+}
+
 // ---------------------------------------------------------------------------
 // Direct read/write commands (synchronous)
 // ---------------------------------------------------------------------------
@@ -798,6 +885,44 @@ mod tests {
         let json = serde_json::to_string(&input).unwrap();
         assert!(json.contains("\"feeDeductFromOutput\":true"));
         assert!(json.contains("\"amount\":1000000"));
+    }
+
+    #[test]
+    fn fund_from_asset_lock_input_serializes() {
+        let input = FundPlatformFromAssetLockInput {
+            wallet_seed_hash: "ff".repeat(32),
+            asset_lock_index: 2,
+            destination_address: "tevo1abc123".into(),
+            amount: None,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"walletSeedHash\""));
+        assert!(json.contains("\"assetLockIndex\":2"));
+        assert!(json.contains("\"destinationAddress\":\"tevo1abc123\""));
+        assert!(json.contains("\"amount\":null"));
+    }
+
+    #[test]
+    fn fund_from_asset_lock_input_with_amount_serializes() {
+        let input = FundPlatformFromAssetLockInput {
+            wallet_seed_hash: "ff".repeat(32),
+            asset_lock_index: 0,
+            destination_address: "XpYvN123".into(),
+            amount: Some(500000),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"amount\":500000"));
+        assert!(json.contains("\"assetLockIndex\":0"));
+    }
+
+    #[test]
+    fn fund_from_asset_lock_input_roundtrip() {
+        let json = r#"{"walletSeedHash":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","assetLockIndex":1,"destinationAddress":"tevo1xyz","amount":null}"#;
+        let input: FundPlatformFromAssetLockInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.wallet_seed_hash, "ff".repeat(32));
+        assert_eq!(input.asset_lock_index, 1);
+        assert_eq!(input.destination_address, "tevo1xyz");
+        assert!(input.amount.is_none());
     }
 
     #[test]

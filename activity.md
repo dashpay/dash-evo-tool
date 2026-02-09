@@ -148,3 +148,10 @@
 **Files changed:** src-tauri/src/commands/identity.rs, src-tauri/src/main.rs, src/backend_task/identity/mod.rs, src/context/mod.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
 **Tests added:** 16 Rust tests (KeySpecDto serialization, ContractBoundsDto variants, RegisterIdentityFundingMethodDto all 4 variants, RegisterIdentityInput serialization + roundtrip, TopUpIdentityInput, TopUpIdentityFromPlatformAddressesInput, TransferToAddressesInput with/without key_id, PlatformAddressCreditsPair, TopUpIdentityFundingMethodDto variants). Updated 2 frontend tests (command counts: 163→167, identity commands: 23→27).
 **Sub-tasks created:** 0
+
+## Run 22 — 2026-02-09
+**Task:** 1.9e Add `wallet_fund_platform_from_asset_lock` Tauri command
+**What was done:** Added `wallet_fund_platform_from_asset_lock` Tauri IPC command wrapping `WalletTask::FundPlatformAddressFromAssetLock`. Used an index-based approach instead of passing the full `AssetLockProof` across IPC — the frontend obtains asset locks from `wallet_list_all`/`wallet_get_hd` (which include `AssetLockDto` with `has_asset_lock_proof` flag) and passes the index. The command looks up the proof from wallet in-memory state, validates it exists, parses the destination platform address (Bech32m or base58), builds the outputs map, and dispatches the task. Created `FundPlatformFromAssetLockInput` DTO with `wallet_seed_hash`, `asset_lock_index`, `destination_address`, and optional `amount` fields. TypeScript bindings auto-regenerated with 168 commands (up from 167). All checks pass: Rust (fmt, clippy, 206 tests), Frontend (lint, typecheck, 36 tests).
+**Files changed:** src-tauri/src/commands/wallet.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
+**Tests added:** 3 Rust tests (FundPlatformFromAssetLockInput serialization with null amount, serialization with amount, roundtrip deserialization). Updated 2 frontend tests (command counts: 167→168, wallet commands: 18→19).
+**Sub-tasks created:** 0

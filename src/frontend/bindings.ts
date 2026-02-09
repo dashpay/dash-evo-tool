@@ -548,6 +548,21 @@ async walletFundPlatformAddressFromUtxos(input: FundPlatformAddressFromWalletUtx
 }
 },
 /**
+ * Fund a platform address from an existing asset lock.
+ *
+ * Dispatches `WalletTask::FundPlatformAddressFromAssetLock`. The asset lock
+ * proof is looked up from the wallet's in-memory state using the provided
+ * index. Result via `TaskResultEvent`.
+ */
+async walletFundPlatformFromAssetLock(input: FundPlatformFromAssetLockInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_fund_platform_from_asset_lock", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Get all loaded wallets (HD + single-key) with current state.
  */
 async walletListAll() : Promise<Result<WalletListDto, string>> {
@@ -2384,6 +2399,31 @@ destination: string;
  * Whether fees are deducted from the output amount.
  */
 feeDeductFromOutput: boolean }
+/**
+ * Input for funding a platform address from an existing asset lock.
+ *
+ * Uses an index into the wallet's `unused_asset_locks` array rather than
+ * passing the full `AssetLockProof` across IPC (proofs are large and complex).
+ * The frontend obtains the asset lock list via `wallet_list_all` or
+ * `wallet_get_hd` and displays them in a dropdown.
+ */
+export type FundPlatformFromAssetLockInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Index into the wallet's `unused_asset_locks` array.
+ */
+assetLockIndex: number;
+/**
+ * Destination platform address (Bech32m format: tevo1.../evo1... or base58).
+ */
+destinationAddress: string;
+/**
+ * Optional amount in credits. `None` means use the full asset lock amount.
+ */
+amount: number | null }
 /**
  * Input for generating a GroveSTARK proof.
  */

@@ -24,6 +24,7 @@ import { DpnsOwnedNamesScreen } from "@/screens/DpnsOwnedNamesScreen";
 import { DpnsScheduledVotesScreen } from "@/screens/DpnsScheduledVotesScreen";
 import { DpnsRegisterNameScreen } from "@/screens/DpnsRegisterNameScreen";
 import { ToolsScreen } from "@/screens/ToolsScreen";
+import { PlatformInfoScreen } from "@/screens/PlatformInfoScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -259,7 +260,7 @@ const toolsIndexRoute = createRoute({
 const toolsPlatformInfoRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/platform-info",
-  component: () => <PlaceholderScreen title="Platform Info" />,
+  component: PlatformInfoScreen,
 });
 
 const toolsProofLogRoute = createRoute({

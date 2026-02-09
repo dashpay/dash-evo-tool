@@ -650,3 +650,10 @@
 **Files changed:** src/frontend/components/tools/ToolPageLayout.tsx, src/frontend/components/tools/HexInput.tsx, src/frontend/components/tools/MonospaceOutput.tsx, src/frontend/screens/ToolsScreen.tsx, src/frontend/routes.tsx, src/frontend/components/tools/ToolPageLayout.test.tsx, src/frontend/components/tools/HexInput.test.tsx, src/frontend/components/tools/MonospaceOutput.test.tsx, src/frontend/screens/ToolsScreen.test.tsx
 **Tests added:** 47 new tests (9 ToolPageLayout, 12 HexInput + detectFormat + decodeToHex unit tests, 12 MonospaceOutput, 13 ToolsScreen, 1 detectFormat edge case)
 **Sub-tasks created:** 0
+
+## Run 94 — 2026-02-09
+**Task:** 9.1b Implement Platform Info screen
+**What was done:** Built the Platform Info screen with a two-column layout: left column shows 7 query-type cards (Basic Info, Epoch, Credits, Version Voting, Validators, Withdrawals in Queue, Completed Withdrawals), right column shows formatted results with copy-to-clipboard via MonospaceOutput. Each card dispatches the corresponding IPC command and displays a loading spinner while waiting. Updated `classify_success_result` in `task_dispatcher.rs` to serialize Platform result payloads (text content, titles, and address balance data) so the frontend can display them. Wired the route to use PlatformInfoScreen instead of PlaceholderScreen.
+**Files changed:** src/frontend/screens/PlatformInfoScreen.tsx, src/frontend/screens/PlatformInfoScreen.test.tsx, src/frontend/routes.tsx, src-tauri/src/task_dispatcher.rs
+**Tests added:** 20 component tests (render, all 7 dispatch commands, disable while loading, result display, error banner + dismiss, re-enable after result/error, loading indicator, event subscription, ignore other task types, dispatch error handling, back button)
+**Sub-tasks created:** 0

@@ -296,6 +296,16 @@
   - [x] **1.9i** Add `wallet_import_mnemonic` Tauri command covering the mnemonic import flow (validate mnemonic, derive keys, encrypt, save, bootstrap) (P1)
   - [x] **1.9j** Add `wallet_bootstrap_addresses` Tauri command wrapping `AppContext::bootstrap_wallet_addresses()` (P1)
   - [x] **1.9k** Regenerate TypeScript bindings after all fix tasks are complete and verify new commands appear in bindings.ts (P1)
+  - [ ] **1.9l Fix sync Tauri commands that call tokio::spawn (runtime panic)** (P0)
+    Several Tauri IPC commands are defined as synchronous `pub fn` but internally call code paths that hit `tokio::spawn` (via `TaskManager::spawn_sync`, `bootstrap_wallet_addresses`, `handle_wallet_unlocked`, `start_spv`, etc.). Tauri runs sync commands on a threadpool with **no Tokio runtime context**, causing a fatal panic: "there is no reactor running, must be called from the context of a Tokio 1.x runtime" (`src/utils/tasks.rs:50`).
+    **Known affected commands in `commands/wallet.rs`:**
+    - `wallet_create` (line 688) — calls `bootstrap_wallet_addresses` + `handle_wallet_unlocked`
+    - `wallet_import_mnemonic` (line 903) — calls `bootstrap_wallet_addresses` + `handle_wallet_unlocked`
+    - `wallet_start_spv` (line 1285) — calls `ctx.start_spv()`
+    - `wallet_bootstrap_addresses` (line 1314) — calls `bootstrap_wallet_addresses`
+    - `wallet_notify_unlocked` (line 1330) — calls `handle_wallet_unlocked`
+    **Fix:** Convert these commands to `async fn` so Tauri runs them on the Tokio runtime. Also audit all other sync commands across all command modules (`core.rs`, `identity.rs`, `contract.rs`, `document.rs`, `token.rs`, `dashpay.rs`, `contested.rs`, `platform_info.rs`, `settings.rs`, `system.rs`) for any code paths that may call `tokio::spawn`, `tokio::runtime::Handle::current()`, or other Tokio-dependent APIs. Convert any additional affected commands to async.
+    **Verify:** `npx tauri dev`, create a wallet, confirm no panic. Also test wallet import and SPV start.
 
 ---
 
@@ -2111,7 +2121,7 @@
 
   - [x] **9.1a** Build tools landing page and shared tool components (`ToolPageLayout`, `HexInput`, `MonospaceOutput`). The tools index route (`/tools`) renders a categorized card grid linking to each sub-tool. Write component tests.
 
-  - [ ] **9.1b** Implement Platform Info screen. Two-column layout: left shows 7 query-type cards (Basic Info, Epoch, Credits, Version Voting, Validators, Withdrawals In Queue, Completed Withdrawals); clicking a card dispatches the IPC command and shows results in the right panel with loading skeleton. Results formatted as key-value pairs with copy button. All 8 `platform_*` IPC commands already exist. Reference: `platform_info_screen.rs`. Write component tests.
+  - [x] **9.1b** Implement Platform Info screen. Two-column layout: left shows 7 query-type cards (Basic Info, Epoch, Credits, Version Voting, Validators, Withdrawals In Queue, Completed Withdrawals); clicking a card dispatches the IPC command and shows results in the right panel with loading skeleton. Results formatted as key-value pairs with copy button. All 8 `platform_*` IPC commands already exist. Reference: `platform_info_screen.rs`. Write component tests.
 
   - [ ] **9.1c** Implement Address Balance screen. Single-card form: text input for platform address (evo1.../tevo1...) with live validation, "Fetch Balance" button, results card showing address (monospace), balance (credits + Dash dual display), and nonce. Uses `platformFetchAddressBalance` IPC. Reference: `address_balance_screen.rs`. Write component tests.
 
@@ -2221,7 +2231,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 70 |
-| Completed | 69 |
-| Remaining | 37 |
+| Completed | 70 |
+| Remaining | 36 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

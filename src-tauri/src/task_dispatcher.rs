@@ -25,6 +25,7 @@ use crate::events::{
 };
 use crate::state::AppState;
 use dash_evo_tool::app::TaskResult;
+use dash_evo_tool::backend_task::platform_info::{PlatformInfoTaskResult, PlatformResult};
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::BackendTaskSuccessResult;
 use dash_evo_tool::components::core_zmq_listener::{ZMQConnectionEvent, ZMQMessage};
@@ -151,7 +152,10 @@ fn classify_success_result(
         BackendTaskSuccessResult::Contract(_) => ("Contract".to_string(), None),
         BackendTaskSuccessResult::Contest(_) => ("Contest".to_string(), None),
         BackendTaskSuccessResult::System(_) => ("System".to_string(), None),
-        BackendTaskSuccessResult::Platform(_) => ("Platform".to_string(), None),
+        BackendTaskSuccessResult::Platform(platform_result) => {
+            let payload = classify_platform_result(platform_result);
+            ("Platform".to_string(), Some(payload))
+        }
         BackendTaskSuccessResult::DashPay(_) => ("DashPay".to_string(), None),
         BackendTaskSuccessResult::GroveSTARK(_) => ("GroveSTARK".to_string(), None),
         BackendTaskSuccessResult::MnList(_) => ("MnList".to_string(), None),
@@ -159,6 +163,78 @@ fn classify_success_result(
         BackendTaskSuccessResult::BroadcastedStateTransition => {
             ("BroadcastedStateTransition".to_string(), None)
         }
+    }
+}
+
+/// Serialize a `PlatformResult` into a JSON payload for the event system.
+///
+/// Most platform info results are pre-formatted text strings from the backend.
+/// `BasicPlatformInfo` is formatted here since `PlatformVersion` is a static ref
+/// that cannot easily be serialized. All results are wrapped in a JSON object
+/// with `type` and `data` fields so the frontend can distinguish them.
+fn classify_platform_result(result: &PlatformResult) -> serde_json::Value {
+    match result {
+        PlatformResult::Info(info) => match info {
+            PlatformInfoTaskResult::BasicPlatformInfo {
+                platform_version,
+                core_chain_lock_height,
+                network,
+            } => {
+                let text = format!(
+                    "Platform Version Information:\n\n\
+                     • Protocol Version: {}\n\
+                     • Fee Version: {:?}\n\
+                     • Drive ABCI Version: {:?}\n\
+                     • Drive Version: {:?}\n\
+                     • DPP Version: {:?}\n\
+                     • System Data Contracts:\n\
+                       - DPNS: {}\n\
+                       - Withdrawals: {}\n\n\
+                     Network: {:?}\n\
+                     Chain Lock Height: {}",
+                    platform_version.protocol_version,
+                    platform_version.fee_version,
+                    platform_version.drive_abci,
+                    platform_version.drive,
+                    platform_version.dpp,
+                    platform_version.system_data_contracts.dpns,
+                    platform_version.system_data_contracts.withdrawals,
+                    network,
+                    core_chain_lock_height.map_or("Not available".to_string(), |h| h.to_string())
+                );
+                serde_json::json!({
+                    "type": "text",
+                    "title": "Basic Platform Information",
+                    "data": text
+                })
+            }
+            PlatformInfoTaskResult::TextResult(text) => {
+                // Extract title from the text (first line before \n\n)
+                let title = text
+                    .split("\n\n")
+                    .next()
+                    .map(|s| s.trim_end_matches(':'))
+                    .unwrap_or("Platform Information")
+                    .to_string();
+                serde_json::json!({
+                    "type": "text",
+                    "title": title,
+                    "data": text
+                })
+            }
+            PlatformInfoTaskResult::AddressBalance {
+                address,
+                balance,
+                nonce,
+            } => {
+                serde_json::json!({
+                    "type": "addressBalance",
+                    "address": address,
+                    "balance": balance,
+                    "nonce": nonce
+                })
+            }
+        },
     }
 }
 

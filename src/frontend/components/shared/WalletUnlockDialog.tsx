@@ -130,7 +130,6 @@ export function WalletUnlockDialog({
               className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
               onClick={() => setShowPassword(!showPassword)}
               aria-label={showPassword ? "Hide password" : "Show password"}
-              tabIndex={-1}
             >
               {showPassword ? (
                 <EyeOff className="size-4" />

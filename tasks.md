@@ -658,7 +658,7 @@
   > - Test coverage: 322 tests across 23 test files — every component has tests
 
   **Fix sub-tasks:**
-  - [ ] **2.7a** Fix WalletUnlockDialog keyboard accessibility: remove `tabIndex={-1}` from password visibility toggle button (P1)
+  - [x] **2.7a** Fix WalletUnlockDialog keyboard accessibility: remove `tabIndex={-1}` from password visibility toggle button (P1)
   - [ ] **2.7b** Fix light mode muted-foreground contrast: darken `--muted-foreground` from #64788c to #5a6d80 for WCAG AA compliance on muted backgrounds (P2)
   - [ ] **2.7c** Fix DesignSystem.tsx EmptyState demo: change `action={{ label: "Create Wallet", onClick: () => {} }}` to `actionLabel="Create Wallet" onAction={() => {}}` (P3)
 
@@ -1064,7 +1064,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 44 |
-| Remaining | 36 |
+| Completed | 45 |
+| Remaining | 35 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

@@ -288,3 +288,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (REVIEW task — audit only)
 **Sub-tasks created:** 3 (2.7a keyboard accessibility fix, 2.7b color contrast fix, 2.7c DesignSystem demo fix)
+
+## Run 42 — 2026-02-09
+**Task:** 2.7a Fix WalletUnlockDialog keyboard accessibility
+**What was done:** Removed `tabIndex={-1}` from the password visibility toggle button in WalletUnlockDialog.tsx (line 133). This attribute was preventing keyboard users from reaching the show/hide password toggle via Tab key navigation. The button now participates in the normal tab order, making the dialog fully keyboard-accessible.
+**Files changed:** src/frontend/components/shared/WalletUnlockDialog.tsx, tasks.md, activity.md
+**Tests added:** 0 (single-line fix — all 322 existing tests pass)
+**Sub-tasks created:** 0

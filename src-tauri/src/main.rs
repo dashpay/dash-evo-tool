@@ -12,3 +12,18 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running Dash Evo Tool");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greet_returns_expected_message() {
+        assert_eq!(greet("Alice"), "Hello, Alice! Welcome to Dash Evo Tool.");
+    }
+
+    #[test]
+    fn greet_handles_empty_name() {
+        assert_eq!(greet(""), "Hello, ! Welcome to Dash Evo Tool.");
+    }
+}

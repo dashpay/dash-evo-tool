@@ -36,6 +36,10 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Testing
+playwright-report/
+test-results/
+
 # Tauri
 src-tauri/icons/android/
 src-tauri/icons/ios/

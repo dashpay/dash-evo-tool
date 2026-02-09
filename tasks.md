@@ -60,7 +60,7 @@
   - `.gitignore` for node_modules, target, dist
   Verify: `npx tauri dev` launches a window with the frontend visible.
 
-- [ ] **0.3 Set up testing infrastructure** (P0)
+- [x] **0.3 Set up testing infrastructure** (P0)
   Configure the full testing stack:
   - **Component tests:** Vitest + Testing Library (for the chosen framework) + jsdom
   - **Playwright:** Install, configure `playwright.config.ts` with the Tauri dev server, set up project for Chromium + WebKit
@@ -645,7 +645,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 7 |
-| Remaining | 53 |
+| Completed | 8 |
+| Remaining | 52 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

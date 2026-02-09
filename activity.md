@@ -50,3 +50,10 @@
 **Files changed:** src/frontend/App.tsx, src-tauri/Cargo.toml, tasks.md, activity.md
 **Tests added:** 0 (Hello World demo — testing infrastructure comes in task 0.3)
 **Sub-tasks created:** 0
+
+## Run 8 — 2026-02-09
+**Task:** 0.3 Set up testing infrastructure
+**What was done:** Configured the full testing pipeline across all three layers. Created a Vitest component test for App.tsx (renders heading, IPC card, input, and button). Created a Playwright e2e test in a new `tests/playwright/` directory (loads homepage, verifies heading and greet button). Added Rust unit tests for the `greet` command in `src-tauri/src/main.rs` (tests expected message and empty name). Updated `playwright.config.ts` to use `tests/playwright/` directory (separated from existing Rust e2e tests in `tests/e2e/`). Installed Chromium browser for Playwright. All npm scripts already existed (test, test:e2e, test:components, lint, typecheck). Verified: `npm run test` (1 test passed), `npx playwright test --project=chromium` (1 test passed), `cargo test` in src-tauri (2 tests passed), lint, typecheck, clippy all pass.
+**Files changed:** src/frontend/App.test.tsx, tests/playwright/app.spec.ts, src-tauri/src/main.rs, playwright.config.ts, tasks.md, activity.md
+**Tests added:** 4 (1 Vitest component test, 1 Playwright e2e test, 2 Rust unit tests)
+**Sub-tasks created:** 0

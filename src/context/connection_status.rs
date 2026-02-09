@@ -12,6 +12,10 @@ use std::time::{Duration, Instant};
 
 const REFRESH_CONNECTED: Duration = Duration::from_secs(10);
 const REFRESH_DISCONNECTED: Duration = Duration::from_secs(2);
+/// Tracks the connection status to currently active network, and provides helper methods
+/// to determine overall connectivity status.
+///
+/// Supports Dash Core and SPV.
 #[derive(Debug)]
 pub struct ConnectionStatus {
     rpc_online: AtomicBool,
@@ -33,6 +37,25 @@ impl ConnectionStatus {
             disable_zmq: AtomicBool::new(false),
             overall_connected: AtomicBool::new(false),
             last_update: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Reset all connection state. Called when switching the active network
+    /// so the status reflects the new network from a clean slate.
+    pub fn reset(&self) {
+        self.rpc_online.store(false, Ordering::Relaxed);
+        if let Ok(mut status) = self.zmq_status.lock() {
+            *status = ZMQConnectionEvent::Disconnected;
+        }
+        self.spv_status
+            .store(SpvStatus::Idle as u8, Ordering::Relaxed);
+        self.backend_mode
+            .store(CoreBackendMode::Rpc.as_u8(), Ordering::Relaxed);
+        self.disable_zmq.store(false, Ordering::Relaxed);
+        self.overall_connected.store(false, Ordering::Relaxed);
+        // Set last_update to epoch so the next trigger_refresh fires immediately
+        if let Ok(mut last) = self.last_update.lock() {
+            *last = Instant::now() - REFRESH_CONNECTED;
         }
     }
 
@@ -58,15 +81,7 @@ impl ConnectionStatus {
     }
 
     pub fn spv_status(&self) -> SpvStatus {
-        match self.spv_status.load(Ordering::Relaxed) {
-            1 => SpvStatus::Starting,
-            2 => SpvStatus::Syncing,
-            3 => SpvStatus::Running,
-            4 => SpvStatus::Stopping,
-            5 => SpvStatus::Stopped,
-            6 => SpvStatus::Error,
-            _ => SpvStatus::Idle,
-        }
+        SpvStatus::from(self.spv_status.load(Ordering::Relaxed))
     }
 
     pub fn set_spv_status(&self, status: SpvStatus) {
@@ -90,19 +105,7 @@ impl ConnectionStatus {
     }
 
     pub fn spv_connected(status: SpvStatus) -> bool {
-        status.is_active() || status == SpvStatus::Running
-    }
-
-    pub fn rpc_connected(&self) -> bool {
-        self.rpc_online()
-    }
-
-    pub fn zmq_required(&self) -> bool {
-        !self.disable_zmq()
-    }
-
-    pub fn rpc_zmq_healthy(&self) -> bool {
-        self.rpc_online() && (self.disable_zmq() || self.zmq_connected())
+        status.is_active()
     }
 
     pub fn overall_connected(&self) -> bool {
@@ -118,18 +121,6 @@ impl ConnectionStatus {
             CoreBackendMode::Spv => Self::spv_connected(spv_status),
         };
         self.overall_connected.store(connected, Ordering::Relaxed);
-    }
-
-    pub fn overall_connected_with(
-        &self,
-        backend_mode: CoreBackendMode,
-        disable_zmq: bool,
-        spv_status: SpvStatus,
-    ) -> bool {
-        match backend_mode {
-            CoreBackendMode::Rpc => self.rpc_online() && (disable_zmq || self.zmq_connected()),
-            CoreBackendMode::Spv => Self::spv_connected(spv_status),
-        }
     }
 
     pub fn tooltip_text(&self) -> String {

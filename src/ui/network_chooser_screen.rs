@@ -1,7 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::BackendTask;
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
@@ -446,7 +446,7 @@ impl NetworkChooserScreen {
             let ctx = self.current_app_context();
             let status = ctx.connection_status();
             let disable_zmq = status.disable_zmq();
-            let rpc_online = self.check_network_status(self.current_network);
+            let rpc_online = self.check_network_status();
             let zmq_connected = status.zmq_connected();
             let spv_snapshot = ctx.spv_manager().status();
             let spv_status = status.spv_status();
@@ -1780,27 +1780,11 @@ impl NetworkChooserScreen {
         }
     }
 
-    /// Check if the network is working
-    fn check_network_status(&self, network: Network) -> bool {
-        match network {
-            Network::Dash => self.mainnet_app_context.connection_status().rpc_online(),
-            Network::Testnet => self
-                .testnet_app_context
-                .as_ref()
-                .map(|ctx| ctx.connection_status().rpc_online())
-                .unwrap_or(false),
-            Network::Devnet => self
-                .devnet_app_context
-                .as_ref()
-                .map(|ctx| ctx.connection_status().rpc_online())
-                .unwrap_or(false),
-            Network::Regtest => self
-                .local_app_context
-                .as_ref()
-                .map(|ctx| ctx.connection_status().rpc_online())
-                .unwrap_or(false),
-            _ => false,
-        }
+    /// Check if the current network's RPC is online.
+    fn check_network_status(&self) -> bool {
+        self.current_app_context()
+            .connection_status()
+            .rpc_online()
     }
 
     fn any_rpc_backend(&self) -> bool {

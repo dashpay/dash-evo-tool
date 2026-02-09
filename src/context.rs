@@ -101,7 +101,8 @@ pub struct AppContext {
     pub(crate) subtasks: Arc<TaskManager>,
     pub(crate) spv_manager: Arc<SpvManager>,
     core_backend_mode: AtomicU8,
-    pub(crate) connection_status: ConnectionStatus,
+    /// Tracks the connection status to currently active network
+    pub(crate) connection_status: Arc<ConnectionStatus>,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -120,6 +121,7 @@ impl AppContext {
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
         subtasks: Arc<TaskManager>,
+        connection_status: Arc<ConnectionStatus>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
@@ -277,7 +279,7 @@ impl AppContext {
             subtasks,
             spv_manager,
             core_backend_mode: AtomicU8::new(saved_core_backend_mode),
-            connection_status: ConnectionStatus::new(),
+            connection_status,
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),

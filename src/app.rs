@@ -7,6 +7,7 @@ use crate::backend_task::core::CoreItem;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
+use crate::context::connection_status::ConnectionStatus;
 use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
@@ -65,6 +66,7 @@ pub struct AppState {
     pub selected_main_screen: RootScreenType,
     pub screen_stack: Vec<Screen>,
     pub chosen_network: Network,
+    pub connection_status: Arc<ConnectionStatus>,
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
@@ -182,11 +184,13 @@ impl AppState {
         let onboarding_completed = settings.onboarding_completed;
 
         let subtasks = Arc::new(TaskManager::new());
+        let connection_status = Arc::new(ConnectionStatus::new());
         let mainnet_app_context = match AppContext::new(
             Network::Dash,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
+            connection_status.clone(),
         ) {
             Some(context) => context,
             None => {
@@ -201,18 +205,21 @@ impl AppState {
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
+            connection_status.clone(),
         );
         let devnet_app_context = AppContext::new(
             Network::Devnet,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
+            connection_status.clone(),
         );
         let local_app_context = AppContext::new(
             Network::Regtest,
             db.clone(),
             password_info,
             subtasks.clone(),
+            connection_status.clone(),
         );
 
         // load fonts
@@ -604,6 +611,7 @@ impl AppState {
             selected_main_screen,
             screen_stack: vec![],
             chosen_network,
+            connection_status,
             mainnet_app_context,
             testnet_app_context,
             devnet_app_context,
@@ -738,6 +746,8 @@ impl AppState {
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
         }
+
+        self.connection_status.reset();
     }
 
     pub fn visible_screen_mut(&mut self) -> &mut Screen {

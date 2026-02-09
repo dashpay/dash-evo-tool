@@ -155,3 +155,10 @@
 **Files changed:** src-tauri/src/commands/wallet.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
 **Tests added:** 3 Rust tests (FundPlatformFromAssetLockInput serialization with null amount, serialization with amount, roundtrip deserialization). Updated 2 frontend tests (command counts: 167→168, wallet commands: 18→19).
 **Sub-tasks created:** 0
+
+## Run 23 — 2026-02-09
+**Task:** 1.9f Add `context_set_core_backend_mode` Tauri command
+**What was done:** Added two new Tauri IPC commands: `context_get_core_backend_mode` (reads current SPV/RPC mode) and `context_set_core_backend_mode` (switches between SPV and RPC modes). The set command wraps `AppContext::set_core_backend_mode()`, validates that SPV mode requires developer mode to be enabled, and automatically stops SPV when switching to RPC (matching egui behavior from `network_chooser_screen.rs`). Added `to_backend()` conversion method on `CoreBackendModeDto`. TypeScript bindings auto-regenerated with 170 commands (up from 168). All checks pass: Rust (fmt, clippy, 208 tests), Frontend (lint, typecheck, 36 tests).
+**Files changed:** src-tauri/src/commands/settings.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
+**Tests added:** 2 Rust tests (CoreBackendModeDto roundtrip, CoreBackendModeDto deserialization from JSON). Updated 2 frontend tests (command counts: 168→170, settings commands: 15→17).
+**Sub-tasks created:** 0

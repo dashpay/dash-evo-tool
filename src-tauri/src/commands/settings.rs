@@ -56,6 +56,12 @@ impl CoreBackendModeDto {
             CoreBackendMode::Rpc => Self::Rpc,
         }
     }
+    fn to_backend(self) -> CoreBackendMode {
+        match self {
+            Self::Spv => CoreBackendMode::Spv,
+            Self::Rpc => CoreBackendMode::Rpc,
+        }
+    }
 }
 
 /// Full application settings DTO.
@@ -294,6 +300,43 @@ pub fn context_get_network(state: tauri::State<'_, Arc<AppState>>) -> NetworkDto
     NetworkDto::from_network(ctx.network())
 }
 
+/// Get the current core backend mode (SPV or RPC).
+#[tauri::command]
+#[specta::specta]
+pub fn context_get_core_backend_mode(state: tauri::State<'_, Arc<AppState>>) -> CoreBackendModeDto {
+    let ctx = state.current_context();
+    CoreBackendModeDto::from_backend(ctx.core_backend_mode())
+}
+
+/// Set the core backend mode (SPV or RPC).
+///
+/// Switches between SPV client and Dash Core RPC for core-level operations.
+/// When switching to RPC, SPV is automatically stopped. SPV mode is only
+/// available when developer mode is enabled.
+#[tauri::command]
+#[specta::specta]
+pub fn context_set_core_backend_mode(
+    state: tauri::State<'_, Arc<AppState>>,
+    mode: CoreBackendModeDto,
+) -> Result<(), String> {
+    let ctx = state.current_context();
+    let backend_mode = mode.to_backend();
+
+    // SPV is gated behind developer mode
+    if backend_mode == CoreBackendMode::Spv && !ctx.is_developer_mode() {
+        return Err("SPV mode is only available when developer mode is enabled".into());
+    }
+
+    ctx.set_core_backend_mode(backend_mode);
+
+    // When switching to RPC, stop SPV (mirrors egui behavior)
+    if backend_mode == CoreBackendMode::Rpc {
+        ctx.stop_spv();
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -372,5 +415,35 @@ mod tests {
         let rpc = CoreBackendModeDto::Rpc;
         let json = serde_json::to_string(&rpc).unwrap();
         assert!(json.contains("\"rpc\""));
+    }
+
+    #[test]
+    fn core_backend_mode_dto_roundtrip() {
+        // SPV roundtrip
+        let original = CoreBackendModeDto::Spv;
+        let backend = original.to_backend();
+        let recovered = CoreBackendModeDto::from_backend(backend);
+        assert_eq!(
+            serde_json::to_string(&original).unwrap(),
+            serde_json::to_string(&recovered).unwrap()
+        );
+
+        // RPC roundtrip
+        let original = CoreBackendModeDto::Rpc;
+        let backend = original.to_backend();
+        let recovered = CoreBackendModeDto::from_backend(backend);
+        assert_eq!(
+            serde_json::to_string(&original).unwrap(),
+            serde_json::to_string(&recovered).unwrap()
+        );
+    }
+
+    #[test]
+    fn core_backend_mode_dto_deserializes_from_json() {
+        let spv: CoreBackendModeDto = serde_json::from_str("\"spv\"").unwrap();
+        assert!(matches!(spv, CoreBackendModeDto::Spv));
+
+        let rpc: CoreBackendModeDto = serde_json::from_str("\"rpc\"").unwrap();
+        assert!(matches!(rpc, CoreBackendModeDto::Rpc));
     }
 }

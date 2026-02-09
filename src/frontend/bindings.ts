@@ -1853,6 +1853,27 @@ async contextSetFeeMultiplier(multiplier: number) : Promise<void> {
  */
 async contextGetNetwork() : Promise<NetworkDto> {
     return await TAURI_INVOKE("context_get_network");
+},
+/**
+ * Get the current core backend mode (SPV or RPC).
+ */
+async contextGetCoreBackendMode() : Promise<CoreBackendModeDto> {
+    return await TAURI_INVOKE("context_get_core_backend_mode");
+},
+/**
+ * Set the core backend mode (SPV or RPC).
+ *
+ * Switches between SPV client and Dash Core RPC for core-level operations.
+ * When switching to RPC, SPV is automatically stopped. SPV mode is only
+ * available when developer mode is enabled.
+ */
+async contextSetCoreBackendMode(mode: CoreBackendModeDto) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("context_set_core_backend_mode", { mode }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

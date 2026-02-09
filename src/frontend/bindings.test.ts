@@ -349,7 +349,7 @@ describe("Bindings: commands object", () => {
     expect(systemCmds.length).toBe(10);
   });
 
-  it("contains all 15 settings/context commands", () => {
+  it("contains all 17 settings/context commands", () => {
     const cmds = commands as unknown as Record<string, unknown>;
     const settingsCmds = [
       "settingsGet",
@@ -367,16 +367,18 @@ describe("Bindings: commands object", () => {
       "contextGetFeeMultiplier",
       "contextSetFeeMultiplier",
       "contextGetNetwork",
+      "contextGetCoreBackendMode",
+      "contextSetCoreBackendMode",
     ];
     for (const cmd of settingsCmds) {
       assertIsFunction(cmds, cmd);
     }
-    expect(settingsCmds.length).toBe(15);
+    expect(settingsCmds.length).toBe(17);
   });
 
-  it("total command count is 168", () => {
+  it("total command count is 170", () => {
     const allKeys = Object.keys(commands);
-    expect(allKeys.length).toBe(168);
+    expect(allKeys.length).toBe(170);
   });
 });
 

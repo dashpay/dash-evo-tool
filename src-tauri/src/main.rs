@@ -321,6 +321,8 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::settings::context_get_fee_multiplier,
             commands::settings::context_set_fee_multiplier,
             commands::settings::context_get_network,
+            commands::settings::context_get_core_backend_mode,
+            commands::settings::context_set_core_backend_mode,
         ])
         .events(collect_events![
             TaskResultEvent,

@@ -197,3 +197,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (verification task — all tests already pass)
 **Sub-tasks created:** 0
+
+## Run 29 — 2026-02-09
+**Task:** 2.1 [META] Design the overall app layout, navigation, and visual language
+**What was done:** Studied all egui UI source files (left_panel.rs, top_panel.rs, theme.rs, components/mod.rs, confirmation_dialog.rs, wallet_unlock_popup.rs, and the full screen/navigation architecture from mod.rs). Designed comprehensive layout, navigation, and visual language for the Tauri web frontend. Decisions cover: three-panel "island" layout (sidebar 72-200px + optional sub-nav 220px + content), @tanstack/react-router file-based routing, Dash brand color palette overriding shadcn's OKLCH defaults, Noto Sans + JetBrains Mono typography, spacing/radius/shadow scales matching egui theme.rs, 5 content layout patterns (list, detail, form/wizard, action, tool), 4 modal/dialog patterns (confirmation, wallet unlock, fee confirmation, toast), loading/error/empty state patterns, responsive breakpoints (≥1280 full, 1024-1279 collapsed sidebar, <1024 drawer), and WCAG 2.1 AA accessibility requirements. Produced 6 sub-tasks for implementation.
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (META task — design/research only)
+**Sub-tasks created:** 6 (2.1a through 2.1f — CSS overrides, typography, Tailwind extensions, layout primitives, theme provider, loading/empty components)

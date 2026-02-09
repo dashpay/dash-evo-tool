@@ -386,3 +386,10 @@
 **Files changed:** src/frontend/components/shared/CopyButton.tsx (fix), src/frontend/screens/SingleKeySendScreen.test.tsx (fix), src/frontend/components/wallet/PrivateKeyDialog.test.tsx (fix), tasks.md, activity.md
 **Tests added:** 0 new (fixed 3 failing tests across 2 test files; all 811 existing tests pass)
 **Sub-tasks created:** 0
+
+## Run 56 — 2026-02-09
+**Task:** 3.6 [REVIEW] Wallet screens functionality parity
+**What was done:** Performed exhaustive comparison of every wallet action in the egui version (8 source files, ~8,000+ lines) against the Tauri React implementation (13 component/screen files, ~365 tests). Used parallel agent audits to catalog all features in both implementations, then verified each claimed gap against actual code. Found the implementation achieves strong parity (A-) with all major workflows present: wallet list CRUD, HD/single-key detail with all tabs, send flows (simple+advanced), create/import wizards, receive dialog, private key dialog, asset lock create/detail. Identified 5 gaps: (1) FeeConfirmationDialog not wired to single-key send flow, (2) transaction size estimation missing from single-key send, (3) asset lock proof details missing (proof type fields, hex, raw details), (4) BIP39 language selection hardcoded to English, (5) entropy grid visualization not ported. Created 5 fix sub-tasks (3.6a-3.6e).
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (REVIEW task — audit only; all 811 existing tests pass)
+**Sub-tasks created:** 5 (3.6a fee dialog wiring, 3.6b tx size estimation, 3.6c proof details, 3.6d language selection, 3.6e entropy grid)

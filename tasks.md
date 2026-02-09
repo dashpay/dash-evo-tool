@@ -879,13 +879,88 @@
   Reference: `single_key_send_screen.rs`, `create_asset_lock_screen.rs`, `asset_lock_detail_screen.rs`
   Write component tests. Write Playwright tests.
 
-- [ ] **3.6 [REVIEW] Wallet screens functionality parity** (P1)
+- [x] **3.6 [REVIEW] Wallet screens functionality parity** (P1)
   Exhaustive comparison of every wallet action in egui vs Tauri:
   - Open `wallets_screen/mod.rs` and trace every button, menu item, dialog, and display element
   - Verify each has a corresponding UI element and IPC command in the Tauri version
   - Check: wallet refresh modes (Core only, Platform full/terminal, Combined), address operations (copy, view key, fund platform), asset lock recovery, platform address funding
   - Verify test coverage for critical paths
   Create fix tasks for gaps.
+
+  > **Audit Findings (Run 56):**
+  >
+  > ### Overall Assessment: STRONG (A-)
+  > 811 tests pass, lint clean, typecheck clean. All major wallet workflows are present and
+  > functional. The Tauri implementation covers all core functionality with significant UX
+  > improvements (split-pane layout, inline rename, context menus, toast notifications,
+  > tabbed detail view, step wizards).
+  >
+  > ### Features with FULL PARITY (confirmed present):
+  > - Wallet list: HD + single-key sections, select, rename (inline), lock/unlock, remove with confirmation
+  > - HD wallet detail: alias, Core+Platform balances, pending indicator, refreshing state
+  > - Refresh modes: All 5 modes (All Auto, Core Only, Core+Platform Full/Terminal, Combined) in dev mode
+  > - Addresses tab: account selector, sortable 7-column table, hide zero toggle, View Key, Add Address, CopyButton
+  > - Transactions tab: dev-mode only, sorted by date, direction/amount/status/txid
+  > - Asset Locks tab: table with all columns, Create/Search/View/Fund buttons
+  > - Single-key detail: address+copy, balance+pending, paginated UTXOs (50/page)
+  > - Receive dialog: Core/Platform tabs (HD), single tab (single-key), QR 220x220, address selector, New Address
+  > - Private Key dialog: masked/revealed, Copy when revealed, security warning
+  > - Create Wallet: 3-step wizard, word count 12-24, BIP39 generation, strength meter, success screen
+  > - Import Wallet: Two tabs (Seed Phrase/Private Key), word grid with multi-word paste, BIP39 validation, advanced options (identity auto-discovery), strength meter
+  > - HD Send: Simple (Core/Platform/Identity sources, address detection, Max+auto-subtract-fee, platform breakdown), Advanced (inputs/outputs, fee strategy), sending/complete/error states
+  > - Single-key Send: Simple (address+amount+subtract fee), Advanced (multiple recipients, memo), sending/complete/error states
+  > - Create Asset Lock: Purpose→Configure→Funding→Creating→Success, registration/top-up, identity selector, advanced options (identity/top-up index), auto-progression on fund receipt
+  > - Asset Lock Detail: TX info, proof status badge, InstantLock/Usable badges, private key with unlock gate
+  > - Identity withdrawal: source selection with key picker, correct IPC dispatch
+  > - Fee strategy: 4-option dropdown for platform operations
+  > - Max button: auto-enables subtract-fee for Core→Core
+  >
+  > ### Gaps Found (5 issues):
+  >
+  > **1. Fee confirmation dialog not wired to send flows (P2)**
+  > - `FeeConfirmationDialog` component exists and is fully implemented
+  > - Neither SendScreen nor SingleKeySendScreen uses it
+  > - Both pass `overrideFee: null` hardcoded
+  > - The egui single-key send screen has `FeeConfirmationDialog` integration that intercepts min relay fee errors, shows the dialog, and re-sends with `override_fee` set
+  > - The HD send screen in egui also passes `override_fee: None` (no dialog there either), so this gap is single-key only
+  >
+  > **2. Transaction size estimation display missing from single-key send (P3)**
+  > - egui `single_key_send_screen.rs` shows: estimated fee, UTXO input count, tx byte size
+  > - Also shows warning when >100 UTXOs needed ("Large number of inputs required")
+  > - Tauri SingleKeySendScreen has no fee estimation display at all
+  > - Note: HD send screen in egui also lacks this, so parity for HD is fine
+  >
+  > **3. Asset lock proof details missing from AssetLockDetailScreen (P2)**
+  > - egui shows detailed proof information: Instant Send TxID + Output Index, Chain Lock Height + OutPoint
+  > - egui shows proof hex with Copy button and collapsible "View Raw Proof Details" section
+  > - Tauri AssetLockDetailScreen shows proof STATUS (badge) but not the detailed proof fields or hex
+  > - This requires the DTO to include proof detail fields (currently `AssetLockDto` has `hasAssetLockProof` boolean and `hasInstantLock` boolean but no proof data)
+  >
+  > **4. BIP39 language selection missing from CreateWalletScreen (P3)**
+  > - egui has Language dropdown: English, Spanish, French, Italian, Portuguese
+  > - Tauri hardcodes English only (`@scure/bip39/wordlists/english.js`)
+  > - Low priority: vast majority of users use English; other languages rarely used
+  >
+  > **5. Entropy grid visualization missing from CreateWalletScreen (P3)**
+  > - egui has `U256EntropyGrid` component that shows randomness visualization
+  > - Allows user to contribute entropy by clicking grid cells
+  > - Tauri uses `@scure/bip39` with WebCrypto `getRandomValues()` for entropy (more secure than user clicking)
+  > - Low priority: the entropy grid was more of a visual novelty; WebCrypto provides better randomness
+  >
+  > ### Test Coverage Assessment:
+  > - 811 total Vitest tests pass (wallet-related: ~365 tests across 12 test files)
+  > - All wallet components have dedicated test files
+  > - Critical paths covered: create, import, send (both modes), receive, private key, asset lock create/detail
+  > - Playwright E2E tests cover wallet screen rendering and navigation
+  >
+  > ### Summary: 5 fix sub-tasks created below (3 functional, 2 cosmetic)
+
+  **Fix sub-tasks:**
+  - [ ] **3.6a** Wire `FeeConfirmationDialog` into `SingleKeySendScreen`: intercept min relay fee errors from task error events, parse the required fee, show the dialog, and re-send with `overrideFee` set. Match egui `single_key_send_screen.rs` lines 805-825 and 844-855 behavior. (P2)
+  - [ ] **3.6b** Add transaction size estimation display to `SingleKeySendScreen`: show estimated fee, UTXO input count, and transaction byte size below the amount input. Add warning banner when >100 UTXOs needed. Port `estimate_fee()` logic from egui `single_key_send_screen.rs` lines 145-196 (can be done client-side from UTXO data already in the store). (P3)
+  - [ ] **3.6c** Add asset lock proof details to `AssetLockDetailScreen`: extend `AssetLockDto` to include proof type and proof detail fields (InstantLock TxID/Output Index for Instant, Core Chain Locked Height/OutPoint for Chain), add proof hex display with Copy button, and add collapsible "View Raw Proof Details" section. Port from egui `asset_lock_detail_screen.rs` lines 130-208. (P2)
+  - [ ] **3.6d** Add BIP39 language selection to `CreateWalletScreen`: add Language dropdown (English, Spanish, French, Italian, Portuguese) before word count selector, dynamically import the selected language wordlist from `@scure/bip39/wordlists/`. Default to English. (P3)
+  - [ ] **3.6e** Add entropy grid visualization to `CreateWalletScreen`: create an `EntropyGrid` component that visualizes random entropy and optionally allows user input. Show below the Generate button. Mix user-contributed entropy with WebCrypto randomness. Port concept from egui `U256EntropyGrid`. (P3)
 
 ---
 
@@ -1225,7 +1300,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 58 |
-| Remaining | 28 |
+| Completed | 59 |
+| Remaining | 32 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

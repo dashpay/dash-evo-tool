@@ -22,6 +22,7 @@ import { DpnsActiveContestsScreen } from "@/screens/DpnsActiveContestsScreen";
 import { DpnsPastContestsScreen } from "@/screens/DpnsPastContestsScreen";
 import { DpnsOwnedNamesScreen } from "@/screens/DpnsOwnedNamesScreen";
 import { DpnsScheduledVotesScreen } from "@/screens/DpnsScheduledVotesScreen";
+import { DpnsRegisterNameScreen } from "@/screens/DpnsRegisterNameScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -162,6 +163,12 @@ const contractsDpnsScheduledRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-scheduled",
   component: DpnsScheduledVotesScreen,
+});
+
+const contractsDpnsRegisterRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/dpns-register",
+  component: DpnsRegisterNameScreen,
 });
 
 const tokensRoute = createRoute({
@@ -321,6 +328,7 @@ const routeTree = rootRoute.addChildren([
       contractsDpnsPastRoute,
       contractsDpnsOwnedRoute,
       contractsDpnsScheduledRoute,
+      contractsDpnsRegisterRoute,
     ]),
     tokensRoute.addChildren([
       tokensIndexRoute,

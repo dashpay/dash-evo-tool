@@ -264,13 +264,13 @@ describe("DpnsActiveContestsScreen — action buttons", () => {
     expect(refreshButton).toBeDisabled();
   });
 
-  it("register name button navigates to identities", async () => {
+  it("register name button navigates to DPNS register screen", async () => {
     useContestStore.setState({ contestedNames: [makeContest()] });
     const { user } = setup();
 
     await user.click(screen.getByRole("button", { name: /register dpns name/i }));
 
-    expect(mockNavigate).toHaveBeenCalledWith({ to: "/identities" });
+    expect(mockNavigate).toHaveBeenCalledWith({ to: "/contracts/dpns-register" });
   });
 
   it("cast/schedule votes button is disabled when no votes selected", () => {

@@ -91,7 +91,7 @@ export function DpnsActiveContestsScreen() {
   }, [loadContests]);
 
   const handleRegisterName = useCallback(() => {
-    navigate({ to: "/identities" });
+    navigate({ to: "/contracts/dpns-register" });
   }, [navigate]);
 
   const handleOpenVoteDialog = useCallback(() => {

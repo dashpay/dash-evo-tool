@@ -566,3 +566,10 @@
 **Files changed:** tests/playwright/dpns-active-contests.spec.ts, tasks.md, activity.md
 **Tests added:** 8 Playwright E2E tests for DPNS Active Contests screen
 **Sub-tasks created:** 0
+
+## Run 82 — 2026-02-09
+**Task:** 5.1h Create RegisterDpnsNameScreen with wiring and tests
+**What was done:** Created `DpnsRegisterNameScreen` screen wrapper that wires the existing `RegisterDpnsNameScreen` component to both identityStore and contestStore. Added `/contracts/dpns-register` route. Updated `DpnsActiveContestsScreen` "Register Name" button to navigate to the new route instead of `/identities`. The screen loads identities on mount, handles registration via `identityRegisterDpnsName` Tauri command, reloads identity and refreshes DPNS names (via contestStore) after successful registration. Shows loading spinner while identities load, handles success/error states, supports "register another" flow and back navigation to active contests. Wrote 31 component tests and 14 Playwright E2E tests.
+**Files changed:** src/frontend/screens/DpnsRegisterNameScreen.tsx, src/frontend/screens/DpnsRegisterNameScreen.test.tsx, src/frontend/screens/DpnsActiveContestsScreen.tsx, src/frontend/screens/DpnsActiveContestsScreen.test.tsx, src/frontend/routes.tsx, tests/playwright/dpns-register-name.spec.ts, tasks.md, activity.md
+**Tests added:** 31 component tests (rendering, data loading, validation, registration submission/success/error, navigation, error dismissal, button state, multiple identities) + 14 Playwright E2E tests (heading, breadcrumb, input, validation, buttons, advanced toggle, info sections)
+**Sub-tasks created:** 0

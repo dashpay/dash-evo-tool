@@ -449,3 +449,10 @@
 **Files changed:** src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/components/identity/IdentityListPanel.test.tsx, src/frontend/test/setup.ts, tasks.md, activity.md
 **Tests added:** 60 tests (empty state: 6, identity display: 14, selection: 3, alias editing: 6, remove: 4, context menu actions: 14, reorder: 4, refresh all: 3, balance formatting: 3, accessibility: 4)
 **Sub-tasks created:** 0
+
+## Run 65 — 2026-02-09
+**Task:** 4.1c Create identity detail component (IdentityDetailPanel)
+**What was done:** Created `IdentityDetailPanel` component displaying full identity details in the right pane of the split-pane layout. Features: header with type icon, alias (or "Unnamed Identity"), full ID with copy button, type/status/network badges; balance section formatted as DASH with credits tooltip; action bar with Top Up, Withdraw, Transfer, Register DPNS, and Refresh buttons (disabled based on status and minimum balance thresholds — 0.005 DASH for withdraw, 0.0002 DASH for transfer); DPNS names list with acquisition dates; associated wallets section with resolved names and clickable links; associated identities section (voter/operator IDs with copy buttons); keys quick-access with Main/Voter sections, purpose abbreviations (A/E/D/T/S/V/O), security levels, private key indicators (blue highlight + lock icon), disabled badges; wallet index and top-up history details section; refreshing state indicator.
+**Files changed:** src/frontend/components/identity/IdentityDetailPanel.tsx, src/frontend/components/identity/IdentityDetailPanel.test.tsx, tasks.md, activity.md
+**Tests added:** 66 tests (header: 13, balance: 4, action bar: 15, DPNS names: 3, associated wallets: 7, associated identities: 4, keys: 9, details section: 3, refreshing state: 2, accessibility: 2, key purpose abbreviations: 5)
+**Sub-tasks created:** 0

@@ -1253,7 +1253,7 @@
   - [x] **4.1e** Create withdraw/transfer components: `WithdrawScreen` (key selector for TRANSFER keys, balance display, amount input with Max, address input with validation, owner key payout address auto-fill, confirmation dialog, states: form→unlock→sending→result), `TransferScreen` (key selector, destination type toggle Identity/PlatformAddress, identity selector or address input, amount with Max, confirmation, states). (P1)
   - [ ] **4.1f** Create register DPNS name component: `RegisterDpnsNameScreen` with identity selector, key selector (advanced), username input with ".dash" suffix, min 3 chars validation, wallet unlock gate, registering state with elapsed time, success with contested/normal result and fee breakdown, source tracking (from Identities vs DPNS). (P1)
 
-- [ ] **4.2 Implement identity list screen** (P1)
+- [x] **4.2 Implement identity list screen** (P1)
   Build the main identity management interface:
   - Table with columns: Alias, Identity ID, In Wallet, Type, Balance
   - Sortable columns (ascending/descending)
@@ -1578,7 +1578,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 65 |
-| Remaining | 32 |
+| Completed | 66 |
+| Remaining | 31 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

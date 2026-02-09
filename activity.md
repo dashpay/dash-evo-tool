@@ -470,3 +470,10 @@
 **Files changed:** src/frontend/components/identity/WithdrawScreen.tsx, src/frontend/components/identity/WithdrawScreen.test.tsx, src/frontend/components/identity/TransferScreen.tsx, src/frontend/components/identity/TransferScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 96 tests (WithdrawScreen: 48, TransferScreen: 48)
 **Sub-tasks created:** 0
+
+## Run 68 — 2026-02-09
+**Task:** 4.2 Implement identity list screen
+**What was done:** Created `IdentitiesScreen` — the main identity management screen that composes all existing identity components into a unified view. Follows the WalletsScreen pattern: left panel (IdentityListPanel) + right panel (IdentityDetailPanel or sub-views). Manages sub-view navigation state for: detail view, key management (Identity Keys), key info, add key, withdraw, and transfer screens. Wires up all Zustand store actions (load, select, refresh, alias, reorder, remove) and Tauri IPC commands (withdraw, transfer, add key, disable keys, replace key). Loads wallet names for the detail panel. Subscribes to task result/error events on mount. Updated routes.tsx to use the real IdentitiesScreen instead of a placeholder. Includes comprehensive test suite covering: loading state, empty state, identity list display, selection, refresh (single and bulk), alias editing, removal with confirmation, reordering, sub-view navigation (keys, withdraw, transfer), sub-view reset on selection change, error toasting, event subscription, placeholder actions (top-up, DPNS), and wallet name resolution.
+**Files changed:** src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/IdentitiesScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
+**Tests added:** 23 tests for IdentitiesScreen (loading, empty, list, selection, refresh, alias, removal, reorder, sub-view navigation, errors, events, placeholders, wallet names)
+**Sub-tasks created:** 0

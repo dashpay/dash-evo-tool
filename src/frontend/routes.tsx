@@ -16,6 +16,7 @@ import { SendScreen } from "@/screens/SendScreen";
 import { SingleKeySendScreen } from "@/screens/SingleKeySendScreen";
 import { CreateAssetLockScreen } from "@/screens/CreateAssetLockScreen";
 import { AssetLockDetailScreen } from "@/screens/AssetLockDetailScreen";
+import { IdentitiesScreen } from "@/screens/IdentitiesScreen";
 import { commands } from "@/bindings";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -120,7 +121,7 @@ const dashpaySearchRoute = createRoute({
 const identitiesRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/identities",
-  component: () => <PlaceholderScreen title="Identities" />,
+  component: IdentitiesScreen,
 });
 
 const contractsRoute = createRoute({

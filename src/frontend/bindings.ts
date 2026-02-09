@@ -563,6 +563,32 @@ async walletFundPlatformFromAssetLock(input: FundPlatformFromAssetLockInput) : P
 }
 },
 /**
+ * Create a new HD wallet from a BIP39 mnemonic.
+ *
+ * This replicates the full wallet creation flow from `AddNewWalletScreen::save_wallet()`:
+ * 1. Parse and validate the mnemonic
+ * 2. Derive seed from mnemonic
+ * 3. Optionally encrypt seed with password (AES-256-GCM + Argon2)
+ * 4. Optionally set app main password
+ * 5. Derive master BIP44 ECDSA extended public key
+ * 6. Compute seed hash (SHA-256)
+ * 7. Derive first receive address (m/44'/coin'/0'/0/0)
+ * 8. Create Wallet struct and persist to database
+ * 9. Register in-memory and set as pending selection
+ * 10. Save first address to database
+ * 11. Bootstrap wallet addresses and start SPV if applicable
+ *
+ * Returns the created wallet as a DTO.
+ */
+async walletCreate(input: CreateWalletInput) : Promise<Result<WalletDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_create", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Get all loaded wallets (HD + single-key) with current state.
  */
 async walletListAll() : Promise<Result<WalletListDto, string>> {
@@ -2113,6 +2139,32 @@ identityIndex: number;
  * Top-up index within the identity.
  */
 topUpIndex: number }
+/**
+ * Input for creating a new HD wallet.
+ *
+ * The mnemonic is generated client-side (including entropy gathering from the user)
+ * and passed to this command. The backend handles: seed derivation, optional
+ * encryption, key derivation, database persistence, in-memory registration,
+ * address bootstrapping, and SPV loading.
+ */
+export type CreateWalletInput = {
+/**
+ * BIP39 mnemonic phrase (space-separated words).
+ */
+mnemonic: string;
+/**
+ * Optional password to encrypt the wallet seed (empty string = no encryption).
+ */
+password: string;
+/**
+ * Optional alias / display name for the wallet (max 64 chars).
+ * If empty, auto-generates "Wallet N".
+ */
+alias: string;
+/**
+ * Whether to also set this password as the application main password.
+ */
+usePasswordForApp: boolean }
 /**
  * Serializable version of `QualifiedContract`.
  * Represents a data contract loaded in the application.

@@ -17,14 +17,15 @@ use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::password_info::PasswordInfo;
 use crate::model::settings::Settings;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{DerivationPathReference, DerivationPathType, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::{CoreBackendMode, SpvManager};
 use crate::utils::tasks::TaskManager;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
-use dash_sdk::dpp::dashcore::{Network, Transaction, Txid};
+use dash_sdk::dpp::dashcore::{Address, Network, Transaction, Txid};
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -472,6 +473,60 @@ impl AppContext {
             wallets.remove(key_hash);
         }
         Ok(())
+    }
+
+    /// Register a new HD wallet: persist to database, insert into in-memory map,
+    /// set the has_wallet flag, and mark it as the pending selection.
+    ///
+    /// This does NOT bootstrap addresses or start SPV — the caller should do
+    /// `bootstrap_wallet_addresses()` and `handle_wallet_unlocked()` after this.
+    pub fn register_new_wallet(&self, wallet: Wallet) -> Result<Arc<RwLock<Wallet>>, String> {
+        // Persist to database
+        self.db
+            .store_wallet(&wallet, &self.network)
+            .map_err(|e| format!("Failed to store wallet: {e}"))?;
+
+        let seed_hash = wallet.seed_hash();
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+
+        // Insert into in-memory map
+        {
+            let mut wallets = self
+                .wallets
+                .write()
+                .map_err(|e| format!("Failed to acquire wallet lock: {e}"))?;
+            wallets.insert(seed_hash, wallet_arc.clone());
+            self.has_wallet.store(true, Ordering::Relaxed);
+        }
+
+        // Mark as pending selection
+        if let Ok(mut pending) = self.pending_wallet_selection.lock() {
+            *pending = Some(seed_hash);
+        }
+
+        Ok(wallet_arc)
+    }
+
+    /// Save a wallet address to the database if it doesn't already exist.
+    pub fn save_address_if_not_exists(
+        &self,
+        seed_hash: &WalletSeedHash,
+        address: &Address,
+        derivation_path: &DerivationPath,
+        path_reference: DerivationPathReference,
+        path_type: DerivationPathType,
+    ) -> Result<(), String> {
+        self.db
+            .add_address_if_not_exists(
+                seed_hash,
+                address,
+                &self.network,
+                derivation_path,
+                path_reference,
+                path_type,
+                None,
+            )
+            .map_err(|e| format!("Failed to save address: {e}"))
     }
 
     pub fn enable_developer_mode(&self, enable: bool) {

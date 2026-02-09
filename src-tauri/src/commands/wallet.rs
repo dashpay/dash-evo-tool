@@ -164,6 +164,26 @@ pub struct SelectWalletInput {
     pub selected: Option<WalletRefDto>,
 }
 
+/// Input for creating a new HD wallet.
+///
+/// The mnemonic is generated client-side (including entropy gathering from the user)
+/// and passed to this command. The backend handles: seed derivation, optional
+/// encryption, key derivation, database persistence, in-memory registration,
+/// address bootstrapping, and SPV loading.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWalletInput {
+    /// BIP39 mnemonic phrase (space-separated words).
+    pub mnemonic: String,
+    /// Optional password to encrypt the wallet seed (empty string = no encryption).
+    pub password: String,
+    /// Optional alias / display name for the wallet (max 64 chars).
+    /// If empty, auto-generates "Wallet N".
+    pub alias: String,
+    /// Whether to also set this password as the application main password.
+    pub use_password_for_app: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -554,6 +574,220 @@ pub fn wallet_fund_platform_from_asset_lock(
     });
     let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
     Ok(DispatchTaskResponse { task_id })
+}
+
+// ---------------------------------------------------------------------------
+// Wallet creation commands
+// ---------------------------------------------------------------------------
+
+/// Create a new HD wallet from a BIP39 mnemonic.
+///
+/// This replicates the full wallet creation flow from `AddNewWalletScreen::save_wallet()`:
+/// 1. Parse and validate the mnemonic
+/// 2. Derive seed from mnemonic
+/// 3. Optionally encrypt seed with password (AES-256-GCM + Argon2)
+/// 4. Optionally set app main password
+/// 5. Derive master BIP44 ECDSA extended public key
+/// 6. Compute seed hash (SHA-256)
+/// 7. Derive first receive address (m/44'/coin'/0'/0/0)
+/// 8. Create Wallet struct and persist to database
+/// 9. Register in-memory and set as pending selection
+/// 10. Save first address to database
+/// 11. Bootstrap wallet addresses and start SPV if applicable
+///
+/// Returns the created wallet as a DTO.
+#[tauri::command]
+#[specta::specta]
+pub fn wallet_create(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: CreateWalletInput,
+) -> Result<WalletDto, String> {
+    use dash_evo_tool::model::wallet::encryption::{encrypt_message, DASH_SECRET_MESSAGE};
+    use dash_evo_tool::model::wallet::{
+        AddressInfo as WalletAddressInfo, ClosedKeyItem, DerivationPathReference,
+        DerivationPathType, OpenWalletSeed, WalletSeed,
+    };
+    use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
+    use dash_sdk::dpp::dashcore::{Address, Network};
+    use dash_sdk::dpp::key_wallet::bip32::{
+        ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
+    };
+    use std::collections::BTreeMap;
+
+    // BIP44 account 0 paths
+    let bip44_account_0_mainnet: [ChildNumber; 3] = [
+        ChildNumber::Hardened { index: 44 },
+        ChildNumber::Hardened { index: 5 },
+        ChildNumber::Hardened { index: 0 },
+    ];
+    let bip44_account_0_testnet: [ChildNumber; 3] = [
+        ChildNumber::Hardened { index: 44 },
+        ChildNumber::Hardened { index: 1 },
+        ChildNumber::Hardened { index: 0 },
+    ];
+
+    // 1. Parse and validate mnemonic
+    let mnemonic: bip39::Mnemonic = input
+        .mnemonic
+        .parse()
+        .map_err(|e| format!("Invalid mnemonic: {e}"))?;
+
+    // 2. Derive seed
+    let seed = mnemonic.to_seed("");
+
+    // 3. Encrypt seed if password provided
+    let (encrypted_seed, salt, nonce, uses_password) = if input.password.is_empty() {
+        (seed.to_vec(), vec![], vec![], false)
+    } else {
+        let (encrypted_seed, salt, nonce) = ClosedKeyItem::encrypt_seed(&seed, &input.password)?;
+        (encrypted_seed, salt, nonce, true)
+    };
+
+    let ctx = state.current_context();
+    let network = ctx.network();
+
+    // 4. Set app main password if requested
+    if uses_password && input.use_password_for_app {
+        let (encrypted_message, pw_salt, pw_nonce) =
+            encrypt_message(DASH_SECRET_MESSAGE, &input.password)?;
+        ctx.update_main_password(&pw_salt, &pw_nonce, &encrypted_message)
+            .map_err(|e| format!("Failed to set app password: {e}"))?;
+    }
+
+    // 5. Derive master BIP44 ECDSA extended public key
+    let master_ecdsa_extended_private_key = ExtendedPrivKey::new_master(network, &seed)
+        .map_err(|e| format!("Failed to create master key: {e}"))?;
+
+    let bip44_root = match network {
+        Network::Dash => &bip44_account_0_mainnet,
+        _ => &bip44_account_0_testnet,
+    };
+    let bip44_root_derivation_path = DerivationPath::from(bip44_root.as_slice());
+
+    let secp = Secp256k1::new();
+    let derived_priv = master_ecdsa_extended_private_key
+        .derive_priv(&secp, &bip44_root_derivation_path)
+        .map_err(|e| format!("Failed to derive BIP44 key: {e}"))?;
+    let master_bip44_ecdsa_extended_public_key = ExtendedPubKey::from_priv(&secp, &derived_priv);
+
+    // 6. Compute seed hash
+    let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
+
+    // 7. Derive first receive address (m/44'/coin'/0'/0/0)
+    let address_path_ext = DerivationPath::from(
+        [
+            ChildNumber::Normal { index: 0 }, // receive (not change)
+            ChildNumber::Normal { index: 0 }, // first address
+        ]
+        .as_slice(),
+    );
+    let first_address = master_bip44_ecdsa_extended_public_key
+        .derive_pub(&secp, &address_path_ext)
+        .ok()
+        .map(|pk| Address::p2pkh(&pk.to_pub(), network));
+
+    // Build known_addresses and watched_addresses
+    let mut known_addresses = BTreeMap::new();
+    let mut watched_addresses = BTreeMap::new();
+
+    if let Some(ref address) = first_address {
+        let full_derivation_path = DerivationPath::from(
+            [
+                bip44_root[0],
+                bip44_root[1],
+                bip44_root[2],
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .as_slice(),
+        );
+        known_addresses.insert(address.clone(), full_derivation_path.clone());
+        watched_addresses.insert(
+            full_derivation_path,
+            WalletAddressInfo {
+                address: address.clone(),
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::BIP44,
+            },
+        );
+    }
+
+    // 8. Generate wallet alias
+    let trimmed_alias = input.alias.trim();
+    let wallet_alias = if trimmed_alias.is_empty() {
+        let existing_count = ctx.loaded_wallets().len();
+        format!("Wallet {}", existing_count + 1)
+    } else {
+        trimmed_alias.chars().take(64).collect()
+    };
+
+    // 9. Create Wallet struct
+    let wallet = Wallet {
+        wallet_seed: WalletSeed::Open(OpenWalletSeed {
+            seed,
+            wallet_info: ClosedKeyItem {
+                seed_hash,
+                encrypted_seed,
+                salt,
+                nonce,
+                password_hint: None,
+            },
+        }),
+        uses_password,
+        master_bip44_ecdsa_extended_public_key,
+        address_balances: Default::default(),
+        address_total_received: Default::default(),
+        known_addresses,
+        watched_addresses,
+        unused_asset_locks: Default::default(),
+        alias: Some(wallet_alias),
+        identities: Default::default(),
+        utxos: Default::default(),
+        transactions: Vec::new(),
+        is_main: true,
+        confirmed_balance: 0,
+        unconfirmed_balance: 0,
+        total_balance: 0,
+        platform_address_info: Default::default(),
+    };
+
+    let new_seed_hash = wallet.seed_hash();
+
+    // 10. Register wallet: persist to DB and add to in-memory map
+    let wallet_arc = ctx.register_new_wallet(wallet)?;
+
+    // 11. Save first address to database
+    if let Some(ref address) = first_address {
+        let full_derivation_path = DerivationPath::from(
+            [
+                bip44_root[0],
+                bip44_root[1],
+                bip44_root[2],
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .as_slice(),
+        );
+        let _ = ctx.save_address_if_not_exists(
+            &new_seed_hash,
+            address,
+            &full_derivation_path,
+            DerivationPathReference::BIP44,
+            DerivationPathType::CLEAR_FUNDS,
+        );
+    }
+
+    // 12. Bootstrap addresses and start SPV if applicable
+    ctx.bootstrap_wallet_addresses(&wallet_arc);
+    if ctx.core_backend_mode() == dash_evo_tool::spv::CoreBackendMode::Spv {
+        ctx.handle_wallet_unlocked(&wallet_arc);
+    }
+
+    // Return DTO
+    let guard = wallet_arc
+        .read()
+        .map_err(|e| format!("Failed to read wallet: {e}"))?;
+    Ok(wallet_to_dto(&guard))
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,5 +1248,58 @@ mod tests {
             }
             _ => panic!("Expected HD variant"),
         }
+    }
+
+    #[test]
+    fn create_wallet_input_serializes() {
+        let input = CreateWalletInput {
+            mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into(),
+            password: "mypassword".into(),
+            alias: "My Wallet".into(),
+            use_password_for_app: true,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"mnemonic\":\"abandon abandon"));
+        assert!(json.contains("\"password\":\"mypassword\""));
+        assert!(json.contains("\"alias\":\"My Wallet\""));
+        assert!(json.contains("\"usePasswordForApp\":true"));
+    }
+
+    #[test]
+    fn create_wallet_input_with_empty_password_serializes() {
+        let input = CreateWalletInput {
+            mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about".into(),
+            password: String::new(),
+            alias: String::new(),
+            use_password_for_app: false,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"password\":\"\""));
+        assert!(json.contains("\"alias\":\"\""));
+        assert!(json.contains("\"usePasswordForApp\":false"));
+    }
+
+    #[test]
+    fn create_wallet_input_roundtrip() {
+        let json = r#"{"mnemonic":"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about","password":"secret","alias":"Test Wallet","usePasswordForApp":false}"#;
+        let input: CreateWalletInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.mnemonic, "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
+        assert_eq!(input.password, "secret");
+        assert_eq!(input.alias, "Test Wallet");
+        assert!(!input.use_password_for_app);
+    }
+
+    #[test]
+    fn create_wallet_input_uses_camel_case() {
+        let input = CreateWalletInput {
+            mnemonic: "test".into(),
+            password: "pw".into(),
+            alias: "w".into(),
+            use_password_for_app: true,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        // Verify camelCase field names
+        assert!(!json.contains("use_password_for_app"));
+        assert!(json.contains("usePasswordForApp"));
     }
 }

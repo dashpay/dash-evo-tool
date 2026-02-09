@@ -70,7 +70,7 @@ impl ClosedKeyItem {
 
     /// Encrypt the seed using AES-256-GCM.
     #[allow(clippy::type_complexity)]
-    pub(crate) fn encrypt_seed(
+    pub fn encrypt_seed(
         seed: &[u8],
         password: &str,
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {

@@ -292,7 +292,7 @@
   - [x] **1.9e** Add `wallet_fund_platform_from_asset_lock` Tauri command wrapping `WalletTask::FundPlatformAddressFromAssetLock` — requires AssetLockProof DTO serialization (P2)
   - [x] **1.9f** Add `context_set_core_backend_mode` Tauri command for switching between SPV and RPC modes (P1)
   - [x] **1.9g** Add `contract_get_by_token_id` Tauri command wrapping `AppContext::get_contract_by_token_id()` (P1)
-  - [ ] **1.9h** Add `wallet_create` Tauri command covering the full wallet creation flow (generate mnemonic, derive keys, encrypt seed, save to DB, bootstrap addresses) (P1)
+  - [x] **1.9h** Add `wallet_create` Tauri command covering the full wallet creation flow (generate mnemonic, derive keys, encrypt seed, save to DB, bootstrap addresses) (P1)
   - [ ] **1.9i** Add `wallet_import_mnemonic` Tauri command covering the mnemonic import flow (validate mnemonic, derive keys, encrypt, save, bootstrap) (P1)
   - [ ] **1.9j** Add `wallet_bootstrap_addresses` Tauri command wrapping `AppContext::bootstrap_wallet_addresses()` (P1)
   - [ ] **1.9k** Regenerate TypeScript bindings after all fix tasks are complete and verify new commands appear in bindings.ts (P1)
@@ -775,7 +775,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 47 |
-| Completed | 27 |
-| Remaining | 44 |
+| Completed | 28 |
+| Remaining | 43 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

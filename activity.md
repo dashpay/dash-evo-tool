@@ -169,3 +169,10 @@
 **Files changed:** src-tauri/src/commands/contract.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
 **Tests added:** 0 new Rust tests (command reuses existing DTO/parsing tests). Updated 2 frontend tests (command counts: 170→171, contract commands: 10→11).
 **Sub-tasks created:** 0
+
+## Run 25 — 2026-02-09
+**Task:** 1.9h Add `wallet_create` Tauri command
+**What was done:** Added `wallet_create` Tauri IPC command that replicates the full wallet creation flow from `AddNewWalletScreen::save_wallet()`. The command accepts a BIP39 mnemonic (generated client-side with entropy), optional password, alias, and `use_password_for_app` flag. It performs: mnemonic parsing/validation, seed derivation, optional AES-256-GCM seed encryption (Argon2 key derivation), optional app main password setting, BIP44 master extended public key derivation, seed hash computation (SHA-256), first receive address derivation (m/44'/coin'/0'/0/0), Wallet struct construction, database persistence, in-memory registration, first address DB storage, address bootstrapping, and SPV loading. Added `bip39` crate to src-tauri/Cargo.toml. Made `ClosedKeyItem::encrypt_seed()` public for cross-crate access. Added two new public methods to `AppContext`: `register_new_wallet()` (DB persist + in-memory insert + has_wallet flag + pending selection) and `save_address_if_not_exists()` (DB address save). TypeScript bindings auto-regenerated with 172 commands (up from 171). All checks pass: Rust (fmt, clippy, 212 tests), Frontend (lint, typecheck, 36 tests).
+**Files changed:** src-tauri/src/commands/wallet.rs, src-tauri/src/main.rs, src-tauri/Cargo.toml, src/model/wallet/encryption.rs, src/context/mod.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
+**Tests added:** 4 Rust tests (CreateWalletInput serialization, empty password serialization, roundtrip deserialization, camelCase field verification). Updated 3 frontend tests (total commands: 171→172, wallet commands: 19→20, command list).
+**Sub-tasks created:** 0

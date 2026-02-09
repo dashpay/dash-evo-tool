@@ -657,3 +657,10 @@
 **Files changed:** src/frontend/screens/PlatformInfoScreen.tsx, src/frontend/screens/PlatformInfoScreen.test.tsx, src/frontend/routes.tsx, src-tauri/src/task_dispatcher.rs
 **Tests added:** 20 component tests (render, all 7 dispatch commands, disable while loading, result display, error banner + dismiss, re-enable after result/error, loading indicator, event subscription, ignore other task types, dispatch error handling, back button)
 **Sub-tasks created:** 0
+
+## Run 95 — 2026-02-09
+**Task:** 1.9l Fix sync Tauri commands that call tokio::spawn (runtime panic)
+**What was done:** Converted 5 sync Tauri IPC commands to async to prevent "no reactor running" panics. The affected commands (`wallet_create`, `wallet_import_mnemonic`, `wallet_start_spv`, `wallet_notify_unlocked`, `wallet_notify_locked`) called context methods that internally use `tokio::spawn` via `spawn_sync()`. Tauri runs sync commands on a threadpool without a tokio runtime context, causing panics. Making them `async fn` ensures Tauri runs them on the tokio runtime. Also audited all other command modules (core, identity, contract, document, token, dashpay, contested, platform_info, settings, system) — all other sync commands either use `task_dispatcher::dispatch_task()` (safe) or are pure database reads (no tokio dependency).
+**Files changed:** src-tauri/src/commands/wallet.rs
+**Tests added:** 0 (no new tests needed — this is a runtime fix, existing 225 tests all pass)
+**Sub-tasks created:** 0

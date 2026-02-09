@@ -296,7 +296,7 @@
   - [x] **1.9i** Add `wallet_import_mnemonic` Tauri command covering the mnemonic import flow (validate mnemonic, derive keys, encrypt, save, bootstrap) (P1)
   - [x] **1.9j** Add `wallet_bootstrap_addresses` Tauri command wrapping `AppContext::bootstrap_wallet_addresses()` (P1)
   - [x] **1.9k** Regenerate TypeScript bindings after all fix tasks are complete and verify new commands appear in bindings.ts (P1)
-  - [ ] **1.9l Fix sync Tauri commands that call tokio::spawn (runtime panic)** (P0)
+  - [x] **1.9l Fix sync Tauri commands that call tokio::spawn (runtime panic)** (P0)
     Several Tauri IPC commands are defined as synchronous `pub fn` but internally call code paths that hit `tokio::spawn` (via `TaskManager::spawn_sync`, `bootstrap_wallet_addresses`, `handle_wallet_unlocked`, `start_spv`, etc.). Tauri runs sync commands on a threadpool with **no Tokio runtime context**, causing a fatal panic: "there is no reactor running, must be called from the context of a Tokio 1.x runtime" (`src/utils/tasks.rs:50`).
     **Known affected commands in `commands/wallet.rs`:**
     - `wallet_create` (line 688) — calls `bootstrap_wallet_addresses` + `handle_wallet_unlocked`

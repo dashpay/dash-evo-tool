@@ -685,7 +685,7 @@ pub fn wallet_fund_platform_from_asset_lock(
 /// Returns the created wallet as a DTO.
 #[tauri::command]
 #[specta::specta]
-pub fn wallet_create(
+pub async fn wallet_create(
     state: tauri::State<'_, Arc<AppState>>,
     input: CreateWalletInput,
 ) -> Result<WalletDto, String> {
@@ -900,7 +900,7 @@ pub fn wallet_create(
 /// Returns the imported wallet as a DTO.
 #[tauri::command]
 #[specta::specta]
-pub fn wallet_import_mnemonic(
+pub async fn wallet_import_mnemonic(
     state: tauri::State<'_, Arc<AppState>>,
     input: ImportMnemonicInput,
 ) -> Result<WalletDto, String> {
@@ -1282,7 +1282,7 @@ pub fn wallet_remove_single_key(
 /// Start SPV for the current network.
 #[tauri::command]
 #[specta::specta]
-pub fn wallet_start_spv(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn wallet_start_spv(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
     let ctx = state.current_context().clone();
     ctx.start_spv()
 }
@@ -1327,7 +1327,7 @@ pub fn wallet_bootstrap_addresses(
 /// Notify the backend that a wallet has been unlocked (triggers SPV wallet load).
 #[tauri::command]
 #[specta::specta]
-pub fn wallet_notify_unlocked(
+pub async fn wallet_notify_unlocked(
     state: tauri::State<'_, Arc<AppState>>,
     wallet_seed_hash: WalletSeedHashDto,
 ) -> Result<(), String> {
@@ -1343,7 +1343,7 @@ pub fn wallet_notify_unlocked(
 /// Notify the backend that a wallet has been locked (triggers SPV wallet unload).
 #[tauri::command]
 #[specta::specta]
-pub fn wallet_notify_locked(
+pub async fn wallet_notify_locked(
     state: tauri::State<'_, Arc<AppState>>,
     wallet_seed_hash: WalletSeedHashDto,
 ) -> Result<(), String> {

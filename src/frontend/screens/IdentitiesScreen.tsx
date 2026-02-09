@@ -47,6 +47,7 @@ import type {
 import type { AddKeyStatus } from "@/components/identity/AddKeyDialog";
 import type { IdentityOption } from "@/components/shared/IdentitySelector";
 import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 
 // ─── Sub-view types ───────────────────────────────────────────────
 
@@ -223,7 +224,7 @@ export function IdentitiesScreen() {
   // Show toast on error
   useEffect(() => {
     if (error) {
-      toast.error(error);
+      toastError(error);
       clearError();
     }
   }, [error, clearError]);

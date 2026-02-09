@@ -12,6 +12,7 @@ import {
 import { validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 import { Island } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -265,10 +266,10 @@ function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
         toast.success("Wallet imported successfully");
         onSuccess();
       } else {
-        toast.error(result.error);
+        toastError(result.error);
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toastError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }
@@ -483,10 +484,10 @@ function PrivateKeyImportForm({ onSuccess }: { onSuccess: () => void }) {
         toast.success("Key imported successfully");
         onSuccess();
       } else {
-        toast.error(result.error);
+        toastError(result.error);
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toastError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }

@@ -47,6 +47,13 @@ vi.mock("sonner", () => ({
   Toaster: () => null,
 }));
 
+const { mockToastError } = vi.hoisted(() => ({
+  mockToastError: vi.fn(),
+}));
+vi.mock("@/lib/toastError", () => ({
+  toastError: mockToastError,
+}));
+
 // ─── Test Fixtures ────────────────────────────────────────────────
 
 function makeContest(overrides: Partial<ContestedName> = {}): ContestedName {
@@ -238,7 +245,7 @@ describe("DpnsPastContestsScreen — error handling", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockToast.error).toHaveBeenCalledWith("Network connection failed");
+      expect(mockToastError).toHaveBeenCalledWith("Network connection failed");
     });
   });
 
@@ -250,7 +257,7 @@ describe("DpnsPastContestsScreen — error handling", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockToast.error).toHaveBeenCalled();
+      expect(mockToastError).toHaveBeenCalled();
     });
 
     const state = useContestStore.getState();

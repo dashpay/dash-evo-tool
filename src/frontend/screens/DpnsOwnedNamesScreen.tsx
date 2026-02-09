@@ -7,6 +7,7 @@ import { OwnedNamesPanel } from "@/components/dpns/OwnedNamesPanel";
 import { useContestStore } from "@/stores/contestStore";
 import { commands } from "@/bindings";
 import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 
 export function DpnsOwnedNamesScreen() {
   const {
@@ -41,7 +42,7 @@ export function DpnsOwnedNamesScreen() {
   // Show error toast
   useEffect(() => {
     if (error) {
-      toast.error(error);
+      toastError(error);
       clearError();
     }
   }, [error, clearError]);
@@ -62,12 +63,10 @@ export function DpnsOwnedNamesScreen() {
         if (result.status === "ok") {
           toast.success(`Alias set to "${alias}"`);
         } else {
-          toast.error(`Failed to set alias: ${result.error}`);
+          toastError(result.error);
         }
       } catch (e) {
-        toast.error(
-          `Failed to set alias: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        toastError(e instanceof Error ? e.message : String(e));
       }
     },
     [],

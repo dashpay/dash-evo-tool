@@ -34,6 +34,7 @@ import type {
   ThemeModeDto,
 } from "@/bindings";
 import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 
 // Network display labels
 const networkLabels: Record<NetworkDto, string> = {
@@ -257,10 +258,10 @@ export function NetworkChooserScreen() {
           setCurrentNetwork(network);
           toast.success(`Switched to ${networkLabels[network]}`);
         } else {
-          toast.error(`Failed to switch network: ${result.error}`);
+          toastError(result.error);
         }
       } catch (e) {
-        toast.error(`Failed to switch network: ${e}`);
+        toastError(e instanceof Error ? e.message : String(e));
       }
     },
     [],
@@ -273,10 +274,10 @@ export function NetworkChooserScreen() {
         if (result.status === "ok") {
           setBackendMode(mode);
         } else {
-          toast.error(`Failed to switch mode: ${result.error}`);
+          toastError(result.error);
         }
       } catch (e) {
-        toast.error(`Failed to switch mode: ${e}`);
+        toastError(e instanceof Error ? e.message : String(e));
       }
     },
     [],
@@ -288,7 +289,7 @@ export function NetworkChooserScreen() {
       if (backendMode === "spv") {
         const result = await commands.walletStartSpv();
         if (result.status === "error") {
-          toast.error(`Failed to start SPV: ${result.error}`);
+          toastError(result.error);
         }
       } else {
         // RPC mode: start Dash-Qt
@@ -304,7 +305,7 @@ export function NetworkChooserScreen() {
         }
       }
     } catch (e) {
-      toast.error(`Connection failed: ${e}`);
+      toastError(e instanceof Error ? e.message : String(e));
     } finally {
       setConnectLoading(false);
     }

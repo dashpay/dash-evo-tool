@@ -59,6 +59,13 @@ vi.mock("sonner", () => ({
   Toaster: () => null,
 }));
 
+const { mockToastError } = vi.hoisted(() => ({
+  mockToastError: vi.fn(),
+}));
+vi.mock("@/lib/toastError", () => ({
+  toastError: mockToastError,
+}));
+
 // ─── Test Fixtures ────────────────────────────────────────────────
 
 function makeKey(overrides: Partial<IdentityKeyDto> = {}): IdentityKeyDto {
@@ -595,7 +602,7 @@ describe("IdentitiesScreen", () => {
       useIdentityStore.setState({ error: "Something went wrong" });
 
       await waitFor(() => {
-        expect(mockToast.error).toHaveBeenCalledWith("Something went wrong");
+        expect(mockToastError).toHaveBeenCalledWith("Something went wrong");
       });
     });
   });

@@ -10,6 +10,7 @@ import { useContestStore } from "@/stores/contestStore";
 import { commands } from "@/bindings";
 import type { QualifiedIdentityDto, ScheduledVoteDto } from "@/bindings";
 import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 
 export function DpnsActiveContestsScreen() {
   const navigate = useNavigate();
@@ -73,7 +74,7 @@ export function DpnsActiveContestsScreen() {
   // Show error toast
   useEffect(() => {
     if (error) {
-      toast.error(error);
+      toastError(error);
       clearError();
     }
   }, [error, clearError]);

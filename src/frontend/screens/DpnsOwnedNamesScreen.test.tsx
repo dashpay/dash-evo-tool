@@ -49,6 +49,13 @@ vi.mock("sonner", () => ({
   Toaster: () => null,
 }));
 
+const { mockToastError } = vi.hoisted(() => ({
+  mockToastError: vi.fn(),
+}));
+vi.mock("@/lib/toastError", () => ({
+  toastError: mockToastError,
+}));
+
 // ─── Test Fixtures ────────────────────────────────────────────────
 
 function makeName(
@@ -300,9 +307,7 @@ describe("DpnsOwnedNamesScreen — set alias", () => {
     );
 
     await waitFor(() => {
-      expect(mockToast.error).toHaveBeenCalledWith(
-        "Failed to set alias: Database error",
-      );
+      expect(mockToastError).toHaveBeenCalledWith("Database error");
     });
   });
 });
@@ -316,7 +321,7 @@ describe("DpnsOwnedNamesScreen — error handling", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockToast.error).toHaveBeenCalledWith("Network connection failed");
+      expect(mockToastError).toHaveBeenCalledWith("Network connection failed");
     });
   });
 
@@ -326,7 +331,7 @@ describe("DpnsOwnedNamesScreen — error handling", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockToast.error).toHaveBeenCalled();
+      expect(mockToastError).toHaveBeenCalled();
     });
 
     const state = useContestStore.getState();

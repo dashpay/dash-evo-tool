@@ -5,7 +5,7 @@ import { commands, events } from "@/bindings";
 import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 import {
   Info,
   Clock,
@@ -141,7 +141,7 @@ export function PlatformInfoScreen() {
           setLoadingId(null);
           activeTaskIdRef.current = null;
           pendingQueryRef.current = null;
-          toast.error(message);
+          toastError(message);
         },
       );
     };
@@ -171,7 +171,7 @@ export function PlatformInfoScreen() {
         setErrorMessage(msg);
         setLoadingId(null);
         pendingQueryRef.current = null;
-        toast.error(msg);
+        toastError(msg);
       }
     },
     [loadingId],

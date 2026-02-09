@@ -51,6 +51,13 @@ vi.mock("sonner", () => ({
   Toaster: () => null,
 }));
 
+const { mockToastError } = vi.hoisted(() => ({
+  mockToastError: vi.fn(),
+}));
+vi.mock("@/lib/toastError", () => ({
+  toastError: mockToastError,
+}));
+
 // ─── Test Fixtures ────────────────────────────────────────────────
 
 function makeVote(
@@ -375,7 +382,7 @@ describe("DpnsScheduledVotesScreen — error handling", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockToast.error).toHaveBeenCalledWith(
+      expect(mockToastError).toHaveBeenCalledWith(
         "Network connection failed",
       );
     });
@@ -387,7 +394,7 @@ describe("DpnsScheduledVotesScreen — error handling", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockToast.error).toHaveBeenCalled();
+      expect(mockToastError).toHaveBeenCalled();
     });
 
     const state = useContestStore.getState();

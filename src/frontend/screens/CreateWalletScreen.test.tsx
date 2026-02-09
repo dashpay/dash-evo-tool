@@ -36,6 +36,12 @@ vi.mock("sonner", () => ({
   },
 }));
 
+// Mock toastError
+const mockToastError = vi.fn();
+vi.mock("@/lib/toastError", () => ({
+  toastError: (...args: unknown[]) => mockToastError(...args),
+}));
+
 // Mock @scure/bip39
 vi.mock("@scure/bip39", () => ({
   entropyToMnemonic: vi.fn(
@@ -403,11 +409,10 @@ describe("CreateWalletScreen", () => {
       status: "error",
       error: "Wallet already exists",
     });
-    const { toast } = await import("sonner");
     const user = await goToProtectStep();
     await user.click(screen.getByRole("button", { name: /create wallet/i }));
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Wallet already exists");
+      expect(mockToastError).toHaveBeenCalledWith("Wallet already exists");
     });
   });
 
@@ -415,11 +420,10 @@ describe("CreateWalletScreen", () => {
     vi.mocked(commands.walletCreate).mockRejectedValueOnce(
       new Error("Network error"),
     );
-    const { toast } = await import("sonner");
     const user = await goToProtectStep();
     await user.click(screen.getByRole("button", { name: /create wallet/i }));
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Network error");
+      expect(mockToastError).toHaveBeenCalledWith("Network error");
     });
   });
 

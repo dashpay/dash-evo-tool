@@ -15,6 +15,7 @@ import { useWalletStore } from "@/stores/walletStore";
 import { commands } from "@/bindings";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
@@ -117,7 +118,7 @@ export function WalletsScreen() {
   // Show toast on error
   useEffect(() => {
     if (error) {
-      toast.error(error);
+      toastError(error);
       clearError();
     }
   }, [error, clearError]);
@@ -172,10 +173,10 @@ export function WalletsScreen() {
         // Reload the wallet to get the new address
         await useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
       } else {
-        toast.error(result.error);
+        toastError(result.error);
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toastError(e instanceof Error ? e.message : String(e));
     } finally {
       setGeneratingAddress(false);
     }
@@ -199,10 +200,10 @@ export function WalletsScreen() {
         toast.success("New receiving address added");
         await useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
       } else {
-        toast.error(result.error);
+        toastError(result.error);
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toastError(e instanceof Error ? e.message : String(e));
     }
   }, [selectedHdWallet]);
 
@@ -219,10 +220,10 @@ export function WalletsScreen() {
         if (result.status === "ok") {
           setPrivateKeyDialog({ open: true, address, wif: result.data });
         } else {
-          toast.error(result.error);
+          toastError(result.error);
         }
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : String(e));
+        toastError(e instanceof Error ? e.message : String(e));
       }
     },
     [],
@@ -279,10 +280,10 @@ export function WalletsScreen() {
       if (result.status === "ok") {
         toast.success("Asset lock search dispatched");
       } else {
-        toast.error(result.error);
+        toastError(result.error);
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toastError(e instanceof Error ? e.message : String(e));
     }
   }, [selectedHdWallet]);
 

@@ -14,7 +14,7 @@ import { wordlist as spanishWordlist } from "@scure/bip39/wordlists/spanish.js";
 import { wordlist as frenchWordlist } from "@scure/bip39/wordlists/french.js";
 import { wordlist as italianWordlist } from "@scure/bip39/wordlists/italian.js";
 import { wordlist as portugueseWordlist } from "@scure/bip39/wordlists/portuguese.js";
-import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 import { Island } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -141,10 +141,10 @@ export function CreateWalletScreen() {
         await useWalletStore.getState().loadWallets();
         setStep("success");
       } else {
-        toast.error(result.error);
+        toastError(result.error);
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      toastError(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
     }

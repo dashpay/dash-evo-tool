@@ -5,7 +5,7 @@ import { Island } from "@/components/layout";
 import { LoadingSpinner } from "@/components/feedback";
 import { PastContestsTable } from "@/components/dpns/PastContestsTable";
 import { useContestStore } from "@/stores/contestStore";
-import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 
 export function DpnsPastContestsScreen() {
   // Contest store
@@ -43,7 +43,7 @@ export function DpnsPastContestsScreen() {
   // Show error toast
   useEffect(() => {
     if (error) {
-      toast.error(error);
+      toastError(error);
       clearError();
     }
   }, [error, clearError]);

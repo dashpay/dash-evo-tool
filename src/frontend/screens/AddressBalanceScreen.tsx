@@ -6,7 +6,7 @@ import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 import { Loader2, Search } from "lucide-react";
 
 /** Validated address balance result from the backend. */
@@ -84,7 +84,7 @@ export function AddressBalanceScreen() {
           setErrorMessage(message);
           setIsLoading(false);
           activeTaskIdRef.current = null;
-          toast.error(message);
+          toastError(message);
         },
       );
     };
@@ -133,7 +133,7 @@ export function AddressBalanceScreen() {
       const msg = e instanceof Error ? e.message : String(e);
       setErrorMessage(msg);
       setIsLoading(false);
-      toast.error(msg);
+      toastError(msg);
     }
   }, [address, isLoading]);
 

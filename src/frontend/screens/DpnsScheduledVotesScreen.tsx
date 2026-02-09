@@ -6,7 +6,7 @@ import { LoadingSpinner } from "@/components/feedback";
 import { ScheduledVotesTable } from "@/components/dpns/ScheduledVotesTable";
 import { useContestStore } from "@/stores/contestStore";
 import type { ScheduledVoteWithStatus } from "@/stores/contestStore";
-import { toast } from "sonner";
+import { toastError } from "@/lib/toastError";
 
 export function DpnsScheduledVotesScreen() {
   const {
@@ -42,7 +42,7 @@ export function DpnsScheduledVotesScreen() {
   // Show error toast
   useEffect(() => {
     if (error) {
-      toast.error(error);
+      toastError(error);
       clearError();
     }
   }, [error, clearError]);

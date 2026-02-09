@@ -40,6 +40,12 @@ vi.mock("sonner", () => ({
   },
 }));
 
+// Mock toastError
+const mockToastError = vi.fn();
+vi.mock("@/lib/toastError", () => ({
+  toastError: (...args: unknown[]) => mockToastError(...args),
+}));
+
 // Valid 24-word mnemonic for testing (matches the default 24-word form)
 const VALID_WORDS = [
   "abandon", "abandon", "abandon", "abandon", "abandon", "abandon",
@@ -306,14 +312,13 @@ describe("ImportWalletScreen", () => {
       status: "error",
       error: "Wallet already imported",
     });
-    const { toast } = await import("sonner");
     const user = userEvent.setup();
     renderAndFillValidMnemonic();
     await user.click(
       screen.getByRole("button", { name: /import wallet/i }),
     );
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Wallet already imported");
+      expect(mockToastError).toHaveBeenCalledWith("Wallet already imported");
     });
   });
 
@@ -483,7 +488,6 @@ describe("ImportWalletScreen", () => {
       status: "error",
       error: "Key already imported",
     });
-    const { toast } = await import("sonner");
     const user = await switchToPrivateKeyTab();
     await user.type(
       screen.getByPlaceholderText(/enter private key/i),
@@ -491,7 +495,7 @@ describe("ImportWalletScreen", () => {
     );
     await user.click(screen.getByRole("button", { name: /import key/i }));
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Key already imported");
+      expect(mockToastError).toHaveBeenCalledWith("Key already imported");
     });
   });
 

@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ThemeToggle } from "@/components/theme";
+import { DesignSystem } from "./DesignSystem";
 
 function App() {
   const [name, setName] = useState("");
@@ -19,6 +20,7 @@ function App() {
   );
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [isTauri, setIsTauri] = useState<boolean | null>(null);
+  const [showDesignSystem, setShowDesignSystem] = useState(false);
 
   async function handleGreet() {
     try {
@@ -43,9 +45,34 @@ function App() {
     }
   }
 
+  if (showDesignSystem) {
+    return (
+      <div>
+        <div className="fixed left-4 top-4 z-50">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowDesignSystem(false)}
+          >
+            Back to Home
+          </Button>
+        </div>
+        <DesignSystem />
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-8 text-foreground">
-      <div className="absolute right-4 top-4">
+      <div className="absolute right-4 top-4 flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowDesignSystem(true)}
+          data-testid="design-system-link"
+        >
+          Design System
+        </Button>
         <ThemeToggle />
       </div>
       <div className="flex flex-col items-center gap-2">

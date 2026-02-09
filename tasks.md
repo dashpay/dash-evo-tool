@@ -567,7 +567,7 @@
   - [x] **2.1e** Create theme provider and toggle: React context for dark/light mode, persist to backend settings via `settings_update_theme` IPC command, `<ThemeToggle>` button component, system theme detection. (P0)
   - [x] **2.1f** Create empty state and loading components: `<EmptyState>` (icon + message + action), `<LoadingSkeleton>` (shimmer), `<LoadingSpinner>` (inline + overlay variants), `<ProgressBar>`. (P1)
 
-- [ ] **2.2 Implement design system foundation** (P0)
+- [x] **2.2 Implement design system foundation** (P0)
   Based on 2.1's decisions, create the design system:
   - CSS variables / theme tokens for colors, spacing, typography, shadows
   - Dark and light theme definitions
@@ -1030,7 +1030,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 38 |
-| Remaining | 39 |
+| Completed | 39 |
+| Remaining | 38 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

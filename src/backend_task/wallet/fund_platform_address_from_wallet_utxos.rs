@@ -35,8 +35,9 @@ impl AppContext {
             // Fees paid from wallet: add estimated platform fee to asset lock amount.
             // We use 2 outputs: the destination (explicit amount) and a change address
             // (remainder recipient that absorbs the fee).
-            let estimated_platform_fee_duffs =
-                self.fee_estimator().estimate_address_funding_from_asset_lock_duffs(2);
+            let estimated_platform_fee_duffs = self
+                .fee_estimator()
+                .estimate_address_funding_from_asset_lock_duffs(2);
             let asset_lock_amount = amount.saturating_add(estimated_platform_fee_duffs);
             (asset_lock_amount, false)
         };

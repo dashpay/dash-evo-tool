@@ -212,6 +212,13 @@
 **Tests added:** 0 (CSS-only change — visual theming)
 **Sub-tasks created:** 0
 
+## Run 32 — 2026-02-09
+**Task:** 2.1c Create Tailwind theme extensions
+**What was done:** Added custom shadow utilities, animation keyframes, and component utility classes to the Tailwind theme. In the `@theme inline` block, added 5 custom shadow tokens (shadow-sm through shadow-elevated and shadow-glow matching egui's Shadow struct) and 5 animation utilities (pulse-connection for connection status indicator, fade-in for modals/toasts, slide-in-right for side panels, slide-in-up for bottom sheets, shimmer for skeleton loaders). Added corresponding `@keyframes` definitions with appropriate easing curves. Created component-level utility classes in `@layer components`: `.connection-dot-connected` (pulsating green), `.connection-dot-disconnected` (static red), `.skeleton` (shimmer gradient loader), `.island` (elevated card surface with border and shadow), `.network-badge` (pill with network accent color). Network accent color classes (`bg-network-mainnet`, `text-network-testnet`, etc.) were already functional from task 2.1a's `@theme inline` color registration. Spacing tokens use Tailwind v4 defaults which already match the design spec. All checks pass: lint, typecheck, 36 tests, Vite build (258KB JS + 59KB CSS).
+**Files changed:** src/frontend/index.css, tasks.md, activity.md
+**Tests added:** 0 (CSS-only change — visual theming extensions)
+**Sub-tasks created:** 0
+
 ## Run 31 — 2026-02-09
 **Task:** 2.1b Set up typography
 **What was done:** Installed `@fontsource-variable/noto-sans` and `@fontsource-variable/jetbrains-mono` npm packages for self-hosted variable web fonts (critical for offline Tauri desktop app). Imported both font CSS files in `index.css` to register all `@font-face` declarations with unicode-range subsetting (Latin, Latin-ext, Cyrillic, Greek, Vietnamese, Devanagari for Noto Sans; Latin, Latin-ext, Cyrillic, Greek, Vietnamese for JetBrains Mono). Configured Tailwind `@theme inline` with `--font-sans` ("Noto Sans Variable" + system-ui fallback) and `--font-mono` ("JetBrains Mono Variable" + ui-monospace fallback) matching the egui theme's Noto Sans usage. Applied `font-sans antialiased` to body with OpenType feature settings (`cv02`, `cv03`, `cv04`, `cv11`) for improved glyph rendering. Applied `font-mono` to `code`, `kbd`, `samp`, `pre` elements. Created comprehensive `.prose` component class for rich text areas (headings h1-h3, paragraphs, lists, code blocks, links, blockquotes, tables, horizontal rules) — used for JSON display, log output, and documentation areas. All checks pass: lint, typecheck, 36 tests, Vite build (258KB JS + 57KB CSS, font woff2 files bundled as assets).

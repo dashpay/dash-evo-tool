@@ -562,7 +562,7 @@
   **Sub-tasks produced:**
   - [x] **2.1a** Override shadcn CSS variables with Dash brand color palette: replace neutral OKLCH values with Dash-specific light/dark mode colors in `index.css`. Add custom CSS variables for `--dash-blue`, `--success`, `--warning`, `--info`, network accent colors. Update `--radius` to 16px base. (P0)
   - [x] **2.1b** Set up typography: install Noto Sans and JetBrains Mono web fonts, configure Tailwind font-family, create `@font-face` declarations, set up `prose` classes for rich text areas. (P0)
-  - [ ] **2.1c** Create Tailwind theme extensions: add custom shadow utilities (shadow-elevated, shadow-glow), spacing tokens, network-accent color classes (`bg-network-mainnet`, etc.), and animation utilities (pulse for connection indicator). (P0)
+  - [x] **2.1c** Create Tailwind theme extensions: add custom shadow utilities (shadow-elevated, shadow-glow), spacing tokens, network-accent color classes (`bg-network-mainnet`, etc.), and animation utilities (pulse for connection indicator). (P0)
   - [ ] **2.1d** Create layout primitives: `<AppShell>` (flex container with sidebar + content), `<Island>` (elevated card with surface bg, border, shadow, rounded-lg), `<PageHeader>` (title + breadcrumbs + actions row). (P0)
   - [ ] **2.1e** Create theme provider and toggle: React context for dark/light mode, persist to backend settings via `settings_update_theme` IPC command, `<ThemeToggle>` button component, system theme detection. (P0)
   - [ ] **2.1f** Create empty state and loading components: `<EmptyState>` (icon + message + action), `<LoadingSkeleton>` (shimmer), `<LoadingSpinner>` (inline + overlay variants), `<ProgressBar>`. (P1)
@@ -1030,7 +1030,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 34 |
-| Remaining | 43 |
+| Completed | 35 |
+| Remaining | 42 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

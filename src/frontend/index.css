@@ -71,6 +71,20 @@
   --color-network-testnet: var(--network-testnet);
   --color-network-devnet: var(--network-devnet);
   --color-network-local: var(--network-local);
+
+  /* === Custom Shadows (matching egui Shadow struct from theme.rs) === */
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.06);
+  --shadow-elevated: 0 12px 32px rgba(0, 0, 0, 0.07);
+  --shadow-glow: 0 0 20px rgba(0, 141, 228, 0.12);
+
+  /* === Custom Animations === */
+  --animate-pulse-connection: pulse-connection 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-fade-in: fade-in 0.2s ease-out;
+  --animate-slide-in-right: slide-in-right 0.2s ease-out;
+  --animate-slide-in-up: slide-in-up 0.2s ease-out;
+  --animate-shimmer: shimmer 1.5s ease-in-out infinite;
 }
 
 /* ============================================================
@@ -219,6 +233,66 @@
   --sidebar-ring: #008de4;         /* Dash Blue */
 }
 
+/* ============================================================
+   KEYFRAMES — Custom animations for Dash Evo Tool
+   ============================================================ */
+
+/* Connection status indicator: pulsating green/red dot */
+@keyframes pulse-connection {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(0.92);
+  }
+}
+
+/* Fade in for modals, toasts, panels */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Slide in from right for side panels, sub-navigation */
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Slide in from bottom for toasts, bottom sheets */
+@keyframes slide-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Shimmer for skeleton loading states */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -290,5 +364,39 @@
   }
   .prose td {
     @apply px-3 py-2 border-b border-border;
+  }
+
+  /* === Connection Status Indicator === */
+  .connection-dot {
+    @apply inline-block w-2.5 h-2.5 rounded-full;
+  }
+  .connection-dot-connected {
+    @apply inline-block w-2.5 h-2.5 rounded-full bg-success animate-pulse-connection;
+  }
+  .connection-dot-disconnected {
+    @apply inline-block w-2.5 h-2.5 rounded-full bg-destructive;
+  }
+
+  /* === Skeleton Shimmer Loader === */
+  .skeleton {
+    @apply rounded-md bg-muted;
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--accent) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
+  /* === Island Panel (elevated card surface) === */
+  .island {
+    @apply bg-card rounded-lg border border-border shadow-elevated;
+  }
+
+  /* === Network Badge (pill with network accent color) === */
+  .network-badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium text-white;
   }
 }

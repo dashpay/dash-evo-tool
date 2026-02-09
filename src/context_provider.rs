@@ -38,9 +38,7 @@ impl Provider {
             if let Some((user, password)) = cookie.split_once(':') {
                 (user.to_string(), password.to_string())
             } else {
-                return Err(
-                    "Malformed cookie file: expected 'user:password' format".to_string(),
-                );
+                return Err("Malformed cookie file: expected 'user:password' format".to_string());
             }
         } else {
             // Fall back to the pre-set user / pass if needed

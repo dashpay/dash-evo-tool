@@ -8,6 +8,18 @@ import {
 import type { WalletDto, AssetLockDto, PlatformAddressDto } from "@/bindings";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+// ─── Mock useUtxoMonitor ────────────────────────────────────────────
+
+const mockUtxoMonitor = {
+  fundsReceived: false,
+  balance: 0,
+  polling: false,
+};
+
+vi.mock("@/hooks/useUtxoMonitor", () => ({
+  useUtxoMonitor: () => mockUtxoMonitor,
+}));
+
 // ─── Polyfills for Radix in jsdom ───────────────────────────────────
 
 beforeAll(() => {
@@ -102,8 +114,6 @@ const defaultProps: CreateIdentityScreenProps = {
   onBackToIdentities: vi.fn(),
   onRegisterDpns: vi.fn(),
   onCopy: vi.fn(),
-  qrReceiveAddress: null,
-  qrFundsReceived: false,
 };
 
 function setup(props: Partial<CreateIdentityScreenProps> = {}) {
@@ -289,10 +299,30 @@ describe("CreateIdentityScreen — wallet balance funding", () => {
 // ─── QR code funding (switch via Select) ─────────────────────────────
 
 describe("CreateIdentityScreen — QR code funding", () => {
+  function makeWalletWithAddress(): WalletDto {
+    return makeWallet({
+      unusedAssetLocks: [],
+      platformAddresses: [],
+      addresses: [
+        {
+          address: "yTestAddress123456789",
+          balance: 0,
+          totalReceived: 0,
+          derivationPath: "m/44'/5'/0'/0/0",
+        },
+      ],
+    });
+  }
+
+  beforeEach(() => {
+    mockUtxoMonitor.fundsReceived = false;
+    mockUtxoMonitor.balance = 0;
+    mockUtxoMonitor.polling = false;
+  });
+
   it("shows QR code funding with address and amount", async () => {
     const { user } = setup({
-      wallets: [makeWalletNoLocks()],
-      qrReceiveAddress: "yTestAddress123456789",
+      wallets: [makeWalletWithAddress()],
     });
     // Switch to QR code method
     const selector = screen.getByRole("combobox", {
@@ -312,11 +342,11 @@ describe("CreateIdentityScreen — QR code funding", () => {
     expect(screen.getByRole("img", { name: /QR code for address/ })).toBeInTheDocument();
   });
 
-  it("shows funds received message", async () => {
+  it("shows funds received message when monitor detects funds", async () => {
+    mockUtxoMonitor.fundsReceived = true;
+    mockUtxoMonitor.balance = 100_000_000;
     const { user } = setup({
-      wallets: [makeWalletNoLocks()],
-      qrReceiveAddress: "yTestAddr",
-      qrFundsReceived: true,
+      wallets: [makeWalletWithAddress()],
     });
     const selector = screen.getByRole("combobox", {
       name: /funding method/i,
@@ -331,8 +361,7 @@ describe("CreateIdentityScreen — QR code funding", () => {
 
   it("calls onCopy when copy button clicked", async () => {
     const { user, props } = setup({
-      wallets: [makeWalletNoLocks()],
-      qrReceiveAddress: "yTestAddr",
+      wallets: [makeWalletWithAddress()],
     });
     const selector = screen.getByRole("combobox", {
       name: /funding method/i,
@@ -351,7 +380,7 @@ describe("CreateIdentityScreen — QR code funding", () => {
     );
     expect(props.onCopy).toHaveBeenCalledOnce();
     expect(props.onCopy).toHaveBeenCalledWith(
-      "dash:yTestAddr?amount=2.00000000",
+      "dash:yTestAddress123456789?amount=2.00000000",
     );
   });
 });

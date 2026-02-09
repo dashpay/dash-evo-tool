@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useUtxoMonitor } from "@/hooks/useUtxoMonitor";
 import {
   ArrowLeft,
   ChevronDown,
@@ -127,10 +128,6 @@ export interface CreateIdentityScreenProps {
   onRegisterDpns?: () => void;
   /** Called to copy text to clipboard. */
   onCopy?: (text: string) => void;
-  /** QR code receive address (generated for QR funding method). */
-  qrReceiveAddress?: string | null;
-  /** Whether a QR funding UTXO has been detected. */
-  qrFundsReceived?: boolean;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
@@ -223,8 +220,6 @@ export function CreateIdentityScreen({
   onBackToIdentities,
   onRegisterDpns,
   onCopy,
-  qrReceiveAddress,
-  qrFundsReceived,
 }: CreateIdentityScreenProps) {
   // ─── Form state ────────────────────────────────────────────────
 
@@ -315,6 +310,20 @@ export function CreateIdentityScreen({
 
   const isDisabled =
     status.type !== "form" && status.type !== "error";
+
+  // ─── QR code funding: address & UTXO monitoring ─────────────────
+
+  const qrReceiveAddress = useMemo(
+    () => selectedWallet?.addresses[0]?.address ?? null,
+    [selectedWallet],
+  );
+
+  const { fundsReceived: qrFundsReceived, balance: qrFundsBalance } =
+    useUtxoMonitor({
+      seedHash: selectedWallet?.seedHash ?? null,
+      address: qrReceiveAddress,
+      enabled: fundingMethod === "qrCode" && !isDisabled,
+    });
 
   // ─── Funding method availability ───────────────────────────────
 
@@ -474,10 +483,12 @@ export function CreateIdentityScreen({
         };
         break;
       case "qrCode":
-        // QR code funding is handled differently — the UTXO info comes
-        // from the backend after detection. This path should not be
-        // directly called from here; the parent orchestrator handles it.
-        return;
+        if (!qrFundsReceived || qrFundsBalance <= 0) return;
+        fm = {
+          method: "fundWithWallet",
+          amountDuffs: qrFundsBalance,
+        };
+        break;
       case "platformAddress":
         if (!selectedPlatformAddr || !platformAmount.parsedAmount) return;
         fm = {
@@ -509,6 +520,8 @@ export function CreateIdentityScreen({
     fundingMethod,
     selectedAssetLock,
     walletBalanceAmount.parsedAmount,
+    qrFundsReceived,
+    qrFundsBalance,
     selectedPlatformAddr,
     platformAmount.parsedAmount,
     identityIndex,
@@ -819,9 +832,9 @@ export function CreateIdentityScreen({
 
             {fundingMethod === "qrCode" && (
               <QrCodePanel
-                address={qrReceiveAddress ?? null}
+                address={qrReceiveAddress}
                 amount={qrAmount}
-                fundsReceived={qrFundsReceived ?? false}
+                fundsReceived={qrFundsReceived}
                 onCopy={onCopy}
                 disabled={isDisabled}
               />

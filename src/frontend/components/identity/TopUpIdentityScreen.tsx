@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useUtxoMonitor } from "@/hooks/useUtxoMonitor";
 import {
   ArrowLeft,
   AlertCircle,
@@ -200,6 +201,22 @@ export function TopUpIdentityScreen({
 
   const identityIndex = identity.walletIndex ?? 0;
 
+  const isFormActive = status.type === "form";
+
+  // ─── QR code funding: address & UTXO monitoring ─────────────────
+
+  const qrReceiveAddress = useMemo(
+    () => selectedWallet?.addresses[0]?.address ?? null,
+    [selectedWallet],
+  );
+
+  const { fundsReceived: qrFundsReceived, balance: qrFundsBalance } =
+    useUtxoMonitor({
+      seedHash: selectedWallet?.seedHash ?? null,
+      address: qrReceiveAddress,
+      enabled: fundingMethod === "qrCode" && isFormActive,
+    });
+
   // Available funding methods: only show methods with available resources
   const availableFundingMethods = useMemo(() => {
     return FUNDING_METHODS.filter((m) => {
@@ -235,7 +252,7 @@ export function TopUpIdentityScreen({
           walletBalanceAmount.parsedAmount <= maxWalletAmount
         );
       case "qrCode":
-        return qrAmount.isValid && qrAmount.parsedAmount !== null && qrAmount.parsedAmount > 0;
+        return qrFundsReceived;
       case "platformAddress":
         return (
           selectedPlatAddr !== null &&
@@ -254,7 +271,7 @@ export function TopUpIdentityScreen({
     selectedAssetLock,
     walletBalanceAmount,
     maxWalletAmount,
-    qrAmount,
+    qrFundsReceived,
     selectedPlatAddr,
     platformAmount,
     maxPlatformAmount,
@@ -300,12 +317,10 @@ export function TopUpIdentityScreen({
         };
         break;
       case "qrCode":
-        if (!qrAmount.parsedAmount) return;
-        // QR code method: in the real flow the backend watches for incoming UTXO
-        // For now we submit with fundWithWallet as a fallback
+        if (!qrFundsReceived || qrFundsBalance <= 0) return;
         method = {
           method: "fundWithWallet",
-          amountDuffs: qrAmount.parsedAmount,
+          amountDuffs: qrFundsBalance,
           topUpIndex: 0,
         };
         break;
@@ -325,7 +340,8 @@ export function TopUpIdentityScreen({
     fundingMethod,
     selectedAssetLock,
     walletBalanceAmount,
-    qrAmount,
+    qrFundsReceived,
+    qrFundsBalance,
     platformAmount,
     selectedPlatAddr,
     identity,
@@ -612,6 +628,7 @@ export function TopUpIdentityScreen({
   }
 
   function renderQrCodeMethod() {
+    const addr = qrReceiveAddress ?? "";
     // QR code mode: user enters amount, gets an address to share
     return (
       <div className="space-y-4">
@@ -623,11 +640,11 @@ export function TopUpIdentityScreen({
             value={qrAmount.value}
             onChange={qrAmount.setValue}
             placeholder="Enter amount (e.g., 0.5)"
+            disabled={qrFundsReceived}
           />
         </div>
 
-        {qrAmount.isValid && qrAmount.parsedAmount && qrAmount.parsedAmount > 0 && selectedWallet && (() => {
-          const addr = selectedWallet.addresses[0]?.address ?? "";
+        {qrAmount.isValid && qrAmount.parsedAmount && qrAmount.parsedAmount > 0 && addr && (() => {
           const dashAmount = formatAmount(qrAmount.parsedAmount, DASH_DECIMAL_PLACES);
           const paymentUri = `dash:${addr}?amount=${dashAmount}`;
           return (
@@ -665,13 +682,23 @@ export function TopUpIdentityScreen({
                   )}
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Once funds are received, the top-up will be processed
-                automatically.
-              </p>
             </div>
           );
         })()}
+
+        {qrFundsReceived && (
+          <div className="flex items-center gap-2 text-sm text-green-600">
+            <CheckCircle2 className="h-4 w-4" />
+            <span>Funds received! Ready to top up identity.</span>
+          </div>
+        )}
+
+        {!qrFundsReceived && qrAmount.isValid && qrAmount.parsedAmount && qrAmount.parsedAmount > 0 && addr && (
+          <p className="text-sm text-muted-foreground">
+            Scan the QR code or copy the payment URI to send funds from an
+            external wallet. Funds will be detected automatically.
+          </p>
+        )}
       </div>
     );
   }

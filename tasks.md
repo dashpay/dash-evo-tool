@@ -1377,7 +1377,7 @@
     4. Display Base64-encoded signature result
     Reference: egui key_info_screen.rs lines 890-935
 
-  - [ ] **4.5f Add UTXO monitoring for QR code funding** (P2)
+  - [x] **4.5f Add UTXO monitoring for QR code funding** (P2)
     When using "Address with QR Code" funding in Create/TopUp, actively monitor wallet for incoming funds.
     Options: periodic polling via IPC, or backend event emission when UTXO detected.
     Reference: egui funding_common.rs lines 57-91

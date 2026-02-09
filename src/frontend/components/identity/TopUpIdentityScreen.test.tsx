@@ -13,6 +13,12 @@ import type {
 } from "@/bindings";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+// ─── Mock useUtxoMonitor ────────────────────────────────────────────
+
+vi.mock("@/hooks/useUtxoMonitor", () => ({
+  useUtxoMonitor: () => ({ fundsReceived: false, balance: 0, polling: false }),
+}));
+
 // ─── Polyfills for Radix in jsdom ───────────────────────────────────
 
 beforeAll(() => {

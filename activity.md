@@ -685,3 +685,10 @@
 **Files changed:** src-tauri/Cargo.toml, src-tauri/src/commands/identity.rs, src-tauri/src/main.rs, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
 **Tests added:** 2 Rust tests (SignMessageInput camelCase serialization, SignMessageInput roundtrip deserialization). Updated 2 frontend tests (total commands 177→178, identity commands 27→28).
 **Sub-tasks created:** 0
+
+## Run 99 — 2026-02-09
+**Task:** 4.5f Add UTXO monitoring for QR code funding
+**What was done:** Created `useUtxoMonitor` hook that polls wallet data via `coreRefreshWalletInfo` + `walletGetHd` to detect incoming funds at a QR code funding address. Integrated the hook into both `CreateIdentityScreen` and `TopUpIdentityScreen` — when QR code funding method is selected, the hook monitors the wallet's first receive address and sets `fundsReceived=true` when the address balance becomes non-zero. Removed the previously unused `qrReceiveAddress`/`qrFundsReceived` props from `CreateIdentityScreen` (now computed internally). Fixed the QR code submit path in both screens to use `fundWithWallet` with the detected balance instead of the previous stub/fallback. Added funds-received indicator to TopUpIdentityScreen QR panel.
+**Files changed:** src/frontend/hooks/useUtxoMonitor.ts (new), src/frontend/hooks/useUtxoMonitor.test.ts (new), src/frontend/components/identity/CreateIdentityScreen.tsx, src/frontend/components/identity/CreateIdentityScreen.test.tsx, src/frontend/components/identity/TopUpIdentityScreen.tsx, src/frontend/components/identity/TopUpIdentityScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 9 hook tests (disabled state, null params, polling, funds detection, stop-on-detect, reset-on-change, error handling). Updated 3 existing CreateIdentityScreen QR tests to use mocked hook.
+**Sub-tasks created:** 0

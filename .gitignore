@@ -30,3 +30,8 @@ test_db*
 **/.DS_Store
 explorer.log
 .gitaipconfig
+
+# Node.js / Frontend
+node_modules/
+dist/
+*.tsbuildinfo

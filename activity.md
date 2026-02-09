@@ -15,3 +15,10 @@
 **Files changed:** package.json, package-lock.json, vite.config.ts, tsconfig.json, tsconfig.app.json, tsconfig.node.json, index.html, src/frontend/main.tsx, src/frontend/App.tsx, src/frontend/index.css, src/frontend/vite-env.d.ts, .gitignore, tasks.md, activity.md
 **Tests added:** 0 (infrastructure setup — testing comes in task 0.1d/0.3)
 **Sub-tasks created:** 0
+
+## Run 3 — 2026-02-09
+**Task:** 0.1b Initialize shadcn/ui
+**What was done:** Initialized shadcn/ui with `npx shadcn@latest init` — auto-detected Vite framework and Tailwind CSS v4. Created `components.json` configured for `src/frontend/` directory with `@/` path aliases. Updated `src/frontend/index.css` with full OKLCH-based theme (light + dark mode CSS variables, radius tokens, sidebar tokens, chart colors). Created `src/frontend/lib/utils.ts` with `cn()` utility. Added resolve alias for `@` in `vite.config.ts` and path mappings in `tsconfig.json`. Installed 15 shadcn/ui components: button, dialog, dropdown-menu, input, label, select, tabs, table, card, badge, separator, sheet, tooltip, popover, sonner (replaced deprecated toast). Updated `App.tsx` to use shadcn Button component and theme-aware classes. Verified TypeScript check and Vite build both pass (223KB JS + 46KB CSS).
+**Files changed:** components.json, vite.config.ts, tsconfig.json, package.json, package-lock.json, src/frontend/index.css, src/frontend/lib/utils.ts, src/frontend/App.tsx, src/frontend/components/ui/{button,dialog,dropdown-menu,input,label,select,tabs,table,card,badge,separator,sheet,tooltip,popover,sonner}.tsx, tasks.md, activity.md
+**Tests added:** 0 (infrastructure setup — testing comes in task 0.1d/0.3)
+**Sub-tasks created:** 0

@@ -26,6 +26,10 @@ import {
   LoadIdentityScreen,
   type LoadIdentityStatus,
 } from "@/components/identity/LoadIdentityScreen";
+import {
+  RegisterDpnsNameScreen,
+  type RegisterDpnsNameStatus,
+} from "@/components/identity/RegisterDpnsNameScreen";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
 import { commands } from "@/bindings";
@@ -51,7 +55,8 @@ type SubView =
   | { type: "transfer" }
   | { type: "createIdentity" }
   | { type: "topUp" }
-  | { type: "loadIdentity" };
+  | { type: "loadIdentity" }
+  | { type: "registerDpns" };
 
 // ─── IdentitiesScreen ─────────────────────────────────────────────
 
@@ -109,6 +114,10 @@ export function IdentitiesScreen() {
     type: "idle",
   });
 
+  // Register DPNS name state
+  const [registerDpnsStatus, setRegisterDpnsStatus] =
+    useState<RegisterDpnsNameStatus>({ type: "form" });
+
   // Key info state
   const [keyInfoState, setKeyInfoState] = useState<{
     isSubmitting: boolean;
@@ -150,6 +159,7 @@ export function IdentitiesScreen() {
     setTopUpStatus({ type: "form" });
     setLoadIdentityStatus({ type: "form" });
     setAddKeyStatus({ type: "idle" });
+    setRegisterDpnsStatus({ type: "form" });
     setKeyInfoState({ isSubmitting: false, error: null, success: null });
   }, [selectedIdentityId]);
 
@@ -224,8 +234,8 @@ export function IdentitiesScreen() {
   }, []);
 
   const handleRegisterDpns = useCallback((_identityId: string) => {
-    // TODO: Navigate to DPNS registration screen (task 5.x)
-    toast.info("Register DPNS Name — coming in a future task");
+    setSubView({ type: "registerDpns" });
+    setRegisterDpnsStatus({ type: "form" });
   }, []);
 
   const handleCreateIdentity = useCallback(() => {
@@ -482,6 +492,40 @@ export function IdentitiesScreen() {
       }
     },
     [loadIdentities],
+  );
+
+  // ─── Register DPNS name callbacks ─────────────────────────────────
+
+  const handleRegisterDpnsSubmit = useCallback(
+    async (params: { identityId: string; name: string }) => {
+      setRegisterDpnsStatus({ type: "registering", startedAt: Date.now() });
+      try {
+        const result = await commands.identityRegisterDpnsName({
+          identityId: params.identityId,
+          name: params.name,
+        });
+        if (result.status === "ok") {
+          // The actual result comes via TaskResultEvent — but we set a
+          // preliminary success here. The identityStore subscription will
+          // reload the identity when the event arrives.
+          setRegisterDpnsStatus({
+            type: "success",
+            contested: false,
+            feeEstimated: null,
+            feeActual: null,
+          });
+          reloadIdentity(params.identityId);
+        } else {
+          setRegisterDpnsStatus({ type: "error", message: result.error });
+        }
+      } catch (e) {
+        setRegisterDpnsStatus({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [reloadIdentity],
   );
 
   // ─── Withdraw callbacks ─────────────────────────────────────────
@@ -771,8 +815,8 @@ export function IdentitiesScreen() {
           loadIdentities();
         }}
         onRegisterDpns={() => {
-          // TODO: Navigate to DPNS registration for new identity
-          toast.info("Register DPNS Name — coming in a future task");
+          setSubView({ type: "registerDpns" });
+          setRegisterDpnsStatus({ type: "form" });
         }}
       />
     );
@@ -903,6 +947,20 @@ export function IdentitiesScreen() {
             onSubmitPlatformAddress={handleTopUpFromPlatformAddress}
             onDismissError={() => setTopUpStatus({ type: "form" })}
             onBack={handleBackToDetail}
+          />
+        );
+
+      case "registerDpns":
+        return (
+          <RegisterDpnsNameScreen
+            identities={identities}
+            preselectedIdentityId={selectedIdentityId}
+            status={registerDpnsStatus}
+            source="identities"
+            onSubmit={handleRegisterDpnsSubmit}
+            onDismissError={() => setRegisterDpnsStatus({ type: "form" })}
+            onBack={handleBackToDetail}
+            onRegisterAnother={() => setRegisterDpnsStatus({ type: "form" })}
           />
         );
     }

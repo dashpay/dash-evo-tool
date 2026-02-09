@@ -524,3 +524,10 @@
 **Files changed:** src/frontend/components/dpns/VoteCastingDialog.tsx, src/frontend/components/dpns/VoteCastingDialog.test.tsx
 **Tests added:** 47 (component tests)
 **Sub-tasks created:** 0
+
+## Run 76 — 2026-02-09
+**Task:** 4.1f Create RegisterDpnsNameScreen component
+**What was done:** Created `RegisterDpnsNameScreen` component with full DPNS name registration flow matching the egui implementation. Features: identity selector (single badge or dropdown for multiple), advanced options with signing key selector (AUTHENTICATION keys at CRITICAL/HIGH/MEDIUM), name input with real-time validation (3-63 chars, alphanumeric + hyphens, no start/end hyphen), contested name detection (< 20 chars, only 0/1 digits), fee estimation display, insufficient balance warning, no-keys warning, registering state with elapsed time, success screen (normal vs contested with voting period explanation and fee breakdown), error screen with dismiss, breadcrumb navigation (from Identities or DPNS), info sections for constraints and contested rules. Wired into IdentitiesScreen as a new `registerDpns` sub-view, replacing the TODO toast placeholder. Also connected the CreateIdentityScreen's onRegisterDpns callback. Exported `validateDpnsName` and `isContestedName` for reuse.
+**Files changed:** src/frontend/components/identity/RegisterDpnsNameScreen.tsx, src/frontend/components/identity/RegisterDpnsNameScreen.test.tsx, src/frontend/screens/IdentitiesScreen.tsx
+**Tests added:** 58 (12 validateDpnsName, 10 isContestedName, 36 component tests covering form rendering, validation, contested detection, button states, submit, back, advanced options, registering state, success states, error state, info sections, preselected identity)
+**Sub-tasks created:** 0

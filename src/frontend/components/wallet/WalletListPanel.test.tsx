@@ -38,6 +38,7 @@ function makeSingleKeyWallet(
     unconfirmedBalance: 0,
     totalBalance: 100000000,
     utxoCount: 3,
+    utxos: [],
     ...overrides,
   };
 }

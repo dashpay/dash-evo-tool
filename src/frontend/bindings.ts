@@ -3623,7 +3623,11 @@ totalBalance: number;
 /**
  * Number of UTXOs.
  */
-utxoCount: number }
+utxoCount: number;
+/**
+ * The UTXOs themselves.
+ */
+utxos: UtxoDto[] }
 /**
  * High-level SPV status values.
  */
@@ -4004,6 +4008,22 @@ groupInfo: JsonValue | null }
  * User experience mode DTO.
  */
 export type UserModeDto = "beginner" | "advanced"
+/**
+ * A UTXO (unspent transaction output).
+ */
+export type UtxoDto = {
+/**
+ * Transaction ID as hex string.
+ */
+txid: string;
+/**
+ * Output index within the transaction.
+ */
+vout: number;
+/**
+ * Amount in duffs.
+ */
+amount: number }
 /**
  * Input for verifying a GroveSTARK proof.
  */

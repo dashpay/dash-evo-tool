@@ -110,6 +110,23 @@ fn single_key_wallet_dto_roundtrip() {
         unconfirmed_balance: 0,
         total_balance: 500_000,
         utxo_count: 3,
+        utxos: vec![
+            UtxoDto {
+                txid: "aa".repeat(32),
+                vout: 0,
+                amount: 200_000,
+            },
+            UtxoDto {
+                txid: "bb".repeat(32),
+                vout: 1,
+                amount: 150_000,
+            },
+            UtxoDto {
+                txid: "cc".repeat(32),
+                vout: 2,
+                amount: 150_000,
+            },
+        ],
     };
     let json = serde_json::to_string(&dto).unwrap();
     assert!(json.contains("\"keyHash\""));

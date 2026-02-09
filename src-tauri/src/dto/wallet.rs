@@ -129,6 +129,8 @@ pub struct SingleKeyWalletDto {
     pub total_balance: u64,
     /// Number of UTXOs.
     pub utxo_count: usize,
+    /// The UTXOs themselves.
+    pub utxos: Vec<UtxoDto>,
 }
 
 /// A UTXO (unspent transaction output).

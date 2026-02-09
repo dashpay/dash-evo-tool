@@ -6,7 +6,7 @@
 
 use crate::dto::common::{CreditsDto, SingleKeyHashDto, WalletSeedHashDto};
 use crate::dto::wallet::{
-    AssetLockDto, PlatformAddressDto, SingleKeyWalletDto, WalletAddressDto, WalletDto,
+    AssetLockDto, PlatformAddressDto, SingleKeyWalletDto, UtxoDto, WalletAddressDto, WalletDto,
     WalletListDto, WalletRefDto, WalletTransactionDto,
 };
 use crate::state::AppState;
@@ -344,6 +344,15 @@ fn wallet_to_dto(wallet: &Wallet) -> WalletDto {
 
 /// Convert a `SingleKeyWallet` to its DTO representation.
 fn single_key_wallet_to_dto(wallet: &SingleKeyWallet) -> SingleKeyWalletDto {
+    let utxos: Vec<UtxoDto> = wallet
+        .utxos
+        .iter()
+        .map(|(outpoint, txout)| UtxoDto {
+            txid: outpoint.txid.to_string(),
+            vout: outpoint.vout,
+            amount: txout.value,
+        })
+        .collect();
     SingleKeyWalletDto {
         key_hash: hex::encode(wallet.key_hash),
         uses_password: wallet.uses_password,
@@ -354,6 +363,7 @@ fn single_key_wallet_to_dto(wallet: &SingleKeyWallet) -> SingleKeyWalletDto {
         unconfirmed_balance: wallet.unconfirmed_balance,
         total_balance: wallet.total_balance,
         utxo_count: wallet.utxos.len(),
+        utxos,
     }
 }
 

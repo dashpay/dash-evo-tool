@@ -23,6 +23,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@fontsource-variable/jetbrains-mono": "^5.2.8",
     "@fontsource-variable/noto-sans": "^5.2.10",
+    "@scure/bip39": "^2.0.1",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-router": "^1.159.4",
     "@tanstack/react-table": "^8.21.3",

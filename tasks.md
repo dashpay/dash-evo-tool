@@ -850,7 +850,7 @@
   Reference: `wallets_screen/mod.rs` — catalog EVERY action button, menu item, and display field
   Write component tests. Write Playwright tests for wallet selection and detail viewing.
 
-- [ ] **3.3 Implement add wallet and import mnemonic screens** (P1)
+- [x] **3.3 Implement add wallet and import mnemonic screens** (P1)
   Build wallet creation flows:
   - **New wallet:** Generate mnemonic, display seed words, set password, name wallet
   - **Import mnemonic:** Enter 12/24 words, set password, name wallet, import
@@ -1225,7 +1225,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 55 |
-| Remaining | 31 |
+| Completed | 56 |
+| Remaining | 30 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

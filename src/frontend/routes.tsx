@@ -9,6 +9,9 @@ import {
 import { AppLayout } from "./AppLayout";
 import { WelcomeScreen } from "@/screens/WelcomeScreen";
 import { NetworkChooserScreen } from "@/screens/NetworkChooserScreen";
+import { WalletsScreen } from "@/screens/WalletsScreen";
+import { CreateWalletScreen } from "@/screens/CreateWalletScreen";
+import { ImportWalletScreen } from "@/screens/ImportWalletScreen";
 import { commands } from "@/bindings";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -179,7 +182,25 @@ const tokensCreatorRoute = createRoute({
 const walletsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/wallets",
-  component: () => <PlaceholderScreen title="Wallets" />,
+  component: () => <Outlet />,
+});
+
+const walletsIndexRoute = createRoute({
+  getParentRoute: () => walletsRoute,
+  path: "/",
+  component: WalletsScreen,
+});
+
+const walletsCreateRoute = createRoute({
+  getParentRoute: () => walletsRoute,
+  path: "/create",
+  component: CreateWalletScreen,
+});
+
+const walletsImportRoute = createRoute({
+  getParentRoute: () => walletsRoute,
+  path: "/import",
+  component: ImportWalletScreen,
 });
 
 const toolsRoute = createRoute({
@@ -273,7 +294,11 @@ const routeTree = rootRoute.addChildren([
       tokensSearchRoute,
       tokensCreatorRoute,
     ]),
-    walletsRoute,
+    walletsRoute.addChildren([
+      walletsIndexRoute,
+      walletsCreateRoute,
+      walletsImportRoute,
+    ]),
     toolsRoute.addChildren([
       toolsIndexRoute,
       toolsProofLogRoute,

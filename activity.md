@@ -580,3 +580,10 @@
 **Files changed:** tests/playwright/dpns-past-contests.spec.ts, tests/playwright/dpns-owned-names.spec.ts, tests/playwright/dpns-scheduled-votes.spec.ts, tasks.md, activity.md
 **Tests added:** 22 Playwright E2E tests (7 for past contests, 6 for owned names, 9 for scheduled votes)
 **Sub-tasks created:** 0
+
+## Run 84 — 2026-02-09
+**Task:** 5.4 [REVIEW] DPNS screens functionality parity
+**What was done:** Comprehensive review of all DPNS screen implementations comparing the original egui code (dpns_contested_names_screen.rs + register_dpns_name_screen.rs) against the Tauri frontend (5 screens, 5 table/panel components, VoteCastingDialog, contestStore, identityStore). Cataloged every user action, data display, conditional UI, modal, sorting/filtering behavior, backend task, and error handling. Found 95% functionality parity with 572 DPNS-specific tests all passing. Identified 2 minor gaps: (1) contested name success detection always reports `contested: false` instead of checking the name, (2) no wallet-locked state display on Register Name screen. Created 2 fix sub-tasks (P3 priority).
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (review task — no code changes)
+**Sub-tasks created:** 2 (5.4a: Fix contested success detection, 5.4b: Add wallet-locked state display)

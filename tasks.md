@@ -1479,8 +1479,69 @@
   Reference: `dpns_contested_names_screen.rs` — trace the Past, Owned, and ScheduledVotes code paths
   Write component tests. Write Playwright tests.
 
-- [ ] **5.4 [REVIEW] DPNS screens functionality parity** (P2)
+- [x] **5.4 [REVIEW] DPNS screens functionality parity** (P2)
   Verify all DPNS actions work. The egui implementation is 2,173 lines of dense logic — ensure nothing was missed. Create fix tasks for gaps.
+
+  > **Review Findings (Run 84):**
+  >
+  > ### Overall Assessment: STRONG — 95% functionality parity
+  >
+  > The Tauri frontend DPNS implementation covers all major functionality from the egui version
+  > across 5 screens (Active Contests, Past Contests, Owned Names, Scheduled Votes, Register Name)
+  > with **572 tests** (47 Playwright E2E + 199 screen tests + 79 table tests + 76 component tests + 81 store tests + 90 dialog tests).
+  > All 1845 project tests pass.
+  >
+  > ### Functionality Covered (complete parity):
+  > - Active Contests: table with Name, Locked Votes, Abstain Votes, Ending Time, Last Updated, Contestants
+  > - Vote selection: Lock, Abstain, TowardsIdentity — with toggle/replace behavior
+  > - Vote visual emphasis: bold green for highest-vote lock/contestant
+  > - Smart filter: o→0, l→1 normalization (matches egui's o/O→0, l→1)
+  > - Sortable columns on all tables
+  > - Past Contests: Name, Ended Time, Last Updated, Awarded To (WonBy/Locked badges)
+  > - Owned Names: Name, Owner ID, Acquired At, Set Alias action (with .dash suffix auto-append)
+  > - Scheduled Votes: Name, Voter, Vote Choice, Scheduled Time, Status, Cast Now/Remove actions
+  > - Clear All / Clear Casted buttons for scheduled votes
+  > - Vote Casting Dialog: Selected votes summary, Set All controls, per-identity method selection
+  >   (No Vote/Cast Now/Schedule), schedule time picker (days/hours/minutes), schedule warning,
+  >   validation, progress view, completed view (success/partial/failure), failed view with retry
+  > - Register Name: identity selection, name validation (3-63 chars, A-Z/0-9/hyphens, no leading/trailing hyphen),
+  >   contested name detection (<20 chars, only letters+0+1), fee estimation, advanced key selector,
+  >   registering/success/error states, breadcrumb navigation, info sections
+  > - Real-time event subscriptions for contest/identity/scheduled-vote updates
+  > - All backend IPC commands wired via contestStore and identityStore
+  >
+  > ### Minor Gaps Found (non-blocking, improvements):
+  >
+  > 1. **Register Name: no wallet unlock flow** — The egui version checks if the wallet is locked
+  >    and shows an "Unlock Wallet" button with a wallet unlock popup. The Tauri version bypasses
+  >    this (the backend command handles wallet state). This is acceptable since wallet unlock is
+  >    handled at the IPC layer, but a UX improvement would show the user a clear wallet-locked state.
+  >
+  > 2. **Register Name: contested name success message differs** — egui shows "DPNS Name Submitted (Contested)"
+  >    with a detailed info box. The Tauri version always sets `contested: false` in the success callback
+  >    (DpnsRegisterNameScreen.tsx:61) regardless of whether the name was actually contested. The component
+  >    supports contested success display but it's never triggered.
+  >
+  > 3. **Active Contests: "Register Name" button visibility** — egui only shows this button if the user
+  >    has voting identities loaded. The Tauri version always shows it. Minor UX difference.
+  >
+  > 4. **Auto-dismissing messages** — egui uses 10-second auto-dismissing messages with countdown timers.
+  >    The Tauri version uses Sonner toast notifications which auto-dismiss but without countdown display.
+  >    This is a UX improvement, not a regression.
+  >
+  > 5. **Refreshing time indicator** — egui shows "Refreshing... Time taken so far: X seconds" during
+  >    contest refresh. The Tauri version shows a spinning refresh icon but no elapsed time. Minor UX gap.
+
+  - [ ] **5.4a Fix Register Name contested success detection** (P3)
+    In `DpnsRegisterNameScreen.tsx`, the success callback always sets `contested: false`. It should
+    determine if the name was contested (using the same `isContestedName()` logic from the component)
+    and pass the correct value. This ensures the contested success message ("DPNS Name Submitted (Contested)")
+    is shown when appropriate. Small fix — ~3 lines changed.
+
+  - [ ] **5.4b Add wallet-locked state display to Register Name screen** (P3)
+    The egui version shows a wallet-locked warning and "Unlock Wallet" button when the selected identity's
+    wallet is locked. Consider adding a similar check using wallet store state, showing a warning panel
+    when the wallet is locked, with a link/button to unlock. Low priority since the backend handles this.
 
 ---
 

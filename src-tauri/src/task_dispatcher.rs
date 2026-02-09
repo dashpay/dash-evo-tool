@@ -66,7 +66,7 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
     // Forward intermediate progress/refresh messages as events
     let handle_progress = handle.clone();
     let tid_progress = tid.clone();
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         while let Some(task_result) = rx.recv().await {
             match task_result {
                 TaskResult::Refresh => {
@@ -100,7 +100,7 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
     });
 
     // Spawn the actual task
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let result = app_context.run_backend_task(task, sender).await;
 
         match result {
@@ -240,7 +240,7 @@ pub fn start_zmq_forwarding(
 /// Checks every 60 seconds for due scheduled votes and dispatches them as
 /// BackendTasks. Results are emitted as `ScheduledVoteExecutedEvent`.
 pub fn start_scheduled_vote_polling(app_handle: AppHandle, app_state: Arc<AppState>) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -306,7 +306,7 @@ pub fn start_scheduled_vote_polling(app_handle: AppHandle, app_state: Arc<AppSta
                     let vid = voter_id_hex.clone();
                     let cname = contested_name.clone();
 
-                    tokio::spawn(async move {
+                    tauri::async_runtime::spawn(async move {
                         let result = ctx_clone.run_backend_task(task, sender).await;
                         match result {
                             Ok(_) => {
@@ -348,7 +348,7 @@ pub fn start_scheduled_vote_polling(app_handle: AppHandle, app_state: Arc<AppSta
 
 /// SPV status polling loop — periodically reads SPV status and emits events.
 pub fn start_spv_status_polling(app_handle: AppHandle, app_state: Arc<AppState>) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;

@@ -190,3 +190,10 @@
 **Files changed:** src-tauri/src/commands/wallet.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
 **Tests added:** 0 new Rust tests (command reuses existing wallet lookup/parsing helpers). Updated 2 frontend tests (total commands: 174→175, wallet commands: 22→23).
 **Sub-tasks created:** 0
+
+## Run 28 — 2026-02-09
+**Task:** 1.9k Regenerate TypeScript bindings after all fix tasks and verify new commands
+**What was done:** Verified that all 12 new commands from fix tasks 1.9a-1.9j (identityRegister, identityTopUp, identityTopUpFromPlatformAddresses, identityTransferToAddresses, walletFundPlatformFromAssetLock, walletCreate, walletImportMnemonic, walletImportPrivateKey, walletBootstrapAddresses, contextGetCoreBackendMode, contextSetCoreBackendMode, contractGetByTokenId) are present in bindings.ts. Confirmed 175 total commands, 166 exported TypeScript types, 8 events. Bindings were already auto-regenerated during each fix task run, so no regeneration was needed. All checks pass: Rust (fmt, clippy, build, 220 tests), Frontend (lint, typecheck, 36 tests). Phase 1 (Backend Bridge) is now fully complete.
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (verification task — all tests already pass)
+**Sub-tasks created:** 0

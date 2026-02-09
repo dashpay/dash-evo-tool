@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::io::Write;
 use std::str::FromStr;
 
@@ -7,6 +6,7 @@ use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::sdk::Uri;
 use serde::Deserialize;
+use tempfile::NamedTempFile;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -70,12 +70,16 @@ impl Config {
         let env_file_path =
             app_user_data_file_path(".env").map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
-        // Write to a temporary file in the same directory first, then rename
-        // atomically. This prevents corruption if the write fails partway through.
-        let tmp_file_path = env_file_path.with_file_name(".env.tmp");
-
+        // Write to a temporary file in the same directory first, then
+        // atomically replace. This prevents corruption if the write fails
+        // partway through. NamedTempFile::persist() closes the handle before
+        // renaming and uses MoveFileEx with MOVEFILE_REPLACE_EXISTING on
+        // Windows for atomic replacement.
+        let parent_dir = env_file_path.parent().ok_or_else(|| {
+            ConfigError::LoadError("Config file path has no parent directory".to_string())
+        })?;
         let mut env_file =
-            File::create(&tmp_file_path).map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            NamedTempFile::new_in(parent_dir).map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
         // Helper function to write a single network config to the `.env` file
         let mut write_network_config = |prefix: &str, config: &NetworkConfig| {
@@ -174,28 +178,15 @@ impl Config {
 
         // Sync all data to disk before renaming to ensure crash-safety
         env_file
+            .as_file()
             .sync_all()
             .map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
-        // On Windows, rename fails if the target already exists, so remove it first.
-        #[cfg(target_os = "windows")]
-        {
-            if env_file_path.exists() {
-                std::fs::remove_file(&env_file_path).map_err(|e| {
-                    let _ = std::fs::remove_file(&tmp_file_path);
-                    ConfigError::LoadError(format!(
-                        "Failed to remove old config file before rename: {}",
-                        e
-                    ))
-                })?;
-            }
-        }
-
-        // Replace the old config with the new one
-        std::fs::rename(&tmp_file_path, &env_file_path).map_err(|e| {
-            // Clean up the temp file on rename failure
-            let _ = std::fs::remove_file(&tmp_file_path);
-            ConfigError::LoadError(format!("Failed to rename temp config file: {}", e))
+        // Atomically replace the old config with the new one.
+        // persist() closes the file handle and uses platform-safe rename
+        // (MoveFileEx with MOVEFILE_REPLACE_EXISTING on Windows).
+        env_file.persist(&env_file_path).map_err(|e| {
+            ConfigError::LoadError(format!("Failed to persist temp config file: {}", e))
         })?;
 
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);

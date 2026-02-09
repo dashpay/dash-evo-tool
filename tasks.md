@@ -838,7 +838,7 @@
   - [x] **3.1e** Create Receive dialog component: `ReceiveDialog` modal with Core/Platform tabs, QR code display (qrcode.react), address selector dropdown, full address display, balance, Copy/New Address buttons, and info text. (P1)
   - [x] **3.1f** Create private key dialog component: `PrivateKeyDialog` modal with address display, WIF key display (masked/revealed toggle), Copy Address/Copy Key buttons, and security warning. Requires wallet unlock. (P1)
 
-- [ ] **3.2 Implement wallet list and detail screens** (P1)
+- [x] **3.2 Implement wallet list and detail screens** (P1)
   Build the main wallet management interface:
   - Wallet list showing all HD and single-key wallets with balances
   - Wallet selector dropdown
@@ -1225,7 +1225,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 54 |
-| Remaining | 32 |
+| Completed | 55 |
+| Remaining | 31 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

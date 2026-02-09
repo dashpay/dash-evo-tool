@@ -358,3 +358,10 @@
 **Files changed:** src/frontend/components/wallet/PrivateKeyDialog.tsx (new), src/frontend/components/wallet/PrivateKeyDialog.test.tsx (new), src/frontend/components/wallet/index.ts
 **Tests added:** 25 Vitest tests (3 rendering: title/closed/escape-close; 3 address section: label/monospace code/copy button; 4 private key section: WIF label/masked by default/aria-label hidden/no copy when hidden; 4 show/hide toggle: reveals key/button text changes/aria-label updates/hides again; 2 copy: address copy clickable/key copy when revealed; 2 security warning: text content/alert role; 2 close button: renders/calls onOpenChange; 1 state reset: masked after close+reopen; 2 accessibility: dialog role/sr-only description; 2 edge cases: long addresses/long keys)
 **Sub-tasks created:** 0
+
+## Run 52 — 2026-02-09
+**Task:** 3.2 Implement wallet list and detail screens
+**What was done:** Verified that task 3.2 was already fully implemented via sub-tasks 3.1a-3.1f plus the WalletsScreen.tsx orchestrator (created during sub-task runs). Performed comprehensive audit of all egui wallet functionality (100+ interactive elements across wallets_screen/mod.rs 2,030 lines) against the Tauri implementation. All functionality present: wallet list (HD + single-key sections with selection, rename, remove, lock/unlock), HD wallet detail (account selector, sortable address table with 6 columns, hide-zero toggle, transactions dev-only tab, asset locks with create/search/view/fund), single-key detail (address, balance, paginated UTXOs), receive dialog (Core/Platform tabs, QR, address selector, new address), private key dialog (masked/revealed, copy, security warning), wallet unlock gate, refresh with mode selector, toast notifications, loading/empty states, and event subscription. Enhanced Playwright e2e tests with 3 additional tests (accessibility role verification, empty state help text, two-panel layout check). All 596 Vitest tests pass, lint and typecheck clean.
+**Files changed:** tests/playwright/wallets.spec.ts (enhanced), tasks.md, activity.md
+**Tests added:** 3 Playwright e2e tests (accessibility role, help text, layout panels)
+**Sub-tasks created:** 0

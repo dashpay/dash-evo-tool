@@ -585,7 +585,7 @@
   - Set up client-side routing for all main sections
   Write component tests for navigation state. Write Playwright test for navigating between sections.
 
-- [ ] **2.4 Implement shared dialog and feedback components** (P1)
+- [x] **2.4 Implement shared dialog and feedback components** (P1)
   Build reusable components used across many screens:
   - **Confirmation dialog:** Generic yes/no with customizable title, message, and button labels
   - **Wallet unlock popup:** Password entry with validation, loading state, error display
@@ -1030,7 +1030,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 40 |
-| Remaining | 37 |
+| Completed | 41 |
+| Remaining | 36 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

@@ -101,7 +101,7 @@ describe("Bindings: commands object", () => {
     assertIsFunction(cmds, "getSpvStatus");
   });
 
-  it("contains all 23 identity commands", () => {
+  it("contains all 27 identity commands", () => {
     const cmds = commands as unknown as Record<string, unknown>;
     const identityCmds = [
       "identityLoad",
@@ -116,6 +116,10 @@ describe("Bindings: commands object", () => {
       "identityAddKey",
       "identityDisableKeys",
       "identityReplaceKey",
+      "identityRegister",
+      "identityTopUp",
+      "identityTopUpFromPlatformAddresses",
+      "identityTransferToAddresses",
       "identityListLocal",
       "identityListUser",
       "identityListVoting",
@@ -131,7 +135,7 @@ describe("Bindings: commands object", () => {
     for (const cmd of identityCmds) {
       assertIsFunction(cmds, cmd);
     }
-    expect(identityCmds.length).toBe(23);
+    expect(identityCmds.length).toBe(27);
   });
 
   it("contains all 10 core commands", () => {
@@ -369,9 +373,9 @@ describe("Bindings: commands object", () => {
     expect(settingsCmds.length).toBe(15);
   });
 
-  it("total command count is 163", () => {
+  it("total command count is 167", () => {
     const allKeys = Object.keys(commands);
-    expect(allKeys.length).toBe(163);
+    expect(allKeys.length).toBe(167);
   });
 });
 

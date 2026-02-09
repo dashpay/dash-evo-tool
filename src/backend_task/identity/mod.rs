@@ -90,6 +90,19 @@ pub struct IdentityKeys {
 }
 
 impl IdentityKeys {
+    /// Create a new `IdentityKeys` with the given master key and additional key inputs.
+    pub fn new(
+        master_private_key: Option<(PrivateKey, DerivationPath)>,
+        master_private_key_type: KeyType,
+        keys_input: Vec<KeyInput>,
+    ) -> Self {
+        Self {
+            master_private_key,
+            master_private_key_type,
+            keys_input,
+        }
+    }
+
     pub fn to_key_storage(&self, wallet_seed_hash: WalletSeedHash) -> KeyStorage {
         let Self {
             master_private_key,

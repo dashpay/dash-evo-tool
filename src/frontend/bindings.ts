@@ -188,6 +188,65 @@ async identityReplaceKey(input: ReplaceKeyInput) : Promise<Result<DispatchTaskRe
 }
 },
 /**
+ * Register a new identity on the platform.
+ *
+ * Derives keys from the wallet, constructs the identity registration info,
+ * and dispatches `IdentityTask::RegisterIdentity`. Supports all 4 funding methods:
+ * UseAssetLock, FundWithWallet, FundWithUtxo, FundWithPlatformAddresses.
+ *
+ * Result arrives via `TaskResultEvent`.
+ */
+async identityRegister(input: RegisterIdentityInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_register", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Top up an existing identity with additional credits.
+ *
+ * Dispatches `IdentityTask::TopUpIdentity`. Supports UseAssetLock, FundWithWallet,
+ * and FundWithUtxo funding methods.
+ *
+ * Result arrives via `TaskResultEvent`.
+ */
+async identityTopUp(input: TopUpIdentityInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_top_up", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Top up an existing identity from Platform addresses.
+ *
+ * Dispatches `IdentityTask::TopUpIdentityFromPlatformAddresses`. Result via event.
+ */
+async identityTopUpFromPlatformAddresses(input: TopUpIdentityFromPlatformAddressesInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_top_up_from_platform_addresses", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transfer credits from an identity to Platform addresses.
+ *
+ * Dispatches `IdentityTask::TransferToAddresses`. Result via event.
+ */
+async identityTransferToAddresses(input: TransferToAddressesInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_transfer_to_addresses", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Load all local qualified identities from the database.
  */
 async identityListLocal() : Promise<Result<QualifiedIdentityDto[], string>> {
@@ -1936,6 +1995,18 @@ distributionType: string }
  */
 export type ContactPrivateInfoDto = { nickname: string; notes: string; isHidden: boolean }
 /**
+ * Contract bounds for a key.
+ */
+export type ContractBoundsDto =
+/**
+ * Key is bound to a single contract.
+ */
+{ type: "singleContract"; contractId: string } |
+/**
+ * Key is bound to a single contract and document type.
+ */
+{ type: "singleContractDocumentType"; contractId: string; documentTypeName: string }
+/**
  * Brief contract info for list views.
  */
 export type ContractSummaryDto = {
@@ -2399,6 +2470,29 @@ export type IdentityTokenIdentifierDto = { identityId: string; tokenId: string }
 export type IdentityTypeDto = "user" | "masternode" | "evonode"
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 /**
+ * A key specification for identity registration.
+ *
+ * Each key has a type, purpose, security level, and optional contract bounds.
+ * The actual private key is derived from the wallet at registration time.
+ */
+export type KeySpecDto = {
+/**
+ * Key type (e.g., "ECDSA_SECP256K1", "ECDSA_HASH160").
+ */
+keyType: string;
+/**
+ * Key purpose (e.g., "AUTHENTICATION", "TRANSFER", "ENCRYPTION", "DECRYPTION").
+ */
+purpose: string;
+/**
+ * Security level (e.g., "MASTER", "CRITICAL", "HIGH", "MEDIUM").
+ */
+securityLevel: string;
+/**
+ * Optional contract bounds for this key.
+ */
+contractBounds: ContractBoundsDto | null }
+/**
  * Input for loading contact requests.
  */
 export type LoadContactRequestsInput = { identityId: string }
@@ -2524,6 +2618,18 @@ export type PaymentRecipientDto = { address: string; amount: number }
 export type PlatformAddressAmountDto = {
 /**
  * The address string.
+ */
+address: string;
+/**
+ * Amount in credits.
+ */
+amount: number }
+/**
+ * A platform address and credits pair for funding operations.
+ */
+export type PlatformAddressCreditsPair = {
+/**
+ * Platform address string.
  */
 address: string;
 /**
@@ -2771,6 +2877,60 @@ identityId: string;
  * The DPNS name to register (without .dash suffix).
  */
 name: string }
+/**
+ * Funding method for identity registration.
+ */
+export type RegisterIdentityFundingMethodDto =
+/**
+ * Use an existing asset lock (from a prior create_registration_asset_lock task).
+ */
+{ method: "useAssetLock"; assetLockProofHex: string; transactionHex: string; address: string } |
+/**
+ * Fund from wallet balance by creating a new asset lock transaction.
+ */
+{ method: "fundWithWallet"; amountDuffs: number } |
+/**
+ * Fund from a specific UTXO.
+ */
+{ method: "fundWithUtxo"; txid: string; vout: number; value: number; scriptPubKeyHex: string; address: string } |
+/**
+ * Fund from Platform addresses.
+ */
+{ method: "fundWithPlatformAddresses"; inputs: PlatformAddressCreditsPair[] }
+/**
+ * Input for registering a new identity.
+ */
+export type RegisterIdentityInput = {
+/**
+ * Wallet seed hash (hex) — the wallet that will own and derive keys for this identity.
+ */
+walletSeedHash: string;
+/**
+ * Identity index within the wallet.
+ */
+identityIndex: number;
+/**
+ * Alias for this identity.
+ */
+alias: string;
+/**
+ * Master key type (e.g., "ECDSA_HASH160", "ECDSA_SECP256K1").
+ */
+masterKeyType: string;
+/**
+ * Additional key specifications beyond the master key.
+ * If empty, default key specs are used (AUTH CRITICAL, AUTH HIGH,
+ * TRANSFER CRITICAL, ENCRYPTION MEDIUM w/ DashPay, DECRYPTION MEDIUM w/ DashPay).
+ */
+keySpecs: KeySpecDto[];
+/**
+ * Whether to use default key specs (ignores key_specs if true).
+ */
+useDefaultKeys: boolean;
+/**
+ * Funding method for identity creation.
+ */
+fundingMethod: RegisterIdentityFundingMethodDto }
 /**
  * Input for registering a token contract.
  * This is a complex operation with many parameters. The frontend sends
@@ -3372,6 +3532,58 @@ amount: number }
  */
 export type TopUpEntryDto = { index: number; amount: number }
 /**
+ * Input for topping up identity from Platform addresses.
+ */
+export type TopUpIdentityFromPlatformAddressesInput = {
+/**
+ * Identity ID (hex) to top up.
+ */
+identityId: string;
+/**
+ * Wallet seed hash (hex) for signing.
+ */
+walletSeedHash: string;
+/**
+ * Platform address → credits amount pairs.
+ */
+inputs: PlatformAddressCreditsPair[] }
+/**
+ * Funding method for identity top-up.
+ */
+export type TopUpIdentityFundingMethodDto =
+/**
+ * Use an existing asset lock.
+ */
+{ method: "useAssetLock"; assetLockProofHex: string; transactionHex: string; address: string } |
+/**
+ * Fund from wallet balance.
+ */
+{ method: "fundWithWallet"; amountDuffs: number; topUpIndex: number } |
+/**
+ * Fund from a specific UTXO.
+ */
+{ method: "fundWithUtxo"; txid: string; vout: number; value: number; scriptPubKeyHex: string; address: string; topUpIndex: number }
+/**
+ * Input for topping up an existing identity.
+ */
+export type TopUpIdentityInput = {
+/**
+ * Identity ID (hex) to top up.
+ */
+identityId: string;
+/**
+ * Wallet seed hash (hex) — the wallet used for funding.
+ */
+walletSeedHash: string;
+/**
+ * Identity index within the wallet.
+ */
+identityIndex: number;
+/**
+ * Funding method.
+ */
+fundingMethod: TopUpIdentityFundingMethodDto }
+/**
  * Input for transferring credits to another identity.
  */
 export type TransferCreditsInput = {
@@ -3443,6 +3655,22 @@ outputs: PlatformAddressAmountDto[];
  * Index of the input to deduct fees from (in sorted order).
  */
 feePayerIndex: number }
+/**
+ * Input for transferring credits from identity to Platform addresses.
+ */
+export type TransferToAddressesInput = {
+/**
+ * Source identity ID (hex).
+ */
+identityId: string;
+/**
+ * Platform address → credits amount pairs (destinations).
+ */
+outputs: PlatformAddressCreditsPair[];
+/**
+ * Optional key ID to use for signing.
+ */
+keyId: number | null }
 /**
  * Input for transferring tokens.
  */

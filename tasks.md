@@ -285,10 +285,10 @@
   > ### Summary: 11 fix sub-tasks created below
 
   **Fix sub-tasks:**
-  - [ ] **1.9a** Add `identity_register` Tauri command wrapping `IdentityTask::RegisterIdentity` with all 4 funding methods (UseAssetLock, FundWithWallet, FundWithUtxo, FundWithPlatformAddresses) (P1)
-  - [ ] **1.9b** Add `identity_top_up` Tauri command wrapping `IdentityTask::TopUpIdentity` with all funding methods (P1)
-  - [ ] **1.9c** Add `identity_top_up_from_platform_addresses` Tauri command wrapping `IdentityTask::TopUpIdentityFromPlatformAddresses` (P1)
-  - [ ] **1.9d** Add `identity_transfer_to_addresses` Tauri command wrapping `IdentityTask::TransferToAddresses` (P1)
+  - [x] **1.9a** Add `identity_register` Tauri command wrapping `IdentityTask::RegisterIdentity` with all 4 funding methods (UseAssetLock, FundWithWallet, FundWithUtxo, FundWithPlatformAddresses) (P1)
+  - [x] **1.9b** Add `identity_top_up` Tauri command wrapping `IdentityTask::TopUpIdentity` with all funding methods (P1)
+  - [x] **1.9c** Add `identity_top_up_from_platform_addresses` Tauri command wrapping `IdentityTask::TopUpIdentityFromPlatformAddresses` (P1)
+  - [x] **1.9d** Add `identity_transfer_to_addresses` Tauri command wrapping `IdentityTask::TransferToAddresses` (P1)
   - [ ] **1.9e** Add `wallet_fund_platform_from_asset_lock` Tauri command wrapping `WalletTask::FundPlatformAddressFromAssetLock` — requires AssetLockProof DTO serialization (P2)
   - [ ] **1.9f** Add `context_set_core_backend_mode` Tauri command for switching between SPV and RPC modes (P1)
   - [ ] **1.9g** Add `contract_get_by_token_id` Tauri command wrapping `AppContext::get_contract_by_token_id()` (P1)
@@ -775,7 +775,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 47 |
-| Completed | 20 |
-| Remaining | 51 |
+| Completed | 24 |
+| Remaining | 47 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

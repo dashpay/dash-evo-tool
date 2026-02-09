@@ -1,6 +1,6 @@
 //! Identity-related Tauri IPC commands.
 //!
-//! Maps all 16 `IdentityTask` variants plus direct database methods to
+//! Maps all IdentityTask variants plus direct database methods to
 //! Tauri commands. Long-running operations are dispatched asynchronously
 //! via `task_dispatcher::dispatch_task` and results arrive as events.
 //! Short reads (DB queries) return directly.
@@ -16,9 +16,11 @@ use crate::task_dispatcher;
 use crate::DispatchTaskResponse;
 
 use dash_evo_tool::backend_task::identity::{
-    IdentityInputToLoad, IdentityTask, RegisterDpnsNameInput,
+    IdentityInputToLoad, IdentityKeys, IdentityRegistrationInfo, IdentityTask, IdentityTopUpInfo,
+    RegisterDpnsNameInput, RegisterIdentityFundingMethod, TopUpIdentityFundingMethod,
 };
 use dash_evo_tool::backend_task::BackendTask;
+use dash_evo_tool::lock_helper::RwLockExt;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_evo_tool::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::wallet::WalletSeedHash;
@@ -26,6 +28,7 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
@@ -209,6 +212,195 @@ pub struct DeleteIdentityInput {
     pub identity_id: IdentifierDto,
 }
 
+/// A key specification for identity registration.
+///
+/// Each key has a type, purpose, security level, and optional contract bounds.
+/// The actual private key is derived from the wallet at registration time.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct KeySpecDto {
+    /// Key type (e.g., "ECDSA_SECP256K1", "ECDSA_HASH160").
+    pub key_type: String,
+    /// Key purpose (e.g., "AUTHENTICATION", "TRANSFER", "ENCRYPTION", "DECRYPTION").
+    pub purpose: String,
+    /// Security level (e.g., "MASTER", "CRITICAL", "HIGH", "MEDIUM").
+    pub security_level: String,
+    /// Optional contract bounds for this key.
+    pub contract_bounds: Option<ContractBoundsDto>,
+}
+
+/// Contract bounds for a key.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum ContractBoundsDto {
+    /// Key is bound to a single contract.
+    #[serde(rename_all = "camelCase")]
+    SingleContract {
+        /// Contract identifier (hex).
+        contract_id: IdentifierDto,
+    },
+    /// Key is bound to a single contract and document type.
+    #[serde(rename_all = "camelCase")]
+    SingleContractDocumentType {
+        /// Contract identifier (hex).
+        contract_id: IdentifierDto,
+        /// Document type name.
+        document_type_name: String,
+    },
+}
+
+/// Funding method for identity registration.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", tag = "method")]
+pub enum RegisterIdentityFundingMethodDto {
+    /// Use an existing asset lock (from a prior create_registration_asset_lock task).
+    #[serde(rename_all = "camelCase")]
+    UseAssetLock {
+        /// Asset lock proof as hex-encoded bytes.
+        asset_lock_proof_hex: String,
+        /// The full transaction as hex-encoded bytes.
+        transaction_hex: String,
+        /// The pay-to address string.
+        address: String,
+    },
+    /// Fund from wallet balance by creating a new asset lock transaction.
+    #[serde(rename_all = "camelCase")]
+    FundWithWallet {
+        /// Amount in duffs.
+        amount_duffs: u64,
+    },
+    /// Fund from a specific UTXO.
+    #[serde(rename_all = "camelCase")]
+    FundWithUtxo {
+        /// Previous transaction hash (hex).
+        txid: String,
+        /// Output index in the previous transaction.
+        vout: u32,
+        /// Output value in satoshis/duffs.
+        value: u64,
+        /// Output script as hex.
+        script_pub_key_hex: String,
+        /// The address string.
+        address: String,
+    },
+    /// Fund from Platform addresses.
+    #[serde(rename_all = "camelCase")]
+    FundWithPlatformAddresses {
+        /// Platform address → credits amount pairs.
+        inputs: Vec<PlatformAddressCreditsPair>,
+    },
+}
+
+/// A platform address and credits pair for funding operations.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformAddressCreditsPair {
+    /// Platform address string.
+    pub address: String,
+    /// Amount in credits.
+    pub amount: CreditsDto,
+}
+
+/// Input for registering a new identity.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterIdentityInput {
+    /// Wallet seed hash (hex) — the wallet that will own and derive keys for this identity.
+    pub wallet_seed_hash: WalletSeedHashDto,
+    /// Identity index within the wallet.
+    pub identity_index: u32,
+    /// Alias for this identity.
+    pub alias: String,
+    /// Master key type (e.g., "ECDSA_HASH160", "ECDSA_SECP256K1").
+    pub master_key_type: String,
+    /// Additional key specifications beyond the master key.
+    /// If empty, default key specs are used (AUTH CRITICAL, AUTH HIGH,
+    /// TRANSFER CRITICAL, ENCRYPTION MEDIUM w/ DashPay, DECRYPTION MEDIUM w/ DashPay).
+    pub key_specs: Vec<KeySpecDto>,
+    /// Whether to use default key specs (ignores key_specs if true).
+    pub use_default_keys: bool,
+    /// Funding method for identity creation.
+    pub funding_method: RegisterIdentityFundingMethodDto,
+}
+
+/// Funding method for identity top-up.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", tag = "method")]
+pub enum TopUpIdentityFundingMethodDto {
+    /// Use an existing asset lock.
+    #[serde(rename_all = "camelCase")]
+    UseAssetLock {
+        /// Asset lock proof as hex-encoded bytes.
+        asset_lock_proof_hex: String,
+        /// The full transaction as hex-encoded bytes.
+        transaction_hex: String,
+        /// The pay-to address string.
+        address: String,
+    },
+    /// Fund from wallet balance.
+    #[serde(rename_all = "camelCase")]
+    FundWithWallet {
+        /// Amount in duffs.
+        amount_duffs: u64,
+        /// Top-up index for this identity.
+        top_up_index: u32,
+    },
+    /// Fund from a specific UTXO.
+    #[serde(rename_all = "camelCase")]
+    FundWithUtxo {
+        /// Previous transaction hash (hex).
+        txid: String,
+        /// Output index.
+        vout: u32,
+        /// Output value in satoshis/duffs.
+        value: u64,
+        /// Output script as hex.
+        script_pub_key_hex: String,
+        /// Address string.
+        address: String,
+        /// Top-up index for this identity.
+        top_up_index: u32,
+    },
+}
+
+/// Input for topping up an existing identity.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TopUpIdentityInput {
+    /// Identity ID (hex) to top up.
+    pub identity_id: IdentifierDto,
+    /// Wallet seed hash (hex) — the wallet used for funding.
+    pub wallet_seed_hash: WalletSeedHashDto,
+    /// Identity index within the wallet.
+    pub identity_index: u32,
+    /// Funding method.
+    pub funding_method: TopUpIdentityFundingMethodDto,
+}
+
+/// Input for topping up identity from Platform addresses.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TopUpIdentityFromPlatformAddressesInput {
+    /// Identity ID (hex) to top up.
+    pub identity_id: IdentifierDto,
+    /// Wallet seed hash (hex) for signing.
+    pub wallet_seed_hash: WalletSeedHashDto,
+    /// Platform address → credits amount pairs.
+    pub inputs: Vec<PlatformAddressCreditsPair>,
+}
+
+/// Input for transferring credits from identity to Platform addresses.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferToAddressesInput {
+    /// Source identity ID (hex).
+    pub identity_id: IdentifierDto,
+    /// Platform address → credits amount pairs (destinations).
+    pub outputs: Vec<PlatformAddressCreditsPair>,
+    /// Optional key ID to use for signing.
+    pub key_id: Option<u32>,
+}
+
 // ---------------------------------------------------------------------------
 // Helper: Convert QualifiedIdentity → QualifiedIdentityDto
 // ---------------------------------------------------------------------------
@@ -349,6 +541,376 @@ fn lookup_wallet_arc_ref(
         .wallet_by_seed_hash(&seed_hash)
         .ok_or_else(|| format!("Wallet not found for seed hash {}", wallet_seed_hash_hex))?;
     Ok(WalletArcRef::from(wallet_arc))
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for identity registration / top-up
+// ---------------------------------------------------------------------------
+
+/// Parse a `ContractBoundsDto` into the SDK `ContractBounds` type.
+fn parse_contract_bounds(dto: &ContractBoundsDto) -> Result<ContractBounds, String> {
+    match dto {
+        ContractBoundsDto::SingleContract { contract_id } => {
+            let id = parse_identifier(contract_id)?;
+            Ok(ContractBounds::SingleContract { id })
+        }
+        ContractBoundsDto::SingleContractDocumentType {
+            contract_id,
+            document_type_name,
+        } => {
+            let id = parse_identifier(contract_id)?;
+            Ok(ContractBounds::SingleContractDocumentType {
+                id,
+                document_type_name: document_type_name.clone(),
+            })
+        }
+    }
+}
+
+/// Build `IdentityKeys` from wallet derivation. Derives the master key and
+/// additional keys using the wallet's HD key derivation at the given identity index.
+fn build_identity_keys(
+    state: &AppState,
+    wallet_seed_hash_hex: &str,
+    identity_index: u32,
+    master_key_type: &str,
+    key_specs: &[KeySpecDto],
+    use_default_keys: bool,
+) -> Result<IdentityKeys, String> {
+    let seed_hash = parse_wallet_seed_hash(wallet_seed_hash_hex)?;
+    let ctx = state.current_context();
+    let wallet_arc = ctx
+        .wallet_by_seed_hash(&seed_hash)
+        .ok_or_else(|| format!("Wallet not found for seed hash {}", wallet_seed_hash_hex))?;
+    let mut wallet = wallet_arc.write_or_recover();
+
+    let master_key_type_parsed = parse_key_type(master_key_type)?;
+
+    // Derive master key (key index 0)
+    let network = ctx.network();
+    let master_key = wallet
+        .identity_authentication_ecdsa_private_key(network, identity_index, 0, Some(ctx))
+        .map_err(|e| format!("Failed to derive master key: {e}"))?;
+
+    // Build additional key inputs
+    let keys_input = if use_default_keys {
+        // Use default key specs (same as egui default_identity_key_specs)
+        let dashpay_contract_id = ctx.dashpay_contract_id();
+        let dashpay_bounds = Some(ContractBounds::SingleContractDocumentType {
+            id: dashpay_contract_id,
+            document_type_name: "contactRequest".to_string(),
+        });
+
+        let default_specs: Vec<(KeyType, Purpose, SecurityLevel, Option<ContractBounds>)> = vec![
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::CRITICAL,
+                None,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::AUTHENTICATION,
+                SecurityLevel::HIGH,
+                None,
+            ),
+            (
+                KeyType::ECDSA_HASH160,
+                Purpose::TRANSFER,
+                SecurityLevel::CRITICAL,
+                None,
+            ),
+            (
+                KeyType::ECDSA_SECP256K1,
+                Purpose::ENCRYPTION,
+                SecurityLevel::MEDIUM,
+                dashpay_bounds.clone(),
+            ),
+            (
+                KeyType::ECDSA_SECP256K1,
+                Purpose::DECRYPTION,
+                SecurityLevel::MEDIUM,
+                dashpay_bounds,
+            ),
+        ];
+
+        default_specs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (kt, purpose, sl, cb))| {
+                let key_index = (i + 1) as u32;
+                let (private_key, derivation_path) = wallet
+                    .identity_authentication_ecdsa_private_key(
+                        ctx.network(),
+                        identity_index,
+                        key_index,
+                        Some(ctx),
+                    )
+                    .map_err(|e| format!("Failed to derive key {}: {e}", key_index))?;
+                Ok(((private_key, derivation_path), kt, purpose, sl, cb))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    } else {
+        // Use custom key specs from frontend
+        key_specs
+            .iter()
+            .enumerate()
+            .map(|(i, spec)| {
+                let key_index = (i + 1) as u32;
+                let kt = parse_key_type(&spec.key_type)?;
+                let purpose = parse_purpose(&spec.purpose)?;
+                let sl = parse_security_level(&spec.security_level)?;
+                let cb = spec
+                    .contract_bounds
+                    .as_ref()
+                    .map(parse_contract_bounds)
+                    .transpose()?;
+
+                let (private_key, derivation_path) = wallet
+                    .identity_authentication_ecdsa_private_key(
+                        ctx.network(),
+                        identity_index,
+                        key_index,
+                        Some(ctx),
+                    )
+                    .map_err(|e| format!("Failed to derive key {}: {e}", key_index))?;
+                Ok(((private_key, derivation_path), kt, purpose, sl, cb))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    };
+
+    Ok(IdentityKeys::new(
+        Some(master_key),
+        master_key_type_parsed,
+        keys_input,
+    ))
+}
+
+/// Parse a `RegisterIdentityFundingMethodDto` into the backend `RegisterIdentityFundingMethod`.
+fn parse_register_funding_method(
+    dto: &RegisterIdentityFundingMethodDto,
+    identity_index: u32,
+    wallet_seed_hash_hex: &str,
+) -> Result<RegisterIdentityFundingMethod, String> {
+    use dash_sdk::dpp::dashcore::consensus::Decodable;
+
+    match dto {
+        RegisterIdentityFundingMethodDto::UseAssetLock {
+            asset_lock_proof_hex,
+            transaction_hex,
+            address,
+        } => {
+            let proof_bytes = hex::decode(asset_lock_proof_hex)
+                .map_err(|e| format!("Invalid asset lock proof hex: {e}"))?;
+            let asset_lock_proof: dash_sdk::dpp::prelude::AssetLockProof =
+                dash_sdk::platform::dpp::bincode::decode_from_slice(
+                    &proof_bytes,
+                    dash_sdk::platform::dpp::bincode::config::standard()
+                        .with_big_endian()
+                        .with_no_limit(),
+                )
+                .map_err(|e| format!("Failed to decode asset lock proof: {e}"))?
+                .0;
+
+            let tx_bytes = hex::decode(transaction_hex)
+                .map_err(|e| format!("Invalid transaction hex: {e}"))?;
+            let transaction =
+                dash_sdk::dpp::dashcore::Transaction::consensus_decode(&mut tx_bytes.as_slice())
+                    .map_err(|e| format!("Failed to decode transaction: {e}"))?;
+
+            let addr =
+                address
+                    .parse::<dash_sdk::dpp::dashcore::Address<
+                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
+                    >>()
+                    .map_err(|e| format!("Invalid address: {e}"))?
+                    .assume_checked();
+
+            Ok(RegisterIdentityFundingMethod::UseAssetLock(
+                addr,
+                Box::new(asset_lock_proof),
+                Box::new(transaction),
+            ))
+        }
+        RegisterIdentityFundingMethodDto::FundWithWallet { amount_duffs } => Ok(
+            RegisterIdentityFundingMethod::FundWithWallet(*amount_duffs, identity_index),
+        ),
+        RegisterIdentityFundingMethodDto::FundWithUtxo {
+            txid,
+            vout,
+            value,
+            script_pub_key_hex,
+            address,
+        } => {
+            let txid_hash = txid
+                .parse::<dash_sdk::dpp::dashcore::Txid>()
+                .map_err(|e| format!("Invalid txid: {e}"))?;
+            let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(txid_hash, *vout);
+
+            let script_bytes = hex::decode(script_pub_key_hex)
+                .map_err(|e| format!("Invalid script_pub_key hex: {e}"))?;
+            let script_pubkey = dash_sdk::dpp::dashcore::ScriptBuf::from_bytes(script_bytes);
+            let txout = dash_sdk::dpp::dashcore::TxOut {
+                value: *value,
+                script_pubkey,
+            };
+
+            let addr =
+                address
+                    .parse::<dash_sdk::dpp::dashcore::Address<
+                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
+                    >>()
+                    .map_err(|e| format!("Invalid address: {e}"))?
+                    .assume_checked();
+
+            Ok(RegisterIdentityFundingMethod::FundWithUtxo(
+                outpoint,
+                txout,
+                addr,
+                identity_index,
+            ))
+        }
+        RegisterIdentityFundingMethodDto::FundWithPlatformAddresses { inputs } => {
+            use dash_sdk::dpp::address_funds::PlatformAddress;
+
+            let seed_hash = parse_wallet_seed_hash(wallet_seed_hash_hex)?;
+            let mut platform_inputs = std::collections::BTreeMap::new();
+            for pair in inputs {
+                let addr = pair
+                    .address
+                    .parse::<dash_sdk::dpp::dashcore::Address<
+                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
+                    >>()
+                    .map_err(|e| format!("Invalid platform address {}: {e}", pair.address))?
+                    .assume_checked();
+                let platform_addr = PlatformAddress::try_from(addr)
+                    .map_err(|e| format!("Invalid platform address: {e}"))?;
+                platform_inputs.insert(platform_addr, pair.amount as Credits);
+            }
+            Ok(RegisterIdentityFundingMethod::FundWithPlatformAddresses {
+                inputs: platform_inputs,
+                wallet_seed_hash: seed_hash,
+            })
+        }
+    }
+}
+
+/// Parse a `TopUpIdentityFundingMethodDto` into the backend `TopUpIdentityFundingMethod`.
+fn parse_top_up_funding_method(
+    dto: &TopUpIdentityFundingMethodDto,
+    identity_index: u32,
+) -> Result<TopUpIdentityFundingMethod, String> {
+    use dash_sdk::dpp::dashcore::consensus::Decodable;
+
+    match dto {
+        TopUpIdentityFundingMethodDto::UseAssetLock {
+            asset_lock_proof_hex,
+            transaction_hex,
+            address,
+        } => {
+            let proof_bytes = hex::decode(asset_lock_proof_hex)
+                .map_err(|e| format!("Invalid asset lock proof hex: {e}"))?;
+            let asset_lock_proof: dash_sdk::dpp::prelude::AssetLockProof =
+                dash_sdk::platform::dpp::bincode::decode_from_slice(
+                    &proof_bytes,
+                    dash_sdk::platform::dpp::bincode::config::standard()
+                        .with_big_endian()
+                        .with_no_limit(),
+                )
+                .map_err(|e| format!("Failed to decode asset lock proof: {e}"))?
+                .0;
+
+            let tx_bytes = hex::decode(transaction_hex)
+                .map_err(|e| format!("Invalid transaction hex: {e}"))?;
+            let transaction =
+                dash_sdk::dpp::dashcore::Transaction::consensus_decode(&mut tx_bytes.as_slice())
+                    .map_err(|e| format!("Failed to decode transaction: {e}"))?;
+
+            let addr =
+                address
+                    .parse::<dash_sdk::dpp::dashcore::Address<
+                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
+                    >>()
+                    .map_err(|e| format!("Invalid address: {e}"))?
+                    .assume_checked();
+
+            Ok(TopUpIdentityFundingMethod::UseAssetLock(
+                addr,
+                Box::new(asset_lock_proof),
+                Box::new(transaction),
+            ))
+        }
+        TopUpIdentityFundingMethodDto::FundWithWallet {
+            amount_duffs,
+            top_up_index,
+        } => Ok(TopUpIdentityFundingMethod::FundWithWallet(
+            *amount_duffs,
+            identity_index,
+            *top_up_index,
+        )),
+        TopUpIdentityFundingMethodDto::FundWithUtxo {
+            txid,
+            vout,
+            value,
+            script_pub_key_hex,
+            address,
+            top_up_index,
+        } => {
+            let txid_hash = txid
+                .parse::<dash_sdk::dpp::dashcore::Txid>()
+                .map_err(|e| format!("Invalid txid: {e}"))?;
+            let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(txid_hash, *vout);
+
+            let script_bytes = hex::decode(script_pub_key_hex)
+                .map_err(|e| format!("Invalid script_pub_key hex: {e}"))?;
+            let script_pubkey = dash_sdk::dpp::dashcore::ScriptBuf::from_bytes(script_bytes);
+            let txout = dash_sdk::dpp::dashcore::TxOut {
+                value: *value,
+                script_pubkey,
+            };
+
+            let addr =
+                address
+                    .parse::<dash_sdk::dpp::dashcore::Address<
+                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
+                    >>()
+                    .map_err(|e| format!("Invalid address: {e}"))?
+                    .assume_checked();
+
+            Ok(TopUpIdentityFundingMethod::FundWithUtxo(
+                outpoint,
+                txout,
+                addr,
+                identity_index,
+                *top_up_index,
+            ))
+        }
+    }
+}
+
+/// Parse platform address pairs into a BTreeMap for backend consumption.
+fn parse_platform_address_credits(
+    pairs: &[PlatformAddressCreditsPair],
+) -> Result<
+    std::collections::BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+    String,
+> {
+    use dash_sdk::dpp::address_funds::PlatformAddress;
+
+    let mut map = std::collections::BTreeMap::new();
+    for pair in pairs {
+        let addr = pair
+            .address
+            .parse::<dash_sdk::dpp::dashcore::Address<
+                dash_sdk::dpp::dashcore::address::NetworkUnchecked,
+            >>()
+            .map_err(|e| format!("Invalid platform address {}: {e}", pair.address))?
+            .assume_checked();
+        let platform_addr = PlatformAddress::try_from(addr)
+            .map_err(|e| format!("Invalid platform address: {e}"))?;
+        map.insert(platform_addr, pair.amount as Credits);
+    }
+    Ok(map)
 }
 
 // ---------------------------------------------------------------------------
@@ -667,6 +1229,128 @@ pub fn identity_replace_key(
         new_qualified_key,
         new_private_key,
     ));
+    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
+    Ok(DispatchTaskResponse { task_id })
+}
+
+/// Register a new identity on the platform.
+///
+/// Derives keys from the wallet, constructs the identity registration info,
+/// and dispatches `IdentityTask::RegisterIdentity`. Supports all 4 funding methods:
+/// UseAssetLock, FundWithWallet, FundWithUtxo, FundWithPlatformAddresses.
+///
+/// Result arrives via `TaskResultEvent`.
+#[tauri::command]
+#[specta::specta]
+pub fn identity_register(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    input: RegisterIdentityInput,
+) -> Result<DispatchTaskResponse, String> {
+    // Build identity keys from wallet derivation
+    let identity_keys = build_identity_keys(
+        &state,
+        &input.wallet_seed_hash,
+        input.identity_index,
+        &input.master_key_type,
+        &input.key_specs,
+        input.use_default_keys,
+    )?;
+
+    // Parse funding method
+    let funding_method = parse_register_funding_method(
+        &input.funding_method,
+        input.identity_index,
+        &input.wallet_seed_hash,
+    )?;
+
+    // Look up wallet Arc reference
+    let wallet_arc_ref = lookup_wallet_arc_ref(&state, &input.wallet_seed_hash)?;
+
+    let registration_info = IdentityRegistrationInfo {
+        alias_input: input.alias,
+        keys: identity_keys,
+        wallet: wallet_arc_ref.wallet,
+        wallet_identity_index: input.identity_index,
+        identity_funding_method: funding_method,
+    };
+
+    let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(registration_info));
+    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
+    Ok(DispatchTaskResponse { task_id })
+}
+
+/// Top up an existing identity with additional credits.
+///
+/// Dispatches `IdentityTask::TopUpIdentity`. Supports UseAssetLock, FundWithWallet,
+/// and FundWithUtxo funding methods.
+///
+/// Result arrives via `TaskResultEvent`.
+#[tauri::command]
+#[specta::specta]
+pub fn identity_top_up(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    input: TopUpIdentityInput,
+) -> Result<DispatchTaskResponse, String> {
+    let qi = lookup_identity(&state, &input.identity_id)?;
+    let wallet_arc_ref = lookup_wallet_arc_ref(&state, &input.wallet_seed_hash)?;
+
+    let funding_method = parse_top_up_funding_method(&input.funding_method, input.identity_index)?;
+
+    let top_up_info = IdentityTopUpInfo {
+        qualified_identity: qi,
+        wallet: wallet_arc_ref.wallet,
+        identity_funding_method: funding_method,
+    };
+
+    let task = BackendTask::IdentityTask(IdentityTask::TopUpIdentity(top_up_info));
+    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
+    Ok(DispatchTaskResponse { task_id })
+}
+
+/// Top up an existing identity from Platform addresses.
+///
+/// Dispatches `IdentityTask::TopUpIdentityFromPlatformAddresses`. Result via event.
+#[tauri::command]
+#[specta::specta]
+pub fn identity_top_up_from_platform_addresses(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    input: TopUpIdentityFromPlatformAddressesInput,
+) -> Result<DispatchTaskResponse, String> {
+    let qi = lookup_identity(&state, &input.identity_id)?;
+    let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
+    let inputs = parse_platform_address_credits(&input.inputs)?;
+
+    let task = BackendTask::IdentityTask(IdentityTask::TopUpIdentityFromPlatformAddresses {
+        identity: qi,
+        inputs,
+        wallet_seed_hash: seed_hash,
+    });
+    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
+    Ok(DispatchTaskResponse { task_id })
+}
+
+/// Transfer credits from an identity to Platform addresses.
+///
+/// Dispatches `IdentityTask::TransferToAddresses`. Result via event.
+#[tauri::command]
+#[specta::specta]
+pub fn identity_transfer_to_addresses(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    input: TransferToAddressesInput,
+) -> Result<DispatchTaskResponse, String> {
+    let qi = lookup_identity(&state, &input.identity_id)?;
+    let outputs = parse_platform_address_credits(&input.outputs)?;
+    let key_id: Option<KeyID> = input.key_id.map(|id| id as KeyID);
+
+    let task = BackendTask::IdentityTask(IdentityTask::TransferToAddresses {
+        identity: qi,
+        outputs,
+        key_id,
+    });
     let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
     Ok(DispatchTaskResponse { task_id })
 }
@@ -1229,5 +1913,263 @@ mod tests {
         assert_eq!(input.identity_type, IdentityTypeDto::Masternode);
         assert_eq!(input.alias, "My MN");
         assert!(!input.derive_keys_from_wallets);
+    }
+
+    // --- Tests for new registration/top-up/transfer DTOs ---
+
+    #[test]
+    fn key_spec_dto_serializes_with_camel_case() {
+        let spec = KeySpecDto {
+            key_type: "ECDSA_HASH160".into(),
+            purpose: "AUTHENTICATION".into(),
+            security_level: "CRITICAL".into(),
+            contract_bounds: None,
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"keyType\":\"ECDSA_HASH160\""));
+        assert!(json.contains("\"purpose\":\"AUTHENTICATION\""));
+        assert!(json.contains("\"securityLevel\":\"CRITICAL\""));
+        assert!(json.contains("\"contractBounds\":null"));
+    }
+
+    #[test]
+    fn key_spec_dto_with_contract_bounds_serializes() {
+        let spec = KeySpecDto {
+            key_type: "ECDSA_SECP256K1".into(),
+            purpose: "ENCRYPTION".into(),
+            security_level: "MEDIUM".into(),
+            contract_bounds: Some(ContractBoundsDto::SingleContractDocumentType {
+                contract_id: "abc123".into(),
+                document_type_name: "contactRequest".into(),
+            }),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        assert!(json.contains("\"contractBounds\":{"));
+        assert!(json.contains("\"type\":\"singleContractDocumentType\""));
+        assert!(json.contains("\"contractId\":\"abc123\""));
+        assert!(json.contains("\"documentTypeName\":\"contactRequest\""));
+    }
+
+    #[test]
+    fn contract_bounds_single_contract_serializes() {
+        let bounds = ContractBoundsDto::SingleContract {
+            contract_id: "def456".into(),
+        };
+        let json = serde_json::to_string(&bounds).unwrap();
+        assert!(json.contains("\"type\":\"singleContract\""));
+        assert!(json.contains("\"contractId\":\"def456\""));
+    }
+
+    #[test]
+    fn register_identity_funding_fund_with_wallet_serializes() {
+        let method = RegisterIdentityFundingMethodDto::FundWithWallet {
+            amount_duffs: 50000,
+        };
+        let json = serde_json::to_string(&method).unwrap();
+        assert!(json.contains("\"method\":\"fundWithWallet\""));
+        assert!(json.contains("\"amountDuffs\":50000"));
+    }
+
+    #[test]
+    fn register_identity_funding_use_asset_lock_serializes() {
+        let method = RegisterIdentityFundingMethodDto::UseAssetLock {
+            asset_lock_proof_hex: "aabb".into(),
+            transaction_hex: "ccdd".into(),
+            address: "XpYvN123".into(),
+        };
+        let json = serde_json::to_string(&method).unwrap();
+        assert!(json.contains("\"method\":\"useAssetLock\""));
+        assert!(json.contains("\"assetLockProofHex\":\"aabb\""));
+        assert!(json.contains("\"transactionHex\":\"ccdd\""));
+    }
+
+    #[test]
+    fn register_identity_funding_fund_with_utxo_serializes() {
+        let method = RegisterIdentityFundingMethodDto::FundWithUtxo {
+            txid: "aa".repeat(32),
+            vout: 0,
+            value: 100000,
+            script_pub_key_hex: "76a914".into(),
+            address: "XpYvN456".into(),
+        };
+        let json = serde_json::to_string(&method).unwrap();
+        assert!(json.contains("\"method\":\"fundWithUtxo\""));
+        assert!(json.contains("\"vout\":0"));
+        assert!(json.contains("\"value\":100000"));
+        assert!(json.contains("\"scriptPubKeyHex\":\"76a914\""));
+    }
+
+    #[test]
+    fn register_identity_funding_platform_addresses_serializes() {
+        let method = RegisterIdentityFundingMethodDto::FundWithPlatformAddresses {
+            inputs: vec![PlatformAddressCreditsPair {
+                address: "XpYvN789".into(),
+                amount: 250000,
+            }],
+        };
+        let json = serde_json::to_string(&method).unwrap();
+        assert!(json.contains("\"method\":\"fundWithPlatformAddresses\""));
+        assert!(json.contains("\"address\":\"XpYvN789\""));
+        assert!(json.contains("\"amount\":250000"));
+    }
+
+    #[test]
+    fn register_identity_input_serializes_with_camel_case() {
+        let input = RegisterIdentityInput {
+            wallet_seed_hash: "aa".repeat(32),
+            identity_index: 0,
+            alias: "My Identity".into(),
+            master_key_type: "ECDSA_HASH160".into(),
+            key_specs: vec![],
+            use_default_keys: true,
+            funding_method: RegisterIdentityFundingMethodDto::FundWithWallet {
+                amount_duffs: 100000,
+            },
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"walletSeedHash\""));
+        assert!(json.contains("\"identityIndex\":0"));
+        assert!(json.contains("\"alias\":\"My Identity\""));
+        assert!(json.contains("\"masterKeyType\":\"ECDSA_HASH160\""));
+        assert!(json.contains("\"useDefaultKeys\":true"));
+        assert!(json.contains("\"fundingMethod\":{"));
+    }
+
+    #[test]
+    fn register_identity_input_roundtrip() {
+        let json = r#"{
+            "walletSeedHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "identityIndex": 3,
+            "alias": "Test",
+            "masterKeyType": "ECDSA_HASH160",
+            "keySpecs": [
+                {
+                    "keyType": "ECDSA_HASH160",
+                    "purpose": "AUTHENTICATION",
+                    "securityLevel": "CRITICAL",
+                    "contractBounds": null
+                }
+            ],
+            "useDefaultKeys": false,
+            "fundingMethod": {
+                "method": "fundWithWallet",
+                "amountDuffs": 50000
+            }
+        }"#;
+        let input: RegisterIdentityInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.identity_index, 3);
+        assert_eq!(input.alias, "Test");
+        assert!(!input.use_default_keys);
+        assert_eq!(input.key_specs.len(), 1);
+        assert_eq!(input.key_specs[0].key_type, "ECDSA_HASH160");
+    }
+
+    #[test]
+    fn top_up_identity_input_serializes() {
+        let input = TopUpIdentityInput {
+            identity_id: "abc123".into(),
+            wallet_seed_hash: "bb".repeat(32),
+            identity_index: 1,
+            funding_method: TopUpIdentityFundingMethodDto::FundWithWallet {
+                amount_duffs: 75000,
+                top_up_index: 0,
+            },
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"identityId\":\"abc123\""));
+        assert!(json.contains("\"identityIndex\":1"));
+        assert!(json.contains("\"method\":\"fundWithWallet\""));
+        assert!(json.contains("\"amountDuffs\":75000"));
+        assert!(json.contains("\"topUpIndex\":0"));
+    }
+
+    #[test]
+    fn top_up_from_platform_addresses_input_serializes() {
+        let input = TopUpIdentityFromPlatformAddressesInput {
+            identity_id: "def456".into(),
+            wallet_seed_hash: "cc".repeat(32),
+            inputs: vec![PlatformAddressCreditsPair {
+                address: "XpAddr".into(),
+                amount: 500000,
+            }],
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"identityId\":\"def456\""));
+        assert!(json.contains("\"walletSeedHash\""));
+        assert!(json.contains("\"address\":\"XpAddr\""));
+        assert!(json.contains("\"amount\":500000"));
+    }
+
+    #[test]
+    fn transfer_to_addresses_input_serializes() {
+        let input = TransferToAddressesInput {
+            identity_id: "abc123".into(),
+            outputs: vec![
+                PlatformAddressCreditsPair {
+                    address: "XpAddr1".into(),
+                    amount: 100000,
+                },
+                PlatformAddressCreditsPair {
+                    address: "XpAddr2".into(),
+                    amount: 200000,
+                },
+            ],
+            key_id: Some(5),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"identityId\":\"abc123\""));
+        assert!(json.contains("\"keyId\":5"));
+        assert!(json.contains("\"XpAddr1\""));
+        assert!(json.contains("\"XpAddr2\""));
+    }
+
+    #[test]
+    fn transfer_to_addresses_input_without_key_id() {
+        let input = TransferToAddressesInput {
+            identity_id: "abc123".into(),
+            outputs: vec![],
+            key_id: None,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"keyId\":null"));
+    }
+
+    #[test]
+    fn platform_address_credits_pair_serializes() {
+        let pair = PlatformAddressCreditsPair {
+            address: "XpYvN123".into(),
+            amount: 42000,
+        };
+        let json = serde_json::to_string(&pair).unwrap();
+        assert!(json.contains("\"address\":\"XpYvN123\""));
+        assert!(json.contains("\"amount\":42000"));
+    }
+
+    #[test]
+    fn top_up_funding_use_asset_lock_serializes() {
+        let method = TopUpIdentityFundingMethodDto::UseAssetLock {
+            asset_lock_proof_hex: "aabb".into(),
+            transaction_hex: "ccdd".into(),
+            address: "XpAddr".into(),
+        };
+        let json = serde_json::to_string(&method).unwrap();
+        assert!(json.contains("\"method\":\"useAssetLock\""));
+        assert!(json.contains("\"assetLockProofHex\":\"aabb\""));
+    }
+
+    #[test]
+    fn top_up_funding_fund_with_utxo_serializes() {
+        let method = TopUpIdentityFundingMethodDto::FundWithUtxo {
+            txid: "bb".repeat(32),
+            vout: 2,
+            value: 50000,
+            script_pub_key_hex: "76a914".into(),
+            address: "XpAddr".into(),
+            top_up_index: 1,
+        };
+        let json = serde_json::to_string(&method).unwrap();
+        assert!(json.contains("\"method\":\"fundWithUtxo\""));
+        assert!(json.contains("\"vout\":2"));
+        assert!(json.contains("\"topUpIndex\":1"));
     }
 }

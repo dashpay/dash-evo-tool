@@ -387,6 +387,12 @@ impl AppContext {
         self.network
     }
 
+    /// Get the DashPay contract ID.
+    pub fn dashpay_contract_id(&self) -> dash_sdk::platform::Identifier {
+        use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+        self.dashpay_contract.id()
+    }
+
     /// Returns `None` if the wallet is not found. Used by the Tauri IPC layer
     /// to look up wallets by their serializable seed hash identifiers.
     pub fn wallet_by_seed_hash(&self, seed_hash: &WalletSeedHash) -> Option<Arc<RwLock<Wallet>>> {

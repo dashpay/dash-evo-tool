@@ -1352,7 +1352,7 @@
     Generate proper dash: payment URI from the funding address.
     Reference: CreateIdentityScreen.tsx lines 1230-1260, ReceiveDialog.tsx lines 280-286
 
-  - [ ] **4.5d Add wallet unlock integration for identity operations** (P1)
+  - [x] **4.5d Add wallet unlock integration for identity operations** (P1)
     WalletUnlockDialog exists but is not used in identity screens. Add unlock prompts before:
     - Withdraw (if signing key is in encrypted wallet)
     - Transfer (if signing key is in encrypted wallet)

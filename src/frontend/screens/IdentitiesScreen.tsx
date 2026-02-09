@@ -30,6 +30,7 @@ import {
   RegisterDpnsNameScreen,
   type RegisterDpnsNameStatus,
 } from "@/components/identity/RegisterDpnsNameScreen";
+import { WalletUnlockDialog, type WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
 import { commands } from "@/bindings";
@@ -126,6 +127,11 @@ export function IdentitiesScreen() {
     success: string | null;
   }>({ isSubmitting: false, error: null, success: null });
 
+  // Wallet unlock state for identity operations
+  const [walletUnlockOpen, setWalletUnlockOpen] = useState(false);
+  const [walletUnlockError, setWalletUnlockError] = useState<string | null>(null);
+  const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<Set<string>>(new Set());
+
   // Load identities and wallets on mount
   useEffect(() => {
     loadIdentities();
@@ -189,6 +195,53 @@ export function IdentitiesScreen() {
     }
     return names;
   }, [hdWallets, singleKeyWallets]);
+
+  // Find the associated wallet for the selected identity (for unlock flow)
+  const associatedWallet = useMemo(() => {
+    if (!selectedIdentity) return null;
+    const hashes = selectedIdentity.associatedWalletHashes;
+    if (hashes.length === 0) return null;
+    // Try HD wallets first
+    for (const hash of hashes) {
+      const hd = hdWallets.find((w) => w.seedHash === hash);
+      if (hd) return { type: "hd" as const, seedHash: hd.seedHash, alias: hd.alias, usesPassword: hd.usesPassword, passwordHint: hd.passwordHint };
+    }
+    // Try single key wallets
+    for (const hash of hashes) {
+      const sk = singleKeyWallets.find((w) => w.keyHash === hash);
+      if (sk) return { type: "sk" as const, seedHash: sk.keyHash, alias: sk.alias, usesPassword: sk.usesPassword, passwordHint: null };
+    }
+    return null;
+  }, [selectedIdentity, hdWallets, singleKeyWallets]);
+
+  // Whether the associated wallet is locked (needs password, not yet unlocked)
+  const walletLocked = useMemo(() => {
+    if (!associatedWallet) return false;
+    if (!associatedWallet.usesPassword) return false;
+    return !walletUnlockedHashes.has(associatedWallet.seedHash);
+  }, [associatedWallet, walletUnlockedHashes]);
+
+  const handleRequestUnlock = useCallback(() => {
+    setWalletUnlockOpen(true);
+    setWalletUnlockError(null);
+  }, []);
+
+  const handleWalletUnlockResult = useCallback(
+    async (result: WalletUnlockResult) => {
+      if (result.status === "unlocked" && associatedWallet) {
+        setWalletUnlockError(null);
+        try {
+          await commands.walletNotifyUnlocked(associatedWallet.seedHash);
+          setWalletUnlockedHashes((prev) => new Set([...prev, associatedWallet.seedHash]));
+        } catch (e) {
+          setWalletUnlockError(e instanceof Error ? e.message : String(e));
+          return;
+        }
+      }
+      setWalletUnlockOpen(false);
+    },
+    [associatedWallet],
+  );
 
   // Build known identities list for TransferScreen
   const knownIdentities: IdentityOption[] = useMemo(() => {
@@ -774,6 +827,7 @@ export function IdentitiesScreen() {
   }
 
   return (
+    <>
     <div className="flex flex-1 gap-3 min-h-0">
       {/* Left Panel — Identity List */}
       <Island noPadding className="w-[300px] shrink-0 flex flex-col overflow-hidden">
@@ -814,6 +868,19 @@ export function IdentitiesScreen() {
         )}
       </Island>
     </div>
+
+    {/* Wallet unlock dialog for identity operations */}
+    {associatedWallet && (
+      <WalletUnlockDialog
+        open={walletUnlockOpen}
+        onOpenChange={setWalletUnlockOpen}
+        walletAlias={associatedWallet.alias || associatedWallet.seedHash.slice(0, 10)}
+        passwordHint={associatedWallet.passwordHint ?? null}
+        error={walletUnlockError}
+        onResult={handleWalletUnlockResult}
+      />
+    )}
+    </>
   );
 
   // ─── Create identity renderer ───────────────────────────────────
@@ -910,6 +977,8 @@ export function IdentitiesScreen() {
             onClearSuccess={() =>
               setKeyInfoState((s) => ({ ...s, success: null }))
             }
+            walletLocked={walletLocked}
+            onRequestUnlock={handleRequestUnlock}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center h-full text-muted-foreground">
@@ -927,6 +996,8 @@ export function IdentitiesScreen() {
             onBackToKeys={handleBackToKeys}
             onAddAnother={() => setAddKeyStatus({ type: "idle" })}
             onBack={handleBackToKeys}
+            walletLocked={walletLocked}
+            onRequestUnlock={handleRequestUnlock}
           />
         );
 
@@ -938,6 +1009,8 @@ export function IdentitiesScreen() {
             onSubmit={handleWithdrawSubmit}
             onDismissError={() => setWithdrawStatus({ type: "form" })}
             onBack={handleBackToDetail}
+            walletLocked={walletLocked}
+            onRequestUnlock={handleRequestUnlock}
           />
         );
 
@@ -951,6 +1024,8 @@ export function IdentitiesScreen() {
             onSubmitToAddress={handleTransferToAddress}
             onDismissError={() => setTransferStatus({ type: "form" })}
             onBack={handleBackToDetail}
+            walletLocked={walletLocked}
+            onRequestUnlock={handleRequestUnlock}
           />
         );
 

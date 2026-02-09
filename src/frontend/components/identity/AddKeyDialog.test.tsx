@@ -400,3 +400,43 @@ describe("AddKeyDialog — accessibility", () => {
     expect(container.querySelector(".test-class")).toBeInTheDocument();
   });
 });
+
+// ─── Wallet unlock gate ──────────────────────────────────────────────
+
+describe("AddKeyDialog — wallet unlock gate", () => {
+  it("shows wallet locked warning when walletLocked is true", () => {
+    setup({ walletLocked: true });
+    expect(screen.getByTestId("wallet-locked-gate")).toBeInTheDocument();
+    expect(
+      screen.getByText(/wallet is locked/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows unlock button when onRequestUnlock is provided", () => {
+    setup({ walletLocked: true, onRequestUnlock: vi.fn() });
+    expect(
+      screen.getByRole("button", { name: /unlock wallet/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("calls onRequestUnlock when unlock button clicked", async () => {
+    const onRequestUnlock = vi.fn();
+    const { user } = setup({ walletLocked: true, onRequestUnlock });
+    await user.click(
+      screen.getByRole("button", { name: /unlock wallet/i }),
+    );
+    expect(onRequestUnlock).toHaveBeenCalledOnce();
+  });
+
+  it("does not show wallet locked warning when walletLocked is false", () => {
+    setup({ walletLocked: false });
+    expect(screen.queryByTestId("wallet-locked-gate")).not.toBeInTheDocument();
+  });
+
+  it("disables add key button when wallet is locked", () => {
+    setup({ walletLocked: true });
+    expect(
+      screen.getByRole("button", { name: /add key$/i }),
+    ).toBeDisabled();
+  });
+});

@@ -99,6 +99,10 @@ export interface KeyInfoScreenProps {
   onClearSuccess?: () => void;
   /** Additional CSS class. */
   className?: string;
+  /** Whether the associated wallet is locked and needs unlock before proceeding. */
+  walletLocked?: boolean;
+  /** Called when user wants to unlock the wallet. */
+  onRequestUnlock?: () => void;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
@@ -157,6 +161,8 @@ export function KeyInfoScreen({
   onClearError,
   onClearSuccess,
   className,
+  walletLocked = false,
+  onRequestUnlock,
 }: KeyInfoScreenProps) {
   const [privateKeyInput, setPrivateKeyInput] = useState("");
   const [addKeyError, setAddKeyError] = useState<string | null>(null);
@@ -533,6 +539,19 @@ export function KeyInfoScreen({
             <h3 className="mb-3 text-sm font-medium text-muted-foreground">
               Key Actions
             </h3>
+            {walletLocked && (
+              <div className="flex items-center gap-3 rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 mb-3" data-testid="wallet-locked-gate">
+                <Lock className="size-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                <p className="text-sm text-amber-700 dark:text-amber-300 flex-1">
+                  Wallet is locked. Unlock to perform key actions.
+                </p>
+                {onRequestUnlock && (
+                  <Button variant="outline" size="sm" onClick={onRequestUnlock}>
+                    Unlock Wallet
+                  </Button>
+                )}
+              </div>
+            )}
             <div className="space-y-3">
               {canDisable && onDisableKey && (
                 <div>
@@ -540,7 +559,7 @@ export function KeyInfoScreen({
                     variant="outline"
                     size="sm"
                     onClick={() => setShowConfirmDisable(true)}
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || walletLocked}
                     className="text-destructive hover:text-destructive"
                   >
                     {isSubmitting ? (
@@ -567,7 +586,7 @@ export function KeyInfoScreen({
                     variant="outline"
                     size="sm"
                     onClick={() => setShowConfirmReplace(true)}
-                    disabled={isSubmitting}
+                    disabled={isSubmitting || walletLocked}
                     className="text-amber-600 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-400"
                   >
                     {isSubmitting ? (

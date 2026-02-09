@@ -597,3 +597,77 @@ describe("KeyInfoScreen — accessibility", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Test success");
   });
 });
+
+// ─── Wallet unlock gate ──────────────────────────────────────────────
+
+describe("KeyInfoScreen — wallet unlock gate", () => {
+  const nonMasterKey = makeKey({
+    keyId: 2,
+    purpose: "AUTHENTICATION",
+    securityLevel: "HIGH",
+    hasPrivateKey: true,
+  });
+
+  it("shows wallet locked warning in key actions when walletLocked is true", () => {
+    setup({
+      keyData: nonMasterKey,
+      walletLocked: true,
+    });
+    expect(screen.getByTestId("wallet-locked-gate")).toBeInTheDocument();
+    expect(
+      screen.getByText(/wallet is locked/i),
+    ).toBeInTheDocument();
+  });
+
+  it("shows unlock button when onRequestUnlock is provided", () => {
+    setup({
+      keyData: nonMasterKey,
+      walletLocked: true,
+      onRequestUnlock: vi.fn(),
+    });
+    expect(
+      screen.getByRole("button", { name: /unlock wallet/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("calls onRequestUnlock when unlock button clicked", async () => {
+    const onRequestUnlock = vi.fn();
+    const { user } = setup({
+      keyData: nonMasterKey,
+      walletLocked: true,
+      onRequestUnlock,
+    });
+    await user.click(
+      screen.getByRole("button", { name: /unlock wallet/i }),
+    );
+    expect(onRequestUnlock).toHaveBeenCalledOnce();
+  });
+
+  it("does not show wallet locked warning when walletLocked is false", () => {
+    setup({
+      keyData: nonMasterKey,
+      walletLocked: false,
+    });
+    expect(screen.queryByTestId("wallet-locked-gate")).not.toBeInTheDocument();
+  });
+
+  it("disables disable-key button when wallet is locked", () => {
+    setup({
+      keyData: nonMasterKey,
+      walletLocked: true,
+    });
+    expect(
+      screen.getByRole("button", { name: /disable key on platform/i }),
+    ).toBeDisabled();
+  });
+
+  it("disables replace-master-key button when wallet is locked", () => {
+    setup({
+      keyData: makeKey({ keyId: 0, securityLevel: "MASTER" }),
+      walletLocked: true,
+    });
+    expect(
+      screen.getByRole("button", { name: /replace master key/i }),
+    ).toBeDisabled();
+  });
+});

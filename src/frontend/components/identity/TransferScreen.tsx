@@ -7,6 +7,7 @@ import {
   AlertCircle,
   CheckCircle2,
   Loader2,
+  Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -83,6 +84,10 @@ export interface TransferScreenProps {
   estimatedFeeIdentity?: number | null;
   /** Estimated fee in credits for platform address transfer. */
   estimatedFeeAddress?: number | null;
+  /** Whether the associated wallet is locked and needs unlock before proceeding. */
+  walletLocked?: boolean;
+  /** Called when user wants to unlock the wallet. */
+  onRequestUnlock?: () => void;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
@@ -135,6 +140,8 @@ export function TransferScreen({
   onAddKey,
   estimatedFeeIdentity,
   estimatedFeeAddress,
+  walletLocked = false,
+  onRequestUnlock,
 }: TransferScreenProps) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [destinationType, setDestinationType] =
@@ -165,7 +172,7 @@ export function TransferScreen({
     CREDITS_DECIMAL_PLACES,
   );
 
-  const isDisabled = status.type === "sending" || status.type === "success";
+  const isDisabled = status.type === "sending" || status.type === "success" || walletLocked;
 
   const estimatedFee =
     destinationType === "identity"
@@ -317,6 +324,21 @@ export function TransferScreen({
       <Separator />
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {/* ── Wallet locked gate ────────────────────────────── */}
+        {walletLocked && (
+          <div className="flex items-center gap-3 rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-900/20 px-4 py-3" data-testid="wallet-locked-gate">
+            <Lock className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+            <p className="text-sm text-amber-700 dark:text-amber-300 flex-1">
+              Wallet is locked. Please unlock to continue.
+            </p>
+            {onRequestUnlock && (
+              <Button variant="outline" size="sm" onClick={onRequestUnlock}>
+                Unlock Wallet
+              </Button>
+            )}
+          </div>
+        )}
+
         {/* ── Step 1: Amount ──────────────────────────────── */}
         <section>
           <h3 className="text-sm font-semibold mb-3" data-testid="step-1-heading">

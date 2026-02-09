@@ -6,6 +6,7 @@ import {
   Loader2,
   Check,
   X,
+  Lock,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -115,6 +116,10 @@ export interface AddKeyDialogProps {
   };
   /** Additional CSS class. */
   className?: string;
+  /** Whether the associated wallet is locked and needs unlock before proceeding. */
+  walletLocked?: boolean;
+  /** Called when user wants to unlock the wallet. */
+  onRequestUnlock?: () => void;
 }
 
 // ─── Component ─────────────────────────────────────────────────────
@@ -138,6 +143,8 @@ export function AddKeyDialog({
   defaultPurpose,
   defaultContractBounds,
   className,
+  walletLocked = false,
+  onRequestUnlock,
 }: AddKeyDialogProps) {
   const [purpose, setPurpose] = useState(defaultPurpose || "AUTHENTICATION");
   const [securityLevel, setSecurityLevel] = useState(
@@ -367,6 +374,21 @@ export function AddKeyDialog({
         </div>
       )}
 
+      {/* Wallet locked gate */}
+      {walletLocked && (
+        <div className="flex items-center gap-3 rounded-md border border-amber-500/30 bg-amber-50 dark:bg-amber-900/20 px-4 py-3" data-testid="wallet-locked-gate">
+          <Lock className="size-4 text-amber-600 dark:text-amber-400 shrink-0" />
+          <p className="text-sm text-amber-700 dark:text-amber-300 flex-1">
+            Wallet is locked. Please unlock to continue.
+          </p>
+          {onRequestUnlock && (
+            <Button variant="outline" size="sm" onClick={onRequestUnlock}>
+              Unlock Wallet
+            </Button>
+          )}
+        </div>
+      )}
+
       <Separator />
 
       {/* Form Fields */}
@@ -544,7 +566,7 @@ export function AddKeyDialog({
 
       {/* Submit */}
       <div className="flex justify-end pt-2">
-        <Button onClick={handleSubmit} disabled={status.type === "submitting"}>
+        <Button onClick={handleSubmit} disabled={status.type === "submitting" || walletLocked}>
           <Plus className="mr-1.5 size-4" />
           Add Key
         </Button>

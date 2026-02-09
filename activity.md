@@ -636,3 +636,10 @@
 **Files changed:** src/frontend/components/identity/CreateIdentityScreen.tsx, src/frontend/components/identity/TopUpIdentityScreen.tsx, src/frontend/components/identity/CreateIdentityScreen.test.tsx, src/frontend/components/identity/TopUpIdentityScreen.test.tsx
 **Tests added:** 4 new tests (TopUp: shows QR code when amount entered, generates dash: payment URI with correct amount, does not show QR code when amount is empty, has copy button for payment URI). 2 updated tests (CreateIdentity: updated testid from qr-code-placeholder to qr-code, updated expected URI to include dash: prefix).
 **Sub-tasks created:** 0
+
+## Run 92 — 2026-02-09
+**Task:** 4.5d Add wallet unlock integration for identity operations
+**What was done:** Added wallet unlock gates to 4 identity operation screens (WithdrawScreen, TransferScreen, AddKeyDialog, KeyInfoScreen). Each screen now accepts `walletLocked` and `onRequestUnlock` props. When the associated wallet is password-protected and not yet unlocked, an amber warning banner is shown with an "Unlock Wallet" button, and form inputs/submit buttons are disabled. Wired the WalletUnlockDialog in the IdentitiesScreen container: it resolves the associated wallet from `associatedWalletHashes`, tracks unlocked wallets by seed hash, and calls `walletNotifyUnlocked` IPC on successful password entry.
+**Files changed:** src/frontend/components/identity/WithdrawScreen.tsx, src/frontend/components/identity/TransferScreen.tsx, src/frontend/components/identity/AddKeyDialog.tsx, src/frontend/components/identity/KeyInfoScreen.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/components/identity/WithdrawScreen.test.tsx, src/frontend/components/identity/TransferScreen.test.tsx, src/frontend/components/identity/AddKeyDialog.test.tsx, src/frontend/components/identity/KeyInfoScreen.test.tsx
+**Tests added:** 23 new tests (6 for WithdrawScreen, 6 for TransferScreen, 5 for AddKeyDialog, 6 for KeyInfoScreen — covering locked gate visibility, unlock button, callback invocation, disabled states)
+**Sub-tasks created:** 0

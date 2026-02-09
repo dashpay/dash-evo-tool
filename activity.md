@@ -664,3 +664,10 @@
 **Files changed:** src-tauri/src/commands/wallet.rs
 **Tests added:** 0 (no new tests needed — this is a runtime fix, existing 225 tests all pass)
 **Sub-tasks created:** 0
+
+## Run 96 — 2026-02-09
+**Task:** 9.1c Implement Address Balance screen
+**What was done:** Built the Address Balance screen with address input (evo1.../tevo1... validation), Fetch Balance button with loading states, and result display showing address (monospace + copy), balance (credits + Dash dual display), and nonce. Connected to existing `platformFetchAddressBalance` IPC command via task event listeners. Updated routes to replace placeholder. Wrote 23 component tests.
+**Files changed:** src/frontend/screens/AddressBalanceScreen.tsx (new), src/frontend/screens/AddressBalanceScreen.test.tsx (new), src/frontend/routes.tsx (updated import + route)
+**Tests added:** 23 component tests covering rendering, validation, fetch dispatch, Enter key, loading states, result display, error handling, event subscription, accessibility attributes, address trimming
+**Sub-tasks created:** 0

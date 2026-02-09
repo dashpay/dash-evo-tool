@@ -25,6 +25,7 @@ import { DpnsScheduledVotesScreen } from "@/screens/DpnsScheduledVotesScreen";
 import { DpnsRegisterNameScreen } from "@/screens/DpnsRegisterNameScreen";
 import { ToolsScreen } from "@/screens/ToolsScreen";
 import { PlatformInfoScreen } from "@/screens/PlatformInfoScreen";
+import { AddressBalanceScreen } from "@/screens/AddressBalanceScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -308,7 +309,7 @@ const toolsGroveStarkRoute = createRoute({
 const toolsAddressBalanceRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/address-balance",
-  component: () => <PlaceholderScreen title="Address Balance" />,
+  component: AddressBalanceScreen,
 });
 
 const settingsRoute = createRoute({

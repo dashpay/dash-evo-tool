@@ -512,3 +512,9 @@
 **Files changed:** src/frontend/stores/contestStore.ts, src/frontend/stores/contestStore.test.ts, src/frontend/stores/index.ts
 **Tests added:** 63 (store unit tests covering initial state, loadContests, loadLocalNames, loadScheduledVotes, selectVote/deselectVote/toggleVote, clearSelectedVotes, castVotes, scheduleVotes, castScheduledVote, deleteScheduledVote, clearAllScheduledVotes, clearExecutedScheduledVotes, refreshDpnsNames, setFilterTerm, setSortColumn, subscribeToUpdates, clearError, normalizeDpnsFilter, matchesDpnsFilter)
 **Sub-tasks created:** 0
+## Run 74 — 2026-02-09
+**Task:** 5.1b Create ActiveContestsTable component
+**What was done:** Created `ActiveContestsTable` component in `src/frontend/components/dpns/` with a sortable/filterable table displaying 6 columns (Name, Locked Votes, Abstain Votes, Ending Time, Last Updated, Contestants). Features include: clickable vote buttons (Lock with icon, Abstain with icon, per-contestant) that call onToggleVote; smart lookalike filter using existing matchesDpnsFilter from contestStore; selected votes highlighted in blue (bg-blue-600) with aria-pressed; bold green highlighting for leading vote counts (locked votes vs contestant votes); tooltip-based detail display; empty states for no contests and no filter matches; selection count badge; full accessibility with aria-labels on all interactive elements. Wrote 40 component tests covering empty states, table rendering, sort headers, filtering, vote button interactions, selection highlighting, visual emphasis, multiple contestants, contest state filtering, and accessibility.
+**Files changed:** src/frontend/components/dpns/ActiveContestsTable.tsx, src/frontend/components/dpns/ActiveContestsTable.test.tsx
+**Tests added:** 40 (component tests)
+**Sub-tasks created:** 0

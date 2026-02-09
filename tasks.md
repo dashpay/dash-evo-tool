@@ -1382,7 +1382,7 @@
     Options: periodic polling via IPC, or backend event emission when UTXO detected.
     Reference: egui funding_common.rs lines 57-91
 
-  - [ ] **4.5g Add sort controls to identity list** (P2)
+  - [x] **4.5g Add sort controls to identity list** (P2)
     Zustand store has sorting infrastructure (sortColumn, sortOrder, setSortColumn) but no UI.
     Add sort dropdown or clickable column headers to expose sorting.
     Reference: identityStore.ts lines 8-17, 41-48, 119-151

@@ -71,6 +71,9 @@ export function IdentitiesScreen() {
     refreshingIds,
     refreshingAll,
     error,
+    sortColumn,
+    sortOrder,
+    useCustomOrder,
     loadIdentities,
     selectIdentity,
     refreshIdentity,
@@ -80,6 +83,7 @@ export function IdentitiesScreen() {
     reorderIdentityDown,
     removeIdentity,
     reloadIdentity,
+    setSortColumn,
     subscribeToUpdates,
     clearError,
   } = useIdentityStore();
@@ -854,6 +858,10 @@ export function IdentitiesScreen() {
           onTopUp={handleTopUp}
           onWithdraw={handleWithdraw}
           onTransfer={handleTransfer}
+          sortColumn={sortColumn}
+          sortOrder={sortOrder}
+          useCustomOrder={useCustomOrder}
+          onSortChange={setSortColumn}
           onCreateIdentity={handleCreateIdentity}
           onLoadIdentity={handleLoadIdentity}
         />

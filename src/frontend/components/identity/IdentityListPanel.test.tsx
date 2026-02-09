@@ -653,6 +653,90 @@ describe("IdentityListPanel — balance display", () => {
 
 // ─── Accessibility ─────────────────────────────────────────────────
 
+// ─── Sort controls ────────────────────────────────────────────────
+
+describe("IdentityListPanel — sort controls", () => {
+  const alice = makeIdentity({ id: "aaa", alias: "Alice" });
+  const bob = makeIdentity({ id: "bbb", alias: "Bob" });
+  const identities = [alice, bob];
+
+  it("does not render sort button when onSortChange not provided", () => {
+    setup({ identities });
+    expect(screen.queryByLabelText("Sort identities")).not.toBeInTheDocument();
+  });
+
+  it("renders sort button when onSortChange is provided", () => {
+    setup({ identities, onSortChange: vi.fn() });
+    expect(screen.getByLabelText("Sort identities")).toBeInTheDocument();
+  });
+
+  it("opens sort dropdown with all column options", async () => {
+    const onSortChange = vi.fn();
+    const { user } = setup({ identities, onSortChange });
+    await user.click(screen.getByLabelText("Sort identities"));
+    expect(screen.getByText("Alias")).toBeInTheDocument();
+    expect(screen.getByText("Balance")).toBeInTheDocument();
+    expect(screen.getByText("Type")).toBeInTheDocument();
+    expect(screen.getByText("Identity ID")).toBeInTheDocument();
+    expect(screen.getByText("Wallet")).toBeInTheDocument();
+    expect(screen.getByText("Custom Order")).toBeInTheDocument();
+  });
+
+  it("calls onSortChange when a sort column is clicked", async () => {
+    const onSortChange = vi.fn();
+    const { user } = setup({ identities, onSortChange });
+    await user.click(screen.getByLabelText("Sort identities"));
+    await user.click(screen.getByText("Balance"));
+    expect(onSortChange).toHaveBeenCalledWith("balance");
+  });
+
+  it("shows ascending arrow for active sort column", async () => {
+    const onSortChange = vi.fn();
+    const { user } = setup({
+      identities,
+      onSortChange,
+      sortColumn: "alias",
+      sortOrder: "ascending",
+      useCustomOrder: false,
+    });
+    await user.click(screen.getByLabelText("Sort identities"));
+    // The Alias menu item should show an ascending arrow
+    const aliasItem = screen.getByText("Alias").closest("[role='menuitem']");
+    expect(aliasItem).toHaveTextContent("↑");
+  });
+
+  it("shows descending arrow for active sort column", async () => {
+    const onSortChange = vi.fn();
+    const { user } = setup({
+      identities,
+      onSortChange,
+      sortColumn: "balance",
+      sortOrder: "descending",
+      useCustomOrder: false,
+    });
+    await user.click(screen.getByLabelText("Sort identities"));
+    const balanceItem = screen
+      .getByText("Balance")
+      .closest("[role='menuitem']");
+    expect(balanceItem).toHaveTextContent("↓");
+  });
+
+  it("does not show sort arrow when useCustomOrder is true", async () => {
+    const onSortChange = vi.fn();
+    const { user } = setup({
+      identities,
+      onSortChange,
+      sortColumn: "alias",
+      sortOrder: "ascending",
+      useCustomOrder: true,
+    });
+    await user.click(screen.getByLabelText("Sort identities"));
+    const aliasItem = screen.getByText("Alias").closest("[role='menuitem']");
+    expect(aliasItem).not.toHaveTextContent("↑");
+    expect(aliasItem).not.toHaveTextContent("↓");
+  });
+});
+
 describe("IdentityListPanel — accessibility", () => {
   it("has identity list region with label", () => {
     setup({ identities: [makeIdentity()] });

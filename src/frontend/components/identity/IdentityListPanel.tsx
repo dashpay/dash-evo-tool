@@ -11,11 +11,13 @@ import {
   ArrowUpFromLine,
   ArrowDownToLine,
   ArrowLeftRight,
+  ArrowUpDown,
   Tag,
   Key,
   RefreshCw,
   UserPlus,
   Loader2,
+  Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -42,6 +44,7 @@ import type {
   IdentityTypeDto,
   IdentityStatusDto,
 } from "@/bindings";
+import type { IdentitySortColumn, IdentitySortOrder } from "@/stores/identityStore";
 
 // ─── Constants ─────────────────────────────────────────────────────
 
@@ -85,6 +88,14 @@ export interface IdentityListPanelProps {
   onWithdraw?: (identityId: string) => void;
   /** Called to navigate to transfer. */
   onTransfer?: (identityId: string) => void;
+  /** Current sort column. */
+  sortColumn?: IdentitySortColumn;
+  /** Current sort order. */
+  sortOrder?: IdentitySortOrder;
+  /** Whether custom ordering is active (overrides column sort). */
+  useCustomOrder?: boolean;
+  /** Called when the user selects a sort column. */
+  onSortChange?: (column: IdentitySortColumn) => void;
   /** Called to navigate to create identity. */
   onCreateIdentity?: () => void;
   /** Called to navigate to load identity. */
@@ -168,6 +179,14 @@ function getStatusLabel(status: IdentityStatusDto): string {
 function isActive(identity: QualifiedIdentityDto): boolean {
   return identity.status === "active";
 }
+
+const SORT_COLUMNS: { value: IdentitySortColumn; label: string }[] = [
+  { value: "alias", label: "Alias" },
+  { value: "balance", label: "Balance" },
+  { value: "type", label: "Type" },
+  { value: "identityId", label: "Identity ID" },
+  { value: "inWallet", label: "Wallet" },
+];
 
 // ─── Inline alias editor ──────────────────────────────────────────
 
@@ -541,6 +560,10 @@ export function IdentityListPanel({
   onTopUp,
   onWithdraw,
   onTransfer,
+  sortColumn = "alias",
+  sortOrder = "ascending",
+  useCustomOrder = true,
+  onSortChange,
   onCreateIdentity,
   onLoadIdentity,
   className,
@@ -596,7 +619,7 @@ export function IdentityListPanel({
       role="region"
       aria-label="Identity list"
     >
-      {/* Header with count and refresh-all */}
+      {/* Header with count, sort, and refresh-all */}
       <div className="flex items-center justify-between px-3 py-2 border-b">
         <div className="flex items-center gap-2">
           <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -606,25 +629,73 @@ export function IdentityListPanel({
             {identities.length}
           </Badge>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={onRefreshAll}
-              disabled={refreshingAll}
-              aria-label="Refresh all identities"
-            >
-              <RefreshCw
-                className={cn(
-                  "h-3.5 w-3.5",
-                  refreshingAll && "animate-spin",
-                )}
-              />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Refresh all identities</TooltipContent>
-        </Tooltip>
+        <div className="flex items-center gap-0.5">
+          {/* Sort dropdown */}
+          {onSortChange && (
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Sort identities"
+                    >
+                      <ArrowUpDown className="h-3.5 w-3.5" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>Sort identities</TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end">
+                {SORT_COLUMNS.map((col) => (
+                  <DropdownMenuItem
+                    key={col.value}
+                    onClick={() => onSortChange(col.value)}
+                  >
+                    <span className="flex-1">{col.label}</span>
+                    {!useCustomOrder && sortColumn === col.value && (
+                      <span className="ml-2 text-muted-foreground text-xs">
+                        {sortOrder === "ascending" ? "↑" : "↓"}
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem disabled={useCustomOrder}>
+                  <Check
+                    className={cn(
+                      "h-3.5 w-3.5 mr-1.5",
+                      useCustomOrder
+                        ? "text-primary"
+                        : "text-transparent",
+                    )}
+                  />
+                  Custom Order
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={onRefreshAll}
+                disabled={refreshingAll}
+                aria-label="Refresh all identities"
+              >
+                <RefreshCw
+                  className={cn(
+                    "h-3.5 w-3.5",
+                    refreshingAll && "animate-spin",
+                  )}
+                />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Refresh all identities</TooltipContent>
+          </Tooltip>
+        </div>
       </div>
 
       {/* Identity list */}

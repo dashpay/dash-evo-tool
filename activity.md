@@ -692,3 +692,10 @@
 **Files changed:** src/frontend/hooks/useUtxoMonitor.ts (new), src/frontend/hooks/useUtxoMonitor.test.ts (new), src/frontend/components/identity/CreateIdentityScreen.tsx, src/frontend/components/identity/CreateIdentityScreen.test.tsx, src/frontend/components/identity/TopUpIdentityScreen.tsx, src/frontend/components/identity/TopUpIdentityScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 9 hook tests (disabled state, null params, polling, funds detection, stop-on-detect, reset-on-change, error handling). Updated 3 existing CreateIdentityScreen QR tests to use mocked hook.
 **Sub-tasks created:** 0
+
+## Run 100 — 2026-02-09
+**Task:** 4.5g Add sort controls to identity list
+**What was done:** Added a sort dropdown button to the IdentityListPanel header that exposes the existing Zustand store sorting infrastructure (sortColumn, sortOrder, setSortColumn). The dropdown shows 5 sortable columns (Alias, Balance, Type, Identity ID, Wallet) with ascending/descending arrows for the active sort column, plus a "Custom Order" indicator. Wired the sort props through IdentitiesScreen to the store. Added 7 component tests covering: sort button visibility, dropdown options, click handling, sort direction indicators, and custom order state.
+**Files changed:** src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/components/identity/IdentityListPanel.test.tsx, src/frontend/screens/IdentitiesScreen.tsx, tasks.md, activity.md
+**Tests added:** 7 component tests for sort controls (button visibility, dropdown options, sort column click, ascending/descending arrows, custom order state)
+**Sub-tasks created:** 0

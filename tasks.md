@@ -1751,7 +1751,7 @@
 
 ## Phase 8: DashPay Screens
 
-- [ ] **8.1 [META] Design DashPay social/payments UX** (P2)
+- [x] **8.1 [META] Design DashPay social/payments UX** (P2)
   Review all DashPay functionality and design improved UX:
   - Profile management (display name, avatar, bio)
   - Contact list with search, add, accept/reject requests
@@ -1762,26 +1762,302 @@
   Files to review: All files in `src/ui/dashpay/`
   Produce implementation sub-tasks.
 
-- [ ] **8.2 Implement DashPay profile and contacts screens** (P2)
-  Build the DashPay social interface:
-  - **Profile tab:** View/edit display name, avatar, bio. Publish profile to blockchain.
-  - **Contacts tab:** Contact list with search. Add contact by ID. Accept/reject pending requests. Contact detail view with edit alias, view profile, send payment, remove.
-  - **Contact profile viewer:** Read-only view of another user's profile
-  - **Contact info editor:** Edit contact metadata
-  Reference: `dashpay_screen.rs`, `profile_screen.rs`, `contacts_list.rs`, `add_contact_screen.rs`, `contact_details.rs`, `contact_profile_viewer.rs`, `contact_info_editor.rs`
-  Write component tests. Write Playwright tests.
+  > **Analysis (Run 87):**
+  >
+  > ### Complete DashPay Functionality Inventory
+  >
+  > **13 files, 4 subscreens, 9 distinct screen types, ~85 user actions, 23 backend IPC commands (all implemented in `src-tauri/src/commands/dashpay.rs`):**
+  >
+  > **Main DashPayScreen (dashpay_screen.rs):**
+  > - 4 subscreens: Contacts, Profile, Payments, ProfileSearch
+  > - DashPay subscreen chooser panel (left sidebar nav)
+  > - Top panel buttons per subscreen (Refresh, Add Contact, Generate QR Code)
+  > - Concurrent backend task dispatch (fetch contacts + requests simultaneously)
+  >
+  > **ProfileScreen (~25 actions):**
+  > - Identity selector (dropdown, auto-selects identity with existing profile)
+  > - Load profile from DB cache on init, fetch from Platform on refresh
+  > - View mode: avatar image (loaded async from URL with center-crop, cached in DB), display name, DPNS username, identity ID, bio
+  > - Click avatar → popup with larger image + copy URL
+  > - Edit mode: display name (25 char, required), bio (140 char), avatar URL (500 char, http/https validation)
+  > - Real-time character count with color coding (green→orange→red)
+  > - Real-time validation with error display
+  > - Unsaved changes detection with discard confirmation dialog
+  > - Fee estimation display (document create vs replace)
+  > - Identity balance check before save
+  > - Wallet unlock flow before save
+  > - Create profile (new) vs Update profile (existing) with success screen
+  > - Info popups: Profile Guidelines, Avatar Image Guidelines
+  >
+  > **ContactsList (~20 actions):**
+  > - 2 tabs: My Contacts / Requests (with pending count badge)
+  > - Identity selector with state sync to embedded ContactRequests
+  > - Search bar with text query across username, display name, nickname, bio, identity ID
+  > - Filter dropdown: All, With usernames, No usernames, With bio, Recent (7 days), Hidden, Visible
+  > - Sort dropdown: Name, Username, Date, Account
+  > - Show hidden checkbox
+  > - Contact cards: avatar (async loaded), name (nickname→display name→username fallback), @username, bio, account reference
+  > - Per-contact actions: View Profile, Pay (dev mode only), Hide/Unhide
+  > - Empty states: No Contacts (with Add Contact button), No Matches
+  > - Load contacts from DB on init, fetch from Platform on refresh
+  > - Save contacts + private info to DB on fetch
+  >
+  > **ContactRequests (~15 actions):**
+  > - 2 tabs: Incoming / Outgoing
+  > - Incoming request cards: avatar, display name/username/truncated ID, account label, timestamp
+  > - Accept button → confirmation dialog → backend task → success/failure
+  > - Reject button → confirmation dialog → backend task → success/failure
+  > - Wallet unlock required for accept/reject
+  > - Structured error handling: MissingEncryptionKey → "Add Encryption Key" button
+  > - Outgoing request cards: To name, identity ID, account label, status (Pending), "Cannot be cancelled"
+  > - Empty states: No Incoming Requests, No Outgoing Requests (with Add Contact button)
+  > - Name resolution from local DB cache + async Platform profile fetch for unknowns
+  > - Save/load requests to/from DB
+  >
+  > **AddContactScreen (~10 actions):**
+  > - Back button, heading, info popup
+  > - Identity selector (From/Sender)
+  > - Auto-selects AUTHENTICATION key (CRITICAL/HIGH security level)
+  > - Key selector (Advanced Options checkbox)
+  > - Username or Identity ID input
+  > - Relationship Label input (optional, 100 char max)
+  > - Request Summary display
+  > - Wallet unlock flow
+  > - Send button with validation (empty check, .dash suffix check, label length)
+  > - Structured error handling: MissingEncryptionKey, MissingDecryptionKey, InvalidUsername, UsernameResolutionFailed → contextual tips and action buttons
+  > - Retry button for recoverable errors
+  > - Success screen with "Send Another" / "Back to Contacts" / "Back to DashPay"
+  >
+  > **ContactDetailsScreen (~8 actions):**
+  > - Back button, heading
+  > - Profile section: avatar placeholder, name (nickname→display name→username), @username, bio, identity ID
+  > - Send Payment button (dev mode only)
+  > - Private Contact Information section with info popup
+  > - View/Edit toggle: nickname, note (multiline), is_hidden checkbox
+  > - Save to local DB immediately + dispatch Platform update (encrypted)
+  > - Payment History section (per-contact, with direction indicators, amounts, memos, tx IDs)
+  > - Actions section (removal/blocking not yet available)
+  > - Auto-fetch profile from Platform on arrival
+  >
+  > **ContactInfoEditorScreen (~6 actions):**
+  > - Back button, heading, info popup
+  > - Contact identifier display
+  > - Private Nickname field
+  > - Private Note field (multiline)
+  > - Hide contact checkbox with warning
+  > - Accepted Account Indices input (comma-separated, with Parse button)
+  > - Wallet unlock flow
+  > - Save/Cancel buttons
+  >
+  > **ContactProfileViewerScreen (~8 actions):**
+  > - Back button, heading, info popup
+  > - Avatar image (async loaded with center-crop)
+  > - Display name, Identity ID, Public Message
+  > - Avatar verification section (hash, fingerprint)
+  > - Refresh button, Pay button (dev mode)
+  > - Private Contact Information section (embedded, same as in ContactDetails): nickname, notes, hidden toggle, edit/save/cancel
+  > - Auto-fetch profile from Platform on first render
+  > - "No profile found" state with Retry button
+  >
+  > **ProfileSearchScreen (~6 actions):**
+  > - Heading, info popup
+  > - Search input (DPNS username prefix) with Enter key trigger
+  > - Search button, Clear Results (top panel)
+  > - Search results: username, display name, public message preview, identity ID
+  > - Per-result actions: View Profile, Add Contact
+  > - "No users found" state with search tip
+  >
+  > **SendPaymentScreen (~8 actions):**
+  > - Back button, heading, info popup
+  > - From identity display with wallet balance
+  > - To contact display (name or ID)
+  > - Amount input (AmountInput component with max button)
+  > - Memo field (100 char max)
+  > - Wallet unlock flow
+  > - Send button with amount validation
+  > - Success screen with tx ID, "Back to DashPay" / "Send Another Payment"
+  >
+  > **PaymentHistory (~5 actions):**
+  > - Identity selector
+  > - Payment records: avatar, direction indicator (⬇/⬆), contact name, amount (+/-), memo, tx ID, timestamp
+  > - Load from DB on init, fetch from Platform on refresh
+  > - Empty state: No Payment History
+  >
+  > **QRCodeGeneratorScreen (~6 actions):**
+  > - Back button, heading, info popup, Advanced Options checkbox
+  > - Identity selector
+  > - Account Index input (advanced), Validity hours input (1-720, advanced)
+  > - Wallet unlock flow
+  > - Generate QR Code button → actual QR image display
+  > - Collapsible QR text data, Copy to clipboard
+  > - Warning about auto-accept
+  >
+  > **QRScannerScreen (~5 actions):**
+  > - Identity selector
+  > - QR data text input (paste), Parse button, Clear button
+  > - Parsed QR details display: contact identity, account reference, expiration
+  > - Wallet unlock flow
+  > - Add Contact button → sends contact request with auto-accept proof
+  >
+  > ### Backend Status
+  > All 23 IPC commands fully implemented in `src-tauri/src/commands/dashpay.rs`:
+  > - 14 async task dispatches (load_profile, update_profile, load_contacts, load_contact_requests, fetch_contact_profile, search_profiles, send_contact_request, send_contact_request_with_proof, accept_contact_request, reject_contact_request, load_payment_history, send_payment_to_contact, update_contact_info, register_addresses)
+  > - 9 direct DB reads/writes (load_profile, save_profile, load_contacts, load_pending_requests, load_payments, load_contact_private_info, save_contact_private_info, set_contact_hidden, save_avatar_bytes)
+  > TypeScript bindings auto-generated in `src/frontend/bindings.ts`.
+  >
+  > ### Frontend Status
+  > No dashpayStore, no DashPay screens/components exist yet. Everything must be built from scratch.
+  >
+  > ### UX Improvements Over egui Version
+  > - Modern card-based layout for contacts with proper avatar images
+  > - Tabbed navigation (Contacts | Requests | Profile | Payments | Search)
+  > - Inline editing for profile with proper form validation (react-hook-form + zod)
+  > - Toast notifications instead of inline message labels
+  > - Responsive search with debouncing
+  > - Better empty states with illustrations/icons
+  > - Confirmation dialogs using shadcn AlertDialog
+  > - Wallet unlock as a sheet/dialog overlay
+  > - QR code display with react-qr-code library
 
-- [ ] **8.3 Implement DashPay payments, search, and QR screens** (P2)
-  Build remaining DashPay screens:
-  - **Send payment:** Select sender identity, recipient contact, amount, optional memo, confirm
-  - **Payment history:** List with filtering, detail view, retry failed payments
-  - **Profile search:** Search public profiles, view results, add as contact or send payment
-  - **QR code generator:** Generate/display QR for identity sharing
-  Reference: `send_payment.rs`, `profile_search.rs`, `qr_code_generator.rs`
-  Write component tests. Write Playwright tests.
+  **Sub-tasks produced:**
+  - [ ] **8.2a Create dashpayStore with profile, contacts, and requests slices** (P2)
+    Create `src/frontend/stores/dashpayStore.ts` with Zustand:
+    - Profile slice: selectedIdentityId, profile (displayName, bio, avatarUrl), loading, saving, editing state
+    - Contacts slice: contacts map, searchQuery, filter, sortOrder, showHidden, loading
+    - Requests slice: incomingRequests, outgoingRequests, acceptedIds, rejectedIds, loading
+    - Payments slice: payments array, loading
+    - Actions: loadProfile, updateProfile, loadContacts, loadContactRequests, fetchContactProfile, searchProfiles, sendContactRequest, acceptRequest, rejectRequest, sendPayment, updateContactInfo
+    - Wire to IPC commands from `src/frontend/bindings.ts`
+    Write unit tests for store actions and state transitions.
 
-- [ ] **8.4 [REVIEW] DashPay screens functionality parity** (P2)
-  Verify all DashPay social features work. Create fix tasks.
+  - [ ] **8.2b Implement DashPay layout shell with subscreen navigation** (P2)
+    Create DashPay screen layout with 4-tab subscreen navigation:
+    - `src/frontend/screens/DashPayScreen.tsx` — top-level layout with sidebar tab nav
+    - Tab items: Contacts, Profile, Payments, Search Profiles
+    - Identity selector in header (shared across all tabs)
+    - "No Identities Loaded" card with "Load Identity" button when no identities exist
+    - Route structure: `/dashpay/contacts`, `/dashpay/profile`, `/dashpay/payments`, `/dashpay/search`
+    Reference: `dashpay_screen.rs`, `mod.rs` (render_no_identities_card)
+    Write component tests for layout rendering and tab switching.
+
+  - [ ] **8.2c Implement ProfileScreen with view/edit modes** (P2)
+    Build the DashPay profile management screen:
+    - View mode: avatar image (with async loading, center-crop to square, placeholder icon), display name, DPNS username, identity ID, bio
+    - Click avatar → dialog with larger image + copy URL
+    - Edit mode: display name (25 char limit, required), bio (140 char), avatar URL (500 char, http/https validation)
+    - Character counters with color coding (green→orange→red thresholds)
+    - Real-time validation with zod schema
+    - Unsaved changes detection with discard confirmation (AlertDialog)
+    - Fee estimation display, identity balance check
+    - Wallet unlock dialog before save
+    - Create Profile vs Update Profile distinction with success toast
+    - Info popups (Sheet or Dialog) for Profile Guidelines and Avatar Guidelines
+    Reference: `profile_screen.rs` (1553 lines)
+    Write component tests. Write Playwright E2E test for profile create flow.
+
+  - [ ] **8.2d Implement ContactsList with search, filter, sort** (P2)
+    Build the contacts list tab:
+    - Two sub-tabs: My Contacts / Requests (with badge count for pending requests)
+    - Search input filtering across username, display name, nickname, bio, identity ID
+    - Filter dropdown: All, With usernames, No usernames, With bio, Recent (7d), Hidden, Visible
+    - Sort dropdown: Name, Username, Date, Account
+    - Show hidden toggle
+    - Contact card component: avatar (async), display name with [Hidden] prefix, @username, bio snippet, account ref
+    - Per-contact action buttons: View Profile → navigates to ContactProfileViewer, Pay (dev mode) → navigates to SendPayment, Hide/Unhide → toggle via DB
+    - Empty states: "No Contacts" with Add Contact button, "No Matches" for filtered empty
+    - Load from DB on mount, refresh from Platform via button
+    Reference: `contacts_list.rs` (1212 lines)
+    Write component tests for search/filter/sort logic. Write Playwright test.
+
+  - [ ] **8.2e Implement ContactRequests with accept/reject flows** (P2)
+    Build the contact requests component (embedded in Contacts tab):
+    - Two sub-tabs: Incoming / Outgoing
+    - Incoming cards: avatar placeholder, display name/username/truncated ID, account label, timestamp, Accept/Reject buttons
+    - Accept flow: confirmation dialog → wallet unlock check → backend task → success toast + mark accepted
+    - Reject flow: confirmation dialog → wallet unlock check → backend task → success toast + mark rejected
+    - Structured error handling: MissingEncryptionKey → "Add Encryption Key" action button
+    - Outgoing cards: To name, identity ID, account label, status badge (Pending), "Cannot be cancelled" note
+    - Name resolution: local DB cache first, then async Platform fetch for unknowns
+    - Empty states: No Incoming Requests, No Outgoing Requests (with Add Contact button)
+    Reference: `contact_requests.rs` (1248 lines)
+    Write component tests for accept/reject flows.
+
+  - [ ] **8.2f Implement AddContactScreen with validation and error handling** (P2)
+    Build the add contact screen (navigated to from Contacts):
+    - Identity selector (From/Sender) with auto key selection
+    - Key selector (Advanced Options toggle)
+    - Username or Identity ID input with validation (empty check, .dash suffix check)
+    - Relationship Label input (optional, 100 char max)
+    - Request Summary card
+    - Wallet unlock flow
+    - Structured error display: MissingEncryptionKey/DecryptionKey → "Add Key" buttons, InvalidUsername → tip, UsernameResolutionFailed → tip
+    - Retry button for recoverable errors
+    - Success screen with navigation options
+    Reference: `add_contact_screen.rs` (697 lines)
+    Write component tests. Write Playwright E2E test for add contact flow.
+
+  - [ ] **8.3a Implement ContactDetailsScreen and ContactProfileViewer** (P2)
+    Build the two contact detail/profile viewing screens:
+    - **ContactDetailsScreen:** profile header (avatar, name, username, bio, ID), Send Payment button (dev mode), Private Contact Info section (nickname, note, hidden toggle with edit/save/cancel), Payment History section (per-contact), Actions section
+    - **ContactProfileViewer:** public profile (avatar with async load, display name, identity ID, public message), avatar verification (hash, fingerprint), Refresh/Pay buttons, embedded Private Contact Info section (edit/save/cancel)
+    - Both auto-fetch from Platform on arrival, show cached data immediately
+    Reference: `contact_details.rs` (691 lines), `contact_profile_viewer.rs` (760 lines)
+    Write component tests.
+
+  - [ ] **8.3b Implement ContactInfoEditor screen** (P2)
+    Build the standalone contact info editor:
+    - Contact identifier display
+    - Private Nickname field with description
+    - Private Note multiline field with description
+    - Hide contact checkbox with warning text
+    - Accepted Account Indices input with Parse button and display
+    - Wallet unlock flow
+    - Save/Cancel buttons with loading spinner
+    Reference: `contact_info_editor.rs` (392 lines)
+    Write component tests.
+
+  - [ ] **8.3c Implement SendPaymentScreen with amount input and memo** (P2)
+    Build the send payment screen:
+    - From identity display with wallet balance
+    - To contact display (resolved name or ID)
+    - Amount input component (with max button, Dash formatting)
+    - Memo field (100 char max with counter)
+    - Wallet unlock flow
+    - Send button with amount > 0 validation
+    - Loading state during send
+    - Success screen with tx info, "Back to DashPay" / "Send Another"
+    Note: Pay button is dev-mode only (requires SPV)
+    Reference: `send_payment.rs` (lines 1-472)
+    Write component tests.
+
+  - [ ] **8.3d Implement PaymentHistory component** (P2)
+    Build the payment history tab:
+    - Identity selector
+    - Payment record cards: avatar placeholder, direction indicator (⬇ incoming / ⬆ outgoing), contact name, amount (+/- with color), memo (italic), tx ID (monospace), timestamp
+    - Load from DB on mount, refresh from Platform via button
+    - Empty state: "No Payment History"
+    Reference: `send_payment.rs` (PaymentHistory, lines 474-892)
+    Write component tests.
+
+  - [ ] **8.3e Implement ProfileSearchScreen** (P2)
+    Build the profile search screen:
+    - Search input for DPNS username prefix with Enter key trigger
+    - Search button, Clear Results button (top panel)
+    - Search results cards: username (primary), display name, public message preview (60 char truncate), identity ID
+    - Per-result action buttons: View Profile → ContactProfileViewer, Add Contact → AddContactScreen (pre-populated)
+    - Loading spinner, "No users found" state with search tip
+    Reference: `profile_search.rs` (382 lines)
+    Write component tests. Write Playwright E2E test for search flow.
+
+  - [ ] **8.3f Implement QRCodeGenerator and QRScanner screens** (P2)
+    Build the QR code screens:
+    - **QRCodeGenerator:** identity selector, account index input (advanced), validity hours input (1-720, advanced), wallet unlock, Generate button, QR image display (use qrcode.react), collapsible text data, Copy to clipboard, warnings
+    - **QRScanner:** identity selector, QR data text input (paste), Parse button, parsed details (identity, account ref, expiration), wallet unlock, Add Contact button
+    Reference: `qr_code_generator.rs` (441 lines), `qr_scanner.rs` (369 lines)
+    Write component tests.
+
+  - [ ] **8.4 [REVIEW] DashPay screens functionality parity** (P2)
+    Verify all DashPay social features work. Check against the ~85 user actions catalogued in 8.1. Create fix tasks.
 
 ---
 

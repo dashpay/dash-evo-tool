@@ -475,6 +475,35 @@ impl AppContext {
         Ok(())
     }
 
+    /// Register a new single-key wallet: persist to database, insert into in-memory
+    /// map, and set the has_wallet flag.
+    pub fn register_new_single_key_wallet(
+        &self,
+        wallet: SingleKeyWallet,
+    ) -> Result<Arc<RwLock<SingleKeyWallet>>, String> {
+        // Persist to database
+        self.db
+            .store_single_key_wallet(&wallet, self.network)
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    "This key has already been imported.".to_string()
+                } else {
+                    format!("Failed to store single-key wallet: {e}")
+                }
+            })?;
+
+        let key_hash = wallet.key_hash();
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+
+        // Insert into in-memory map
+        if let Ok(mut wallets) = self.single_key_wallets.write() {
+            wallets.insert(key_hash, wallet_arc.clone());
+            self.has_wallet.store(true, Ordering::Relaxed);
+        }
+
+        Ok(wallet_arc)
+    }
+
     /// Register a new HD wallet: persist to database, insert into in-memory map,
     /// set the has_wallet flag, and mark it as the pending selection.
     ///

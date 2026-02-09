@@ -589,6 +589,56 @@ async walletCreate(input: CreateWalletInput) : Promise<Result<WalletDto, string>
 }
 },
 /**
+ * Import an HD wallet from an existing BIP39 mnemonic.
+ *
+ * This replicates the import flow from `ImportMnemonicScreen::save_wallet()`:
+ * 1. Parse and validate the mnemonic
+ * 2. Derive seed from mnemonic
+ * 3. Optionally encrypt seed with password (AES-256-GCM + Argon2)
+ * 4. Optionally set app main password
+ * 5. Derive master BIP44 ECDSA extended public key
+ * 6. Compute seed hash (SHA-256)
+ * 7. Create Wallet struct with EMPTY address maps (no pre-derived addresses)
+ * 8. Persist to database (with duplicate detection)
+ * 9. Register in-memory and set as pending selection
+ * 10. Bootstrap wallet addresses and start SPV if applicable
+ * 11. Queue identity discovery if identity_scan_count > 0
+ *
+ * Key differences from `wallet_create`:
+ * - Address maps start empty (no first address pre-derived)
+ * - Supports identity auto-discovery via `identity_scan_count`
+ * - Provides "already imported" error for duplicate wallets
+ *
+ * Returns the imported wallet as a DTO.
+ */
+async walletImportMnemonic(input: ImportMnemonicInput) : Promise<Result<WalletDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_import_mnemonic", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Import a single-key wallet from a private key (WIF or hex).
+ *
+ * This replicates the import flow from `ImportMnemonicScreen::save_private_key_wallet()`:
+ * 1. Parse private key (WIF format auto-detects network; hex uses active network)
+ * 2. Create SingleKeyWallet with optional password encryption
+ * 3. Persist to database (with duplicate detection)
+ * 4. Register in-memory
+ *
+ * Returns the imported single-key wallet as a DTO.
+ */
+async walletImportPrivateKey(input: ImportPrivateKeyInput) : Promise<Result<SingleKeyWalletDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_import_private_key", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Get all loaded wallets (HD + single-key) with current state.
  */
 async walletListAll() : Promise<Result<WalletListDto, string>> {
@@ -2592,6 +2642,57 @@ export type IdentityTokenIdentifierDto = { identityId: string; tokenId: string }
  * Type of identity (User, Masternode, Evonode).
  */
 export type IdentityTypeDto = "user" | "masternode" | "evonode"
+/**
+ * Input for importing an HD wallet from an existing BIP39 mnemonic.
+ *
+ * Unlike `CreateWalletInput`, this does NOT pre-derive the first receive address
+ * (address maps start empty, populated during bootstrap). It also supports
+ * optional identity auto-discovery via `identity_scan_count`.
+ */
+export type ImportMnemonicInput = {
+/**
+ * BIP39 mnemonic phrase (space-separated words, 12/15/18/21/24).
+ */
+mnemonic: string;
+/**
+ * Optional password to encrypt the wallet seed (empty string = no encryption).
+ */
+password: string;
+/**
+ * Optional alias / display name for the wallet (max 64 chars).
+ * If empty, auto-generates "Wallet N".
+ */
+alias: string;
+/**
+ * Whether to also set this password as the application main password.
+ */
+usePasswordForApp: boolean;
+/**
+ * Number of identity indices to scan (0 = skip identity discovery).
+ * When > 0, the backend will check indices 0..identity_scan_count-1
+ * for existing identities on the network (useful for mobile recovery).
+ */
+identityScanCount: number }
+/**
+ * Input for importing a single-key wallet from a private key.
+ *
+ * Supports WIF-encoded private keys (51-52 chars, network auto-detected)
+ * and hex-encoded raw private keys (64 hex chars, uses active network).
+ */
+export type ImportPrivateKeyInput = {
+/**
+ * Private key string (WIF format or 64-char hex).
+ */
+privateKey: string;
+/**
+ * Optional password to encrypt the private key (empty string = no encryption).
+ */
+password: string;
+/**
+ * Optional alias / display name (max 64 chars).
+ * If empty, auto-generates "Key N".
+ */
+alias: string }
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 /**
  * A key specification for identity registration.

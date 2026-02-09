@@ -176,3 +176,10 @@
 **Files changed:** src-tauri/src/commands/wallet.rs, src-tauri/src/main.rs, src-tauri/Cargo.toml, src/model/wallet/encryption.rs, src/context/mod.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
 **Tests added:** 4 Rust tests (CreateWalletInput serialization, empty password serialization, roundtrip deserialization, camelCase field verification). Updated 3 frontend tests (total commands: 171→172, wallet commands: 19→20, command list).
 **Sub-tasks created:** 0
+
+## Run 26 — 2026-02-09
+**Task:** 1.9i Add `wallet_import_mnemonic` Tauri command
+**What was done:** Added two Tauri IPC commands for wallet import: `wallet_import_mnemonic` (HD wallet import from BIP39 mnemonic) and `wallet_import_private_key` (single-key wallet import from WIF/hex private key). The mnemonic import replicates `ImportMnemonicScreen::save_wallet()` with key differences from `wallet_create`: address maps start empty (no first address pre-derived), supports identity auto-discovery via `identity_scan_count` parameter (0-50), and provides descriptive "already imported" error for duplicate wallets. The private key import replicates `ImportMnemonicScreen::save_private_key_wallet()`: tries WIF parsing first then hex, creates `SingleKeyWallet`, persists to DB with duplicate detection. Added `register_new_single_key_wallet()` method to `AppContext` for cross-crate single-key wallet registration. Created `ImportMnemonicInput` and `ImportPrivateKeyInput` DTOs. TypeScript bindings auto-regenerated with 174 commands (up from 172). All checks pass: Rust (fmt, clippy, 220 tests), Frontend (lint, typecheck, 36 tests).
+**Files changed:** src-tauri/src/commands/wallet.rs, src-tauri/src/main.rs, src/context/mod.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
+**Tests added:** 8 Rust tests (ImportMnemonicInput serialization, no-password serialization, roundtrip, camelCase; ImportPrivateKeyInput serialization, empty fields, roundtrip, camelCase). Updated 2 frontend tests (total commands: 172→174, wallet commands: 20→22).
+**Sub-tasks created:** 0

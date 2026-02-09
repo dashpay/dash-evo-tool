@@ -190,6 +190,8 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::wallet::wallet_fund_platform_address_from_utxos,
             commands::wallet::wallet_fund_platform_from_asset_lock,
             commands::wallet::wallet_create,
+            commands::wallet::wallet_import_mnemonic,
+            commands::wallet::wallet_import_private_key,
             commands::wallet::wallet_list_all,
             commands::wallet::wallet_get_hd,
             commands::wallet::wallet_get_single_key,

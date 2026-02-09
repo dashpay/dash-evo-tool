@@ -505,3 +505,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (META task — research/design only)
 **Sub-tasks created:** 8 (5.1a through 5.1h)
+
+## Run 73 — 2026-02-09
+**Task:** 5.1a Create contestStore.ts Zustand store
+**What was done:** Created `contestStore.ts` following the identityStore/walletStore patterns. The store manages contested names, local DPNS names, scheduled votes with casting status, selected votes for bulk voting, filter terms for active/past/owned tabs, and sort state. Actions include loadContests (dispatches async query), loadLocalNames, loadScheduledVotes, selectVote/deselectVote/toggleVote (with VoteChoiceDto equality), castVotes, scheduleVotes, castScheduledVote (with optimistic UI), deleteScheduledVote, clearAllScheduledVotes, clearExecutedScheduledVotes, refreshDpnsNames, and setSortColumn. Event subscriptions handle taskResultEvent (Contest + Identity types), taskErrorEvent, and scheduledVoteExecutedEvent. Also exported normalizeDpnsFilter and matchesDpnsFilter helpers for the smart lookalike character filter. Updated stores/index.ts exports. Wrote 63 unit tests covering all state, actions, event handlers, and helper functions.
+**Files changed:** src/frontend/stores/contestStore.ts, src/frontend/stores/contestStore.test.ts, src/frontend/stores/index.ts
+**Tests added:** 63 (store unit tests covering initial state, loadContests, loadLocalNames, loadScheduledVotes, selectVote/deselectVote/toggleVote, clearSelectedVotes, castVotes, scheduleVotes, castScheduledVote, deleteScheduledVote, clearAllScheduledVotes, clearExecutedScheduledVotes, refreshDpnsNames, setFilterTerm, setSortColumn, subscribeToUpdates, clearError, normalizeDpnsFilter, matchesDpnsFilter)
+**Sub-tasks created:** 0

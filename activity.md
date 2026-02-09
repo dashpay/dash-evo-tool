@@ -518,3 +518,9 @@
 **Files changed:** src/frontend/components/dpns/ActiveContestsTable.tsx, src/frontend/components/dpns/ActiveContestsTable.test.tsx
 **Tests added:** 40 (component tests)
 **Sub-tasks created:** 0
+## Run 75 — 2026-02-09
+**Task:** 5.1c Create VoteCastingDialog component
+**What was done:** Created `VoteCastingDialog` component in `src/frontend/components/dpns/` with full vote casting/scheduling workflow. Features include: selected votes summary with formatted vote choices and relative end times; per-identity vote method selection (No Vote / Cast Now / Schedule) with individual time pickers (days 0-14, hours 0-23, minutes 0-59); "Set All" bulk control to apply the same method to all identities; schedule warning banner when any identity has scheduled votes; validation (no votes, no identities, no actions selected, zero schedule time); status tracking through NotStarted → Casting/Scheduling → Completed/Failed states; progress view with elapsed time display; completion view showing success/partial/failure with detailed cast/scheduled counts; failed view with retry and close options; close prevention during processing; accessible with aria-labels, role=alert/status, labeled selects per identity. Wrote 47 component tests covering formatVoteChoice helper, dialog rendering, validation states, per-identity method selection, Set All controls, schedule warnings, applying votes (immediate/scheduled/mixed), progress states, completion states, failure and retry flow, cancel, accessibility, time input constraints, and close prevention.
+**Files changed:** src/frontend/components/dpns/VoteCastingDialog.tsx, src/frontend/components/dpns/VoteCastingDialog.test.tsx
+**Tests added:** 47 (component tests)
+**Sub-tasks created:** 0

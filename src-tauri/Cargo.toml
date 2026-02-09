@@ -29,6 +29,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 crossbeam-channel = "0.5"
 directories = "6.0"
+hex = "0.4"
 
 [lints.clippy]
 uninlined_format_args = "allow"

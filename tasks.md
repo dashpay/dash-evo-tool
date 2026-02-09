@@ -178,7 +178,7 @@
   - Provides `tauri::State<AppState>` for all commands to access
   Verify: Tauri app starts, creates AppContexts, connects to database.
 
-- [ ] **1.3 Implement async result event system** (P0)
+- [x] **1.3 Implement async result event system** (P0)
   Replace `egui_mpsc` channels with Tauri's event system:
   - Backend tasks emit results via `app_handle.emit("task-result", payload)`
   - ZMQ events (instant-locked transactions, chain-locked blocks) forwarded as Tauri events
@@ -727,7 +727,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 13 |
-| Remaining | 49 |
+| Completed | 14 |
+| Remaining | 48 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

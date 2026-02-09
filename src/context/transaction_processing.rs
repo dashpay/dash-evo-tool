@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use super::AppContext;
 
 impl AppContext {
-    pub(crate) fn received_transaction_finality(
+    pub fn received_transaction_finality(
         &self,
         tx: &Transaction,
         islock: Option<InstantLock>,

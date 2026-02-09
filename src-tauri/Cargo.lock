@@ -2134,6 +2134,7 @@ dependencies = [
  "dash-evo-tool",
  "dash-sdk",
  "directories",
+ "hex",
  "serde",
  "serde_json",
  "specta",

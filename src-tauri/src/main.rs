@@ -2,28 +2,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod dto;
+pub mod events;
 pub mod state;
+pub mod task_dispatcher;
 
 use dto::NetworkDto;
+use events::{
+    ScheduledVoteExecutedEvent, SpvStatusEvent, TaskErrorEvent, TaskResultEvent,
+    WalletUpdatedEvent, ZmqChainLockedBlockEvent, ZmqConnectionStatusEvent,
+    ZmqIsLockedTransactionEvent,
+};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Typescript;
 use state::AppState;
+use std::sync::Arc;
 use tauri::Manager;
-use tauri_specta::{collect_commands, collect_events, Builder, Event};
+use tauri_specta::{collect_commands, collect_events, Builder};
 
 /// A sample DTO demonstrating tauri-specta type generation.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct GreetResponse {
     pub message: String,
     pub timestamp_ms: u64,
-}
-
-/// A sample event demonstrating tauri-specta event type generation.
-#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
-pub struct BackendNotification {
-    pub title: String,
-    pub body: String,
 }
 
 /// Network availability info returned to the frontend.
@@ -34,6 +35,15 @@ pub struct NetworkInfo {
     pub active_network: NetworkDto,
     /// All networks that have valid configurations.
     pub available_networks: Vec<NetworkDto>,
+}
+
+/// Response from dispatching a backend task.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchTaskResponse {
+    /// Unique task ID. Listen for `TaskResultEvent` or `TaskErrorEvent` with
+    /// this ID to receive the result.
+    pub task_id: String,
 }
 
 #[tauri::command]
@@ -57,7 +67,7 @@ async fn get_app_version() -> String {
 /// Get the current network state: active network and available networks.
 #[tauri::command]
 #[specta::specta]
-fn get_network_info(state: tauri::State<'_, AppState>) -> NetworkInfo {
+fn get_network_info(state: tauri::State<'_, Arc<AppState>>) -> NetworkInfo {
     NetworkInfo {
         active_network: NetworkDto::from_network(state.active_network()),
         available_networks: state
@@ -72,7 +82,7 @@ fn get_network_info(state: tauri::State<'_, AppState>) -> NetworkInfo {
 /// the requested network has no valid configuration.
 #[tauri::command]
 #[specta::specta]
-fn switch_network(network: NetworkDto, state: tauri::State<'_, AppState>) -> Result<(), String> {
+fn switch_network(network: NetworkDto, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
     let net = network.to_network();
     if state.switch_network(net) {
         Ok(())
@@ -84,25 +94,99 @@ fn switch_network(network: NetworkDto, state: tauri::State<'_, AppState>) -> Res
     }
 }
 
-fn main() {
-    let builder = Builder::<tauri::Wry>::new()
+/// Get the SPV status for all available networks.
+#[tauri::command]
+#[specta::specta]
+fn get_spv_status(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Vec<events::SpvStatusEvent> {
+    let mut statuses = Vec::new();
+    for network in state.available_networks() {
+        let ctx = state.context_for_network(network);
+        let network_dto = NetworkDto::from_network(network);
+        let spv_manager = ctx.spv_manager();
+        let snapshot = spv_manager.status();
+        let status = match snapshot.status {
+            dash_evo_tool::spv::SpvStatus::Idle => events::SpvStatusDto::Idle,
+            dash_evo_tool::spv::SpvStatus::Starting => events::SpvStatusDto::Starting,
+            dash_evo_tool::spv::SpvStatus::Syncing => events::SpvStatusDto::Syncing,
+            dash_evo_tool::spv::SpvStatus::Running => events::SpvStatusDto::Running,
+            dash_evo_tool::spv::SpvStatus::Stopping => events::SpvStatusDto::Stopping,
+            dash_evo_tool::spv::SpvStatus::Stopped => events::SpvStatusDto::Stopped,
+            dash_evo_tool::spv::SpvStatus::Error => events::SpvStatusDto::Error,
+        };
+        let sync_pct = None::<f64>; // Not computable without a target height
+        let header_height = snapshot
+            .sync_progress
+            .as_ref()
+            .map(|p| p.header_height);
+        statuses.push(events::SpvStatusEvent {
+            network: network_dto,
+            status,
+            sync_progress_pct: sync_pct,
+            header_height,
+            connected_peers: snapshot.connected_peers as u32,
+            error: snapshot.last_error,
+        });
+    }
+    statuses
+}
+
+/// Create the tauri-specta builder with all commands and events registered.
+///
+/// This is extracted so both `main()` and tests can use the same builder
+/// to generate TypeScript bindings.
+fn create_specta_builder() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new()
         .commands(collect_commands![
             greet,
             get_app_version,
             get_network_info,
             switch_network,
+            get_spv_status,
         ])
-        .events(collect_events![BackendNotification]);
+        .events(collect_events![
+            TaskResultEvent,
+            TaskErrorEvent,
+            ZmqIsLockedTransactionEvent,
+            ZmqChainLockedBlockEvent,
+            ZmqConnectionStatusEvent,
+            SpvStatusEvent,
+            WalletUpdatedEvent,
+            ScheduledVoteExecutedEvent,
+        ])
+}
+
+fn main() {
+    let builder = create_specta_builder();
 
     #[cfg(debug_assertions)]
-    builder
-        .export(
-            Typescript::default()
-                .bigint(specta_typescript::BigIntExportBehavior::Number)
-                .header("/* eslint-disable */\n// This file is auto-generated by tauri-specta. Do not edit."),
-            "../src/frontend/bindings.ts",
-        )
-        .expect("Failed to export TypeScript bindings");
+    {
+        let bindings_path = std::path::Path::new("../src/frontend/bindings.ts");
+        builder
+            .export(
+                Typescript::default()
+                    .bigint(specta_typescript::BigIntExportBehavior::Number)
+                    .header("/* eslint-disable */\n// This file is auto-generated by tauri-specta. Do not edit."),
+                bindings_path,
+            )
+            .expect("Failed to export TypeScript bindings");
+
+        // Strip trailing whitespace generated by tauri-specta
+        if let Ok(content) = std::fs::read_to_string(bindings_path) {
+            let cleaned: String = content
+                .lines()
+                .map(|line| line.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let cleaned = if content.ends_with('\n') {
+                cleaned + "\n"
+            } else {
+                cleaned
+            };
+            let _ = std::fs::write(bindings_path, cleaned);
+        }
+    }
 
     tauri::Builder::default()
         .invoke_handler(builder.invoke_handler())
@@ -112,16 +196,26 @@ fn main() {
             // Initialize the full application state (database, AppContexts, etc.)
             match AppState::init() {
                 Ok(app_state) => {
+                    let app_state = Arc::new(app_state);
+
+                    // Start background event forwarding loops.
+                    // These hold Arc<AppState> clones for the lifetime of the app.
+                    let handle = app.handle().clone();
+                    task_dispatcher::start_scheduled_vote_polling(
+                        handle.clone(),
+                        app_state.clone(),
+                    );
+                    task_dispatcher::start_spv_status_polling(handle, app_state.clone());
+
+                    // Manage the Arc<AppState> directly — Tauri commands receive
+                    // tauri::State<'_, Arc<AppState>> and can clone the Arc as needed.
                     app.manage(app_state);
+
                     tracing::info!("Tauri app setup complete — AppState initialized.");
                 }
                 Err(e) => {
-                    // Log the error. The app will start but commands that need
-                    // AppState will fail gracefully.
                     tracing::error!("Failed to initialize AppState: {e}");
                     eprintln!("FATAL: Failed to initialize AppState: {e}");
-                    // Still return Ok so Tauri can show an error in the UI
-                    // rather than crashing silently.
                 }
             }
 
@@ -168,17 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn backend_notification_serializes() {
-        let event = BackendNotification {
-            title: "Test".into(),
-            body: "Body".into(),
-        };
-        let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("\"title\":\"Test\""));
-        assert!(json.contains("\"body\":\"Body\""));
-    }
-
-    #[test]
     fn network_info_serializes_with_camel_case() {
         let info = NetworkInfo {
             active_network: NetworkDto::Dash,
@@ -187,5 +270,134 @@ mod tests {
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"activeNetwork\""));
         assert!(json.contains("\"availableNetworks\""));
+    }
+
+    #[test]
+    fn dispatch_task_response_serializes() {
+        let resp = DispatchTaskResponse {
+            task_id: "task-42".into(),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"taskId\":\"task-42\""));
+    }
+
+    #[test]
+    fn event_types_serialize_correctly() {
+        // TaskResultEvent
+        let event = TaskResultEvent {
+            task_id: "task-1".into(),
+            result_type: "Identity".into(),
+            payload: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"taskId\""));
+        assert!(json.contains("\"resultType\""));
+
+        // TaskErrorEvent
+        let event = TaskErrorEvent {
+            task_id: "task-2".into(),
+            message: "Something failed".into(),
+            details: "Full error trace".into(),
+            recoverable: true,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"recoverable\":true"));
+
+        // SpvStatusEvent
+        let event = SpvStatusEvent {
+            network: NetworkDto::Testnet,
+            status: events::SpvStatusDto::Syncing,
+            sync_progress_pct: Some(42.5),
+            header_height: Some(100000),
+            connected_peers: 8,
+            error: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"syncProgressPct\":42.5"));
+        assert!(json.contains("\"connectedPeers\":8"));
+    }
+
+    #[test]
+    fn zmq_event_types_serialize() {
+        let event = ZmqIsLockedTransactionEvent {
+            network: NetworkDto::Dash,
+            txid: "abc123".into(),
+            raw_tx: "deadbeef".into(),
+            affected_utxo_count: 3,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"affectedUtxoCount\":3"));
+
+        let event = ZmqChainLockedBlockEvent {
+            network: NetworkDto::Dash,
+            block_height: 500000,
+            block_hash: "def456".into(),
+            tx_count: 12,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"blockHeight\":500000"));
+
+        let event = ZmqConnectionStatusEvent {
+            network: NetworkDto::Testnet,
+            connected: true,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"connected\":true"));
+    }
+
+    #[test]
+    fn scheduled_vote_event_serializes() {
+        let event = ScheduledVoteExecutedEvent {
+            contested_name: "alice".into(),
+            voter_id: "abc123".into(),
+            success: true,
+            error: None,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"contestedName\":\"alice\""));
+        assert!(json.contains("\"voterId\":\"abc123\""));
+        assert!(json.contains("\"success\":true"));
+    }
+
+    #[test]
+    fn wallet_updated_event_serializes() {
+        let event = WalletUpdatedEvent {
+            wallet_seed_hash: "deadbeef".into(),
+            network: NetworkDto::Dash,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"walletSeedHash\":\"deadbeef\""));
+    }
+
+    #[test]
+    fn export_typescript_bindings() {
+        let builder = create_specta_builder();
+        let path = std::path::Path::new("../src/frontend/bindings.ts");
+        builder
+            .export(
+                Typescript::default()
+                    .bigint(specta_typescript::BigIntExportBehavior::Number)
+                    .header(
+                        "/* eslint-disable */\n// This file is auto-generated by tauri-specta. Do not edit.",
+                    ),
+                path,
+            )
+            .expect("Failed to export TypeScript bindings");
+
+        // tauri-specta generates trailing whitespace on some lines.
+        // Strip it to satisfy git pre-commit hooks.
+        let content = std::fs::read_to_string(path).expect("Failed to read bindings");
+        let cleaned: String = content
+            .lines()
+            .map(|line| line.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Preserve trailing newline
+        let cleaned = if content.ends_with('\n') {
+            cleaned + "\n"
+        } else {
+            cleaned
+        };
+        std::fs::write(path, cleaned).expect("Failed to write cleaned bindings");
     }
 }

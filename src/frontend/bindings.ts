@@ -11,6 +11,30 @@ async greet(name: string) : Promise<GreetResponse> {
 },
 async getAppVersion() : Promise<string> {
     return await TAURI_INVOKE("get_app_version");
+},
+/**
+ * Get the current network state: active network and available networks.
+ */
+async getNetworkInfo() : Promise<NetworkInfo> {
+    return await TAURI_INVOKE("get_network_info");
+},
+/**
+ * Switch the active network. Returns `Ok(())` on success or an error if
+ * the requested network has no valid configuration.
+ */
+async switchNetwork(network: NetworkDto) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("switch_network", { network }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the SPV status for all available networks.
+ */
+async getSpvStatus() : Promise<SpvStatusEvent[]> {
+    return await TAURI_INVOKE("get_spv_status");
 }
 }
 
@@ -18,9 +42,23 @@ async getAppVersion() : Promise<string> {
 
 
 export const events = __makeEvents__<{
-backendNotification: BackendNotification
+scheduledVoteExecutedEvent: ScheduledVoteExecutedEvent,
+spvStatusEvent: SpvStatusEvent,
+taskErrorEvent: TaskErrorEvent,
+taskResultEvent: TaskResultEvent,
+walletUpdatedEvent: WalletUpdatedEvent,
+zmqChainLockedBlockEvent: ZmqChainLockedBlockEvent,
+zmqConnectionStatusEvent: ZmqConnectionStatusEvent,
+zmqIsLockedTransactionEvent: ZmqIsLockedTransactionEvent
 }>({
-backendNotification: "backend-notification"
+scheduledVoteExecutedEvent: "scheduled-vote-executed-event",
+spvStatusEvent: "spv-status-event",
+taskErrorEvent: "task-error-event",
+taskResultEvent: "task-result-event",
+walletUpdatedEvent: "wallet-updated-event",
+zmqChainLockedBlockEvent: "zmq-chain-locked-block-event",
+zmqConnectionStatusEvent: "zmq-connection-status-event",
+zmqIsLockedTransactionEvent: "zmq-is-locked-transaction-event"
 })
 
 /** user-defined constants **/
@@ -30,13 +68,185 @@ backendNotification: "backend-notification"
 /** user-defined types **/
 
 /**
- * A sample event demonstrating tauri-specta event type generation.
- */
-export type BackendNotification = { title: string; body: string }
-/**
  * A sample DTO demonstrating tauri-specta type generation.
  */
 export type GreetResponse = { message: string; timestamp_ms: number }
+export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
+/**
+ * Network identifier matching Dash SDK's Network enum.
+ */
+export type NetworkDto = "dash" | "testnet" | "devnet" | "regtest"
+/**
+ * Network availability info returned to the frontend.
+ */
+export type NetworkInfo = {
+/**
+ * Currently active network.
+ */
+activeNetwork: NetworkDto;
+/**
+ * All networks that have valid configurations.
+ */
+availableNetworks: NetworkDto[] }
+/**
+ * Emitted when a scheduled vote is automatically cast.
+ */
+export type ScheduledVoteExecutedEvent = {
+/**
+ * The contested name the vote was for.
+ */
+contestedName: string;
+/**
+ * Voter identity ID (hex).
+ */
+voterId: string;
+/**
+ * Whether the vote was cast successfully.
+ */
+success: boolean;
+/**
+ * Error message if the vote failed.
+ */
+error: string | null }
+/**
+ * High-level SPV status values.
+ */
+export type SpvStatusDto = "idle" | "starting" | "syncing" | "running" | "stopping" | "stopped" | "error"
+/**
+ * Emitted when SPV sync status changes.
+ */
+export type SpvStatusEvent = {
+/**
+ * The network this SPV instance belongs to.
+ */
+network: NetworkDto;
+/**
+ * Current SPV status.
+ */
+status: SpvStatusDto;
+/**
+ * Sync progress as a percentage (0.0–100.0), if syncing.
+ */
+syncProgressPct: number | null;
+/**
+ * Current header height, if known.
+ */
+headerHeight: number | null;
+/**
+ * Number of connected peers.
+ */
+connectedPeers: number;
+/**
+ * Error message, if status is Error.
+ */
+error: string | null }
+/**
+ * Emitted when a backend task fails.
+ */
+export type TaskErrorEvent = {
+/**
+ * Unique task ID assigned at dispatch time.
+ */
+taskId: string;
+/**
+ * User-friendly error message suitable for display.
+ */
+message: string;
+/**
+ * Technical error details for debugging.
+ */
+details: string;
+/**
+ * Whether the operation can be retried.
+ */
+recoverable: boolean }
+/**
+ * Emitted when a backend task completes successfully.
+ *
+ * The `result_type` field is a discriminant string (e.g. "Identity", "Wallet",
+ * "Contract") that the frontend can match on. The `payload` is the serialized
+ * result data as JSON value. This design avoids needing to represent the entire
+ * `BackendTaskSuccessResult` enum in the TypeScript type system up front —
+ * individual domain result types will be defined as the IPC commands are
+ * implemented in phases 1.4–1.7.
+ */
+export type TaskResultEvent = {
+/**
+ * Unique task ID assigned at dispatch time.
+ */
+taskId: string;
+/**
+ * The domain of the result (e.g. "Identity", "Wallet", "None", "Refresh").
+ */
+resultType: string;
+/**
+ * The serialized result payload. `null` for `None` and `Refresh` results.
+ */
+payload: JsonValue | null }
+/**
+ * Emitted when a wallet's balance or state changes.
+ */
+export type WalletUpdatedEvent = {
+/**
+ * Which wallet changed (seed hash, hex-encoded).
+ */
+walletSeedHash: string;
+/**
+ * The network this wallet belongs to.
+ */
+network: NetworkDto }
+/**
+ * Emitted when a chain-locked block is received via ZMQ.
+ */
+export type ZmqChainLockedBlockEvent = {
+/**
+ * The network this event belongs to.
+ */
+network: NetworkDto;
+/**
+ * Block height.
+ */
+blockHeight: number;
+/**
+ * Block hash (hex).
+ */
+blockHash: string;
+/**
+ * Number of transactions in the block.
+ */
+txCount: number }
+/**
+ * Emitted when ZMQ connection status changes.
+ */
+export type ZmqConnectionStatusEvent = {
+/**
+ * The network this status change belongs to.
+ */
+network: NetworkDto;
+/**
+ * Whether ZMQ is currently connected.
+ */
+connected: boolean }
+/**
+ * Emitted when an InstantSend-locked transaction is received via ZMQ.
+ */
+export type ZmqIsLockedTransactionEvent = {
+/**
+ * The network this event belongs to.
+ */
+network: NetworkDto;
+/**
+ * Transaction ID (hex).
+ */
+txid: string;
+/**
+ * Serialized transaction data (hex).
+ */
+rawTx: string;
+/**
+ * Number of UTXOs affected by this transaction.
+ */
+affectedUtxoCount: number }
 
 /** tauri-specta globals **/
 

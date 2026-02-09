@@ -577,7 +577,7 @@
   - Theme toggle mechanism (persisted to backend settings)
   Write component tests for theme switching. Write Playwright test verifying dark/light mode.
 
-- [ ] **2.3 Implement app shell: sidebar navigation + top bar** (P0)
+- [x] **2.3 Implement app shell: sidebar navigation + top bar** (P0)
   Build the persistent app chrome:
   - **Left sidebar:** Navigation items with icons for each main section (Dashpay, Identities, Contracts, Tokens, Wallets, Tools, Settings). Active state highlighting. Collapsible on narrow viewports.
   - **Top bar:** Breadcrumb trail showing current location. Connection status indicator (pulsating dot: green=connected, red=disconnected, fed by ZMQ status events). Network badge showing current network (Mainnet/Testnet/Devnet/Local).
@@ -1030,7 +1030,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 39 |
-| Remaining | 38 |
+| Completed | 40 |
+| Remaining | 37 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

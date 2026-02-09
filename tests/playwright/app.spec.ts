@@ -1,19 +1,11 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("App", () => {
-  test("loads the homepage with heading and greet button", async ({
-    page,
-  }) => {
+  test("loads the app with sidebar and top bar", async ({ page }) => {
     await page.goto("/");
-
-    await expect(
-      page.getByRole("heading", { name: /dash evo tool/i }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: /greet/i }),
-    ).toBeVisible();
-    await expect(
-      page.getByPlaceholder(/enter your name/i),
-    ).toBeVisible();
+    // App should redirect to /identities and show the shell
+    await expect(page.getByTestId("sidebar")).toBeVisible();
+    await expect(page.getByTestId("top-bar")).toBeVisible();
+    await expect(page).toHaveURL(/\/identities/);
   });
 });

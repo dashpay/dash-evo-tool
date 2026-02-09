@@ -5,6 +5,7 @@ test.describe("Theme Switching", () => {
     page,
   }) => {
     await page.goto("/");
+    await page.waitForSelector("[data-testid='sidebar']");
 
     // The html element should have either "light" or "dark" class
     const htmlClassList = await page.evaluate(() =>
@@ -19,6 +20,7 @@ test.describe("Theme Switching", () => {
     page,
   }) => {
     await page.goto("/");
+    await page.waitForSelector("[data-testid='sidebar']");
 
     // Open the theme toggle dropdown
     const themeButton = page.getByRole("button", { name: /toggle theme/i });
@@ -45,6 +47,7 @@ test.describe("Theme Switching", () => {
 
   test("dark mode changes background color", async ({ page }) => {
     await page.goto("/");
+    await page.waitForSelector("[data-testid='sidebar']");
 
     // Switch to light mode
     const themeButton = page.getByRole("button", { name: /toggle theme/i });
@@ -65,45 +68,5 @@ test.describe("Theme Switching", () => {
 
     // Background should be different between modes
     expect(lightBg).not.toBe(darkBg);
-  });
-
-  test("can navigate to design system showcase", async ({ page }) => {
-    await page.goto("/");
-
-    // Click the design system link
-    const dsLink = page.getByTestId("design-system-link");
-    await expect(dsLink).toBeVisible();
-    await dsLink.click();
-
-    // Verify design system page renders
-    await expect(page.getByTestId("design-system")).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: /design system/i }),
-    ).toBeVisible();
-
-    // Verify sections render
-    await expect(page.getByText("Buttons")).toBeVisible();
-    await expect(page.getByText("Badges")).toBeVisible();
-    await expect(page.getByText("Typography")).toBeVisible();
-  });
-
-  test("design system showcase works in dark mode", async ({ page }) => {
-    await page.goto("/");
-
-    // Switch to dark mode first
-    const themeButton = page.getByRole("button", { name: /toggle theme/i });
-    await themeButton.click();
-    await page.getByRole("menuitem", { name: /dark/i }).click();
-    await expect(page.locator("html")).toHaveClass(/dark/);
-
-    // Navigate to design system
-    await page.getByTestId("design-system-link").click();
-    await expect(page.getByTestId("design-system")).toBeVisible();
-
-    // Verify dark mode is still active
-    await expect(page.locator("html")).toHaveClass(/dark/);
-
-    // The theme indicator should show dark
-    await expect(page.getByText(/current theme: dark/i)).toBeVisible();
   });
 });

@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
+use crate::spv::CoreBackendMode;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -149,6 +150,23 @@ impl AppContext {
                     if let Ok(mut proofs) = self.transactions_waiting_for_finality.try_lock() {
                         proofs.remove(&tx_id);
                     }
+
+                    // Auto-refresh wallet UTXOs in RPC mode so the broadcast tx's
+                    // spent inputs are reconciled (the tx was already broadcast and
+                    // may confirm later). SPV handles its own reconciliation.
+                    if self.core_backend_mode() == CoreBackendMode::Rpc
+                        && let Some(wallet_arc) = self.wallets.read().ok()
+                            .and_then(|w| w.get(&seed_hash).cloned())
+                    {
+                        let ctx = Arc::clone(self);
+                        // Fire-and-forget — don't block the error return on refresh
+                        tokio::task::spawn_blocking(move || {
+                            if let Err(e) = ctx.refresh_wallet_info(wallet_arc) {
+                                tracing::warn!("Failed to auto-refresh wallet after timeout: {}", e);
+                            }
+                        });
+                    }
+
                     return Err("Timeout waiting for asset lock proof — no InstantLock or ChainLock received within 5 minutes".to_string());
                 }
                 _ = tokio::time::sleep(Duration::from_millis(200)) => {

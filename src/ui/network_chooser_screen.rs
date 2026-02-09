@@ -646,7 +646,7 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        ui.colored_label(color, format!("{:?}", spv_status));
+                        ui.colored_label(color, spv_status.to_string());
                     });
                 }
             });

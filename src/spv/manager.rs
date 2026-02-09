@@ -77,6 +77,20 @@ impl SpvStatus {
     }
 }
 
+impl std::fmt::Display for SpvStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpvStatus::Idle => write!(f, "Idle"),
+            SpvStatus::Starting => write!(f, "Starting"),
+            SpvStatus::Syncing => write!(f, "Syncing"),
+            SpvStatus::Running => write!(f, "Running"),
+            SpvStatus::Stopping => write!(f, "Stopping"),
+            SpvStatus::Stopped => write!(f, "Stopped"),
+            SpvStatus::Error => write!(f, "Error"),
+        }
+    }
+}
+
 impl From<u8> for SpvStatus {
     fn from(value: u8) -> Self {
         match value {

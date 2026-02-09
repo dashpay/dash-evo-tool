@@ -1,7 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -36,7 +35,7 @@ impl AppContext {
             // We use 2 outputs: the destination (explicit amount) and a change address
             // (remainder recipient that absorbs the fee).
             let estimated_platform_fee_duffs =
-                PlatformFeeEstimator::new().estimate_address_funding_from_asset_lock_duffs(2);
+                self.fee_estimator().estimate_address_funding_from_asset_lock_duffs(2);
             let asset_lock_amount = amount.saturating_add(estimated_platform_fee_duffs);
             (asset_lock_amount, false)
         };
@@ -166,8 +165,8 @@ impl AppContext {
             proofs.remove(&tx_id);
         }
 
-        // Step 7: Get wallet and SDK for the platform funding operation
-        let (wallet, sdk) = {
+        // Step 7: Get wallet, SDK, and derive a fresh change address if needed
+        let (wallet, sdk, change_platform_address) = {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
                 wallets
@@ -175,9 +174,29 @@ impl AppContext {
                     .cloned()
                     .ok_or_else(|| "Wallet not found".to_string())?
             };
+
+            // Derive a fresh change address while we have write access (only
+            // needed when fees are NOT deducted from the output).
+            let change_platform_address = if !fee_deduct_from_output {
+                let mut wallet_w = wallet_arc.write().map_err(|e| e.to_string())?;
+                let addr = wallet_w.receive_address(self.network, true, Some(self))?;
+                match PlatformAddress::try_from(addr) {
+                    Ok(pa) if pa != destination => Some(pa),
+                    // First address matched destination or failed to convert;
+                    // derive another — two consecutive fresh addresses can't collide.
+                    _ => {
+                        let addr2 =
+                            wallet_w.receive_address(self.network, true, Some(self))?;
+                        PlatformAddress::try_from(addr2).ok()
+                    }
+                }
+            } else {
+                None
+            };
+
             let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
             let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
-            (wallet, sdk)
+            (wallet, sdk, change_platform_address)
         };
 
         // Step 8: Fund the destination platform address
@@ -191,18 +210,11 @@ impl AppContext {
             vec![AddressFundsFeeStrategyStep::ReduceOutput(0)]
         } else {
             // Fee NOT deducted from output: destination receives the exact requested
-            // amount. We use a separate "change" address derived from the asset lock
-            // key as the remainder recipient (absorbs the fee estimate surplus).
-            // The fee is deducted from the change output, not the destination.
+            // amount. We use a fresh wallet-controlled change address to absorb the
+            // fee estimate surplus, keeping it spendable.
             let amount_credits = amount.saturating_mul(CREDITS_PER_DUFF);
-            let change_address = PlatformAddress::from(&asset_lock_private_key);
 
-            if change_address == destination {
-                // Extremely unlikely: random key collides with destination address.
-                // Fall back to single-output mode with remainder.
-                outputs.insert(destination, None);
-                vec![AddressFundsFeeStrategyStep::ReduceOutput(0)]
-            } else {
+            if let Some(change_address) = change_platform_address {
                 outputs.insert(destination, Some(amount_credits));
                 outputs.insert(change_address, None); // Remainder recipient
 
@@ -213,6 +225,8 @@ impl AppContext {
                     .position(|k| *k == change_address)
                     .unwrap_or(0) as u16;
                 vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
+            } else {
+                return Err("Failed to derive a change address for platform funding".to_string());
             }
         };
 

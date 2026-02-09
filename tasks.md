@@ -1387,7 +1387,7 @@
     Add sort dropdown or clickable column headers to expose sorting.
     Reference: identityStore.ts lines 8-17, 41-48, 119-151
 
-  - [ ] **4.5h Add progress messages for long identity operations** (P2)
+  - [x] **4.5h Add progress messages for long identity operations** (P2)
     Show intermediate progress messages (e.g., "Searching index 5 of 10...") during wallet identity search.
     Backend likely emits these via task messages; frontend needs to listen and display them.
     Reference: egui add_existing_identity_screen.rs lines 1143-1147

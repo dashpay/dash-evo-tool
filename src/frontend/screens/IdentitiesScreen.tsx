@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Island } from "@/components/layout";
 import { LoadingSpinner } from "@/components/feedback";
 import { IdentityListPanel } from "@/components/identity/IdentityListPanel";
@@ -33,7 +33,7 @@ import {
 import { WalletUnlockDialog, type WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
-import { commands } from "@/bindings";
+import { commands, events } from "@/bindings";
 import type {
   QualifiedIdentityDto,
   IdentityKeyDto,
@@ -41,6 +41,8 @@ import type {
   KeySpecDto,
   TopUpIdentityFundingMethodDto,
   AddKeyToIdentityInput,
+  TaskResultEvent,
+  TaskErrorEvent,
 } from "@/bindings";
 import type { AddKeyStatus } from "@/components/identity/AddKeyDialog";
 import type { IdentityOption } from "@/components/shared/IdentitySelector";
@@ -114,6 +116,7 @@ export function IdentitiesScreen() {
   // Load identity state
   const [loadIdentityStatus, setLoadIdentityStatus] =
     useState<LoadIdentityStatus>({ type: "form" });
+  const loadIdentityTaskIdRef = useRef<string | null>(null);
 
   // Add key state
   const [addKeyStatus, setAddKeyStatus] = useState<AddKeyStatus>({
@@ -153,6 +156,70 @@ export function IdentitiesScreen() {
     return () => cleanup?.();
   }, [subscribeToUpdates]);
 
+  // Subscribe to task progress messages and errors for load identity operations
+  useEffect(() => {
+    let cleanupResult: (() => void) | undefined;
+    let cleanupError: (() => void) | undefined;
+
+    const subscribe = async () => {
+      cleanupResult = await events.taskResultEvent.listen(
+        (event: { payload: TaskResultEvent }) => {
+          const { taskId, resultType, payload } = event.payload;
+          if (!loadIdentityTaskIdRef.current) return;
+          if (taskId !== loadIdentityTaskIdRef.current) return;
+
+          if (resultType === "Message" && typeof payload === "string") {
+            // Check if this is a final success message or a progress update
+            if (
+              payload.startsWith("Successfully loaded") ||
+              payload.startsWith("Finished loading")
+            ) {
+              setLoadIdentityStatus({
+                type: "success",
+                message: payload,
+              });
+              loadIdentityTaskIdRef.current = null;
+              loadIdentities();
+            } else {
+              // Intermediate progress update
+              setLoadIdentityStatus((prev) =>
+                prev.type === "loading"
+                  ? { ...prev, progressMessage: payload }
+                  : prev,
+              );
+            }
+          } else if (resultType === "Identity") {
+            // Final identity result
+            setLoadIdentityStatus({
+              type: "success",
+              message: "Identity loaded successfully",
+            });
+            loadIdentityTaskIdRef.current = null;
+            loadIdentities();
+          }
+        },
+      );
+
+      cleanupError = await events.taskErrorEvent.listen(
+        (event: { payload: TaskErrorEvent }) => {
+          const { taskId, message } = event.payload;
+          if (!loadIdentityTaskIdRef.current) return;
+          if (taskId !== loadIdentityTaskIdRef.current) return;
+
+          setLoadIdentityStatus({ type: "error", message });
+          loadIdentityTaskIdRef.current = null;
+        },
+      );
+    };
+
+    subscribe().catch(() => {});
+
+    return () => {
+      cleanupResult?.();
+      cleanupError?.();
+    };
+  }, [loadIdentities]);
+
   // Show toast on error
   useEffect(() => {
     if (error) {
@@ -169,6 +236,7 @@ export function IdentitiesScreen() {
     setCreateIdentityStatus({ type: "form" });
     setTopUpStatus({ type: "form" });
     setLoadIdentityStatus({ type: "form" });
+    loadIdentityTaskIdRef.current = null;
     setAddKeyStatus({ type: "idle" });
     setRegisterDpnsStatus({ type: "form" });
     setKeyInfoState({ isSubmitting: false, error: null, success: null });
@@ -453,11 +521,8 @@ export function IdentitiesScreen() {
           selectedWalletSeedHash: params.selectedWalletSeedHash,
         });
         if (result.status === "ok") {
-          setLoadIdentityStatus({
-            type: "success",
-            message: "Identity loaded successfully",
-          });
-          loadIdentities();
+          // Store task ID for progress message tracking
+          loadIdentityTaskIdRef.current = result.data.taskId;
         } else {
           setLoadIdentityStatus({ type: "error", message: result.error });
         }
@@ -468,7 +533,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [loadIdentities],
+    [],
   );
 
   const handleSearchFromWallet = useCallback(
@@ -480,11 +545,7 @@ export function IdentitiesScreen() {
           identityIndex: params.identityIndex,
         });
         if (result.status === "ok") {
-          setLoadIdentityStatus({
-            type: "success",
-            message: "Identity search completed",
-          });
-          loadIdentities();
+          loadIdentityTaskIdRef.current = result.data.taskId;
         } else {
           setLoadIdentityStatus({ type: "error", message: result.error });
         }
@@ -495,7 +556,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [loadIdentities],
+    [],
   );
 
   const handleSearchUpToIndex = useCallback(
@@ -507,11 +568,7 @@ export function IdentitiesScreen() {
           maxIdentityIndex: params.maxIdentityIndex,
         });
         if (result.status === "ok") {
-          setLoadIdentityStatus({
-            type: "success",
-            message: "Wallet search completed",
-          });
-          loadIdentities();
+          loadIdentityTaskIdRef.current = result.data.taskId;
         } else {
           setLoadIdentityStatus({ type: "error", message: result.error });
         }
@@ -522,7 +579,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [loadIdentities],
+    [],
   );
 
   const handleSearchByDpnsName = useCallback(
@@ -534,11 +591,7 @@ export function IdentitiesScreen() {
           walletSeedHash: params.walletSeedHash,
         });
         if (result.status === "ok") {
-          setLoadIdentityStatus({
-            type: "success",
-            message: `Found identity for "${params.name}.dash"`,
-          });
-          loadIdentities();
+          loadIdentityTaskIdRef.current = result.data.taskId;
         } else {
           setLoadIdentityStatus({ type: "error", message: result.error });
         }
@@ -549,7 +602,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [loadIdentities],
+    [],
   );
 
   // ─── Register DPNS name callbacks ─────────────────────────────────
@@ -931,9 +984,15 @@ export function IdentitiesScreen() {
         onSearchFromWallet={handleSearchFromWallet}
         onSearchUpToIndex={handleSearchUpToIndex}
         onSearchByDpnsName={handleSearchByDpnsName}
-        onDismissError={() => setLoadIdentityStatus({ type: "form" })}
+        onDismissError={() => {
+          setLoadIdentityStatus({ type: "form" });
+          loadIdentityTaskIdRef.current = null;
+        }}
         onBack={handleBackToDetail}
-        onLoadAnother={() => setLoadIdentityStatus({ type: "form" })}
+        onLoadAnother={() => {
+          setLoadIdentityStatus({ type: "form" });
+          loadIdentityTaskIdRef.current = null;
+        }}
       />
     );
   }

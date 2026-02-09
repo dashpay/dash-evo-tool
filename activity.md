@@ -699,3 +699,10 @@
 **Files changed:** src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/components/identity/IdentityListPanel.test.tsx, src/frontend/screens/IdentitiesScreen.tsx, tasks.md, activity.md
 **Tests added:** 7 component tests for sort controls (button visibility, dropdown options, sort column click, ascending/descending arrows, custom order state)
 **Sub-tasks created:** 0
+
+## Run 101 — 2026-02-09
+**Task:** 4.5h Add progress messages for long identity operations
+**What was done:** Added intermediate progress message display during long-running identity load/search operations. The backend emits `Message("Searching index X of Y...")` events via the task dispatcher during wallet identity searches. Added `progressMessage` field to `LoadIdentityStatus` loading state, subscribed to `TaskResultEvent` with `resultType: "Message"` in `IdentitiesScreen.tsx` to capture these intermediate messages, and updated the loading screen UI to display progress messages with elapsed time. Also improved the load identity event flow to track task IDs from dispatch responses and handle final results (`Message` with "Successfully loaded"/"Finished loading" prefix, or `Identity` result type) and errors via the event system rather than treating the dispatch success as the operation success.
+**Files changed:** src/frontend/components/identity/LoadIdentityScreen.tsx, src/frontend/components/identity/LoadIdentityScreen.test.tsx, src/frontend/screens/IdentitiesScreen.tsx, tasks.md, activity.md
+**Tests added:** 4 component tests (progress message display, elapsed time with progress message, no "Time elapsed" prefix when progress message present, generic loading without progress message)
+**Sub-tasks created:** 0

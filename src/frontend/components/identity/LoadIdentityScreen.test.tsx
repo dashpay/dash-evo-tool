@@ -388,6 +388,48 @@ describe("LoadIdentityScreen — status screens", () => {
     expect(screen.getByText("Searching…")).toBeInTheDocument();
     expect(screen.getByText(/Time elapsed/)).toBeInTheDocument();
   });
+
+  it("shows progress message during loading when provided", () => {
+    setup({
+      status: {
+        type: "loading",
+        startedAt: Date.now() - 5000,
+        progressMessage: "Searching index 3 of 10...",
+      },
+    });
+    expect(screen.getByText("Searching…")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Searching index 3 of 10\.\.\./),
+    ).toBeInTheDocument();
+    // Should NOT show "Time elapsed:" prefix when progress message is present
+    expect(screen.queryByText(/Time elapsed/)).not.toBeInTheDocument();
+  });
+
+  it("shows elapsed time alongside progress message", () => {
+    setup({
+      status: {
+        type: "loading",
+        startedAt: Date.now() - 65000,
+        progressMessage: "Searching index 5 of 10...",
+      },
+    });
+    // Progress message should include the elapsed time in parentheses
+    const progressEl = screen.getByText(/Searching index 5 of 10/);
+    expect(progressEl.textContent).toMatch(/\(1m \d+s\)/);
+  });
+
+  it("shows generic loading when no progress message", () => {
+    setup({
+      status: {
+        type: "loading",
+        startedAt: Date.now() - 3000,
+      },
+    });
+    expect(screen.getByText(/Time elapsed/)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Searching index/),
+    ).not.toBeInTheDocument();
+  });
 });
 
 // ─── Advanced options — By Identity ID ──────────────────────────────

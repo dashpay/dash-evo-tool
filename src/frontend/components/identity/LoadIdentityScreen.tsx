@@ -29,7 +29,7 @@ import type { WalletDto, IdentityTypeDto } from "@/bindings";
 
 export type LoadIdentityStatus =
   | { type: "form" }
-  | { type: "loading"; startedAt: number }
+  | { type: "loading"; startedAt: number; progressMessage?: string }
   | { type: "error"; message: string }
   | { type: "success"; message?: string };
 
@@ -284,9 +284,15 @@ export function LoadIdentityScreen({
       <div className="flex flex-col items-center justify-center h-full gap-6 p-8">
         <Loader2 className="w-12 h-12 animate-spin text-primary" aria-hidden />
         <h2 className="text-xl font-semibold">Searching…</h2>
-        <p className="text-sm text-muted-foreground">
-          Time elapsed: {formatElapsedTime(status.startedAt)}
-        </p>
+        {status.progressMessage ? (
+          <p className="text-sm text-muted-foreground">
+            {status.progressMessage} ({formatElapsedTime(status.startedAt)})
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Time elapsed: {formatElapsedTime(status.startedAt)}
+          </p>
+        )}
       </div>
     );
   }

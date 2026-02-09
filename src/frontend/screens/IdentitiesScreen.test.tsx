@@ -616,8 +616,8 @@ describe("IdentitiesScreen", () => {
     });
   });
 
-  describe("placeholder actions", () => {
-    it("shows toast for Top Up (not yet implemented)", async () => {
+  describe("top-up navigation", () => {
+    it("navigates to Top Up screen when Top Up clicked", async () => {
       const user = userEvent.setup();
       const identity = makeIdentity({
         alias: "TopUpMe",
@@ -644,9 +644,9 @@ describe("IdentitiesScreen", () => {
       await user.click(topUpItem);
 
       await waitFor(() => {
-        expect(mockToast.info).toHaveBeenCalledWith(
-          expect.stringContaining("Top Up"),
-        );
+        expect(
+          screen.getByRole("heading", { name: /Top Up Identity/i }),
+        ).toBeInTheDocument();
       });
     });
   });

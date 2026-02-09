@@ -1277,7 +1277,7 @@
   Reference: `add_new_identity_screen/mod.rs` and all sub-files (by_wallet_qr_code.rs, by_unused_balance.rs, by_unused_asset_lock.rs, by_platform_address.rs)
   Write component tests. Write Playwright test for at least one funding method.
 
-- [ ] **4.4 Implement identity keys, top-up, withdraw, and transfer screens** (P1)
+- [x] **4.4 Implement identity keys, top-up, withdraw, and transfer screens** (P1)
   Build remaining identity operation screens:
   - **Keys screen:** List all identity keys with metadata, add new key, view key details, disable/enable key
   - **Key info:** View key metadata, export private key

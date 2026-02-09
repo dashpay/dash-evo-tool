@@ -484,3 +484,10 @@
 **Files changed:** src/frontend/components/identity/CreateIdentityScreen.tsx, src/frontend/components/identity/CreateIdentityScreen.test.tsx, src/frontend/screens/IdentitiesScreen.tsx, tasks.md, activity.md
 **Tests added:** 51 tests (header, no-wallets, wallet selection, alias, funding methods, asset locks, wallet balance, QR code, platform address, advanced options, key editor, status displays, success screen, create button, submit validation, disabled state)
 **Sub-tasks created:** 0
+
+## Run 70 — 2026-02-09
+**Task:** 4.4 Implement identity keys, top-up, withdraw, and transfer screens
+**What was done:** Implemented TopUpIdentityScreen (4 funding methods: asset lock, wallet balance, QR code, platform address) and LoadIdentityScreen (3 modes: by identity ID, by wallet derivation, by DPNS name). Both screens wired into IdentitiesScreen with full IPC callbacks. Updated existing test that expected toast placeholder to verify actual navigation.
+**Files changed:** src/frontend/components/identity/TopUpIdentityScreen.tsx, src/frontend/components/identity/TopUpIdentityScreen.test.tsx, src/frontend/components/identity/LoadIdentityScreen.tsx, src/frontend/components/identity/LoadIdentityScreen.test.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/IdentitiesScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 68 new tests (28 TopUpIdentityScreen + 40 LoadIdentityScreen); 1 existing test updated
+**Sub-tasks created:** 0

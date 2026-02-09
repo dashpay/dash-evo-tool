@@ -18,6 +18,14 @@ import {
   CreateIdentityScreen,
   type CreateIdentityStatus,
 } from "@/components/identity/CreateIdentityScreen";
+import {
+  TopUpIdentityScreen,
+  type TopUpStatus,
+} from "@/components/identity/TopUpIdentityScreen";
+import {
+  LoadIdentityScreen,
+  type LoadIdentityStatus,
+} from "@/components/identity/LoadIdentityScreen";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
 import { commands } from "@/bindings";
@@ -26,6 +34,7 @@ import type {
   IdentityKeyDto,
   RegisterIdentityFundingMethodDto,
   KeySpecDto,
+  TopUpIdentityFundingMethodDto,
 } from "@/bindings";
 import type { AddKeyStatus } from "@/components/identity/AddKeyDialog";
 import type { IdentityOption } from "@/components/shared/IdentitySelector";
@@ -40,7 +49,9 @@ type SubView =
   | { type: "addKey" }
   | { type: "withdraw" }
   | { type: "transfer" }
-  | { type: "createIdentity" };
+  | { type: "createIdentity" }
+  | { type: "topUp" }
+  | { type: "loadIdentity" };
 
 // ─── IdentitiesScreen ─────────────────────────────────────────────
 
@@ -86,6 +97,13 @@ export function IdentitiesScreen() {
   const [createIdentityStatus, setCreateIdentityStatus] =
     useState<CreateIdentityStatus>({ type: "form" });
 
+  // Top-up state
+  const [topUpStatus, setTopUpStatus] = useState<TopUpStatus>({ type: "form" });
+
+  // Load identity state
+  const [loadIdentityStatus, setLoadIdentityStatus] =
+    useState<LoadIdentityStatus>({ type: "form" });
+
   // Add key state
   const [addKeyStatus, setAddKeyStatus] = useState<AddKeyStatus>({
     type: "idle",
@@ -129,6 +147,8 @@ export function IdentitiesScreen() {
     setWithdrawStatus({ type: "form" });
     setTransferStatus({ type: "form" });
     setCreateIdentityStatus({ type: "form" });
+    setTopUpStatus({ type: "form" });
+    setLoadIdentityStatus({ type: "form" });
     setAddKeyStatus({ type: "idle" });
     setKeyInfoState({ isSubmitting: false, error: null, success: null });
   }, [selectedIdentityId]);
@@ -199,8 +219,8 @@ export function IdentitiesScreen() {
   }, []);
 
   const handleTopUp = useCallback((_identityId: string) => {
-    // TODO: Implement top-up screen in task 4.3/4.4
-    toast.info("Top Up — coming in a future task");
+    setSubView({ type: "topUp" });
+    setTopUpStatus({ type: "form" });
   }, []);
 
   const handleRegisterDpns = useCallback((_identityId: string) => {
@@ -211,6 +231,11 @@ export function IdentitiesScreen() {
   const handleCreateIdentity = useCallback(() => {
     setSubView({ type: "createIdentity" });
     setCreateIdentityStatus({ type: "form" });
+  }, []);
+
+  const handleLoadIdentity = useCallback(() => {
+    setSubView({ type: "loadIdentity" });
+    setLoadIdentityStatus({ type: "form" });
   }, []);
 
   const handleNavigateToWallet = useCallback((_seedHash: string) => {
@@ -262,6 +287,195 @@ export function IdentitiesScreen() {
         }
       } catch (e) {
         setCreateIdentityStatus({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [loadIdentities],
+  );
+
+  // ─── Top-up callbacks ──────────────────────────────────────────
+
+  const handleTopUpSubmit = useCallback(
+    async (params: {
+      identityId: string;
+      walletSeedHash: string;
+      identityIndex: number;
+      fundingMethod: TopUpIdentityFundingMethodDto;
+    }) => {
+      setTopUpStatus({ type: "waitingForPlatform", startedAt: Date.now() });
+      try {
+        const result = await commands.identityTopUp({
+          identityId: params.identityId,
+          walletSeedHash: params.walletSeedHash,
+          identityIndex: params.identityIndex,
+          fundingMethod: params.fundingMethod,
+        });
+        if (result.status === "ok") {
+          setTopUpStatus({ type: "success" });
+          reloadIdentity(params.identityId);
+        } else {
+          setTopUpStatus({ type: "error", message: result.error });
+        }
+      } catch (e) {
+        setTopUpStatus({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [reloadIdentity],
+  );
+
+  const handleTopUpFromPlatformAddress = useCallback(
+    async (params: {
+      identityId: string;
+      walletSeedHash: string;
+      outputs: { address: string; amount: number }[];
+    }) => {
+      setTopUpStatus({ type: "waitingForPlatform", startedAt: Date.now() });
+      try {
+        const result = await commands.identityTopUpFromPlatformAddresses({
+          identityId: params.identityId,
+          walletSeedHash: params.walletSeedHash,
+          outputs: params.outputs,
+        });
+        if (result.status === "ok") {
+          setTopUpStatus({ type: "success" });
+          reloadIdentity(params.identityId);
+        } else {
+          setTopUpStatus({ type: "error", message: result.error });
+        }
+      } catch (e) {
+        setTopUpStatus({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [reloadIdentity],
+  );
+
+  // ─── Load identity callbacks ──────────────────────────────────
+
+  const handleLoadById = useCallback(
+    async (params: {
+      identityId: string;
+      identityType: string;
+      alias: string;
+      votingPrivateKey: string;
+      ownerPrivateKey: string;
+      payoutAddressPrivateKey: string;
+      keys: string[];
+      deriveKeysFromWallets: boolean;
+      selectedWalletSeedHash: string | null;
+    }) => {
+      setLoadIdentityStatus({ type: "loading", startedAt: Date.now() });
+      try {
+        const result = await commands.identityLoad({
+          identityId: params.identityId,
+          identityType: params.identityType as "user" | "masternode" | "evonode",
+          alias: params.alias,
+          votingPrivateKey: params.votingPrivateKey,
+          ownerPrivateKey: params.ownerPrivateKey,
+          payoutAddressPrivateKey: params.payoutAddressPrivateKey,
+          keys: params.keys,
+          deriveKeysFromWallets: params.deriveKeysFromWallets,
+          selectedWalletSeedHash: params.selectedWalletSeedHash,
+        });
+        if (result.status === "ok") {
+          setLoadIdentityStatus({
+            type: "success",
+            message: "Identity loaded successfully",
+          });
+          loadIdentities();
+        } else {
+          setLoadIdentityStatus({ type: "error", message: result.error });
+        }
+      } catch (e) {
+        setLoadIdentityStatus({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [loadIdentities],
+  );
+
+  const handleSearchFromWallet = useCallback(
+    async (params: { walletSeedHash: string; identityIndex: number }) => {
+      setLoadIdentityStatus({ type: "loading", startedAt: Date.now() });
+      try {
+        const result = await commands.identitySearchFromWallet({
+          walletSeedHash: params.walletSeedHash,
+          identityIndex: params.identityIndex,
+        });
+        if (result.status === "ok") {
+          setLoadIdentityStatus({
+            type: "success",
+            message: "Identity search completed",
+          });
+          loadIdentities();
+        } else {
+          setLoadIdentityStatus({ type: "error", message: result.error });
+        }
+      } catch (e) {
+        setLoadIdentityStatus({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [loadIdentities],
+  );
+
+  const handleSearchUpToIndex = useCallback(
+    async (params: { walletSeedHash: string; maxIdentityIndex: number }) => {
+      setLoadIdentityStatus({ type: "loading", startedAt: Date.now() });
+      try {
+        const result = await commands.identitySearchUpToIndex({
+          walletSeedHash: params.walletSeedHash,
+          maxIdentityIndex: params.maxIdentityIndex,
+        });
+        if (result.status === "ok") {
+          setLoadIdentityStatus({
+            type: "success",
+            message: "Wallet search completed",
+          });
+          loadIdentities();
+        } else {
+          setLoadIdentityStatus({ type: "error", message: result.error });
+        }
+      } catch (e) {
+        setLoadIdentityStatus({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [loadIdentities],
+  );
+
+  const handleSearchByDpnsName = useCallback(
+    async (params: { name: string; walletSeedHash: string | null }) => {
+      setLoadIdentityStatus({ type: "loading", startedAt: Date.now() });
+      try {
+        const result = await commands.identitySearchByDpnsName({
+          name: params.name,
+          walletSeedHash: params.walletSeedHash,
+        });
+        if (result.status === "ok") {
+          setLoadIdentityStatus({
+            type: "success",
+            message: `Found identity for "${params.name}.dash"`,
+          });
+          loadIdentities();
+        } else {
+          setLoadIdentityStatus({ type: "error", message: result.error });
+        }
+      } catch (e) {
+        setLoadIdentityStatus({
           type: "error",
           message: e instanceof Error ? e.message : String(e),
         });
@@ -520,6 +734,7 @@ export function IdentitiesScreen() {
           onWithdraw={handleWithdraw}
           onTransfer={handleTransfer}
           onCreateIdentity={handleCreateIdentity}
+          onLoadIdentity={handleLoadIdentity}
         />
       </Island>
 
@@ -527,6 +742,8 @@ export function IdentitiesScreen() {
       <Island className="flex-1 min-w-0 overflow-auto">
         {subView.type === "createIdentity" ? (
           renderCreateIdentity()
+        ) : subView.type === "loadIdentity" ? (
+          renderLoadIdentity()
         ) : selectedIdentity ? (
           renderRightPanel()
         ) : (
@@ -557,6 +774,24 @@ export function IdentitiesScreen() {
           // TODO: Navigate to DPNS registration for new identity
           toast.info("Register DPNS Name — coming in a future task");
         }}
+      />
+    );
+  }
+
+  // ─── Load identity renderer ────────────────────────────────────
+
+  function renderLoadIdentity() {
+    return (
+      <LoadIdentityScreen
+        wallets={hdWallets}
+        status={loadIdentityStatus}
+        onLoadById={handleLoadById}
+        onSearchFromWallet={handleSearchFromWallet}
+        onSearchUpToIndex={handleSearchUpToIndex}
+        onSearchByDpnsName={handleSearchByDpnsName}
+        onDismissError={() => setLoadIdentityStatus({ type: "form" })}
+        onBack={handleBackToDetail}
+        onLoadAnother={() => setLoadIdentityStatus({ type: "form" })}
       />
     );
   }
@@ -654,6 +889,19 @@ export function IdentitiesScreen() {
             onSubmitToIdentity={handleTransferToIdentity}
             onSubmitToAddress={handleTransferToAddress}
             onDismissError={() => setTransferStatus({ type: "form" })}
+            onBack={handleBackToDetail}
+          />
+        );
+
+      case "topUp":
+        return (
+          <TopUpIdentityScreen
+            identity={selectedIdentity}
+            wallets={hdWallets}
+            status={topUpStatus}
+            onSubmit={handleTopUpSubmit}
+            onSubmitPlatformAddress={handleTopUpFromPlatformAddress}
+            onDismissError={() => setTopUpStatus({ type: "form" })}
             onBack={handleBackToDetail}
           />
         );

@@ -393,3 +393,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (REVIEW task — audit only; all 811 existing tests pass)
 **Sub-tasks created:** 5 (3.6a fee dialog wiring, 3.6b tx size estimation, 3.6c proof details, 3.6d language selection, 3.6e entropy grid)
+
+## Run 57 — 2026-02-09
+**Task:** 3.6a Wire FeeConfirmationDialog into SingleKeySendScreen
+**What was done:** Wired `FeeConfirmationDialog` into `SingleKeySendScreen` to intercept "min relay fee not met" errors from backend task error events. Added `parseMinRelayFeeError()` helper that extracts the required fee from error messages (e.g., "min relay fee not met, 226 < 1000" → 1000). When a min relay fee error is detected: the fee confirmation dialog is shown (with estimated and required fees), the pending payment request is stored in a ref, and on user confirmation the transaction is re-sent with `overrideFee` set to the required fee. On cancel, state resets to idle. The FeeConfirmationDialog is rendered in both the "sending" and "form" states to be visible when the error arrives during an active send. Added 10 new tests: 6 unit tests for `parseMinRelayFeeError` and 4 integration tests (dialog shown on fee error, re-send with override on confirm, reset to idle on cancel, normal error for non-fee errors). All 831 tests pass, lint clean, typecheck clean.
+**Files changed:** src/frontend/screens/SingleKeySendScreen.tsx, src/frontend/screens/SingleKeySendScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 10 (6 parseMinRelayFeeError unit tests, 4 fee confirmation dialog integration tests)
+**Sub-tasks created:** 0

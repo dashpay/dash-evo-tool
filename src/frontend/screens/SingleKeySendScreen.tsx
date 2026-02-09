@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout";
 import { AmountInput, formatAmount } from "@/components/shared/AmountInput";
+import { FeeConfirmationDialog } from "@/components/shared/FeeConfirmationDialog";
+import type { FeeConfirmationResult } from "@/components/shared/FeeConfirmationDialog";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,6 +70,22 @@ function duffsFromDashString(value: string): number | null {
   return Math.round(num * DUFFS_PER_DASH);
 }
 
+/**
+ * Parse a "min relay fee not met" error to extract the required fee.
+ * Matches error format: "min relay fee not met, 226 < 1000"
+ * Returns the required fee (the number after '<') or null if not a fee error.
+ */
+export function parseMinRelayFeeError(error: string): number | null {
+  if (!error.includes("min relay fee")) return null;
+  const ltPos = error.indexOf("<");
+  if (ltPos === -1) return null;
+  const afterLt = error.substring(ltPos + 1).trim();
+  const digits = afterLt.match(/^(\d+)/);
+  if (!digits) return null;
+  const requiredFee = parseInt(digits[1], 10);
+  return isNaN(requiredFee) ? null : requiredFee;
+}
+
 // ─── SingleKeySendScreen ────────────────────────────────────────────
 
 export function SingleKeySendScreen() {
@@ -101,6 +119,18 @@ export function SingleKeySendScreen() {
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [walletUnlocked, setWalletUnlocked] = useState(false);
+
+  // Fee confirmation dialog state
+  const [feeDialogOpen, setFeeDialogOpen] = useState(false);
+  const [feeDialogEstimated, setFeeDialogEstimated] = useState(0);
+  const [feeDialogRequired, setFeeDialogRequired] = useState(0);
+  // Stores the pending payment params for retry with override fee
+  const pendingRequestRef = useRef<{
+    keyHash: string;
+    recipients: { address: string; amount: number }[];
+    subtractFeeFromAmount: boolean;
+    memo: string | null;
+  } | null>(null);
 
   // Elapsed time
   const [elapsed, setElapsed] = useState(0);
@@ -146,6 +176,7 @@ export function SingleKeySendScreen() {
           sendStatus.taskId &&
           event.payload.taskId === sendStatus.taskId
         ) {
+          pendingRequestRef.current = null;
           const message = event.payload.message || "Transaction completed successfully!";
           setSendStatus({ state: "complete", message });
         }
@@ -162,6 +193,18 @@ export function SingleKeySendScreen() {
           sendStatus.taskId &&
           event.payload.taskId === sendStatus.taskId
         ) {
+          // Check for min relay fee error — show fee confirmation dialog instead of error
+          const requiredFee = parseMinRelayFeeError(event.payload.message);
+          if (requiredFee !== null && pendingRequestRef.current) {
+            // Extract estimated fee from the error (the number before '<')
+            const match = event.payload.message.match(/(\d+)\s*</);
+            const estimatedFee = match ? parseInt(match[1], 10) : 0;
+            setFeeDialogEstimated(estimatedFee);
+            setFeeDialogRequired(requiredFee);
+            setFeeDialogOpen(true);
+            // Keep sending state — user must confirm or cancel
+            return;
+          }
           setSendStatus({
             state: "error",
             message: event.payload.message,
@@ -331,12 +374,18 @@ export function SingleKeySendScreen() {
       return;
     }
 
+    // Store the request for potential fee override retry
+    const requestParams = {
+      keyHash: wallet.keyHash,
+      recipients: paymentRecipients,
+      subtractFeeFromAmount: subtractFee,
+      memo: memo.trim() || null,
+    };
+    pendingRequestRef.current = requestParams;
+
     try {
       const result = await commands.coreSendSingleKeyWalletPayment({
-        keyHash: wallet.keyHash,
-        recipients: paymentRecipients,
-        subtractFeeFromAmount: subtractFee,
-        memo: memo.trim() || null,
+        ...requestParams,
         overrideFee: null,
       });
 
@@ -354,6 +403,40 @@ export function SingleKeySendScreen() {
       });
     }
   }, [wallet, canSend, recipients, balance, subtractFee, memo]);
+
+  // ─── Fee confirmation ──────────────────────────────────────────
+
+  const handleFeeConfirmResult = useCallback(
+    async (result: FeeConfirmationResult) => {
+      if (result.status === "confirmed" && pendingRequestRef.current) {
+        // Retry send with the override fee
+        try {
+          const sendResult = await commands.coreSendSingleKeyWalletPayment({
+            ...pendingRequestRef.current,
+            overrideFee: result.overrideFee,
+          });
+
+          if (sendResult.status === "error") throw new Error(sendResult.error);
+
+          setSendStatus({
+            state: "sending",
+            startTime: Date.now(),
+            taskId: sendResult.data.taskId,
+          });
+        } catch (e) {
+          setSendStatus({
+            state: "error",
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      } else {
+        // User canceled — abort the transaction
+        pendingRequestRef.current = null;
+        setSendStatus({ state: "idle" });
+      }
+    },
+    [],
+  );
 
   // ─── No wallet → redirect ─────────────────────────────────────
 
@@ -391,6 +474,16 @@ export function SingleKeySendScreen() {
             Time elapsed: {formatElapsed(elapsed)}
           </p>
         </div>
+
+        {/* Fee confirmation dialog — may appear during sending state */}
+        <FeeConfirmationDialog
+          open={feeDialogOpen}
+          onOpenChange={setFeeDialogOpen}
+          estimatedFee={feeDialogEstimated}
+          requiredFee={feeDialogRequired}
+          unit="duffs"
+          onResult={handleFeeConfirmResult}
+        />
       </Island>
     );
   }
@@ -658,6 +751,16 @@ export function SingleKeySendScreen() {
         passwordHint={null}
         error={unlockError}
         onResult={handleUnlockResult}
+      />
+
+      {/* Fee confirmation dialog */}
+      <FeeConfirmationDialog
+        open={feeDialogOpen}
+        onOpenChange={setFeeDialogOpen}
+        estimatedFee={feeDialogEstimated}
+        requiredFee={feeDialogRequired}
+        unit="duffs"
+        onResult={handleFeeConfirmResult}
       />
     </Island>
   );

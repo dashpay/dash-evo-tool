@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SingleKeySendScreen } from "./SingleKeySendScreen";
+import { SingleKeySendScreen, parseMinRelayFeeError } from "./SingleKeySendScreen";
 
 // ─── Mocks ──────────────────────────────────────────────────────────
 
@@ -14,6 +14,11 @@ vi.mock("@tanstack/react-router", () => ({
 const mockCoreSendSingleKeyWalletPayment = vi.fn();
 const mockWalletNotifyUnlocked = vi.fn();
 
+// Capture event listeners so we can simulate backend events in tests
+type EventCallback = (event: { payload: Record<string, unknown> }) => void;
+let taskResultListeners: EventCallback[] = [];
+let taskErrorListeners: EventCallback[] = [];
+
 vi.mock("@/bindings", () => ({
   commands: {
     coreSendSingleKeyWalletPayment: (...args: unknown[]) =>
@@ -22,8 +27,22 @@ vi.mock("@/bindings", () => ({
       mockWalletNotifyUnlocked(...args),
   },
   events: {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
+    taskResultEvent: {
+      listen: vi.fn().mockImplementation((cb: EventCallback) => {
+        taskResultListeners.push(cb);
+        return Promise.resolve(() => {
+          taskResultListeners = taskResultListeners.filter((l) => l !== cb);
+        });
+      }),
+    },
+    taskErrorEvent: {
+      listen: vi.fn().mockImplementation((cb: EventCallback) => {
+        taskErrorListeners.push(cb);
+        return Promise.resolve(() => {
+          taskErrorListeners = taskErrorListeners.filter((l) => l !== cb);
+        });
+      }),
+    },
   },
 }));
 
@@ -62,6 +81,8 @@ describe("SingleKeySendScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     walletStoreState = { singleKeyWallets: [], selectedWallet: null };
+    taskResultListeners = [];
+    taskErrorListeners = [];
   });
 
   describe("no wallet selected", () => {
@@ -368,5 +389,163 @@ describe("SingleKeySendScreen", () => {
       expect(screen.getByLabelText("Destination address")).toBeInTheDocument();
       expect(screen.getByLabelText("Back to wallets")).toBeInTheDocument();
     });
+  });
+
+  describe("fee confirmation dialog", () => {
+    async function sendAndGetSending(user: ReturnType<typeof userEvent.setup>) {
+      mockCoreSendSingleKeyWalletPayment.mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-fee-test" },
+      });
+      await user.type(
+        screen.getByLabelText("Destination address"),
+        "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L",
+      );
+      await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
+      await user.click(screen.getByText("Send").closest("button")!);
+      await waitFor(() => {
+        expect(screen.getByText("Sending...")).toBeInTheDocument();
+      });
+    }
+
+    it("shows fee dialog on min relay fee error", async () => {
+      const user = userEvent.setup();
+      setupWallet();
+      render(<SingleKeySendScreen />);
+      await sendAndGetSending(user);
+
+      // Simulate a min relay fee error event
+      for (const listener of taskErrorListeners) {
+        listener({
+          payload: {
+            taskId: "task-fee-test",
+            message: "min relay fee not met, 226 < 1000",
+          },
+        });
+      }
+
+      await waitFor(() => {
+        expect(screen.getByText("Fee Confirmation Required")).toBeInTheDocument();
+      });
+    });
+
+    it("re-sends with override fee on confirm", async () => {
+      const user = userEvent.setup();
+      setupWallet();
+      render(<SingleKeySendScreen />);
+      await sendAndGetSending(user);
+
+      // Trigger min relay fee error
+      for (const listener of taskErrorListeners) {
+        listener({
+          payload: {
+            taskId: "task-fee-test",
+            message: "min relay fee not met, 226 < 1000",
+          },
+        });
+      }
+
+      await waitFor(() => {
+        expect(screen.getByText("Fee Confirmation Required")).toBeInTheDocument();
+      });
+
+      // Reset mock for the retry call
+      mockCoreSendSingleKeyWalletPayment.mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-fee-retry" },
+      });
+
+      // Click "Confirm & Send"
+      await user.click(screen.getByText("Confirm & Send"));
+
+      await waitFor(() => {
+        expect(mockCoreSendSingleKeyWalletPayment).toHaveBeenLastCalledWith(
+          expect.objectContaining({ overrideFee: 1000 }),
+        );
+      });
+    });
+
+    it("resets to idle on cancel", async () => {
+      const user = userEvent.setup();
+      setupWallet();
+      render(<SingleKeySendScreen />);
+      await sendAndGetSending(user);
+
+      // Trigger min relay fee error
+      for (const listener of taskErrorListeners) {
+        listener({
+          payload: {
+            taskId: "task-fee-test",
+            message: "min relay fee not met, 226 < 1000",
+          },
+        });
+      }
+
+      await waitFor(() => {
+        expect(screen.getByText("Fee Confirmation Required")).toBeInTheDocument();
+      });
+
+      // Click "Cancel"
+      await user.click(screen.getByText("Cancel"));
+
+      // Should be back to the form (idle state)
+      await waitFor(() => {
+        expect(screen.queryByText("Fee Confirmation Required")).not.toBeInTheDocument();
+        expect(screen.queryByText("Sending...")).not.toBeInTheDocument();
+        expect(screen.getByLabelText("Destination address")).toBeInTheDocument();
+      });
+    });
+
+    it("shows normal error for non-fee errors", async () => {
+      const user = userEvent.setup();
+      setupWallet();
+      render(<SingleKeySendScreen />);
+      await sendAndGetSending(user);
+
+      // Simulate a normal (non-fee) error
+      for (const listener of taskErrorListeners) {
+        listener({
+          payload: {
+            taskId: "task-fee-test",
+            message: "Connection timeout",
+          },
+        });
+      }
+
+      await waitFor(() => {
+        expect(screen.getByText("Connection timeout")).toBeInTheDocument();
+        expect(screen.queryByText("Fee Confirmation Required")).not.toBeInTheDocument();
+      });
+    });
+  });
+});
+
+// ─── parseMinRelayFeeError unit tests ───────────────────────────────
+
+describe("parseMinRelayFeeError", () => {
+  it("parses standard format: min relay fee not met, 226 < 1000", () => {
+    expect(parseMinRelayFeeError("min relay fee not met, 226 < 1000")).toBe(1000);
+  });
+
+  it("parses with extra text", () => {
+    expect(
+      parseMinRelayFeeError("Error: min relay fee not met, 150 < 500 (code -26)"),
+    ).toBe(500);
+  });
+
+  it("returns null for non-fee errors", () => {
+    expect(parseMinRelayFeeError("Insufficient funds")).toBe(null);
+  });
+
+  it("returns null when no < symbol", () => {
+    expect(parseMinRelayFeeError("min relay fee issue")).toBe(null);
+  });
+
+  it("returns null for empty string", () => {
+    expect(parseMinRelayFeeError("")).toBe(null);
+  });
+
+  it("parses large fee values", () => {
+    expect(parseMinRelayFeeError("min relay fee not met, 5000 < 50000")).toBe(50000);
   });
 });

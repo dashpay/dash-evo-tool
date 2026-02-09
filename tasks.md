@@ -956,7 +956,7 @@
   > ### Summary: 5 fix sub-tasks created below (3 functional, 2 cosmetic)
 
   **Fix sub-tasks:**
-  - [ ] **3.6a** Wire `FeeConfirmationDialog` into `SingleKeySendScreen`: intercept min relay fee errors from task error events, parse the required fee, show the dialog, and re-send with `overrideFee` set. Match egui `single_key_send_screen.rs` lines 805-825 and 844-855 behavior. (P2)
+  - [x] **3.6a** Wire `FeeConfirmationDialog` into `SingleKeySendScreen`: intercept min relay fee errors from task error events, parse the required fee, show the dialog, and re-send with `overrideFee` set. Match egui `single_key_send_screen.rs` lines 805-825 and 844-855 behavior. (P2)
   - [ ] **3.6b** Add transaction size estimation display to `SingleKeySendScreen`: show estimated fee, UTXO input count, and transaction byte size below the amount input. Add warning banner when >100 UTXOs needed. Port `estimate_fee()` logic from egui `single_key_send_screen.rs` lines 145-196 (can be done client-side from UTXO data already in the store). (P3)
   - [ ] **3.6c** Add asset lock proof details to `AssetLockDetailScreen`: extend `AssetLockDto` to include proof type and proof detail fields (InstantLock TxID/Output Index for Instant, Core Chain Locked Height/OutPoint for Chain), add proof hex display with Copy button, and add collapsible "View Raw Proof Details" section. Port from egui `asset_lock_detail_screen.rs` lines 130-208. (P2)
   - [ ] **3.6d** Add BIP39 language selection to `CreateWalletScreen`: add Language dropdown (English, Spanish, French, Italian, Portuguese) before word count selector, dynamically import the selected language wordlist from `@scure/bip39/wordlists/`. Default to English. (P3)
@@ -1300,7 +1300,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 59 |
-| Remaining | 32 |
+| Completed | 60 |
+| Remaining | 31 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

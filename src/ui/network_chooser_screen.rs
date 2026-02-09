@@ -1,7 +1,7 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
-use crate::backend_task::BackendTask;
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
@@ -446,7 +446,9 @@ impl NetworkChooserScreen {
             let ctx = self.current_app_context();
             let status = ctx.connection_status();
             let disable_zmq = status.disable_zmq();
-            let rpc_online = self.check_network_status();
+            let rpc_online = self.current_app_context()
+                .connection_status()
+                .rpc_online();
             let zmq_connected = status.zmq_connected();
             let spv_snapshot = ctx.spv_manager().status();
             let spv_status = status.spv_status();
@@ -1778,13 +1780,6 @@ impl NetworkChooserScreen {
         } else {
             0.0
         }
-    }
-
-    /// Check if the current network's RPC is online.
-    fn check_network_status(&self) -> bool {
-        self.current_app_context()
-            .connection_status()
-            .rpc_online()
     }
 
     fn any_rpc_backend(&self) -> bool {

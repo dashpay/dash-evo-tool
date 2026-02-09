@@ -42,7 +42,10 @@ impl ConnectionStatus {
 
     /// Reset all connection state. Called when switching the active network
     /// so the status reflects the new network from a clean slate.
-    pub fn reset(&self) {
+    ///
+    /// `backend_mode` should be the new network's current backend mode so that
+    /// `overall_connected()` and `tooltip_text()` read the correct mode immediately.
+    pub fn reset(&self, backend_mode: CoreBackendMode) {
         self.rpc_online.store(false, Ordering::Relaxed);
         if let Ok(mut status) = self.zmq_status.lock() {
             *status = ZMQConnectionEvent::Disconnected;
@@ -50,7 +53,7 @@ impl ConnectionStatus {
         self.spv_status
             .store(SpvStatus::Idle as u8, Ordering::Relaxed);
         self.backend_mode
-            .store(CoreBackendMode::Rpc.as_u8(), Ordering::Relaxed);
+            .store(backend_mode.as_u8(), Ordering::Relaxed);
         self.disable_zmq.store(false, Ordering::Relaxed);
         self.overall_connected.store(false, Ordering::Relaxed);
         // Set last_update to epoch so the next trigger_refresh fires immediately

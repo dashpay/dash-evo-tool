@@ -747,7 +747,8 @@ impl AppState {
             screen.change_context(app_context.clone())
         }
 
-        self.connection_status.reset();
+        self.connection_status
+            .reset(app_context.core_backend_mode());
     }
 
     pub fn visible_screen_mut(&mut self) -> &mut Screen {

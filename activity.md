@@ -552,3 +552,10 @@
 **Files changed:** src/frontend/components/dpns/OwnedNamesPanel.tsx, src/frontend/components/dpns/OwnedNamesPanel.test.tsx, src/frontend/screens/DpnsOwnedNamesScreen.tsx, src/frontend/screens/DpnsOwnedNamesScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
 **Tests added:** 55 (30 OwnedNamesPanel component tests + 25 DpnsOwnedNamesScreen screen tests covering empty states, rendering, filtering, sorting, set alias action, data loading, action buttons, error handling, filter integration, multiple names, accessibility)
 **Sub-tasks created:** 0
+
+## Run 80 — 2026-02-09
+**Task:** 5.1g Create ScheduledVotesTable component and wire DpnsScheduledVotesScreen
+**What was done:** Created `ScheduledVotesTable` component showing scheduled DPNS votes with 6 sortable columns: Name, Voter (truncated ID with tooltip), Vote Choice (Lock/Abstain/identity badge), Scheduled Time (relative with full date tooltip), Status (Pending/Casting.../Casted/Failed with color-coded badges), Actions (Cast Now + Remove buttons). Cast Now is enabled only for Pending/Failed status and disabled during any cast operation. Internal filtering by name or voter ID. Created `DpnsScheduledVotesScreen` screen wired to contestStore with Refresh, Clear Casted (enabled when completed votes exist), and Clear All buttons. Subscribes to real-time Tauri events. Error toast handling. Replaced placeholder route in routes.tsx. Exported helper functions (formatScheduledTime, formatRelativeTime, getStatusDisplay) for reuse and testing.
+**Files changed:** src/frontend/components/dpns/ScheduledVotesTable.tsx, src/frontend/components/dpns/ScheduledVotesTable.test.tsx, src/frontend/screens/DpnsScheduledVotesScreen.tsx, src/frontend/screens/DpnsScheduledVotesScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
+**Tests added:** 70 (49 ScheduledVotesTable component tests + 21 DpnsScheduledVotesScreen screen tests covering helper functions, empty states, rendering, filtering, sorting, Cast Now/Remove actions, disabled states, accessibility, data loading, action buttons, error handling, multiple votes)
+**Sub-tasks created:** 0

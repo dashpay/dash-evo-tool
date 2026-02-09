@@ -21,6 +21,7 @@ import { commands } from "@/bindings";
 import { DpnsActiveContestsScreen } from "@/screens/DpnsActiveContestsScreen";
 import { DpnsPastContestsScreen } from "@/screens/DpnsPastContestsScreen";
 import { DpnsOwnedNamesScreen } from "@/screens/DpnsOwnedNamesScreen";
+import { DpnsScheduledVotesScreen } from "@/screens/DpnsScheduledVotesScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -160,7 +161,7 @@ const contractsDpnsOwnedRoute = createRoute({
 const contractsDpnsScheduledRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-scheduled",
-  component: () => <PlaceholderScreen title="DPNS Scheduled Votes" />,
+  component: DpnsScheduledVotesScreen,
 });
 
 const tokensRoute = createRoute({

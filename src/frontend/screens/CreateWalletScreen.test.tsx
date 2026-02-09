@@ -48,7 +48,24 @@ vi.mock("@scure/bip39/wordlists/english.js", () => ({
   wordlist: ["abandon", "ability", "able", "about"],
 }));
 
+vi.mock("@scure/bip39/wordlists/spanish.js", () => ({
+  wordlist: ["ábaco", "abdomen", "abeja", "abierto"],
+}));
+
+vi.mock("@scure/bip39/wordlists/french.js", () => ({
+  wordlist: ["abaisser", "abandon", "abdiquer", "abeille"],
+}));
+
+vi.mock("@scure/bip39/wordlists/italian.js", () => ({
+  wordlist: ["abaco", "abbaglio", "abbondante", "abete"],
+}));
+
+vi.mock("@scure/bip39/wordlists/portuguese.js", () => ({
+  wordlist: ["abacate", "abaixo", "abalar", "abater"],
+}));
+
 import { commands } from "@/bindings";
+import { generateMnemonic } from "@scure/bip39";
 
 describe("CreateWalletScreen", () => {
   beforeEach(() => {
@@ -111,6 +128,31 @@ describe("CreateWalletScreen", () => {
     expect(
       screen.getByRole("heading", { name: /back up your seed phrase/i }),
     ).toBeInTheDocument();
+  });
+
+  // ─── Language Selection ───────────────────────────────────────
+
+  it("shows language selector with default English", () => {
+    render(<CreateWalletScreen />);
+    expect(screen.getByText("English")).toBeInTheDocument();
+  });
+
+  it("renders Language label", () => {
+    render(<CreateWalletScreen />);
+    expect(screen.getByText("Language")).toBeInTheDocument();
+  });
+
+  it("passes selected language wordlist to generateMnemonic", async () => {
+    const user = userEvent.setup();
+    render(<CreateWalletScreen />);
+    // Default is English — click Generate
+    await user.click(
+      screen.getByRole("button", { name: /generate seed phrase/i }),
+    );
+    expect(generateMnemonic).toHaveBeenCalledWith(
+      ["abandon", "ability", "able", "about"],
+      expect.any(Number),
+    );
   });
 
   // ─── Step 2: Backup ──────────────────────────────────────────

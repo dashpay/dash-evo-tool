@@ -9,7 +9,11 @@ import {
   Wallet,
 } from "lucide-react";
 import { generateMnemonic } from "@scure/bip39";
-import { wordlist } from "@scure/bip39/wordlists/english.js";
+import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
+import { wordlist as spanishWordlist } from "@scure/bip39/wordlists/spanish.js";
+import { wordlist as frenchWordlist } from "@scure/bip39/wordlists/french.js";
+import { wordlist as italianWordlist } from "@scure/bip39/wordlists/italian.js";
+import { wordlist as portugueseWordlist } from "@scure/bip39/wordlists/portuguese.js";
 import { toast } from "sonner";
 import { Island } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -31,6 +35,23 @@ import { useWalletStore } from "@/stores/walletStore";
 
 const WORD_COUNTS = [12, 15, 18, 21, 24] as const;
 type WordCount = (typeof WORD_COUNTS)[number];
+
+const BIP39_LANGUAGES = [
+  "English",
+  "Spanish",
+  "French",
+  "Italian",
+  "Portuguese",
+] as const;
+type Bip39Language = (typeof BIP39_LANGUAGES)[number];
+
+const WORDLISTS: Record<Bip39Language, string[]> = {
+  English: englishWordlist,
+  Spanish: spanishWordlist,
+  French: frenchWordlist,
+  Italian: italianWordlist,
+  Portuguese: portugueseWordlist,
+};
 
 const ENTROPY_BITS: Record<WordCount, number> = {
   12: 128,
@@ -71,6 +92,7 @@ export function CreateWalletScreen() {
 
   const [step, setStep] = useState<Step>("generate");
   const [wordCount, setWordCount] = useState<WordCount>(24);
+  const [language, setLanguage] = useState<Bip39Language>("English");
   const [mnemonic, setMnemonic] = useState<string[] | null>(null);
   const [wroteItDown, setWroteItDown] = useState(false);
   const [alias, setAlias] = useState("");
@@ -85,11 +107,14 @@ export function CreateWalletScreen() {
   );
 
   const handleGenerate = useCallback(() => {
-    const mnemonicStr = generateMnemonic(wordlist, ENTROPY_BITS[wordCount]);
+    const mnemonicStr = generateMnemonic(
+      WORDLISTS[language],
+      ENTROPY_BITS[wordCount],
+    );
     setMnemonic(mnemonicStr.split(" "));
     setStep("backup");
     setWroteItDown(false);
-  }, [wordCount]);
+  }, [wordCount, language]);
 
   const handleSave = useCallback(async () => {
     if (!mnemonic) return;
@@ -191,6 +216,8 @@ export function CreateWalletScreen() {
           <GenerateStep
             wordCount={wordCount}
             onWordCountChange={setWordCount}
+            language={language}
+            onLanguageChange={setLanguage}
             onGenerate={handleGenerate}
           />
         )}
@@ -283,10 +310,14 @@ function StepConnector({ completed }: { completed: boolean }) {
 function GenerateStep({
   wordCount,
   onWordCountChange,
+  language,
+  onLanguageChange,
   onGenerate,
 }: {
   wordCount: WordCount;
   onWordCountChange: (count: WordCount) => void;
+  language: Bip39Language;
+  onLanguageChange: (lang: Bip39Language) => void;
   onGenerate: () => void;
 }) {
   return (
@@ -299,23 +330,44 @@ function GenerateStep({
         </p>
       </div>
 
-      <div className="space-y-2">
-        <Label htmlFor="word-count">Word Count</Label>
-        <Select
-          value={String(wordCount)}
-          onValueChange={(v) => onWordCountChange(Number(v) as WordCount)}
-        >
-          <SelectTrigger id="word-count" className="w-[180px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {WORD_COUNTS.map((count) => (
-              <SelectItem key={count} value={String(count)}>
-                {count} words
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <div className="flex gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="language">Language</Label>
+          <Select
+            value={language}
+            onValueChange={(v) => onLanguageChange(v as Bip39Language)}
+          >
+            <SelectTrigger id="language" className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {BIP39_LANGUAGES.map((lang) => (
+                <SelectItem key={lang} value={lang}>
+                  {lang}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="word-count">Word Count</Label>
+          <Select
+            value={String(wordCount)}
+            onValueChange={(v) => onWordCountChange(Number(v) as WordCount)}
+          >
+            <SelectTrigger id="word-count" className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {WORD_COUNTS.map((count) => (
+                <SelectItem key={count} value={String(count)}>
+                  {count} words
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <Button onClick={onGenerate} className="gap-2">

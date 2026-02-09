@@ -414,3 +414,10 @@
 **Files changed:** src-tauri/src/dto/wallet.rs, src-tauri/src/commands/wallet.rs, src-tauri/src/dto/tests.rs, src/frontend/bindings.ts, src/frontend/screens/AssetLockDetailScreen.tsx, src/frontend/screens/AssetLockDetailScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 11 (Rust: 2 DTO roundtrip tests for instant send and chain lock proof variants; TypeScript: 9 tests — proof details heading, instant send type/txid/output index/copy button, chain lock details/copy button, proof hex display with copy, collapsible raw details toggle+expand, no proof section when null)
 **Sub-tasks created:** 0
+
+## Run 60 — 2026-02-09
+**Task:** 3.6d Add BIP39 language selection to CreateWalletScreen
+**What was done:** Added BIP39 language selection dropdown to `CreateWalletScreen`, matching the 5 languages from the egui `add_new_wallet_screen.rs`. Imported all 5 wordlists from `@scure/bip39/wordlists/` (English, Spanish, French, Italian, Portuguese) and created a `WORDLISTS` record mapping language names to their wordlist arrays. Added `Bip39Language` type and `BIP39_LANGUAGES` constant. Added `language` state (default: English) to the main component. Updated `handleGenerate` to pass the selected language's wordlist to `generateMnemonic()`. Extended `GenerateStep` props with `language` and `onLanguageChange`, added a Language `<Select>` dropdown placed side-by-side with the Word Count selector in a `flex gap-4` row. The dropdown appears before the word count selector, matching the egui layout order.
+**Files changed:** src/frontend/screens/CreateWalletScreen.tsx, src/frontend/screens/CreateWalletScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 3 (language selector shows default English, Language label rendered, generateMnemonic called with English wordlist)
+**Sub-tasks created:** 0

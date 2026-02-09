@@ -37,6 +37,18 @@ pub struct GenerateReceiveAddressInput {
     pub wallet_seed_hash: WalletSeedHashDto,
 }
 
+/// Input for deriving and viewing a private key at a derivation path.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPrivateKeyInput {
+    /// Wallet seed hash (hex).
+    pub wallet_seed_hash: WalletSeedHashDto,
+    /// The address whose key is being viewed (for validation).
+    pub address: String,
+    /// BIP32 derivation path (e.g., "m/44'/5'/0'/0/0").
+    pub derivation_path: String,
+}
+
 /// Input for fetching platform address balances.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1319,6 +1331,49 @@ pub fn wallet_notify_locked(
 }
 
 // ---------------------------------------------------------------------------
+// Private key derivation
+// ---------------------------------------------------------------------------
+
+/// Derive and return a private key in WIF format for a given derivation path.
+///
+/// Requires the wallet to be unlocked (if password-protected).
+/// The caller must have called `wallet_notify_unlocked` first.
+#[tauri::command]
+#[specta::specta]
+pub fn wallet_get_private_key(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: GetPrivateKeyInput,
+) -> Result<String, String> {
+    let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
+    let ctx = state.current_context().clone();
+    let network = ctx.network();
+
+    let wallet_arc = ctx
+        .wallet_by_seed_hash(&seed_hash)
+        .ok_or_else(|| "Wallet not found".to_string())?;
+    let wallet = wallet_arc
+        .read()
+        .map_err(|e| format!("Failed to read wallet: {}", e))?;
+
+    if wallet.uses_password && !wallet.is_open() {
+        return Err("Wallet is locked. Please unlock it first.".to_string());
+    }
+
+    // Parse the derivation path string
+    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+    let path: DerivationPath = input
+        .derivation_path
+        .parse()
+        .map_err(|e| format!("Invalid derivation path: {}", e))?;
+
+    let private_key = wallet
+        .private_key_at_derivation_path(&path, network)
+        .map_err(|e| format!("Failed to derive private key: {}", e))?;
+
+    Ok(private_key.to_wif())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1680,6 +1735,28 @@ mod tests {
         );
         assert_eq!(input.password, "secret");
         assert_eq!(input.alias, "My Key");
+    }
+
+    #[test]
+    fn get_private_key_input_serializes() {
+        let input = GetPrivateKeyInput {
+            wallet_seed_hash: "aa".repeat(32),
+            address: "XpYvN123abc".into(),
+            derivation_path: "m/44'/5'/0'/0/0".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"walletSeedHash\""));
+        assert!(json.contains("\"address\":\"XpYvN123abc\""));
+        assert!(json.contains("\"derivationPath\":\"m/44'/5'/0'/0/0\""));
+    }
+
+    #[test]
+    fn get_private_key_input_roundtrip() {
+        let json = r#"{"walletSeedHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","address":"XyZ123","derivationPath":"m/44'/5'/0'/1/5"}"#;
+        let input: GetPrivateKeyInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.wallet_seed_hash, "aa".repeat(32));
+        assert_eq!(input.address, "XyZ123");
+        assert_eq!(input.derivation_path, "m/44'/5'/0'/1/5");
     }
 
     #[test]

@@ -858,7 +858,7 @@
   Reference: `add_new_wallet_screen.rs`, `import_mnemonic_screen.rs`
   Write component tests. Write Playwright test for full create/import flow.
 
-- [ ] **3.4 Implement HD wallet send screen** (P1)
+- [x] **3.4 Implement HD wallet send screen** (P1)
   Build the send transaction flow for HD wallets:
   - Simple mode: single recipient, amount, fee level
   - Advanced mode: multiple recipients, manual UTXO selection, custom fee
@@ -1225,7 +1225,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 56 |
-| Remaining | 30 |
+| Completed | 57 |
+| Remaining | 29 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

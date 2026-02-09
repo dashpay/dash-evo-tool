@@ -206,6 +206,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::wallet::wallet_bootstrap_addresses,
             commands::wallet::wallet_notify_unlocked,
             commands::wallet::wallet_notify_locked,
+            commands::wallet::wallet_get_private_key,
             // Contract commands
             commands::contract::contract_fetch,
             commands::contract::contract_fetch_with_descriptions,

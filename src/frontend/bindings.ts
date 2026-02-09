@@ -793,6 +793,20 @@ async walletNotifyLocked(walletSeedHash: string) : Promise<Result<null, string>>
 }
 },
 /**
+ * Derive and return a private key in WIF format for a given derivation path.
+ *
+ * Requires the wallet to be unlocked (if password-protected).
+ * The caller must have called `wallet_notify_unlocked` first.
+ */
+async walletGetPrivateKey(input: GetPrivateKeyInput) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_get_private_key", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Fetch contracts from Platform by their IDs.
  *
  * Dispatches `ContractTask::FetchContracts`. Result arrives via `TaskResultEvent`.
@@ -2586,6 +2600,22 @@ export type GenerateReceiveAddressInput = {
  * Wallet seed hash (hex).
  */
 walletSeedHash: string }
+/**
+ * Input for deriving and viewing a private key at a derivation path.
+ */
+export type GetPrivateKeyInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * The address whose key is being viewed (for validation).
+ */
+address: string;
+/**
+ * BIP32 derivation path (e.g., "m/44'/5'/0'/0/0").
+ */
+derivationPath: string }
 /**
  * A sample DTO demonstrating tauri-specta type generation.
  */

@@ -12,6 +12,7 @@ import { NetworkChooserScreen } from "@/screens/NetworkChooserScreen";
 import { WalletsScreen } from "@/screens/WalletsScreen";
 import { CreateWalletScreen } from "@/screens/CreateWalletScreen";
 import { ImportWalletScreen } from "@/screens/ImportWalletScreen";
+import { SendScreen } from "@/screens/SendScreen";
 import { commands } from "@/bindings";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -203,6 +204,12 @@ const walletsImportRoute = createRoute({
   component: ImportWalletScreen,
 });
 
+const walletsSendRoute = createRoute({
+  getParentRoute: () => walletsRoute,
+  path: "/send/$type",
+  component: SendScreen,
+});
+
 const toolsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/tools",
@@ -298,6 +305,7 @@ const routeTree = rootRoute.addChildren([
       walletsIndexRoute,
       walletsCreateRoute,
       walletsImportRoute,
+      walletsSendRoute,
     ]),
     toolsRoute.addChildren([
       toolsIndexRoute,

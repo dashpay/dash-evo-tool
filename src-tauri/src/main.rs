@@ -1,6 +1,8 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+pub mod dto;
+
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Typescript;

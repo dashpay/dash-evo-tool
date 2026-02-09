@@ -1795,8 +1795,15 @@ impl TokensScreen {
             }
         }
 
+        // Append any tokens not present in the saved order (e.g., newly added tokens)
+        for (key, value) in &self.my_tokens {
+            if !reordered.contains_key(key) {
+                reordered.insert(*key, value.clone());
+            }
+        }
+
         // Replace the original with the reordered map
-        //self.my_tokens = reordered;
+        self.my_tokens = reordered;
     }
 
     /// Save the current map's order of token IDs to the DB
@@ -2041,7 +2048,7 @@ impl TokensScreen {
                         .step_decreasing_initial_emission_input
                         .parse::<u64>()
                         .unwrap_or(0),
-                    min_value: if self.step_decreasing_start_period_offset_input.is_empty() {
+                    min_value: if self.step_decreasing_min_value_input.is_empty() {
                         None
                     } else {
                         match self.step_decreasing_min_value_input.parse::<u64>() {
@@ -2055,7 +2062,7 @@ impl TokensScreen {
                             }
                         }
                     },
-                    max_interval_count: if self.step_decreasing_start_period_offset_input.is_empty()
+                    max_interval_count: if self.step_decreasing_max_interval_count_input.is_empty()
                     {
                         None
                     } else {

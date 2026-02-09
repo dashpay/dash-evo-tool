@@ -168,7 +168,7 @@
   - [x] **1.1a** Install and configure tauri-specta v2: Add `specta`, `tauri-specta` to src-tauri/Cargo.toml. Set up the `tauri_specta::ts::builder()` in main.rs to export bindings to `src/frontend/bindings.ts`. Add `specta` feature to the `tauri` dependency. Create a minimal test command with `#[specta::specta]` and verify TypeScript types are generated.
   - [x] **1.1b** Create IPC DTO types module: Create `src-tauri/src/dto/` with serializable Data Transfer Objects for all complex Rust types that cross the IPC boundary. These replace `Arc<RwLock<T>>`, `Arc<DataContract>`, etc. with owned, serializable structs. Start with: `WalletDto`, `SingleKeyWalletDto`, `QualifiedIdentityDto`, `DataContractDto`, `DocumentDto`, `TokenInfoDto`, `FeeResultDto`. All derive `Serialize, Deserialize, specta::Type, Clone`.
 
-- [ ] **1.2 Implement Tauri app state and initialization** (P0)
+- [x] **1.2 Implement Tauri app state and initialization** (P0)
   Create `src-tauri/src/state.rs` that:
   - Wraps `AppContext` creation for all 4 networks (reuse existing initialization from `app.rs`)
   - Manages the active network selection
@@ -727,7 +727,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 12 |
-| Remaining | 50 |
+| Completed | 13 |
+| Remaining | 49 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

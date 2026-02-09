@@ -85,3 +85,10 @@
 **Files changed:** src-tauri/Cargo.toml, src-tauri/src/main.rs, src-tauri/src/dto/mod.rs, src-tauri/src/dto/common.rs, src-tauri/src/dto/fee.rs, src-tauri/src/dto/wallet.rs, src-tauri/src/dto/identity.rs, src-tauri/src/dto/contract.rs, src-tauri/src/dto/document.rs, src-tauri/src/dto/token.rs, src-tauri/src/dto/tests.rs, tasks.md, activity.md
 **Tests added:** 25 Rust unit tests (roundtrip serialization/deserialization and camelCase field verification for all DTO types)
 **Sub-tasks created:** 0
+
+## Run 13 — 2026-02-09
+**Task:** 1.2 Implement Tauri app state and initialization
+**What was done:** Created `src-tauri/src/state.rs` with `AppState` struct that wraps `AppContext` instances for all 4 networks (Mainnet required, Testnet/Devnet/Regtest optional). Replicates the initialization sequence from the egui `AppState::new()`: creates app data directory, copies `.env.example`, initializes logging, opens and migrates SQLite database (schema v27), loads settings, creates `TaskManager`, and creates `AppContext` per network (which internally initializes SDK, loads system data contracts, creates Core RPC client, loads wallets from DB, creates SPV manager, and bootstraps wallets). Added `dash-evo-tool` and `dash-sdk` as direct dependencies in `src-tauri/Cargo.toml`. Added `NetworkDto::from_network()`/`to_network()` conversion methods. Created two new IPC commands: `get_network_info` (returns active network + available networks) and `switch_network` (changes active network). Integrated `AppState::init()` into Tauri's `setup()` hook with `app.manage()`. All checks pass: Rust (fmt, clippy, 33 tests), Frontend (lint, typecheck, 1 test).
+**Files changed:** src-tauri/Cargo.toml, src-tauri/src/state.rs (new), src-tauri/src/main.rs, src-tauri/src/dto/common.rs, tasks.md, activity.md
+**Tests added:** 3 new Rust tests (context_for_network_covers_all_variants, default_settings_network_is_dash, network_info_serializes_with_camel_case)
+**Sub-tasks created:** 0

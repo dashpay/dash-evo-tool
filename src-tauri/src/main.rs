@@ -2,10 +2,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod dto;
+pub mod state;
 
+use dto::NetworkDto;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Typescript;
+use state::AppState;
+use tauri::Manager;
 use tauri_specta::{collect_commands, collect_events, Builder, Event};
 
 /// A sample DTO demonstrating tauri-specta type generation.
@@ -20,6 +24,16 @@ pub struct GreetResponse {
 pub struct BackendNotification {
     pub title: String,
     pub body: String,
+}
+
+/// Network availability info returned to the frontend.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkInfo {
+    /// Currently active network.
+    pub active_network: NetworkDto,
+    /// All networks that have valid configurations.
+    pub available_networks: Vec<NetworkDto>,
 }
 
 #[tauri::command]
@@ -40,9 +54,44 @@ async fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Get the current network state: active network and available networks.
+#[tauri::command]
+#[specta::specta]
+fn get_network_info(state: tauri::State<'_, AppState>) -> NetworkInfo {
+    NetworkInfo {
+        active_network: NetworkDto::from_network(state.active_network()),
+        available_networks: state
+            .available_networks()
+            .into_iter()
+            .map(NetworkDto::from_network)
+            .collect(),
+    }
+}
+
+/// Switch the active network. Returns `Ok(())` on success or an error if
+/// the requested network has no valid configuration.
+#[tauri::command]
+#[specta::specta]
+fn switch_network(network: NetworkDto, state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let net = network.to_network();
+    if state.switch_network(net) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Network {:?} is not available — check your .env configuration.",
+            network
+        ))
+    }
+}
+
 fn main() {
     let builder = Builder::<tauri::Wry>::new()
-        .commands(collect_commands![greet, get_app_version])
+        .commands(collect_commands![
+            greet,
+            get_app_version,
+            get_network_info,
+            switch_network,
+        ])
         .events(collect_events![BackendNotification]);
 
     #[cfg(debug_assertions)]
@@ -59,6 +108,23 @@ fn main() {
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
+
+            // Initialize the full application state (database, AppContexts, etc.)
+            match AppState::init() {
+                Ok(app_state) => {
+                    app.manage(app_state);
+                    tracing::info!("Tauri app setup complete — AppState initialized.");
+                }
+                Err(e) => {
+                    // Log the error. The app will start but commands that need
+                    // AppState will fail gracefully.
+                    tracing::error!("Failed to initialize AppState: {e}");
+                    eprintln!("FATAL: Failed to initialize AppState: {e}");
+                    // Still return Ok so Tauri can show an error in the UI
+                    // rather than crashing silently.
+                }
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -110,5 +176,16 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"title\":\"Test\""));
         assert!(json.contains("\"body\":\"Body\""));
+    }
+
+    #[test]
+    fn network_info_serializes_with_camel_case() {
+        let info = NetworkInfo {
+            active_network: NetworkDto::Dash,
+            available_networks: vec![NetworkDto::Dash, NetworkDto::Testnet],
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"activeNetwork\""));
+        assert!(json.contains("\"availableNetworks\""));
     }
 }

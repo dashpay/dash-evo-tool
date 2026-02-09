@@ -1,5 +1,6 @@
 //! Common DTO types shared across domains.
 
+use dash_sdk::dpp::dashcore::Network;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -11,6 +12,29 @@ pub enum NetworkDto {
     Testnet,
     Devnet,
     Regtest,
+}
+
+impl NetworkDto {
+    /// Convert from the Dash SDK `Network` enum.
+    pub fn from_network(network: Network) -> Self {
+        match network {
+            Network::Dash => Self::Dash,
+            Network::Testnet => Self::Testnet,
+            Network::Devnet => Self::Devnet,
+            Network::Regtest => Self::Regtest,
+            _ => Self::Dash, // Fallback for any future variants
+        }
+    }
+
+    /// Convert to the Dash SDK `Network` enum.
+    pub fn to_network(self) -> Network {
+        match self {
+            Self::Dash => Network::Dash,
+            Self::Testnet => Network::Testnet,
+            Self::Devnet => Network::Devnet,
+            Self::Regtest => Network::Regtest,
+        }
+    }
 }
 
 /// A key-value pair for displaying structured data.

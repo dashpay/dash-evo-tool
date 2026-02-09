@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -8,7 +8,7 @@ import {
   RefreshCw,
   Wallet,
 } from "lucide-react";
-import { generateMnemonic } from "@scure/bip39";
+import { entropyToMnemonic } from "@scure/bip39";
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
 import { wordlist as spanishWordlist } from "@scure/bip39/wordlists/spanish.js";
 import { wordlist as frenchWordlist } from "@scure/bip39/wordlists/french.js";
@@ -30,6 +30,10 @@ import { CopyButton } from "@/components/shared/CopyButton";
 import { commands } from "@/bindings";
 import { cn } from "@/lib/utils";
 import { useWalletStore } from "@/stores/walletStore";
+import {
+  EntropyGrid,
+  type EntropyGridRef,
+} from "@/components/wallet/EntropyGrid";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -100,6 +104,7 @@ export function CreateWalletScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [saving, setSaving] = useState(false);
   const [createdSeedHash, setCreatedSeedHash] = useState<string | null>(null);
+  const entropyGridRef = useRef<EntropyGridRef>(null);
 
   const passwordStrength = useMemo(
     () => estimatePasswordStrength(password),
@@ -107,10 +112,13 @@ export function CreateWalletScreen() {
   );
 
   const handleGenerate = useCallback(() => {
-    const mnemonicStr = generateMnemonic(
-      WORDLISTS[language],
-      ENTROPY_BITS[wordCount],
-    );
+    const entropyBytes = ENTROPY_BITS[wordCount] / 8;
+    // Get combined entropy: user-modified grid XORed with fresh WebCrypto randomness
+    const fullEntropy = entropyGridRef.current?.getCombinedEntropy();
+    const entropy = fullEntropy
+      ? fullEntropy.slice(0, entropyBytes)
+      : crypto.getRandomValues(new Uint8Array(entropyBytes));
+    const mnemonicStr = entropyToMnemonic(entropy, WORDLISTS[language]);
     setMnemonic(mnemonicStr.split(" "));
     setStep("backup");
     setWroteItDown(false);
@@ -219,6 +227,7 @@ export function CreateWalletScreen() {
             language={language}
             onLanguageChange={setLanguage}
             onGenerate={handleGenerate}
+            entropyGridRef={entropyGridRef}
           />
         )}
 
@@ -313,22 +322,26 @@ function GenerateStep({
   language,
   onLanguageChange,
   onGenerate,
+  entropyGridRef,
 }: {
   wordCount: WordCount;
   onWordCountChange: (count: WordCount) => void;
   language: Bip39Language;
   onLanguageChange: (lang: Bip39Language) => void;
   onGenerate: () => void;
+  entropyGridRef: React.RefObject<EntropyGridRef | null>;
 }) {
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-semibold mb-1">Generate Seed Phrase</h2>
         <p className="text-sm text-muted-foreground">
-          Your seed phrase is the master key to your wallet. It will be generated
-          using cryptographically secure random data.
+          Move your cursor over the grid below to contribute extra randomness,
+          then configure and generate your seed phrase.
         </p>
       </div>
+
+      <EntropyGrid ref={entropyGridRef} />
 
       <div className="flex gap-4">
         <div className="space-y-2">

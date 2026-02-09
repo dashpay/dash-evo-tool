@@ -960,7 +960,7 @@
   - [x] **3.6b** Add transaction size estimation display to `SingleKeySendScreen`: show estimated fee, UTXO input count, and transaction byte size below the amount input. Add warning banner when >100 UTXOs needed. Port `estimate_fee()` logic from egui `single_key_send_screen.rs` lines 145-196 (can be done client-side from UTXO data already in the store). (P3)
   - [x] **3.6c** Add asset lock proof details to `AssetLockDetailScreen`: extend `AssetLockDto` to include proof type and proof detail fields (InstantLock TxID/Output Index for Instant, Core Chain Locked Height/OutPoint for Chain), add proof hex display with Copy button, and add collapsible "View Raw Proof Details" section. Port from egui `asset_lock_detail_screen.rs` lines 130-208. (P2)
   - [x] **3.6d** Add BIP39 language selection to `CreateWalletScreen`: add Language dropdown (English, Spanish, French, Italian, Portuguese) before word count selector, dynamically import the selected language wordlist from `@scure/bip39/wordlists/`. Default to English. (P3)
-  - [ ] **3.6e** Add entropy grid visualization to `CreateWalletScreen`: create an `EntropyGrid` component that visualizes random entropy and optionally allows user input. Show below the Generate button. Mix user-contributed entropy with WebCrypto randomness. Port concept from egui `U256EntropyGrid`. (P3)
+  - [x] **3.6e** Add entropy grid visualization to `CreateWalletScreen`: create an `EntropyGrid` component that visualizes random entropy and optionally allows user input. Show below the Generate button. Mix user-contributed entropy with WebCrypto randomness. Port concept from egui `U256EntropyGrid`. (P3)
 
 ---
 
@@ -1300,7 +1300,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 63 |
-| Remaining | 28 |
+| Completed | 64 |
+| Remaining | 27 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

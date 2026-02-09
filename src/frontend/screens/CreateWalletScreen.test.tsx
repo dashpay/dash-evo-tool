@@ -38,7 +38,7 @@ vi.mock("sonner", () => ({
 
 // Mock @scure/bip39
 vi.mock("@scure/bip39", () => ({
-  generateMnemonic: vi.fn(
+  entropyToMnemonic: vi.fn(
     () =>
       "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
   ),
@@ -65,7 +65,7 @@ vi.mock("@scure/bip39/wordlists/portuguese.js", () => ({
 }));
 
 import { commands } from "@/bindings";
-import { generateMnemonic } from "@scure/bip39";
+import { entropyToMnemonic } from "@scure/bip39";
 
 describe("CreateWalletScreen", () => {
   beforeEach(() => {
@@ -142,16 +142,16 @@ describe("CreateWalletScreen", () => {
     expect(screen.getByText("Language")).toBeInTheDocument();
   });
 
-  it("passes selected language wordlist to generateMnemonic", async () => {
+  it("passes entropy and wordlist to entropyToMnemonic", async () => {
     const user = userEvent.setup();
     render(<CreateWalletScreen />);
     // Default is English — click Generate
     await user.click(
       screen.getByRole("button", { name: /generate seed phrase/i }),
     );
-    expect(generateMnemonic).toHaveBeenCalledWith(
+    expect(entropyToMnemonic).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
       ["abandon", "ability", "able", "about"],
-      expect.any(Number),
     );
   });
 
@@ -447,5 +447,60 @@ describe("CreateWalletScreen", () => {
     expect(
       screen.getByRole("list", { name: /seed phrase words/i }),
     ).toBeInTheDocument();
+  });
+
+  // ─── Entropy Grid Integration ──────────────────────────────────
+
+  it("renders entropy grid in Generate step", () => {
+    render(<CreateWalletScreen />);
+    expect(
+      screen.getByRole("grid", { name: /entropy grid/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows entropy grid instruction text", () => {
+    render(<CreateWalletScreen />);
+    expect(
+      screen.getByText(/click and drag across the grid to add randomness/i),
+    ).toBeInTheDocument();
+  });
+
+  it("entropy grid disappears after generating", async () => {
+    const user = userEvent.setup();
+    render(<CreateWalletScreen />);
+    expect(
+      screen.getByRole("grid", { name: /entropy grid/i }),
+    ).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: /generate seed phrase/i }),
+    );
+    // Now we're on backup step — grid should not be rendered
+    expect(
+      screen.queryByRole("grid", { name: /entropy grid/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("entropy grid reappears when going back from Backup", async () => {
+    const user = userEvent.setup();
+    render(<CreateWalletScreen />);
+    await user.click(
+      screen.getByRole("button", { name: /generate seed phrase/i }),
+    );
+    await user.click(screen.getByRole("button", { name: /^back$/i }));
+    expect(
+      screen.getByRole("grid", { name: /entropy grid/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("passes Uint8Array entropy to entropyToMnemonic", async () => {
+    const user = userEvent.setup();
+    render(<CreateWalletScreen />);
+    await user.click(
+      screen.getByRole("button", { name: /generate seed phrase/i }),
+    );
+    const [entropyArg] = vi.mocked(entropyToMnemonic).mock.calls[0];
+    expect(entropyArg).toBeInstanceOf(Uint8Array);
+    // Default word count is 24 → 256 bits → 32 bytes
+    expect(entropyArg.length).toBe(32);
   });
 });

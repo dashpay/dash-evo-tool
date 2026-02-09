@@ -300,7 +300,7 @@ pub fn qualified_identity_to_dto(qi: &QualifiedIdentity) -> QualifiedIdentityDto
 // Helper: Parse identifier from hex string
 // ---------------------------------------------------------------------------
 
-fn parse_identifier(hex_str: &str) -> Result<Identifier, String> {
+pub fn parse_identifier(hex_str: &str) -> Result<Identifier, String> {
     let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex identifier: {e}"))?;
     Identifier::from_bytes(&bytes).map_err(|e| format!("Invalid identifier: {e}"))
 }

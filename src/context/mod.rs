@@ -382,6 +382,11 @@ impl AppContext {
 
     /// Get a wallet Arc reference by its seed hash.
     ///
+    /// Get the network this context was configured for.
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
     /// Returns `None` if the wallet is not found. Used by the Tauri IPC layer
     /// to look up wallets by their serializable seed hash identifiers.
     pub fn wallet_by_seed_hash(&self, seed_hash: &WalletSeedHash) -> Option<Arc<RwLock<Wallet>>> {

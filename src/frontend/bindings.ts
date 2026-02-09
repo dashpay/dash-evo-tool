@@ -1170,6 +1170,615 @@ async tokenSaveOrder(input: SaveTokenOrderInput) : Promise<Result<null, string>>
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Load a DashPay profile for an identity.
+ */
+async dashpayLoadProfile(input: LoadProfileInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_load_profile", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update a DashPay profile.
+ */
+async dashpayUpdateProfile(input: UpdateProfileInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_update_profile", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load contacts for an identity.
+ */
+async dashpayLoadContacts(input: LoadContactsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_load_contacts", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load contact requests for an identity.
+ */
+async dashpayLoadContactRequests(input: LoadContactRequestsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_load_contact_requests", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch a contact's public profile.
+ */
+async dashpayFetchContactProfile(input: FetchContactProfileInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_fetch_contact_profile", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Search for DashPay profiles by keyword.
+ */
+async dashpaySearchProfiles(input: SearchProfilesInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_search_profiles", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send a contact request to a username.
+ */
+async dashpaySendContactRequest(input: SendContactRequestInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_send_contact_request", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send a contact request with QR auto-accept proof.
+ */
+async dashpaySendContactRequestWithProof(input: SendContactRequestWithProofInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_send_contact_request_with_proof", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Accept a contact request.
+ */
+async dashpayAcceptContactRequest(input: AcceptContactRequestInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_accept_contact_request", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Reject a contact request.
+ */
+async dashpayRejectContactRequest(input: RejectContactRequestInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_reject_contact_request", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load payment history for an identity.
+ */
+async dashpayLoadPaymentHistory(input: LoadPaymentHistoryInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_load_payment_history", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send a payment to a contact.
+ */
+async dashpaySendPaymentToContact(input: SendPaymentToContactInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_send_payment_to_contact", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update contact info (nickname, note, hidden status).
+ */
+async dashpayUpdateContactInfo(input: UpdateContactInfoInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_update_contact_info", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Register DashPay receiving addresses for incoming payment detection.
+ */
+async dashpayRegisterAddresses(input: RegisterDashPayAddressesInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_register_addresses", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load a locally stored DashPay profile.
+ */
+async dashpayDbLoadProfile(identityId: string) : Promise<Result<StoredProfileDto | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_load_profile", { identityId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save a DashPay profile locally.
+ */
+async dashpayDbSaveProfile(identityId: string, displayName: string | null, bio: string | null, avatarUrl: string | null, publicMessage: string | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_save_profile", { identityId, displayName, bio, avatarUrl, publicMessage }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load all locally stored contacts for an identity.
+ */
+async dashpayDbLoadContacts(identityId: string) : Promise<Result<StoredContactDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_load_contacts", { identityId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load pending contact requests for an identity.
+ */
+async dashpayDbLoadPendingRequests(identityId: string, requestType: string) : Promise<Result<StoredContactRequestDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_load_pending_requests", { identityId, requestType }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load payment history from local database.
+ */
+async dashpayDbLoadPayments(identityId: string, limit: number) : Promise<Result<StoredPaymentDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_load_payments", { identityId, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load private contact info (nickname, notes, hidden).
+ */
+async dashpayDbLoadContactPrivateInfo(ownerIdentityId: string, contactIdentityId: string) : Promise<Result<ContactPrivateInfoDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_load_contact_private_info", { ownerIdentityId, contactIdentityId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save private contact info.
+ */
+async dashpayDbSaveContactPrivateInfo(ownerIdentityId: string, contactIdentityId: string, nickname: string, notes: string, isHidden: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_save_contact_private_info", { ownerIdentityId, contactIdentityId, nickname, notes, isHidden }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set contact hidden status.
+ */
+async dashpayDbSetContactHidden(ownerIdentityId: string, contactIdentityId: string, isHidden: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_set_contact_hidden", { ownerIdentityId, contactIdentityId, isHidden }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save a DashPay profile's avatar bytes.
+ */
+async dashpayDbSaveAvatarBytes(identityId: string, avatarBytes: number[] | null) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_db_save_avatar_bytes", { identityId, avatarBytes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Query all contested DPNS names and vote contenders.
+ */
+async contestedQueryDpnsContests() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("contested_query_dpns_contests");
+},
+/**
+ * Vote on one or more contested DPNS names.
+ */
+async contestedVoteOnDpnsNames(input: VoteOnDpnsNamesInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contested_vote_on_dpns_names", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Schedule DPNS votes for future execution.
+ */
+async contestedScheduleDpnsVotes(input: ScheduleDpnsVotesInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contested_schedule_dpns_votes", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Cast a single scheduled vote immediately.
+ */
+async contestedCastScheduledVote(input: CastScheduledVoteInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contested_cast_scheduled_vote", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Clear all scheduled votes.
+ */
+async contestedClearAllScheduledVotes() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("contested_clear_all_scheduled_votes");
+},
+/**
+ * Clear only executed scheduled votes.
+ */
+async contestedClearExecutedScheduledVotes() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("contested_clear_executed_scheduled_votes");
+},
+/**
+ * Delete a single scheduled vote.
+ */
+async contestedDeleteScheduledVote(input: DeleteScheduledVoteInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contested_delete_scheduled_vote", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get all scheduled votes from local database.
+ */
+async contestedGetScheduledVotes() : Promise<Result<ScheduledVoteDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contested_get_scheduled_votes") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch current epoch info from Platform.
+ */
+async platformCurrentEpochInfo() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("platform_current_epoch_info");
+},
+/**
+ * Fetch total credits on Platform.
+ */
+async platformTotalCredits() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("platform_total_credits");
+},
+/**
+ * Fetch current version voting state.
+ */
+async platformVersionVotingState() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("platform_version_voting_state");
+},
+/**
+ * Fetch current validator set info.
+ */
+async platformValidatorSetInfo() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("platform_validator_set_info");
+},
+/**
+ * Fetch current withdrawals in queue.
+ */
+async platformWithdrawalsInQueue() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("platform_withdrawals_in_queue");
+},
+/**
+ * Fetch recently completed withdrawals.
+ */
+async platformRecentlyCompletedWithdrawals() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("platform_recently_completed_withdrawals");
+},
+/**
+ * Fetch basic platform info (version, chain lock height, network).
+ */
+async platformBasicInfo() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("platform_basic_info");
+},
+/**
+ * Fetch balance for a Platform address.
+ */
+async platformFetchAddressBalance(input: FetchAddressBalanceInput) : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("platform_fetch_address_balance", { input });
+},
+/**
+ * Wipe all platform data (devnet only).
+ */
+async systemWipePlatformData() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("system_wipe_platform_data");
+},
+/**
+ * Update the theme preference.
+ */
+async systemUpdateTheme(theme: ThemeModeDto) : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("system_update_theme", { theme });
+},
+/**
+ * Fetch a masternode list diff between two block heights.
+ */
+async mnlistFetchDiff(input: FetchMnListDiffInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("mnlist_fetch_diff", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch quorum rotation info.
+ */
+async mnlistFetchQrInfo(input: FetchQrInfoInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("mnlist_fetch_qr_info", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch quorum rotation info with included DMLs.
+ */
+async mnlistFetchQrInfoWithDmls(input: FetchQrInfoInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("mnlist_fetch_qr_info_with_dmls", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch chain lock signatures over a block height range.
+ */
+async mnlistFetchChainLocks(input: FetchChainLocksInput) : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("mnlist_fetch_chain_locks", { input });
+},
+/**
+ * Fetch a chain of MnList diffs for validation.
+ */
+async mnlistFetchDiffsChain(input: FetchDiffsChainInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("mnlist_fetch_diffs_chain", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Generate a GroveSTARK proof.
+ */
+async grovestarkGenerateProof(input: GenerateGroveStarkProofInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("grovestark_generate_proof", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Verify a GroveSTARK proof.
+ */
+async grovestarkVerifyProof(input: VerifyGroveStarkProofInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("grovestark_verify_proof", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Broadcast a state transition to Platform.
+ */
+async broadcastStateTransition(input: BroadcastStateTransitionInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("broadcast_state_transition", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the current application settings.
+ */
+async settingsGet() : Promise<Result<SettingsDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_get") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update the main password.
+ */
+async settingsUpdatePassword(input: UpdateMainPasswordInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_password", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update Dash Core execution settings.
+ */
+async settingsUpdateDashCore(input: UpdateDashCoreSettingsInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_dash_core", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update the ZMQ disable setting.
+ */
+async settingsUpdateDisableZmq(disable: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_disable_zmq", { disable }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update onboarding completed flag.
+ */
+async settingsUpdateOnboardingCompleted(completed: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_onboarding_completed", { completed }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update show evonode tools setting.
+ */
+async settingsUpdateShowEvonodeTools(show: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_show_evonode_tools", { show }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update user mode (Beginner/Advanced).
+ */
+async settingsUpdateUserMode(mode: UserModeDto) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_user_mode", { mode }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update close Dash-Qt on exit setting.
+ */
+async settingsUpdateCloseDashQtOnExit(closeOnExit: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_close_dash_qt_on_exit", { closeOnExit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update auto-start SPV setting.
+ */
+async settingsUpdateAutoStartSpv(autoStart: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_auto_start_spv", { autoStart }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get auto-start SPV setting.
+ */
+async settingsGetAutoStartSpv() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_get_auto_start_spv") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Check if developer mode is enabled.
+ */
+async contextIsDeveloperMode() : Promise<boolean> {
+    return await TAURI_INVOKE("context_is_developer_mode");
+},
+/**
+ * Enable or disable developer mode.
+ */
+async contextEnableDeveloperMode(enable: boolean) : Promise<void> {
+    await TAURI_INVOKE("context_enable_developer_mode", { enable });
+},
+/**
+ * Get the current fee multiplier (in permille: 1000 = 1x, 2000 = 2x).
+ */
+async contextGetFeeMultiplier() : Promise<number> {
+    return await TAURI_INVOKE("context_get_fee_multiplier");
+},
+/**
+ * Set the fee multiplier (in permille: 1000 = 1x, 2000 = 2x).
+ */
+async contextSetFeeMultiplier(multiplier: number) : Promise<void> {
+    await TAURI_INVOKE("context_set_fee_multiplier", { multiplier });
+},
+/**
+ * Get the current network as a string (for display/routing).
+ */
+async contextGetNetwork() : Promise<NetworkDto> {
+    return await TAURI_INVOKE("context_get_network");
 }
 }
 
@@ -1202,6 +1811,10 @@ zmqIsLockedTransactionEvent: "zmq-is-locked-transaction-event"
 
 /** user-defined types **/
 
+/**
+ * Input for accepting a contact request.
+ */
+export type AcceptContactRequestInput = { identityId: string; requestId: string }
 /**
  * Input for adding a key to an identity.
  */
@@ -1279,6 +1892,14 @@ identityId: string;
  */
 keyId: number }
 /**
+ * Input for broadcasting a state transition.
+ */
+export type BroadcastStateTransitionInput = {
+/**
+ * Hex-encoded state transition bytes.
+ */
+stateTransitionHex: string }
+/**
  * Input for burning tokens.
  */
 export type BurnTokensInput = {
@@ -1295,6 +1916,10 @@ amount: string;
  */
 groupInfo: JsonValue | null }
 /**
+ * Input for casting a single scheduled vote.
+ */
+export type CastScheduledVoteInput = { vote: ScheduledVoteDto }
+/**
  * Input for claiming tokens.
  */
 export type ClaimTokensInput = {
@@ -1306,6 +1931,10 @@ operation: TokenOperationInput;
  * Distribution type as a string (e.g., "Perpetual").
  */
 distributionType: string }
+/**
+ * Contact private info (nickname, notes, hidden).
+ */
+export type ContactPrivateInfoDto = { nickname: string; notes: string; isHidden: boolean }
 /**
  * Brief contract info for list views.
  */
@@ -1326,6 +1955,10 @@ documentTypeCount: number;
  * Number of tokens.
  */
 tokenCount: number }
+/**
+ * Core backend mode DTO.
+ */
+export type CoreBackendModeDto = "spv" | "rpc"
 /**
  * Input for creating a registration asset lock.
  */
@@ -1432,6 +2065,10 @@ export type DeleteIdentityInput = {
  */
 identityId: string }
 /**
+ * Input for deleting a single scheduled vote.
+ */
+export type DeleteScheduledVoteInput = { voterId: string; contestedName: string }
+/**
  * Input for destroying frozen funds.
  */
 export type DestroyFrozenFundsInput = {
@@ -1447,6 +2084,10 @@ frozenIdentityId: string;
  * Optional group info as JSON.
  */
 groupInfo: JsonValue | null }
+/**
+ * A single diff chain entry.
+ */
+export type DiffChainEntry = { baseHeight: number; baseHash: string; height: number; hash: string }
 /**
  * Input for disabling keys on an identity.
  */
@@ -1521,6 +2162,18 @@ contractId: string;
  */
 identityId: string }
 /**
+ * Input for fetching an address balance.
+ */
+export type FetchAddressBalanceInput = { address: string }
+/**
+ * Input for fetching chain locks over a range.
+ */
+export type FetchChainLocksInput = { baseBlockHeight: number; blockHeight: number }
+/**
+ * Input for fetching a contact's profile.
+ */
+export type FetchContactProfileInput = { identityId: string; contactId: string }
+/**
  * Input for fetching contracts by IDs.
  */
 export type FetchContractsInput = {
@@ -1536,6 +2189,10 @@ export type FetchContractsWithDescriptionsInput = {
  * Contract IDs (hex) to fetch with descriptions.
  */
 contractIds: string[] }
+/**
+ * Input for fetching a chain of diffs.
+ */
+export type FetchDiffsChainInput = { chain: DiffChainEntry[] }
 /**
  * Input for fetching documents.
  */
@@ -1585,6 +2242,10 @@ orderByClauses: OrderByClauseDto[];
  */
 startAfter: string | null }
 /**
+ * Input for fetching MnList diff.
+ */
+export type FetchMnListDiffInput = { baseBlockHeight: number; baseBlockHash: string; blockHeight: number; blockHash: string; validateQuorums: boolean }
+/**
  * Input for fetching platform address balances.
  */
 export type FetchPlatformAddressBalancesInput = {
@@ -1596,6 +2257,10 @@ walletSeedHash: string;
  * Sync mode to use.
  */
 syncMode: PlatformSyncModeDto }
+/**
+ * Input for fetching QR info.
+ */
+export type FetchQrInfoInput = { knownBlockHashes: string[]; blockHash: string }
 /**
  * Input for fetching a token by contract ID.
  */
@@ -1648,6 +2313,10 @@ destination: string;
  * Whether fees are deducted from the output amount.
  */
 feeDeductFromOutput: boolean }
+/**
+ * Input for generating a GroveSTARK proof.
+ */
+export type GenerateGroveStarkProofInput = { identityId: string; contractId: string; documentType: string; documentId: string; keyId: number; privateKeyHex: string; publicKeyHex: string }
 /**
  * Input for generating a receive address.
  */
@@ -1730,6 +2399,14 @@ export type IdentityTokenIdentifierDto = { identityId: string; tokenId: string }
 export type IdentityTypeDto = "user" | "masternode" | "evonode"
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
 /**
+ * Input for loading contact requests.
+ */
+export type LoadContactRequestsInput = { identityId: string }
+/**
+ * Input for loading contacts.
+ */
+export type LoadContactsInput = { identityId: string }
+/**
  * Input for loading an existing identity by ID or from a wallet.
  */
 export type LoadIdentityInput = {
@@ -1769,6 +2446,14 @@ deriveKeysFromWallets: boolean;
  * Optional wallet seed hash to associate with.
  */
 selectedWalletSeedHash: string | null }
+/**
+ * Input for loading payment history.
+ */
+export type LoadPaymentHistoryInput = { identityId: string }
+/**
+ * Input for loading a DashPay profile.
+ */
+export type LoadProfileInput = { identityId: string }
 /**
  * Input for minting tokens.
  */
@@ -2051,6 +2736,10 @@ walletSeedHash: string;
  */
 platformSyncMode: PlatformSyncModeDto | null }
 /**
+ * Input for registering DashPay addresses.
+ */
+export type RegisterDashPayAddressesInput = { identityId: string }
+/**
  * Input for registering a new data contract.
  */
 export type RegisterDataContractInput = {
@@ -2101,6 +2790,10 @@ identityId: string;
  * Key ID for signing.
  */
 keyId: number }
+/**
+ * Input for rejecting a contact request.
+ */
+export type RejectContactRequestInput = { identityId: string; requestId: string }
 /**
  * Input for removing a contract.
  */
@@ -2242,6 +2935,14 @@ export type SaveTokenOrderInput = {
  */
 tokenIds: IdentityTokenIdentifierDto[] }
 /**
+ * Input for scheduling DPNS votes.
+ */
+export type ScheduleDpnsVotesInput = { votes: ScheduledVoteDto[] }
+/**
+ * A scheduled DPNS vote DTO.
+ */
+export type ScheduledVoteDto = { contestedName: string; voterId: string; choice: VoteChoiceDto; unixTimestamp: number; executedSuccessfully: boolean }
+/**
  * Emitted when a scheduled vote is automatically cast.
  */
 export type ScheduledVoteExecutedEvent = {
@@ -2298,6 +2999,10 @@ walletSeedHash: string;
  */
 identityIndex: number }
 /**
+ * Input for searching profiles by keyword.
+ */
+export type SearchProfilesInput = { searchQuery: string }
+/**
  * Input for selecting a wallet.
  */
 export type SelectWalletInput = {
@@ -2305,6 +3010,30 @@ export type SelectWalletInput = {
  * Which wallet to select: HD (by seed hash), SingleKey (by key hash), or None (deselect).
  */
 selected: WalletRefDto | null }
+/**
+ * Input for sending a contact request.
+ */
+export type SendContactRequestInput = { identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+signingKeyId: number;
+/**
+ * Recipient username (with or without .dash).
+ */
+toUsername: string; accountLabel: string | null }
+/**
+ * Input for sending a contact request with QR auto-accept proof.
+ */
+export type SendContactRequestWithProofInput = { identityId: string; signingKeyId: number; toIdentityId: string; accountLabel: string | null;
+/**
+ * Auto-accept proof data from QR scan.
+ */
+proofIdentityId: string; proofKeyHex: string; proofAccountReference: number; proofExpiresAt: number }
+/**
+ * Input for sending a payment to a contact.
+ */
+export type SendPaymentToContactInput = { identityId: string; contactId: string; amountDash: number; memo: string | null }
 /**
  * Input for sending a payment from a single-key wallet.
  */
@@ -2450,6 +3179,10 @@ walletSeedHash: string;
  */
 alias: string | null }
 /**
+ * Full application settings DTO.
+ */
+export type SettingsDto = { network: NetworkDto; themeMode: ThemeModeDto; overwriteDashConf: boolean; disableZmq: boolean; onboardingCompleted: boolean; showEvonodeTools: boolean; userMode: UserModeDto; closeDashQtOnExit: boolean; coreBackendMode: CoreBackendModeDto; hasPassword: boolean; dashQtPath: string | null }
+/**
  * Serializable summary of a single-key wallet.
  * Replaces `SingleKeyWallet` for IPC. Does NOT include private key material.
  */
@@ -2535,6 +3268,22 @@ dashQtPath: string;
  */
 overwriteDashConf: boolean }
 /**
+ * Stored DashPay contact from local database.
+ */
+export type StoredContactDto = { ownerIdentityId: string; contactIdentityId: string; username: string | null; displayName: string | null; avatarUrl: string | null; publicMessage: string | null; contactStatus: string; createdAt: number; updatedAt: number; lastSeen: number | null }
+/**
+ * Stored contact request from local database.
+ */
+export type StoredContactRequestDto = { id: number; fromIdentityId: string; toIdentityId: string; toUsername: string | null; accountLabel: string | null; requestType: string; status: string; createdAt: number; respondedAt: number | null; expiresAt: number | null }
+/**
+ * Stored payment record from local database.
+ */
+export type StoredPaymentDto = { id: number; txId: string; fromIdentityId: string; toIdentityId: string; amount: number; memo: string | null; paymentType: string; status: string; createdAt: number; confirmedAt: number | null }
+/**
+ * Stored DashPay profile from local database.
+ */
+export type StoredProfileDto = { identityId: string; displayName: string | null; bio: string | null; avatarUrl: string | null; publicMessage: string | null; createdAt: number; updatedAt: number }
+/**
  * Emitted when a backend task fails.
  */
 export type TaskErrorEvent = {
@@ -2577,6 +3326,10 @@ resultType: string;
  * The serialized result payload. `null` for `None` and `Refresh` results.
  */
 payload: JsonValue | null }
+/**
+ * Theme mode DTO.
+ */
+export type ThemeModeDto = "light" | "dark" | "system"
 /**
  * Shared input pattern for token operations that require identity, contract,
  * token position, and signing key.
@@ -2723,6 +3476,14 @@ unfreezeIdentityId: string;
  */
 groupInfo: JsonValue | null }
 /**
+ * Input for updating contact info.
+ */
+export type UpdateContactInfoInput = { identityId: string; contactId: string; nickname: string | null; note: string | null; isHidden: boolean; acceptedAccounts: number[] }
+/**
+ * Input for updating Dash Core execution settings.
+ */
+export type UpdateDashCoreSettingsInput = { customDashQtPath: string | null; overwriteDashConf: boolean }
+/**
  * Input for updating an existing data contract.
  */
 export type UpdateDataContractInput = {
@@ -2738,6 +3499,14 @@ identityId: string;
  * Key ID to use for signing.
  */
 keyId: number }
+/**
+ * Input for updating the main password.
+ */
+export type UpdateMainPasswordInput = { saltHex: string; nonceHex: string; passwordCheckHex: string }
+/**
+ * Input for updating a DashPay profile.
+ */
+export type UpdateProfileInput = { identityId: string; displayName: string | null; bio: string | null; avatarUrl: string | null }
 /**
  * Input for updating token configuration.
  */
@@ -2762,6 +3531,58 @@ publicNote: string | null;
  * Optional group info as JSON.
  */
 groupInfo: JsonValue | null }
+/**
+ * User experience mode DTO.
+ */
+export type UserModeDto = "beginner" | "advanced"
+/**
+ * Input for verifying a GroveSTARK proof.
+ */
+export type VerifyGroveStarkProofInput = {
+/**
+ * Serialized proof bytes as hex.
+ */
+proofHex: string;
+/**
+ * Public inputs.
+ */
+stateRootHex: string; contractIdHex: string; messageHashHex: string; timestamp: number;
+/**
+ * Metadata.
+ */
+createdAt: number; proofSize: number; generationTimeMs: number; securityLevel: number }
+/**
+ * A vote choice for DPNS contested names.
+ */
+export type VoteChoiceDto =
+/**
+ * Vote to lock the name (no one gets it).
+ */
+{ towardsIdentity: { identityId: string } } |
+/**
+ * Abstain from voting.
+ */
+"abstain" |
+/**
+ * Vote to lock the name.
+ */
+"lock"
+/**
+ * A single vote entry: (contested name, vote choice).
+ */
+export type VoteEntry = { contestedName: string; choice: VoteChoiceDto }
+/**
+ * Input for voting on DPNS names.
+ */
+export type VoteOnDpnsNamesInput = {
+/**
+ * List of (name, choice) pairs to vote on.
+ */
+votes: VoteEntry[];
+/**
+ * List of voter identity IDs.
+ */
+voterIdentityIds: string[] }
 /**
  * An address within an HD wallet.
  */

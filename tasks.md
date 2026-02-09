@@ -216,7 +216,7 @@
   - **Direct DB:** get_contracts (local), get_contract_by_id, set_contract_alias, remove_token, identity_token_balances
   Write Rust unit tests.
 
-- [ ] **1.7 Implement DashPay, DPNS & remaining IPC commands** (P1)
+- [x] **1.7 Implement DashPay, DPNS & remaining IPC commands** (P1)
   Create commands for:
   - **DashPayTask (14 ops):** load_profile, update_profile, load_contacts, load_contact_requests, fetch_contact_profile, search_profiles, send_contact_request, send_contact_request_with_proof, accept_contact_request, reject_contact_request, load_payment_history, send_payment_to_contact, update_contact_info, register_dashpay_addresses
   - **DashPay direct DB (10 ops):** save_dashpay_profile, save_dashpay_contact, save_contact_request, load_contact_private_info, save_contact_private_info, set_contact_hidden, load_pending_contact_requests, load_payment_history (local), save_payment, save_dashpay_profile_avatar_bytes
@@ -727,7 +727,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 17 |
-| Remaining | 45 |
+| Completed | 18 |
+| Remaining | 44 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

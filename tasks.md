@@ -231,7 +231,7 @@
   - **Context (5 ops):** get_network, get_fee_multiplier, set_fee_multiplier, is_developer_mode, enable_developer_mode
   Write Rust unit tests.
 
-- [ ] **1.8 Configure tauri-specta TypeScript type generation** (P1)
+- [x] **1.8 Configure tauri-specta TypeScript type generation** (P1)
   After all commands are implemented, verify that tauri-specta generates complete TypeScript bindings:
   - All command functions exported with correct parameter and return types
   - All DTO types exported as TypeScript interfaces
@@ -727,7 +727,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 18 |
-| Remaining | 44 |
+| Completed | 19 |
+| Remaining | 43 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

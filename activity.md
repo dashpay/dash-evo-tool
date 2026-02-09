@@ -127,3 +127,10 @@
 **Files changed:** src-tauri/src/commands/dashpay.rs (new), src-tauri/src/commands/contested.rs (new), src-tauri/src/commands/platform_info.rs (new), src-tauri/src/commands/system.rs (new), src-tauri/src/commands/settings.rs (new), src-tauri/src/commands/mod.rs, src-tauri/src/commands/identity.rs, src-tauri/src/main.rs, src/context/mod.rs, src/frontend/bindings.ts (auto-generated), tasks.md, activity.md
 **Tests added:** 33 new Rust tests (11 in dashpay.rs, 5 in contested.rs, 1 in platform_info.rs, 13 in system.rs, 5 in settings.rs — all covering DTO serialization, camelCase field verification, and helper validation)
 **Sub-tasks created:** 0
+
+## Run 19 — 2026-02-09
+**Task:** 1.8 Configure tauri-specta TypeScript type generation
+**What was done:** Verified that tauri-specta generates complete TypeScript bindings in `src/frontend/bindings.ts` (3,902 lines). Confirmed: 163 command functions matching all 163 `#[specta::specta]`-annotated Rust commands, 8 typed event listeners (TaskResult, TaskError, ZmqIsLockedTransaction, ZmqChainLockedBlock, ZmqConnectionStatus, SpvStatus, WalletUpdated, ScheduledVoteExecuted), 153 exported TypeScript types covering all DTO interfaces. Bindings pass `tsc --noEmit` cleanly. Wrote comprehensive Vitest test suite (`bindings.test.ts`) with 35 tests covering: command object completeness per domain (identity 23, core 10, wallet 18, contract 10, document 8, token 25, dashpay 23, contested 8, platform_info 8, system 10, settings 15), event listener presence, type structure verification (string unions, DTO field shapes, Result type), and compile-time type import assertions for 32 key types. All checks pass: lint, typecheck, 36 tests (35 new + 1 existing).
+**Files changed:** src/frontend/bindings.test.ts (new), tasks.md, activity.md
+**Tests added:** 35 Vitest tests (command completeness, event completeness, type structure, type import verification)
+**Sub-tasks created:** 0

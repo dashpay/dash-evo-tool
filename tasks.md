@@ -871,7 +871,7 @@
   Reference: `send_screen/mod.rs` (1,725 lines) — this is complex, trace every code path
   Write component tests for form validation. Write Playwright test for send flow.
 
-- [ ] **3.5 Implement single-key wallet send and asset lock screens** (P1)
+- [x] **3.5 Implement single-key wallet send and asset lock screens** (P1)
   Build remaining wallet transaction screens:
   - **Single-key send:** Similar to HD send but with UTXO selection from single-key wallet
   - **Create asset lock:** Wallet selection, amount, script type, unlock conditions
@@ -1225,7 +1225,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 57 |
-| Remaining | 29 |
+| Completed | 58 |
+| Remaining | 28 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

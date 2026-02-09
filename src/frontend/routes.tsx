@@ -13,6 +13,9 @@ import { WalletsScreen } from "@/screens/WalletsScreen";
 import { CreateWalletScreen } from "@/screens/CreateWalletScreen";
 import { ImportWalletScreen } from "@/screens/ImportWalletScreen";
 import { SendScreen } from "@/screens/SendScreen";
+import { SingleKeySendScreen } from "@/screens/SingleKeySendScreen";
+import { CreateAssetLockScreen } from "@/screens/CreateAssetLockScreen";
+import { AssetLockDetailScreen } from "@/screens/AssetLockDetailScreen";
 import { commands } from "@/bindings";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -210,6 +213,24 @@ const walletsSendRoute = createRoute({
   component: SendScreen,
 });
 
+const walletsSingleKeySendRoute = createRoute({
+  getParentRoute: () => walletsRoute,
+  path: "/send-single-key",
+  component: SingleKeySendScreen,
+});
+
+const walletsCreateAssetLockRoute = createRoute({
+  getParentRoute: () => walletsRoute,
+  path: "/asset-locks/create",
+  component: CreateAssetLockScreen,
+});
+
+const walletsAssetLockDetailRoute = createRoute({
+  getParentRoute: () => walletsRoute,
+  path: "/asset-locks/$txid",
+  component: AssetLockDetailScreen,
+});
+
 const toolsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/tools",
@@ -306,6 +327,9 @@ const routeTree = rootRoute.addChildren([
       walletsCreateRoute,
       walletsImportRoute,
       walletsSendRoute,
+      walletsSingleKeySendRoute,
+      walletsCreateAssetLockRoute,
+      walletsAssetLockDetailRoute,
     ]),
     toolsRoute.addChildren([
       toolsIndexRoute,

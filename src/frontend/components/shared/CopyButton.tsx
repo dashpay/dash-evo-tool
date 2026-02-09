@@ -44,7 +44,7 @@ export function CopyButton({
       size={size}
       onClick={handleCopy}
       className={cn("text-muted-foreground", className)}
-      aria-label={copied ? "Copied" : "Copy to clipboard"}
+      aria-label={copied ? "Copied" : label || "Copy to clipboard"}
     >
       {copied ? (
         <Check className="size-3.5 text-success" />

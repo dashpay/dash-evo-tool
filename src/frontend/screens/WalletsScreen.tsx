@@ -150,7 +150,7 @@ export function WalletsScreen() {
     if (selectedWallet?.type === "hd") {
       navigate({ to: "/wallets/send/hd" as string });
     } else if (selectedWallet?.type === "singleKey") {
-      navigate({ to: "/wallets/send/single-key" as string });
+      navigate({ to: "/wallets/send-single-key" as string });
     }
   }, [navigate, selectedWallet]);
 

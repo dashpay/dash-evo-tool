@@ -147,7 +147,7 @@ describe("PrivateKeyDialog", () => {
     renderDialog();
 
     // The Copy button next to the address should exist
-    const copyButtons = screen.getAllByRole("button", { name: "Copy to clipboard" });
+    const copyButtons = screen.getAllByRole("button", { name: "Copy" });
     expect(copyButtons).toHaveLength(1);
 
     // Clicking it should change to "Copied" feedback
@@ -165,7 +165,7 @@ describe("PrivateKeyDialog", () => {
     await user.click(screen.getByRole("button", { name: "Show private key" }));
 
     // Should have 2 copy buttons (address + key)
-    const copyButtons = screen.getAllByRole("button", { name: "Copy to clipboard" });
+    const copyButtons = screen.getAllByRole("button", { name: "Copy" });
     expect(copyButtons).toHaveLength(2);
   });
 

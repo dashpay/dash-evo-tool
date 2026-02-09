@@ -1718,6 +1718,21 @@ async parseDataContract(input: ParseDataContractInput) : Promise<Result<ParseDat
 }
 },
 /**
+ * Parse hex-encoded bytes into a Document and return pretty-printed JSON.
+ *
+ * Requires a contract ID and document type name so the backend can look up
+ * the document type schema needed for deserialization.
+ * The frontend decodes base64/CSV → hex before calling.
+ */
+async parseDocument(input: ParseDocumentInput) : Promise<Result<ParseDocumentOutput, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("parse_document", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Fetch current epoch info from Platform.
  */
 async platformCurrentEpochInfo() : Promise<DispatchTaskResponse> {
@@ -2934,6 +2949,30 @@ hexData: string }
 export type ParseDataContractOutput = {
 /**
  * Pretty-printed JSON representation of the contract.
+ */
+json: string }
+/**
+ * Input for parsing a serialized document.
+ */
+export type ParseDocumentInput = {
+/**
+ * Hex-encoded document bytes.
+ */
+hexData: string;
+/**
+ * Contract ID (hex) the document belongs to.
+ */
+contractId: string;
+/**
+ * Document type name within the contract.
+ */
+documentTypeName: string }
+/**
+ * Output from successfully parsing a document.
+ */
+export type ParseDocumentOutput = {
+/**
+ * Pretty-printed JSON representation of the document.
  */
 json: string }
 /**

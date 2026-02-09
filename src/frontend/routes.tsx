@@ -27,6 +27,7 @@ import { ToolsScreen } from "@/screens/ToolsScreen";
 import { PlatformInfoScreen } from "@/screens/PlatformInfoScreen";
 import { AddressBalanceScreen } from "@/screens/AddressBalanceScreen";
 import { ContractVisualizerScreen } from "@/screens/ContractVisualizerScreen";
+import { DocumentVisualizerScreen } from "@/screens/DocumentVisualizerScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -280,7 +281,7 @@ const toolsTransitionRoute = createRoute({
 const toolsDocumentRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/document-visualizer",
-  component: () => <PlaceholderScreen title="Document Visualizer" />,
+  component: DocumentVisualizerScreen,
 });
 
 const toolsProofVisualizerRoute = createRoute({

@@ -421,46 +421,8 @@
 - [x] **4.5 [REVIEW] Identity screens functionality parity** (P1)
   Exhaustive comparison against all egui identity screens. Verify every action, dialog, and display element is present and working. Check DPNS name registration flow (which bridges identities and DPNS). Create fix tasks for gaps.
 
-  > **Review Findings (Run 71):**
-  >
-  > **Screens Reviewed:** IdentitiesScreen, IdentityListPanel, IdentityDetailPanel, CreateIdentityScreen, LoadIdentityScreen, TopUpIdentityScreen, WithdrawScreen, TransferScreen, KeyManagementScreen, KeyInfoScreen, AddKeyDialog
-  > **Tests:** 1407 passing (48/49 test files pass; 1 pre-existing failure in NetworkChooserScreen unrelated to identities)
-  >
-  > ### Fully Implemented (matching egui parity):
-  > - Identity list with cards, context menus, inline alias editing
-  > - Identity detail panel with balance, keys, DPNS names, wallets, type info
-  > - Create identity with 4 funding methods + advanced options (key editor, index selector)
-  > - Load identity with 3 modes (by ID, by wallet, by DPNS name) + advanced options
-  > - Top up identity with 4 funding methods
-  > - Withdraw with amount/address/key selection + confirmation dialog
-  > - Transfer with identity/platform-address destinations + confirmation dialog
-  > - Key management table with purpose/security/type/status/private indicators
-  > - Key info with public key display, add/remove private key, disable key
-  > - Add key dialog with purpose/security/type/private key + contract bounds UI
-  > - Concurrent identity refresh (Promise.allSettled)
-  > - Identity status display with color-coded badges
-  > - Balance hover tooltip showing raw credits
-  > - Copy to clipboard for IDs, keys, addresses
-  > - Reorder identities up/down with persistence
-  > - Fee estimation display
-  >
-  > ### Gaps Found (fix tasks created below):
-  >
-  > **P1 — Functionality gaps:**
-  > 1. **DPNS name registration screen not implemented** — Only stubs/toasts exist. The full RegisterDpnsNameScreen (identity selection, name validation, contested detection, registration) is deferred to Phase 5.
-  > 2. **Message signing not implemented** — KeyInfoScreen UI exists but handler throws "not yet implemented". Backend IPC command missing.
-  > 3. **Contract bounds not sent to backend in AddKey** — UI collects data but IPC call omits contractBounds field. Backend `AddKeyToIdentityInput` type lacks the field. Backend hardcodes `contract_bounds: None`.
-  > 4. **Master key replacement missing key generation UI** — No key type selector, no "Regenerate" button, no display of new private key. Uses hardcoded empty values.
-  > 5. **Wallet unlock not integrated for identity operations** — WalletUnlockDialog exists but is not used in any identity screen (withdraw, transfer, add key, etc.).
-  > 6. **QR code placeholder in CreateIdentityScreen** — Shows dashed border box with "QR Code" text instead of actual QR code (QRCodeSVG from qrcode.react is used in ReceiveDialog but not here).
-  > 7. **UTXO monitoring for QR funding not implemented** — No active detection of incoming funds when using QR code funding method.
-  >
-  > **P2 — UX polish gaps:**
-  > 8. **No sortable table/columns for identity list** — Zustand store has sorting infrastructure but no UI to trigger it (egui has clickable column headers).
-  > 9. **No progress messages during wallet identity search** — Shows generic "Searching..." instead of "Searching index 5 of 10...".
-  > 10. **No testnet-only helper buttons** — "Fill Random HPMN" / "Fill Random Masternode" missing from LoadIdentityScreen.
-  > 11. **Identity encoding tooltip missing** — IDs shown without encoding type info (Base58 for User, Hex/ProTxHash for masternodes).
-  > 12. **No recovery suggestions for errors** — Raw error strings from backend, no `recovery_suggestion()` equivalent.
+  > **Review Findings (Run 71):** 1407 tests pass. 7 P1 gaps + 5 P2 gaps found. Details: [ralph/docs/phase4-identity-design.md](ralph/docs/phase4-identity-design.md)
+
 
   - [x] **4.5a Fix contract bounds not passed in AddKey IPC call** (P1)
     AddKeyDialog collects contract bounds but the data is lost before reaching the backend:
@@ -537,50 +499,8 @@
   Reference: `dpns_contested_names_screen.rs` (2,173 lines) — this file handles ALL 4 tabs
   Produce implementation sub-tasks.
 
-  > **Design (Run 72):**
-  >
-  > ### DPNS Screens Architecture
-  >
-  > **4 tabs** (routes already defined in routes.tsx as placeholders):
-  > - `/contracts/dpns-active` → Active Contests (sortable table + inline vote selection + bulk voting)
-  > - `/contracts/dpns-past` → Past Contests (read-only historical table)
-  > - `/contracts/dpns-owned` → My Usernames (owned DPNS names with set-alias action)
-  > - `/contracts/dpns-scheduled` → Scheduled Votes (manage queued votes: remove, cast now, clear)
-  >
-  > ### Key Complexity Areas
-  >
-  > **Active Contests tab** is the most complex — a sortable/filterable table where each row has
-  > clickable vote buttons (Lock, Abstain, or per-contestant). Selected votes accumulate in state
-  > and a "Cast/Schedule Votes" button opens a popup dialog with per-identity vote method
-  > selection (No Vote / Cast Now / Schedule with days/hours/minutes). The dialog shows status
-  > during submission and a success/partial-success/failure result screen.
-  >
-  > **Smart name filter** converts lookalikes: 'o'/'O' → '0', 'l' → '1' (anti-confusion).
-  >
-  > **Register Name** is already scoped as a separate screen (reachable from DPNS and Identities).
-  > It detects contested names (length < 20, no non-0/1 digits), shows fee estimation, and
-  > handles the preorder+domain document submission flow.
-  >
-  > ### Store Design: `contestStore.ts`
-  >
-  > Following walletStore/identityStore patterns:
-  > - State: contestedNames[], localDpnsNames[], scheduledVotes[], selectedVotes[], loading, refreshing, error
-  > - Actions: loadContests, loadLocalNames, loadScheduledVotes, selectVote/deselectVote, castVotes, scheduleVotes, castScheduledVote, deleteScheduledVote, clearAll/clearCasted, setAlias, subscribeToUpdates
-  > - Tauri commands already bound in bindings.ts: contestedQueryDpnsContests, contestedVoteOnDpnsNames, contestedScheduleDpnsVotes, contestedCastScheduledVote, contestedGetScheduledVotes, contestedDeleteScheduledVote, contestedClearAllScheduledVotes, contestedClearExecutedScheduledVotes, identityLocalDpnsNames, identityRegisterDpnsName
-  >
-  > ### Component Breakdown
-  >
-  > - `components/contest/ActiveContestsTable.tsx` — sortable table with inline vote buttons
-  > - `components/contest/PastContestsTable.tsx` — read-only historical table
-  > - `components/contest/OwnedNamesPanel.tsx` — my usernames list with set-alias
-  > - `components/contest/ScheduledVotesTable.tsx` — scheduled votes with actions
-  > - `components/contest/VoteCastingDialog.tsx` — bulk vote casting/scheduling popup
-  > - `components/contest/RegisterDpnsNameForm.tsx` — name registration form with validation
-  > - `screens/DpnsActiveContestsScreen.tsx` — wires store to ActiveContestsTable + VoteCastingDialog
-  > - `screens/DpnsPastContestsScreen.tsx` — wires store to PastContestsTable
-  > - `screens/DpnsOwnedNamesScreen.tsx` — wires store to OwnedNamesPanel
-  > - `screens/DpnsScheduledVotesScreen.tsx` — wires store to ScheduledVotesTable
-  > - `screens/RegisterDpnsNameScreen.tsx` — wires identity store + form
+  > **Design (Run 72):** 4 tabs (Active/Past/Owned/Scheduled), contestStore, smart name filter, VoteCastingDialog. Details: [ralph/docs/phase5-dpns-design.md](ralph/docs/phase5-dpns-design.md)
+
 
   - [x] **5.1a** Create `contestStore.ts` Zustand store with state (contestedNames, localDpnsNames, scheduledVotes, selectedVotes, filter/sort), actions (loadContests, loadLocalNames, loadScheduledVotes, selectVote, deselectVote, clearSelectedVotes, subscribeToUpdates), and Tauri event listeners. Follow identityStore pattern. Write store unit tests.
   - [x] **5.1b** Create `ActiveContestsTable` component — sortable/filterable table with 6 columns (Name, Locked Votes, Abstain Votes, Ending Time, Last Updated, Contestants). Each row has clickable vote buttons (Lock, Abstain, per-contestant). Smart lookalike filter ('o'→'0', 'l'→'1'). Selected votes highlighted in blue. Empty state message. Write component tests.
@@ -612,55 +532,8 @@
 - [x] **5.4 [REVIEW] DPNS screens functionality parity** (P2)
   Verify all DPNS actions work. The egui implementation is 2,173 lines of dense logic — ensure nothing was missed. Create fix tasks for gaps.
 
-  > **Review Findings (Run 84):**
-  >
-  > ### Overall Assessment: STRONG — 95% functionality parity
-  >
-  > The Tauri frontend DPNS implementation covers all major functionality from the egui version
-  > across 5 screens (Active Contests, Past Contests, Owned Names, Scheduled Votes, Register Name)
-  > with **572 tests** (47 Playwright E2E + 199 screen tests + 79 table tests + 76 component tests + 81 store tests + 90 dialog tests).
-  > All 1845 project tests pass.
-  >
-  > ### Functionality Covered (complete parity):
-  > - Active Contests: table with Name, Locked Votes, Abstain Votes, Ending Time, Last Updated, Contestants
-  > - Vote selection: Lock, Abstain, TowardsIdentity — with toggle/replace behavior
-  > - Vote visual emphasis: bold green for highest-vote lock/contestant
-  > - Smart filter: o→0, l→1 normalization (matches egui's o/O→0, l→1)
-  > - Sortable columns on all tables
-  > - Past Contests: Name, Ended Time, Last Updated, Awarded To (WonBy/Locked badges)
-  > - Owned Names: Name, Owner ID, Acquired At, Set Alias action (with .dash suffix auto-append)
-  > - Scheduled Votes: Name, Voter, Vote Choice, Scheduled Time, Status, Cast Now/Remove actions
-  > - Clear All / Clear Casted buttons for scheduled votes
-  > - Vote Casting Dialog: Selected votes summary, Set All controls, per-identity method selection
-  >   (No Vote/Cast Now/Schedule), schedule time picker (days/hours/minutes), schedule warning,
-  >   validation, progress view, completed view (success/partial/failure), failed view with retry
-  > - Register Name: identity selection, name validation (3-63 chars, A-Z/0-9/hyphens, no leading/trailing hyphen),
-  >   contested name detection (<20 chars, only letters+0+1), fee estimation, advanced key selector,
-  >   registering/success/error states, breadcrumb navigation, info sections
-  > - Real-time event subscriptions for contest/identity/scheduled-vote updates
-  > - All backend IPC commands wired via contestStore and identityStore
-  >
-  > ### Minor Gaps Found (non-blocking, improvements):
-  >
-  > 1. **Register Name: no wallet unlock flow** — The egui version checks if the wallet is locked
-  >    and shows an "Unlock Wallet" button with a wallet unlock popup. The Tauri version bypasses
-  >    this (the backend command handles wallet state). This is acceptable since wallet unlock is
-  >    handled at the IPC layer, but a UX improvement would show the user a clear wallet-locked state.
-  >
-  > 2. **Register Name: contested name success message differs** — egui shows "DPNS Name Submitted (Contested)"
-  >    with a detailed info box. The Tauri version always sets `contested: false` in the success callback
-  >    (DpnsRegisterNameScreen.tsx:61) regardless of whether the name was actually contested. The component
-  >    supports contested success display but it's never triggered.
-  >
-  > 3. **Active Contests: "Register Name" button visibility** — egui only shows this button if the user
-  >    has voting identities loaded. The Tauri version always shows it. Minor UX difference.
-  >
-  > 4. **Auto-dismissing messages** — egui uses 10-second auto-dismissing messages with countdown timers.
-  >    The Tauri version uses Sonner toast notifications which auto-dismiss but without countdown display.
-  >    This is a UX improvement, not a regression.
-  >
-  > 5. **Refreshing time indicator** — egui shows "Refreshing... Time taken so far: X seconds" during
-  >    contest refresh. The Tauri version shows a spinning refresh icon but no elapsed time. Minor UX gap.
+  > **Review Findings (Run 84):** 95% parity, 1845 tests pass. 5 minor gaps (non-blocking). Details: [ralph/docs/phase5-dpns-design.md](ralph/docs/phase5-dpns-design.md)
+
 
   - [ ] **5.4a Fix Register Name contested success detection** (P3)
     In `DpnsRegisterNameScreen.tsx`, the success callback always sets `contested: false`. It should
@@ -687,35 +560,8 @@
   Files to review: All files in `src/ui/contracts_documents/`
   Produce implementation sub-tasks.
 
-  > **Design Decisions (Run 85):**
-  >
-  > ### Complete Action Inventory (6 egui screens, ~50 user actions)
-  >
-  > **Backend Status:** All Tauri IPC commands fully implemented (11 contract + 8 document commands).
-  > All DTOs defined. TypeScript bindings auto-generated via tauri-specta. No backend work needed.
-  >
-  > **Missing Frontend Infrastructure:**
-  > - No `contractStore.ts` or `documentStore.ts` (Zustand stores)
-  > - No contract/document components or screens (only DPNS screens exist under /contracts/)
-  > - The `/contracts/` route is a placeholder
-  >
-  > ### UX Design
-  >
-  > **Main Screen Layout (3-panel):**
-  > - Left sidebar: Contract tree browser (collapsible) with search, showing contract → document types → indexes → properties. Right-click context menu for copy hex/JSON. Remove button for user contracts.
-  > - Center: SQL-like query input bar at top, document results below with JSON/YAML toggle, field selector, search filter, pagination
-  > - Top bar: Action buttons (Load Contracts, Register, Update, Create/Delete/Replace/Transfer/Purchase/SetPrice Document, Group Actions)
-  >
-  > **Sub-screens (each accessible from top bar buttons):**
-  > 1. Add Contracts — multi-ID input, fetch, set aliases
-  > 2. Register Contract — identity/key selection, JSON editor with auto-wrap detection, fee estimation, broadcast
-  > 3. Update Contract — contract selector, JSON editor, identity/key selection, fee estimation, broadcast
-  > 4. Document Actions (6 types sharing common layout) — contract/doc-type selection, identity/key selection, wallet unlock, type-specific inputs, fee estimation, broadcast
-  > 5. Group Actions — contract selector (filtered to group-enabled), identity selector, fetch & display table, "Take Action" routing to token screens
-  >
-  > ### Implementation Plan
-  >
-  > Tasks 6.2–6.4 are replaced with more granular sub-tasks below to ensure each is completable in one agent run.
+  > **Design Decisions (Run 85):** 3-panel layout (tree+query+results), 6 action types, all IPC ready. Details: [ralph/docs/phase6-contract-design.md](ralph/docs/phase6-contract-design.md)
+
 
   **Sub-tasks produced:**
   - [ ] **6.2a** Create `contractStore.ts` Zustand store: local contract list CRUD (list, get by ID, set alias, remove), loading/error states, subscribe to `task-completed` events for contract fetch results. Follow `walletStore.ts` pattern. Write 15+ tests.
@@ -753,107 +599,8 @@
   Files to review: All files in `src/ui/tokens/`
   Produce implementation sub-tasks.
 
-  > **Design Decisions (Run 86):**
-  >
-  > ### Complete Action Inventory (15+ egui screens, ~120 user actions, 22 backend tasks)
-  >
-  > **Backend Status:** All Tauri IPC commands fully implemented in `src-tauri/src/commands/token.rs`
-  > (1,511 lines): 21 async dispatch commands + 2 direct database commands. All input DTOs defined.
-  > TypeScript bindings auto-generated via tauri-specta in `src/frontend/bindings.ts`. 45+ backend
-  > unit tests. **No backend work needed.**
-  >
-  > **Missing Frontend Infrastructure:**
-  > - No `tokenStore.ts` (Zustand store)
-  > - No token components or screens (only placeholder routes at `/tokens/`, `/tokens/search`, `/tokens/creator`)
-  > - No `/token/` component directory
-  >
-  > ### Token Screens Architecture
-  >
-  > **Main Screen: 3 tabs (like egui's TokensSubscreen enum)**
-  > 1. **My Tokens** — Portfolio view of all owned tokens with sorting, detail expansion, per-row action menu
-  > 2. **Search Tokens** — Keyword search with pagination, contract detail expansion, "Add to My Tokens"
-  > 3. **Token Creator** — Multi-step wizard (7+ steps) for creating new token contracts
-  >
-  > **Action Screens (13 separate routes, all share a common operation base pattern):**
-  > - Transfer, Mint, Burn, Freeze, Unfreeze, Pause, Resume, Claim, View Claims,
-  >   Set Price, Purchase, Update Config, Destroy Frozen Funds
-  > - Each follows: token context → input form → advanced options (public note) →
-  >   key selection → wallet unlock → fee estimation → confirmation → broadcast → result
-  > - Group action support where applicable (mint, pause, resume, set price, update config)
-  >
-  > **Supplementary Screens:**
-  > - Add Token by ID — lookup by contract ID or token ID
-  > - Token Info Popup — modal with full token metadata + JSON schema viewer
-  > - Contract Details — expanded view when navigating from search results
-  >
-  > ### Store Design: `tokenStore.ts`
-  >
-  > Following walletStore/identityStore/contestStore patterns:
-  > - **State:** myTokens[] (with balance, metadata, contract info), searchResults[],
-  >   searchKeyword, searchCursor, tokenOrder[], selectedToken, loading, refreshing, error,
-  >   sortColumn, sortOrder
-  > - **Actions:** loadMyTokenBalances, searchByKeyword, clearSearch, fetchTokenByContractId,
-  >   fetchTokenByTokenId, saveTokenLocally, removeToken, loadTokenOrder, saveTokenOrder,
-  >   queryTokenPricing, queryFrozenIdentities, subscribeToUpdates
-  > - **Event listeners:** TaskResultEvent (filter resultType === "Token") for async operation results
-  > - Tauri commands already bound: tokenQueryMyBalances, tokenQueryIdentityBalance,
-  >   tokenQueryDescriptionsByKeyword, tokenFetchByContractId, tokenFetchByTokenId,
-  >   tokenSaveLocally, tokenRemove, tokenLoadOrder, tokenSaveOrder, tokenQueryPricing,
-  >   tokenQueryFrozenIdentities, tokenMint, tokenTransfer, tokenBurn, tokenFreeze,
-  >   tokenUnfreeze, tokenPause, tokenResume, tokenClaim, tokenEstimatePerpetualRewards,
-  >   tokenPurchase, tokenSetDirectPurchasePrice, tokenUpdateConfig, tokenDestroyFrozenFunds,
-  >   tokenRegisterContract
-  >
-  > ### Component Breakdown
-  >
-  > - `components/token/MyTokensTable.tsx` — sortable table (Owner Identity, Alias, Balance) with
-  >   per-row action dropdown (Transfer, Mint, Burn, Freeze, Unfreeze, Pause, Resume, Claim,
-  >   View Claims, Set Price, Purchase, Update Config, Destroy Frozen Funds, More Info, Remove)
-  > - `components/token/TokenInfoDialog.tsx` — modal with full token metadata (name, description,
-  >   contract ID, token ID, base/max supply, status, pricing, distribution rules) + "View Schema" JSON popup
-  > - `components/token/TokenSearchPanel.tsx` — keyword input, search button, results table with
-  >   pagination (Previous/Next), "More Info" per row, contract detail expansion
-  > - `components/token/TokenCreatorWizard.tsx` — multi-step wizard with sub-components:
-  >   - Step 1: BasicInfoStep (name, plural name, language selector 50+, description, decimals,
-  >     base supply, max supply, capitalize, start paused, allow transfers to frozen)
-  >   - Step 2: DistributionStep (perpetual + pre-programmed distribution config, recipient type
-  >     selector, function selector with formula visualization images, interval config, entry grid)
-  >   - Step 3: ControlRulesStep (mint/burn/freeze/unfreeze/destroy/pause/resume/max-supply/
-  >     conventions/marketplace rules — each with action taker combo, identity inputs, admin identity)
-  >   - Step 4: GroupsStep (add groups, member grid with identity + power inputs, required power)
-  >   - Step 5: HistoryStep (keep history checkbox options)
-  >   - Step 6: KeywordsStep (searchable keyword tags)
-  >   - Step 7: ReviewStep (identity selection, summary, create button, fee confirmation)
-  > - `components/token/TokenOperationForm.tsx` — shared operation layout: amount input, recipient
-  >   selector (where applicable), advanced options toggle (public note), key selector, fee display,
-  >   action button, confirmation dialog, group action support, progress/success/error states
-  > - `screens/TokenMyTokensScreen.tsx` — wires tokenStore to MyTokensTable + action routing
-  > - `screens/TokenSearchScreen.tsx` — wires tokenStore to TokenSearchPanel
-  > - `screens/TokenCreatorScreen.tsx` — wires tokenStore + identityStore to TokenCreatorWizard
-  > - `screens/TokenTransferScreen.tsx` — wires TokenOperationForm for transfer
-  > - `screens/TokenMintScreen.tsx` — wires TokenOperationForm for mint
-  > - `screens/TokenBurnScreen.tsx` — wires TokenOperationForm for burn
-  > - (etc. for each of the 13 action screens)
-  > - `screens/TokenAddByIdScreen.tsx` — contract/token ID lookup with search status
-  > - `screens/TokenViewClaimsScreen.tsx` — claims history table with fetch/refresh
-  >
-  > ### Complexity Notes
-  >
-  > - Token Creator is the single most complex screen in the entire application (~112K lines in egui).
-  >   It needs 7 wizard steps with deeply nested configuration forms. Breaking it into sub-components
-  >   per step is critical.
-  > - Distribution function visualization shows formula images (Linear, Polynomial, Exponential,
-  >   Logarithmic, Inverted Logarithmic). These can be SVG/inline components or static assets.
-  > - Control Rules have deeply nested configurations with ~10 rule types, each with action taker
-  >   selection (No One / Contract Owner / Identity / Main Group / Specific Group) and sub-rules.
-  > - Group action support means some action screens detect when the token is group-controlled
-  >   and adjust their UI text/behavior accordingly.
-  > - Pricing supports single price or tiered pricing (map of quantity thresholds to prices).
-  >
-  > ### Implementation Plan
-  >
-  > Tasks 7.2–7.4 are replaced with more granular sub-tasks below. The token creator wizard
-  > is split across multiple tasks due to its extreme complexity.
+  > **Design Decisions (Run 86):** 3 tabs + 13 action routes, tokenStore, 7-step creator wizard, TokenOperationForm shared component. Details: [ralph/docs/phase7-token-design.md](ralph/docs/phase7-token-design.md)
+
 
   **Sub-tasks produced:**
   - [ ] **7.2a** Create `tokenStore.ts` Zustand store: token list CRUD (load balances, search by keyword with pagination cursor, fetch by contract/token ID, save locally, remove), token ordering (load/save), pricing queries, frozen identity queries, sort state (column, order), loading/error/refreshing states, TaskResultEvent subscription filtering by "Token" result type. Follow walletStore/identityStore pattern. Write 20+ store tests.
@@ -892,161 +639,8 @@
   Files to review: All files in `src/ui/dashpay/`
   Produce implementation sub-tasks.
 
-  > **Analysis (Run 87):**
-  >
-  > ### Complete DashPay Functionality Inventory
-  >
-  > **13 files, 4 subscreens, 9 distinct screen types, ~85 user actions, 23 backend IPC commands (all implemented in `src-tauri/src/commands/dashpay.rs`):**
-  >
-  > **Main DashPayScreen (dashpay_screen.rs):**
-  > - 4 subscreens: Contacts, Profile, Payments, ProfileSearch
-  > - DashPay subscreen chooser panel (left sidebar nav)
-  > - Top panel buttons per subscreen (Refresh, Add Contact, Generate QR Code)
-  > - Concurrent backend task dispatch (fetch contacts + requests simultaneously)
-  >
-  > **ProfileScreen (~25 actions):**
-  > - Identity selector (dropdown, auto-selects identity with existing profile)
-  > - Load profile from DB cache on init, fetch from Platform on refresh
-  > - View mode: avatar image (loaded async from URL with center-crop, cached in DB), display name, DPNS username, identity ID, bio
-  > - Click avatar → popup with larger image + copy URL
-  > - Edit mode: display name (25 char, required), bio (140 char), avatar URL (500 char, http/https validation)
-  > - Real-time character count with color coding (green→orange→red)
-  > - Real-time validation with error display
-  > - Unsaved changes detection with discard confirmation dialog
-  > - Fee estimation display (document create vs replace)
-  > - Identity balance check before save
-  > - Wallet unlock flow before save
-  > - Create profile (new) vs Update profile (existing) with success screen
-  > - Info popups: Profile Guidelines, Avatar Image Guidelines
-  >
-  > **ContactsList (~20 actions):**
-  > - 2 tabs: My Contacts / Requests (with pending count badge)
-  > - Identity selector with state sync to embedded ContactRequests
-  > - Search bar with text query across username, display name, nickname, bio, identity ID
-  > - Filter dropdown: All, With usernames, No usernames, With bio, Recent (7 days), Hidden, Visible
-  > - Sort dropdown: Name, Username, Date, Account
-  > - Show hidden checkbox
-  > - Contact cards: avatar (async loaded), name (nickname→display name→username fallback), @username, bio, account reference
-  > - Per-contact actions: View Profile, Pay (dev mode only), Hide/Unhide
-  > - Empty states: No Contacts (with Add Contact button), No Matches
-  > - Load contacts from DB on init, fetch from Platform on refresh
-  > - Save contacts + private info to DB on fetch
-  >
-  > **ContactRequests (~15 actions):**
-  > - 2 tabs: Incoming / Outgoing
-  > - Incoming request cards: avatar, display name/username/truncated ID, account label, timestamp
-  > - Accept button → confirmation dialog → backend task → success/failure
-  > - Reject button → confirmation dialog → backend task → success/failure
-  > - Wallet unlock required for accept/reject
-  > - Structured error handling: MissingEncryptionKey → "Add Encryption Key" button
-  > - Outgoing request cards: To name, identity ID, account label, status (Pending), "Cannot be cancelled"
-  > - Empty states: No Incoming Requests, No Outgoing Requests (with Add Contact button)
-  > - Name resolution from local DB cache + async Platform profile fetch for unknowns
-  > - Save/load requests to/from DB
-  >
-  > **AddContactScreen (~10 actions):**
-  > - Back button, heading, info popup
-  > - Identity selector (From/Sender)
-  > - Auto-selects AUTHENTICATION key (CRITICAL/HIGH security level)
-  > - Key selector (Advanced Options checkbox)
-  > - Username or Identity ID input
-  > - Relationship Label input (optional, 100 char max)
-  > - Request Summary display
-  > - Wallet unlock flow
-  > - Send button with validation (empty check, .dash suffix check, label length)
-  > - Structured error handling: MissingEncryptionKey, MissingDecryptionKey, InvalidUsername, UsernameResolutionFailed → contextual tips and action buttons
-  > - Retry button for recoverable errors
-  > - Success screen with "Send Another" / "Back to Contacts" / "Back to DashPay"
-  >
-  > **ContactDetailsScreen (~8 actions):**
-  > - Back button, heading
-  > - Profile section: avatar placeholder, name (nickname→display name→username), @username, bio, identity ID
-  > - Send Payment button (dev mode only)
-  > - Private Contact Information section with info popup
-  > - View/Edit toggle: nickname, note (multiline), is_hidden checkbox
-  > - Save to local DB immediately + dispatch Platform update (encrypted)
-  > - Payment History section (per-contact, with direction indicators, amounts, memos, tx IDs)
-  > - Actions section (removal/blocking not yet available)
-  > - Auto-fetch profile from Platform on arrival
-  >
-  > **ContactInfoEditorScreen (~6 actions):**
-  > - Back button, heading, info popup
-  > - Contact identifier display
-  > - Private Nickname field
-  > - Private Note field (multiline)
-  > - Hide contact checkbox with warning
-  > - Accepted Account Indices input (comma-separated, with Parse button)
-  > - Wallet unlock flow
-  > - Save/Cancel buttons
-  >
-  > **ContactProfileViewerScreen (~8 actions):**
-  > - Back button, heading, info popup
-  > - Avatar image (async loaded with center-crop)
-  > - Display name, Identity ID, Public Message
-  > - Avatar verification section (hash, fingerprint)
-  > - Refresh button, Pay button (dev mode)
-  > - Private Contact Information section (embedded, same as in ContactDetails): nickname, notes, hidden toggle, edit/save/cancel
-  > - Auto-fetch profile from Platform on first render
-  > - "No profile found" state with Retry button
-  >
-  > **ProfileSearchScreen (~6 actions):**
-  > - Heading, info popup
-  > - Search input (DPNS username prefix) with Enter key trigger
-  > - Search button, Clear Results (top panel)
-  > - Search results: username, display name, public message preview, identity ID
-  > - Per-result actions: View Profile, Add Contact
-  > - "No users found" state with search tip
-  >
-  > **SendPaymentScreen (~8 actions):**
-  > - Back button, heading, info popup
-  > - From identity display with wallet balance
-  > - To contact display (name or ID)
-  > - Amount input (AmountInput component with max button)
-  > - Memo field (100 char max)
-  > - Wallet unlock flow
-  > - Send button with amount validation
-  > - Success screen with tx ID, "Back to DashPay" / "Send Another Payment"
-  >
-  > **PaymentHistory (~5 actions):**
-  > - Identity selector
-  > - Payment records: avatar, direction indicator (⬇/⬆), contact name, amount (+/-), memo, tx ID, timestamp
-  > - Load from DB on init, fetch from Platform on refresh
-  > - Empty state: No Payment History
-  >
-  > **QRCodeGeneratorScreen (~6 actions):**
-  > - Back button, heading, info popup, Advanced Options checkbox
-  > - Identity selector
-  > - Account Index input (advanced), Validity hours input (1-720, advanced)
-  > - Wallet unlock flow
-  > - Generate QR Code button → actual QR image display
-  > - Collapsible QR text data, Copy to clipboard
-  > - Warning about auto-accept
-  >
-  > **QRScannerScreen (~5 actions):**
-  > - Identity selector
-  > - QR data text input (paste), Parse button, Clear button
-  > - Parsed QR details display: contact identity, account reference, expiration
-  > - Wallet unlock flow
-  > - Add Contact button → sends contact request with auto-accept proof
-  >
-  > ### Backend Status
-  > All 23 IPC commands fully implemented in `src-tauri/src/commands/dashpay.rs`:
-  > - 14 async task dispatches (load_profile, update_profile, load_contacts, load_contact_requests, fetch_contact_profile, search_profiles, send_contact_request, send_contact_request_with_proof, accept_contact_request, reject_contact_request, load_payment_history, send_payment_to_contact, update_contact_info, register_addresses)
-  > - 9 direct DB reads/writes (load_profile, save_profile, load_contacts, load_pending_requests, load_payments, load_contact_private_info, save_contact_private_info, set_contact_hidden, save_avatar_bytes)
-  > TypeScript bindings auto-generated in `src/frontend/bindings.ts`.
-  >
-  > ### Frontend Status
-  > No dashpayStore, no DashPay screens/components exist yet. Everything must be built from scratch.
-  >
-  > ### UX Improvements Over egui Version
-  > - Modern card-based layout for contacts with proper avatar images
-  > - Tabbed navigation (Contacts | Requests | Profile | Payments | Search)
-  > - Inline editing for profile with proper form validation (react-hook-form + zod)
-  > - Toast notifications instead of inline message labels
-  > - Responsive search with debouncing
-  > - Better empty states with illustrations/icons
-  > - Confirmation dialogs using shadcn AlertDialog
-  > - Wallet unlock as a sheet/dialog overlay
+  > **Analysis (Run 87):** 13 files, 9 screen types, ~85 user actions, 23 IPC commands (all implemented). Details: [ralph/docs/phase8-dashpay-design.md](ralph/docs/phase8-dashpay-design.md)
+
   > - QR code display with react-qr-code library
 
   **Sub-tasks produced:**
@@ -1205,37 +799,8 @@
   Files to review: All files in `src/ui/tools/`
   Produce implementation sub-tasks.
 
-  > **Design (Run 88):**
-  >
-  > ### Tools Screen Inventory — 9 Screens, ~85 User Actions
-  >
-  > All Tauri IPC commands are already wired: platform_info (8 commands), mnlist (5 commands), grovestark (2 commands), broadcast_state_transition (1 command). Routes already scaffolded as placeholders in `routes.tsx`. Only missing backend command: `proof_log` (SQLite read for proof history).
-  >
-  > **Architecture: Tools Landing + Sub-Tool Navigation**
-  > - Tools index (`/tools`) shows a grid of tool cards (icon + name + description) for discoverability
-  > - Each tool is a sub-route (`/tools/platform-info`, `/tools/address-balance`, etc.)
-  > - Tools grouped into 3 categories:
-  >   1. **Network Info** — Platform Info, Address Balance
-  >   2. **Data Visualizers** — Contract Visualizer, Document Visualizer, Proof Visualizer, Transition Visualizer
-  >   3. **Advanced** — Proof Log, Masternode List Diff, GroveSTARK
-  >
-  > **UX Improvements over egui:**
-  > - **Platform Info:** Replace left-sidebar buttons with a card grid of query types; results render in a collapsible panel below with copy-to-clipboard; loading skeleton instead of plain spinner
-  > - **Address Balance:** Clean single-card form with inline validation, results in a summary card with Dash/credits dual display
-  > - **Visualizers (Contract/Document/Proof):** Unified layout — top: input textarea with format auto-detection badge (hex/base64/CSV), bottom: scrollable monospace JSON output with syntax highlighting via `react-json-view-lite`; Document Visualizer adds searchable comboboxes for contract/type selection
-  > - **Transition Visualizer:** Input + parsed JSON + contract detection panel; clickable contract IDs open fetch dialog; broadcast button with elapsed time counter and toast notifications for success/error
-  > - **Proof Log:** Full data table using `@tanstack/react-table` with sortable columns, pagination, row selection → detail panel on right with display mode tabs (Hex/JSON/PathQuery); gold hash highlighting preserved
-  > - **Masternode List Diff:** Tab-based layout (Core Items / QR Info / Quorum Viewer) with resizable split panels; file open/save via Tauri dialog API
-  > - **GroveSTARK:** Two-mode UI (Generate/Verify) with stepper progress for generation; research warning banner; copy-to-clipboard for proofs/results
-  >
-  > **Shared Components Needed:**
-  > - `HexInput` — multiline textarea with format auto-detection (hex/base64/CSV) and decode-to-bytes helper
-  > - `MonospaceOutput` — scrollable, selectable monospace text area with optional syntax highlighting
-  > - `ToolPageLayout` — consistent page layout for tool screens (back nav + title + content area)
-  >
-  > **Missing Backend Work:**
-  > - Need Tauri command for `proof_log` — thin wrapper around `db.get_proof_log_items()` returning paginated, sorted results
-  > - Visualizer parsing (contract/document/proof deserialization) should be done in Rust via new Tauri commands to avoid shipping DPP/bincode/GroveDB to frontend
+  > **Design (Run 88):** 9 screens, ~85 actions, card grid landing, 3 categories. Details: [ralph/docs/phase9-tools-design.md](ralph/docs/phase9-tools-design.md)
+
 
   **Sub-tasks:**
 
@@ -1247,7 +812,7 @@
 
   - [x] **9.1d** Implement Contract Visualizer screen. Uses `HexInput` for hex/base64/CSV input. Parsing should be done via a new Tauri command (`parse_data_contract`) that deserializes bytes to JSON on the Rust side. Output shown in `MonospaceOutput` or `JsonViewer`. Error display for invalid input. Reference: `contract_visualizer_screen.rs`. Write component tests + Tauri command.
 
-  - [ ] **9.1e** Implement Document Visualizer screen. Adds searchable contract selector (ComboBox) and document type selector on top of `HexInput`. Parsing via new Tauri command (`parse_document`) requiring contract ID + document type name + bytes. Shows parsed JSON or error. Reference: `document_visualizer_screen.rs`. Write component tests + Tauri command.
+  - [x] **9.1e** Implement Document Visualizer screen. Adds searchable contract selector (ComboBox) and document type selector on top of `HexInput`. Parsing via new Tauri command (`parse_document`) requiring contract ID + document type name + bytes. Shows parsed JSON or error. Reference: `document_visualizer_screen.rs`. Write component tests + Tauri command.
 
   - [ ] **9.1f** Implement Proof Visualizer screen. `HexInput` for GroveDB proof data. Parsing via new Tauri command (`parse_grovedb_proof`) using bincode deserialization on Rust side. Shows proof structure as formatted text. Reference: `proof_visualizer_screen.rs`. Write component tests + Tauri command.
 

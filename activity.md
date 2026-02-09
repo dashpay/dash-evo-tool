@@ -22,3 +22,10 @@
 **Files changed:** components.json, vite.config.ts, tsconfig.json, package.json, package-lock.json, src/frontend/index.css, src/frontend/lib/utils.ts, src/frontend/App.tsx, src/frontend/components/ui/{button,dialog,dropdown-menu,input,label,select,tabs,table,card,badge,separator,sheet,tooltip,popover,sonner}.tsx, tasks.md, activity.md
 **Tests added:** 0 (infrastructure setup — testing comes in task 0.1d/0.3)
 **Sub-tasks created:** 0
+
+## Run 4 — 2026-02-09
+**Task:** 0.1c Install supplementary libraries
+**What was done:** Installed all remaining supplementary libraries: @tanstack/react-table v8, @tanstack/react-virtual v3, @tanstack/react-router v1, @dnd-kit/core v6, @dnd-kit/sortable v10, react-json-view-lite v2, qrcode.react v4. Libraries already present from earlier setup: clsx, tailwind-merge, lucide-react. Verified TypeScript check and Vite build both pass (223KB JS + 46KB CSS, no regressions).
+**Files changed:** package.json, package-lock.json, tasks.md, activity.md
+**Tests added:** 0 (dependency installation — testing comes in task 0.3)
+**Sub-tasks created:** 0

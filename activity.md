@@ -435,3 +435,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (META task — research only)
 **Sub-tasks created:** 6 (4.1a through 4.1f — identity store, list panel, detail panel, key management, withdraw/transfer, register DPNS)
+
+## Run 63 — 2026-02-09
+**Task:** 4.1a Create identity Zustand store
+**What was done:** Created `useIdentityStore` Zustand store following the established walletStore pattern. Implements full identity state management: loadIdentities with saved custom order, selectIdentity, refreshIdentity/refreshAllIdentities (async with per-identity tracking), setAlias, reorderIdentityUp/Down (with DB persistence), removeIdentity (with deselection and order update), setSortColumn (dual-mode: custom vs column-based sorting), reloadIdentity, and subscribeToUpdates (listens to taskResultEvent for Identity results and taskErrorEvent for error handling). All 27 identity IPC commands from bindings.ts are leveraged.
+**Files changed:** src/frontend/stores/identityStore.ts, src/frontend/stores/identityStore.test.ts, tasks.md, activity.md
+**Tests added:** 45 tests covering all state and actions (initial state, loadIdentities with ordering, selectIdentity, refreshIdentity, refreshAllIdentities, setAlias, reorderIdentityUp/Down, removeIdentity, setSortColumn, reloadIdentity, subscribeToUpdates, clearError)
+**Sub-tasks created:** 0

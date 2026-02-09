@@ -1396,7 +1396,7 @@
 
 ## Phase 5: DPNS Contest & Voting Screens
 
-- [ ] **5.1 [META] Design DPNS contest/voting UX** (P2)
+- [x] **5.1 [META] Design DPNS contest/voting UX** (P2)
   Review the DPNS contested names functionality and design improved UX. This is one of the most complex screens in DET:
   - Active contests table with real-time data (locked votes, abstain votes, ending time, top contender)
   - Single vote flow (immediate cast or schedule for later)
@@ -1406,6 +1406,60 @@
   - Scheduled votes management (view, cancel, execute early)
   Reference: `dpns_contested_names_screen.rs` (2,173 lines) — this file handles ALL 4 tabs
   Produce implementation sub-tasks.
+
+  > **Design (Run 72):**
+  >
+  > ### DPNS Screens Architecture
+  >
+  > **4 tabs** (routes already defined in routes.tsx as placeholders):
+  > - `/contracts/dpns-active` → Active Contests (sortable table + inline vote selection + bulk voting)
+  > - `/contracts/dpns-past` → Past Contests (read-only historical table)
+  > - `/contracts/dpns-owned` → My Usernames (owned DPNS names with set-alias action)
+  > - `/contracts/dpns-scheduled` → Scheduled Votes (manage queued votes: remove, cast now, clear)
+  >
+  > ### Key Complexity Areas
+  >
+  > **Active Contests tab** is the most complex — a sortable/filterable table where each row has
+  > clickable vote buttons (Lock, Abstain, or per-contestant). Selected votes accumulate in state
+  > and a "Cast/Schedule Votes" button opens a popup dialog with per-identity vote method
+  > selection (No Vote / Cast Now / Schedule with days/hours/minutes). The dialog shows status
+  > during submission and a success/partial-success/failure result screen.
+  >
+  > **Smart name filter** converts lookalikes: 'o'/'O' → '0', 'l' → '1' (anti-confusion).
+  >
+  > **Register Name** is already scoped as a separate screen (reachable from DPNS and Identities).
+  > It detects contested names (length < 20, no non-0/1 digits), shows fee estimation, and
+  > handles the preorder+domain document submission flow.
+  >
+  > ### Store Design: `contestStore.ts`
+  >
+  > Following walletStore/identityStore patterns:
+  > - State: contestedNames[], localDpnsNames[], scheduledVotes[], selectedVotes[], loading, refreshing, error
+  > - Actions: loadContests, loadLocalNames, loadScheduledVotes, selectVote/deselectVote, castVotes, scheduleVotes, castScheduledVote, deleteScheduledVote, clearAll/clearCasted, setAlias, subscribeToUpdates
+  > - Tauri commands already bound in bindings.ts: contestedQueryDpnsContests, contestedVoteOnDpnsNames, contestedScheduleDpnsVotes, contestedCastScheduledVote, contestedGetScheduledVotes, contestedDeleteScheduledVote, contestedClearAllScheduledVotes, contestedClearExecutedScheduledVotes, identityLocalDpnsNames, identityRegisterDpnsName
+  >
+  > ### Component Breakdown
+  >
+  > - `components/contest/ActiveContestsTable.tsx` — sortable table with inline vote buttons
+  > - `components/contest/PastContestsTable.tsx` — read-only historical table
+  > - `components/contest/OwnedNamesPanel.tsx` — my usernames list with set-alias
+  > - `components/contest/ScheduledVotesTable.tsx` — scheduled votes with actions
+  > - `components/contest/VoteCastingDialog.tsx` — bulk vote casting/scheduling popup
+  > - `components/contest/RegisterDpnsNameForm.tsx` — name registration form with validation
+  > - `screens/DpnsActiveContestsScreen.tsx` — wires store to ActiveContestsTable + VoteCastingDialog
+  > - `screens/DpnsPastContestsScreen.tsx` — wires store to PastContestsTable
+  > - `screens/DpnsOwnedNamesScreen.tsx` — wires store to OwnedNamesPanel
+  > - `screens/DpnsScheduledVotesScreen.tsx` — wires store to ScheduledVotesTable
+  > - `screens/RegisterDpnsNameScreen.tsx` — wires identity store + form
+
+  - [ ] **5.1a** Create `contestStore.ts` Zustand store with state (contestedNames, localDpnsNames, scheduledVotes, selectedVotes, filter/sort), actions (loadContests, loadLocalNames, loadScheduledVotes, selectVote, deselectVote, clearSelectedVotes, subscribeToUpdates), and Tauri event listeners. Follow identityStore pattern. Write store unit tests.
+  - [ ] **5.1b** Create `ActiveContestsTable` component — sortable/filterable table with 6 columns (Name, Locked Votes, Abstain Votes, Ending Time, Last Updated, Contestants). Each row has clickable vote buttons (Lock, Abstain, per-contestant). Smart lookalike filter ('o'→'0', 'l'→'1'). Selected votes highlighted in blue. Empty state message. Write component tests.
+  - [ ] **5.1c** Create `VoteCastingDialog` component — dialog with: selected votes summary, "Set All" bulk control (No Vote / Cast Now / Schedule with days/hours/minutes), per-identity vote method selection, Apply button with status tracking (NotStarted → Casting → Scheduling → Completed/Failed), success/partial-success/failure result screen with navigation buttons. Write component tests.
+  - [ ] **5.1d** Wire `DpnsActiveContestsScreen` — compose ActiveContestsTable + VoteCastingDialog, connect to contestStore, add top-right action buttons (Refresh, Register Name, Cast/Schedule Votes), replace placeholder route. Write screen-level tests.
+  - [ ] **5.1e** Create `PastContestsTable` component and wire `DpnsPastContestsScreen` — read-only sortable/filterable table with 4 columns (Name, Ended Time, Last Updated, Awarded To). Awards show identity ID or "Locked". Replace placeholder route. Write component + screen tests.
+  - [ ] **5.1f** Create `OwnedNamesPanel` component and wire `DpnsOwnedNamesScreen` — filterable table with 4 columns (Name, Owner ID, Acquired At, Actions). "Set Alias" button per row. Empty state. Replace placeholder route. Write component + screen tests.
+  - [ ] **5.1g** Create `ScheduledVotesTable` component and wire `DpnsScheduledVotesScreen` — sortable table with 6 columns (Name, Voter, Vote Choice, Scheduled Time, Status, Actions). Per-row "Remove" and "Cast Now" buttons (Cast Now only if Pending/Failed). Top-right "Clear All" and "Clear Casted" buttons. Empty state with instructions. Replace placeholder route. Write component + screen tests.
+  - [ ] **5.1h** Create `RegisterDpnsNameScreen` — identity selector, name input with real-time validation (3-63 chars, alphanumeric + hyphen, no start/end hyphen), contested name detection (length < 20, no non-0/1 digits) with warning, fee estimation, balance check, registration status flow (form → waiting → success/error), success screen with "register another" option. Wire to identityStore + contestStore. Replace any existing placeholder. Write component tests.
 
 - [ ] **5.2 Implement DPNS active contests and voting screens** (P2)
   Build the contest viewing and voting interface:

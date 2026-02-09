@@ -498,3 +498,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (review-only task)
 **Sub-tasks created:** 10 (4.5a through 4.5j)
+
+## Run 72 — 2026-02-09
+**Task:** 5.1 [META] Design DPNS contest/voting UX
+**What was done:** Comprehensive analysis of the egui DPNS contested names screen (2,173 lines across 4 tabs: Active Contests, Past Contests, My Usernames, Scheduled Votes) plus the Register DPNS Name screen and all backend task modules (query contests, vote, schedule, clear, register). Cataloged every UI element, user action, table column, dialog, status flow, filter/sort behavior, and backend operation. Designed the component architecture (contestStore + 7 components + 5 screens) following established walletStore/identityStore patterns, leveraging the already-generated Tauri IPC bindings. Created 8 specific implementation sub-tasks (5.1a through 5.1h).
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (META task — research/design only)
+**Sub-tasks created:** 8 (5.1a through 5.1h)

@@ -755,6 +755,22 @@ async walletClearSpvData() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Bootstrap known addresses for a wallet.
+ *
+ * Populates the wallet's `known_addresses` and `watched_addresses` maps
+ * from derivation paths if they are empty. This is typically called
+ * automatically during wallet creation/import, but can be invoked
+ * manually if address maps need re-initialization.
+ */
+async walletBootstrapAddresses(walletSeedHash: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_bootstrap_addresses", { walletSeedHash }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Notify the backend that a wallet has been unlocked (triggers SPV wallet load).
  */
 async walletNotifyUnlocked(walletSeedHash: string) : Promise<Result<null, string>> {

@@ -1255,6 +1255,27 @@ pub fn wallet_clear_spv_data(state: tauri::State<'_, Arc<AppState>>) -> Result<(
     ctx.clear_spv_data()
 }
 
+/// Bootstrap known addresses for a wallet.
+///
+/// Populates the wallet's `known_addresses` and `watched_addresses` maps
+/// from derivation paths if they are empty. This is typically called
+/// automatically during wallet creation/import, but can be invoked
+/// manually if address maps need re-initialization.
+#[tauri::command]
+#[specta::specta]
+pub fn wallet_bootstrap_addresses(
+    state: tauri::State<'_, Arc<AppState>>,
+    wallet_seed_hash: WalletSeedHashDto,
+) -> Result<(), String> {
+    let seed_hash = parse_wallet_seed_hash(&wallet_seed_hash)?;
+    let ctx = state.current_context();
+    let wallet_arc = ctx
+        .wallet_by_seed_hash(&seed_hash)
+        .ok_or_else(|| format!("Wallet not found for seed hash {}", wallet_seed_hash))?;
+    ctx.bootstrap_wallet_addresses(&wallet_arc);
+    Ok(())
+}
+
 /// Notify the backend that a wallet has been unlocked (triggers SPV wallet load).
 #[tauri::command]
 #[specta::specta]

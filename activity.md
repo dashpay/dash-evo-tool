@@ -183,3 +183,10 @@
 **Files changed:** src-tauri/src/commands/wallet.rs, src-tauri/src/main.rs, src/context/mod.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
 **Tests added:** 8 Rust tests (ImportMnemonicInput serialization, no-password serialization, roundtrip, camelCase; ImportPrivateKeyInput serialization, empty fields, roundtrip, camelCase). Updated 2 frontend tests (total commands: 172→174, wallet commands: 20→22).
 **Sub-tasks created:** 0
+
+## Run 27 — 2026-02-09
+**Task:** 1.9j Add `wallet_bootstrap_addresses` Tauri command
+**What was done:** Added `wallet_bootstrap_addresses` Tauri IPC command wrapping `AppContext::bootstrap_wallet_addresses()`. The command takes a wallet seed hash, looks up the wallet from in-memory state, and calls the bootstrap method which populates the wallet's `known_addresses` and `watched_addresses` maps from derivation paths if they are empty. This is typically called automatically during wallet creation/import but is exposed as a standalone command for cases where address maps need manual re-initialization. TypeScript bindings auto-regenerated with 175 commands (up from 174). All checks pass: Rust (fmt, clippy, 220 tests), Frontend (lint, typecheck, 36 tests).
+**Files changed:** src-tauri/src/commands/wallet.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
+**Tests added:** 0 new Rust tests (command reuses existing wallet lookup/parsing helpers). Updated 2 frontend tests (total commands: 174→175, wallet commands: 22→23).
+**Sub-tasks created:** 0

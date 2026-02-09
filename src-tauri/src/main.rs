@@ -203,6 +203,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::wallet::wallet_start_spv,
             commands::wallet::wallet_stop_spv,
             commands::wallet::wallet_clear_spv_data,
+            commands::wallet::wallet_bootstrap_addresses,
             commands::wallet::wallet_notify_unlocked,
             commands::wallet::wallet_notify_locked,
             // Contract commands

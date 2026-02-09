@@ -538,3 +538,10 @@
 **Files changed:** src/frontend/screens/DpnsActiveContestsScreen.tsx, src/frontend/screens/DpnsActiveContestsScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
 **Tests added:** 28 (screen-level tests covering rendering, data loading, action buttons, vote toggling, vote casting dialog, error handling, filter integration, sort integration, multiple contests)
 **Sub-tasks created:** 0
+
+## Run 78 — 2026-02-09
+**Task:** 5.1e Create PastContestsTable component and wire DpnsPastContestsScreen
+**What was done:** Created `PastContestsTable` read-only component showing past DPNS contests (wonBy or locked state) with 4 sortable columns: Name, Ended Time, Last Updated, Awarded To. Awarded To column shows a Trophy badge with truncated winner identity (with full ID tooltip) for wonBy contests, and a Lock badge for locked contests. Smart filter with o→0, l→1 normalization. Created `DpnsPastContestsScreen` screen wired to contestStore with Refresh button, loading spinner, error toast handling, and real-time event subscription. Replaced placeholder route in routes.tsx.
+**Files changed:** src/frontend/components/dpns/PastContestsTable.tsx, src/frontend/components/dpns/PastContestsTable.test.tsx, src/frontend/screens/DpnsPastContestsScreen.tsx, src/frontend/screens/DpnsPastContestsScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
+**Tests added:** 52 (31 PastContestsTable component tests + 21 DpnsPastContestsScreen screen tests covering empty states, rendering, state filtering, sorting, filtering, awarded-to display, read-only verification, accessibility, data loading, action buttons, error handling, filter/sort integration, multiple contests)
+**Sub-tasks created:** 0

@@ -1,0 +1,405 @@
+import { create } from "zustand";
+import { commands, events } from "../bindings";
+import type {
+  WalletDto,
+  SingleKeyWalletDto,
+  WalletRefDto,
+  PlatformSyncModeDto,
+} from "../bindings";
+
+// ─── Refresh modes (mirrors egui WalletRefreshMode) ─────────────────
+
+export type WalletRefreshMode =
+  | "coreOnly"
+  | "coreAndPlatformAuto"
+  | "coreAndPlatformFull"
+  | "coreAndPlatformTerminal"
+  | "combined";
+
+// ─── Store state ────────────────────────────────────────────────────
+
+interface WalletState {
+  // Data
+  hdWallets: WalletDto[];
+  singleKeyWallets: SingleKeyWalletDto[];
+  selectedWallet: WalletRefDto | null;
+
+  // Loading / error
+  loading: boolean;
+  refreshing: boolean;
+  error: string | null;
+
+  // Refresh mode preference
+  refreshMode: WalletRefreshMode;
+}
+
+// ─── Store actions ──────────────────────────────────────────────────
+
+interface WalletActions {
+  /** Load all wallets from the backend. */
+  loadWallets: () => Promise<void>;
+
+  /** Select a wallet (HD or single-key) as the active wallet. */
+  selectWallet: (ref: WalletRefDto | null) => Promise<void>;
+
+  /** Refresh a specific HD wallet from Core (and optionally Platform). */
+  refreshHdWallet: (seedHash: string) => Promise<void>;
+
+  /** Refresh a specific single-key wallet from Core. */
+  refreshSingleKeyWallet: (keyHash: string) => Promise<void>;
+
+  /** Refresh the currently selected wallet. */
+  refreshSelectedWallet: () => Promise<void>;
+
+  /** Set the refresh mode preference. */
+  setRefreshMode: (mode: WalletRefreshMode) => void;
+
+  /** Rename an HD wallet. */
+  setHdWalletAlias: (seedHash: string, alias: string | null) => Promise<void>;
+
+  /** Rename a single-key wallet. */
+  setSingleKeyWalletAlias: (
+    keyHash: string,
+    alias: string | null,
+  ) => Promise<void>;
+
+  /** Remove an HD wallet. */
+  removeHdWallet: (seedHash: string) => Promise<void>;
+
+  /** Remove a single-key wallet. */
+  removeSingleKeyWallet: (keyHash: string) => Promise<void>;
+
+  /** Reload a single HD wallet (after backend mutation). */
+  reloadHdWallet: (seedHash: string) => Promise<void>;
+
+  /** Reload a single single-key wallet (after backend mutation). */
+  reloadSingleKeyWallet: (keyHash: string) => Promise<void>;
+
+  /** Notify the backend a wallet has been unlocked. */
+  notifyUnlocked: (seedHash: string) => Promise<void>;
+
+  /** Notify the backend a wallet has been locked. */
+  notifyLocked: (seedHash: string) => Promise<void>;
+
+  /** Subscribe to wallet-updated Tauri events. Returns unsubscribe fn. */
+  subscribeToUpdates: () => Promise<() => void>;
+
+  /** Clear error state. */
+  clearError: () => void;
+}
+
+export type WalletStore = WalletState & WalletActions;
+
+// ─── Helpers ────────────────────────────────────────────────────────
+
+function platformSyncModeForRefresh(
+  mode: WalletRefreshMode,
+): PlatformSyncModeDto | null {
+  switch (mode) {
+    case "coreOnly":
+      return null;
+    case "coreAndPlatformAuto":
+    case "combined":
+      return "auto";
+    case "coreAndPlatformFull":
+      return "forceFull";
+    case "coreAndPlatformTerminal":
+      return "terminalOnly";
+  }
+}
+
+// ─── Store ──────────────────────────────────────────────────────────
+
+export const useWalletStore = create<WalletStore>((set, get) => ({
+  // Initial state
+  hdWallets: [],
+  singleKeyWallets: [],
+  selectedWallet: null,
+  loading: false,
+  refreshing: false,
+  error: null,
+  refreshMode: "coreAndPlatformAuto",
+
+  loadWallets: async () => {
+    set({ loading: true, error: null });
+    try {
+      const result = await commands.walletListAll();
+      if (result.status === "ok") {
+        set({
+          hdWallets: result.data.hdWallets,
+          singleKeyWallets: result.data.singleKeyWallets,
+          selectedWallet: result.data.selected,
+          loading: false,
+        });
+      } else {
+        set({ error: result.error, loading: false });
+      }
+    } catch (e) {
+      set({
+        error: e instanceof Error ? e.message : String(e),
+        loading: false,
+      });
+    }
+  },
+
+  selectWallet: async (ref) => {
+    try {
+      const result = await commands.walletSelect({ selected: ref });
+      if (result.status === "ok") {
+        set({ selectedWallet: ref });
+      } else {
+        set({ error: result.error });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  refreshHdWallet: async (seedHash) => {
+    const { refreshMode } = get();
+    set({ refreshing: true, error: null });
+    try {
+      const platformSyncMode = platformSyncModeForRefresh(refreshMode);
+      const result = await commands.coreRefreshWalletInfo({
+        walletSeedHash: seedHash,
+        platformSyncMode,
+      });
+      if (result.status === "error") {
+        set({ error: result.error, refreshing: false });
+        return;
+      }
+      // The actual updated wallet data comes back via the walletUpdated event
+      // or we can re-fetch it. For immediate UI update, re-fetch this wallet.
+      const walletResult = await commands.walletGetHd(seedHash);
+      if (walletResult.status === "ok") {
+        set((state) => ({
+          hdWallets: state.hdWallets.map((w) =>
+            w.seedHash === seedHash ? walletResult.data : w,
+          ),
+          refreshing: false,
+        }));
+      } else {
+        set({ refreshing: false });
+      }
+    } catch (e) {
+      set({
+        error: e instanceof Error ? e.message : String(e),
+        refreshing: false,
+      });
+    }
+  },
+
+  refreshSingleKeyWallet: async (keyHash) => {
+    set({ refreshing: true, error: null });
+    try {
+      const result = await commands.coreRefreshSingleKeyWalletInfo({
+        keyHash,
+      });
+      if (result.status === "error") {
+        set({ error: result.error, refreshing: false });
+        return;
+      }
+      const walletResult = await commands.walletGetSingleKey(keyHash);
+      if (walletResult.status === "ok") {
+        set((state) => ({
+          singleKeyWallets: state.singleKeyWallets.map((w) =>
+            w.keyHash === keyHash ? walletResult.data : w,
+          ),
+          refreshing: false,
+        }));
+      } else {
+        set({ refreshing: false });
+      }
+    } catch (e) {
+      set({
+        error: e instanceof Error ? e.message : String(e),
+        refreshing: false,
+      });
+    }
+  },
+
+  refreshSelectedWallet: async () => {
+    const { selectedWallet, refreshHdWallet, refreshSingleKeyWallet } = get();
+    if (!selectedWallet) return;
+    if (selectedWallet.type === "hd") {
+      await refreshHdWallet(selectedWallet.seedHash);
+    } else {
+      await refreshSingleKeyWallet(selectedWallet.keyHash);
+    }
+  },
+
+  setRefreshMode: (mode) => {
+    set({ refreshMode: mode });
+  },
+
+  setHdWalletAlias: async (seedHash, alias) => {
+    try {
+      const result = await commands.walletSetAlias({
+        walletSeedHash: seedHash,
+        alias,
+      });
+      if (result.status === "ok") {
+        set((state) => ({
+          hdWallets: state.hdWallets.map((w) =>
+            w.seedHash === seedHash ? { ...w, alias } : w,
+          ),
+        }));
+      } else {
+        set({ error: result.error });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  setSingleKeyWalletAlias: async (keyHash, alias) => {
+    try {
+      const result = await commands.walletSetSingleKeyAlias({
+        keyHash,
+        alias,
+      });
+      if (result.status === "ok") {
+        set((state) => ({
+          singleKeyWallets: state.singleKeyWallets.map((w) =>
+            w.keyHash === keyHash ? { ...w, alias } : w,
+          ),
+        }));
+      } else {
+        set({ error: result.error });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  removeHdWallet: async (seedHash) => {
+    try {
+      const result = await commands.walletRemove({
+        walletSeedHash: seedHash,
+      });
+      if (result.status === "ok") {
+        set((state) => {
+          const newHdWallets = state.hdWallets.filter(
+            (w) => w.seedHash !== seedHash,
+          );
+          // If the removed wallet was selected, deselect
+          const wasSelected =
+            state.selectedWallet?.type === "hd" &&
+            state.selectedWallet.seedHash === seedHash;
+          return {
+            hdWallets: newHdWallets,
+            selectedWallet: wasSelected ? null : state.selectedWallet,
+          };
+        });
+      } else {
+        set({ error: result.error });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  removeSingleKeyWallet: async (keyHash) => {
+    try {
+      const result = await commands.walletRemoveSingleKey({ keyHash });
+      if (result.status === "ok") {
+        set((state) => {
+          const newSingleKeyWallets = state.singleKeyWallets.filter(
+            (w) => w.keyHash !== keyHash,
+          );
+          const wasSelected =
+            state.selectedWallet?.type === "singleKey" &&
+            state.selectedWallet.keyHash === keyHash;
+          return {
+            singleKeyWallets: newSingleKeyWallets,
+            selectedWallet: wasSelected ? null : state.selectedWallet,
+          };
+        });
+      } else {
+        set({ error: result.error });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  reloadHdWallet: async (seedHash) => {
+    try {
+      const result = await commands.walletGetHd(seedHash);
+      if (result.status === "ok") {
+        set((state) => {
+          const exists = state.hdWallets.some((w) => w.seedHash === seedHash);
+          return {
+            hdWallets: exists
+              ? state.hdWallets.map((w) =>
+                  w.seedHash === seedHash ? result.data : w,
+                )
+              : [...state.hdWallets, result.data],
+          };
+        });
+      }
+    } catch {
+      // Silently ignore — wallet may no longer exist
+    }
+  },
+
+  reloadSingleKeyWallet: async (keyHash) => {
+    try {
+      const result = await commands.walletGetSingleKey(keyHash);
+      if (result.status === "ok") {
+        set((state) => {
+          const exists = state.singleKeyWallets.some(
+            (w) => w.keyHash === keyHash,
+          );
+          return {
+            singleKeyWallets: exists
+              ? state.singleKeyWallets.map((w) =>
+                  w.keyHash === keyHash ? result.data : w,
+                )
+              : [...state.singleKeyWallets, result.data],
+          };
+        });
+      }
+    } catch {
+      // Silently ignore
+    }
+  },
+
+  notifyUnlocked: async (seedHash) => {
+    try {
+      await commands.walletNotifyUnlocked(seedHash);
+    } catch {
+      // Non-critical — best effort
+    }
+  },
+
+  notifyLocked: async (seedHash) => {
+    try {
+      await commands.walletNotifyLocked(seedHash);
+    } catch {
+      // Non-critical — best effort
+    }
+  },
+
+  subscribeToUpdates: async () => {
+    const unlisten = await events.walletUpdatedEvent.listen((event) => {
+      const { walletSeedHash } = event.payload;
+      // Reload the updated wallet's data
+      const state = get();
+      const isHd = state.hdWallets.some(
+        (w) => w.seedHash === walletSeedHash,
+      );
+      if (isHd) {
+        state.reloadHdWallet(walletSeedHash);
+      } else {
+        // Could be a single-key wallet — try reloading from full list
+        state.loadWallets();
+      }
+    });
+    return unlisten;
+  },
+
+  clearError: () => {
+    set({ error: null });
+  },
+}));

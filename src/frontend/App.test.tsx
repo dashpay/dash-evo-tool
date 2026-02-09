@@ -9,13 +9,18 @@ describe("App", () => {
     expect(
       screen.getByRole("heading", { name: /dash evo tool/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/tauri 2\.0 \+ react frontend/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/tauri 2\.0 \+ react frontend/i),
+    ).toBeInTheDocument();
     expect(screen.getByText(/ipc test/i)).toBeInTheDocument();
     expect(
       screen.getByPlaceholderText(/enter your name/i),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /greet/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /get app version/i }),
     ).toBeInTheDocument();
   });
 });

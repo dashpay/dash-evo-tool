@@ -11,10 +11,14 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["specta"] }
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
+specta = { version = "=2.0.0-rc.22", features = ["function"] }
+specta-typescript = "0.0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+thiserror = "2"
 
 # DET backend crate dependency — will be added in Phase 1 (task 1.2)
 # when the backend modules (backend_task, model, database, context, spv)

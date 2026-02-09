@@ -71,3 +71,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (META task — research/design only)
 **Sub-tasks created:** 2 (1.1a tauri-specta configuration, 1.1b DTO types module)
+
+## Run 11 — 2026-02-09
+**Task:** 1.1a Install and configure tauri-specta v2
+**What was done:** Added tauri-specta v2.0.0-rc.21, specta v2.0.0-rc.22, and specta-typescript v0.0.9 to src-tauri/Cargo.toml. Enabled `specta` feature on tauri crate. Refactored main.rs to use `Builder::<tauri::Wry>::new()` pattern with `collect_commands!` and `collect_events!` macros. Added `#[specta::specta]` to commands, created `GreetResponse` DTO and `BackendNotification` event struct both deriving `specta::Type`. Configured TypeScript binding export to `src/frontend/bindings.ts` with `BigIntExportBehavior::Number` for u64 → number mapping. Verified bindings generate correctly with type-safe command wrappers and event listeners. Updated App.tsx to import from generated bindings instead of raw `invoke()`. All checks pass: Rust (fmt, clippy, 5 tests), Frontend (lint, typecheck, 1 test).
+**Files changed:** src-tauri/Cargo.toml, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/App.tsx, src/frontend/App.test.tsx, tasks.md, activity.md
+**Tests added:** 3 new Rust tests (greet_response_serializes, greet_response_deserializes, backend_notification_serializes) + updated 2 existing tests for new GreetResponse type
+**Sub-tasks created:** 0

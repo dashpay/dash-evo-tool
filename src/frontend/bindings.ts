@@ -814,6 +814,17 @@ async contractGetById(contractId: string) : Promise<Result<DataContractDto | nul
 }
 },
 /**
+ * Get a contract by its token ID from the local database.
+ */
+async contractGetByTokenId(tokenId: string) : Promise<Result<DataContractDto | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_get_by_token_id", { tokenId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Set or clear the alias for a contract.
  */
 async contractSetAlias(input: SetContractAliasInput) : Promise<Result<null, string>> {

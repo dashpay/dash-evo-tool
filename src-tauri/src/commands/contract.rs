@@ -377,6 +377,22 @@ pub fn contract_get_by_id(
     Ok(contract.map(|qc| data_contract_to_dto(&qc.contract, qc.alias.clone())))
 }
 
+/// Get a contract by its token ID from the local database.
+#[tauri::command]
+#[specta::specta]
+pub fn contract_get_by_token_id(
+    state: tauri::State<'_, Arc<AppState>>,
+    token_id: IdentifierDto,
+) -> Result<Option<DataContractDto>, String> {
+    let identifier = parse_identifier(&token_id)?;
+    let ctx = state.current_context();
+    let contract = ctx
+        .get_contract_by_token_id(&identifier)
+        .map_err(|e| format!("Failed to get contract by token ID: {e}"))?;
+
+    Ok(contract.map(|qc| data_contract_to_dto(&qc.contract, qc.alias.clone())))
+}
+
 /// Set or clear the alias for a contract.
 #[tauri::command]
 #[specta::specta]

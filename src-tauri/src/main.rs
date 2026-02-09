@@ -212,6 +212,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::contract::contract_remove,
             commands::contract::contract_list_local,
             commands::contract::contract_get_by_id,
+            commands::contract::contract_get_by_token_id,
             commands::contract::contract_set_alias,
             // Document commands
             commands::document::document_broadcast,

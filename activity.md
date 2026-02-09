@@ -162,3 +162,10 @@
 **Files changed:** src-tauri/src/commands/settings.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
 **Tests added:** 2 Rust tests (CoreBackendModeDto roundtrip, CoreBackendModeDto deserialization from JSON). Updated 2 frontend tests (command counts: 168→170, settings commands: 15→17).
 **Sub-tasks created:** 0
+
+## Run 24 — 2026-02-09
+**Task:** 1.9g Add `contract_get_by_token_id` Tauri command
+**What was done:** Added `contract_get_by_token_id` Tauri IPC command wrapping `AppContext::get_contract_by_token_id()`. The command takes a `token_id` (IdentifierDto hex string), looks up the contract from the local database via the token ID, and returns an `Option<DataContractDto>`. Follows the same pattern as `contract_get_by_id` — synchronous DB read, reuses existing `data_contract_to_dto` converter, consistent error handling. TypeScript bindings auto-regenerated with 171 commands (up from 170). All checks pass: Rust (fmt, clippy, 208 tests), Frontend (lint, typecheck, 36 tests).
+**Files changed:** src-tauri/src/commands/contract.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
+**Tests added:** 0 new Rust tests (command reuses existing DTO/parsing tests). Updated 2 frontend tests (command counts: 170→171, contract commands: 10→11).
+**Sub-tasks created:** 0

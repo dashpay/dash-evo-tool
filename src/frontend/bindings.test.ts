@@ -187,7 +187,7 @@ describe("Bindings: commands object", () => {
     expect(walletCmds.length).toBe(19);
   });
 
-  it("contains all 10 contract commands", () => {
+  it("contains all 11 contract commands", () => {
     const cmds = commands as unknown as Record<string, unknown>;
     const contractCmds = [
       "contractFetch",
@@ -199,12 +199,13 @@ describe("Bindings: commands object", () => {
       "contractRemove",
       "contractListLocal",
       "contractGetById",
+      "contractGetByTokenId",
       "contractSetAlias",
     ];
     for (const cmd of contractCmds) {
       assertIsFunction(cmds, cmd);
     }
-    expect(contractCmds.length).toBe(10);
+    expect(contractCmds.length).toBe(11);
   });
 
   it("contains all 8 document commands", () => {
@@ -378,7 +379,7 @@ describe("Bindings: commands object", () => {
 
   it("total command count is 170", () => {
     const allKeys = Object.keys(commands);
-    expect(allKeys.length).toBe(170);
+    expect(allKeys.length).toBe(171);
   });
 });
 

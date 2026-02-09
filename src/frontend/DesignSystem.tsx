@@ -323,7 +323,8 @@ export function DesignSystem() {
                   icon={Inbox}
                   title="No wallets"
                   description="Create a wallet to get started"
-                  action={{ label: "Create Wallet", onClick: () => {} }}
+                  actionLabel="Create Wallet"
+                  onAction={() => {}}
                 />
                 <EmptyState
                   icon={Shield}

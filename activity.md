@@ -302,3 +302,10 @@
 **Files changed:** src/frontend/index.css, tasks.md, activity.md
 **Tests added:** 0 (CSS-only change — all 322 existing tests pass)
 **Sub-tasks created:** 0
+
+## Run 44 — 2026-02-09
+**Task:** 2.7c Fix DesignSystem.tsx EmptyState demo
+**What was done:** Fixed the EmptyState demo in DesignSystem.tsx to use the correct props. Changed `action={{ label: "Create Wallet", onClick: () => {} }}` (non-existent prop) to `actionLabel="Create Wallet" onAction={() => {}}` (correct props). The CTA button now renders correctly in the "No wallets" empty state demo.
+**Files changed:** src/frontend/DesignSystem.tsx, tasks.md, activity.md
+**Tests added:** 0 (single-line fix — all 322 existing tests pass)
+**Sub-tasks created:** 0

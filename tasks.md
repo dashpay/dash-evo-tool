@@ -966,7 +966,7 @@
 
 ## Phase 4: Identity Screens
 
-- [ ] **4.1 [META] Design identity screens UX** (P1)
+- [x] **4.1 [META] Design identity screens UX** (P1)
   Review all identity functionality and design improved UX:
   - Identity list with sortable columns and drag-drop reordering
   - Identity creation wizard (4 funding methods, key configuration)
@@ -974,6 +974,284 @@
   - Identity operations (top-up, withdraw, transfer, register DPNS name)
   Files to review: All files in `src/ui/identities/` — catalog every screen, dialog, and user action
   Produce implementation sub-tasks.
+
+  > **Design Decisions (Run 62):**
+  >
+  > ### Identity Screens Architecture: Route-Based with Shared Store
+  >
+  > The egui version uses ~7,000 lines across 12+ files with modal popups and screen stacks.
+  > The Tauri version splits into clean, focused route-based screens with a shared Zustand store:
+  >
+  > ```
+  > /identities                        → IdentitiesScreen (list + detail split-pane)
+  > /identities/create                 → CreateIdentityScreen (new identity wizard)
+  > /identities/load                   → LoadIdentityScreen (add existing by ID/wallet/DPNS)
+  > /identities/top-up/:id             → TopUpIdentityScreen (top-up wizard)
+  > /identities/withdraw/:id           → WithdrawScreen (withdraw credits)
+  > /identities/transfer/:id           → TransferScreen (transfer credits)
+  > /identities/register-dpns/:id      → RegisterDpnsNameScreen (register DPNS name)
+  > /identities/keys/:id               → KeyManagementScreen (view/add/disable/replace keys)
+  > /identities/keys/:id/:keyId        → KeyInfoScreen (key detail + sign message)
+  > ```
+  >
+  > ### Identity List & Detail View (IdentitiesScreen)
+  >
+  > **Layout: Split-pane design (similar to WalletsScreen pattern)**
+  > - Left panel (320px): Sortable identity table
+  > - Right panel: Detail view for selected identity
+  > - Empty state when no identities: Card with "No Identities" + "Create" / "Load" buttons
+  >
+  > **Identity Table:**
+  > - Columns: Alias, Identity ID (truncated), In Wallet, Type (User/MN/Evonode), Balance (DASH)
+  > - Sortable columns (click header: Alias, Identity ID, In Wallet, Type, Balance)
+  > - Custom ordering: Up/Down buttons to reorder (persisted to DB via `identity_save_order`)
+  > - Default: custom order if saved, else sort by Alias ascending
+  > - Inline alias editing: click alias cell → text input, Enter to save, Escape to cancel
+  > - Row selection: click to select, highlights with Dash Blue left border
+  > - Context menu (right-click or kebab): View Keys, Register DPNS Name, Top Up, Withdraw,
+  >   Transfer, Update Alias, Remove
+  > - Identity status colors: Active (green badge), Failed (red), Unknown (gray), Pending (yellow)
+  > - Type display: "User" | "Masternode" | "Evonode" badge
+  > - Balance: formatted in DASH, hover shows duffs (tooltip)
+  >
+  > **Identity Detail Panel (when selected):**
+  > - Header: Alias (large), Identity ID (full, monospace + copy), Type badge, Status badge
+  > - Balance section: Credits balance in DASH, platform balance breakdown
+  > - DPNS names section: List of registered names (if any)
+  > - Associated wallet: Wallet name + link to wallet screen
+  > - Action bar: Top Up, Withdraw, Transfer, Register DPNS, Refresh buttons
+  > - Keys dropdown: Quick access to all keys with private key indicators
+  >   (highlighted green if private key held, dim if not)
+  > - For voter identity: separate section showing voter keys
+  >
+  > **Top bar actions:**
+  > - "Create Identity" button (navigates to /identities/create)
+  > - "Load Identity" button (navigates to /identities/load)
+  > - "Refresh All" button (bulk refresh all identities)
+  > - If no wallets: shows "Import/Create Wallet" instead
+  >
+  > ### Create Identity Flow (CreateIdentityScreen)
+  >
+  > **Multi-step wizard with step indicator (similar to CreateWalletScreen pattern):**
+  >
+  > **Step 1: Select Wallet**
+  > - Wallet selector dropdown (if multiple wallets)
+  > - Auto-selects if only one wallet
+  > - Wallet unlock gate if password-protected
+  >
+  > **Step 2: Identity Index (advanced only, collapsible)**
+  > - Dropdown showing indices 0–30
+  > - "(used)" marker on already-claimed indices
+  > - Info tooltip: "Identity index is an internal reference number"
+  >
+  > **Step 3: Key Configuration (advanced only, collapsible)**
+  > - Toggle: Default Keys / Advanced Configuration
+  > - Default: platform auto-selects keys (explanation text shown)
+  > - Advanced: Table with columns (Key #, WIF, Purpose, Type, Security Level, Delete)
+  >   - Master key row (always present, not deletable)
+  >   - Additional key rows with + Add Key button
+  >   - Purpose dropdown: Authentication, Transfer, Voting, Owner
+  >   - Type dropdown: ECDSA_SECP256K1, ECDSA_HASH160, BLS12_381, BIP13_SCRIPT_HASH
+  >   - Security Level dropdown: Critical, High, Medium (auto-set based on purpose)
+  >
+  > **Step 4: Local Alias**
+  > - Text input for local alias (required)
+  > - Info: "Stored only in Dash Evo Tool — not broadcast to the network"
+  >
+  > **Step 5: Funding Method**
+  > - Selector with 4 options:
+  >   1. "Unused Evo Funding Locks" (recommended, shown only if locks exist)
+  >   2. "Wallet Balance" (shown only if wallet has sufficient balance)
+  >   3. "Address with QR Code" (always available)
+  >   4. "Platform Address" (shown only if wallet has platform balance)
+  > - Each option has a brief description
+  >
+  > **Step 6: Funding-specific UI (varies by method)**
+  > - **Asset Lock:** Select from list of available locks, amount display
+  > - **Wallet Balance:** Amount selector, auto-calculate from wallet balance
+  > - **QR Code:** Generate receive address, show QR (220×220), address + copy button,
+  >   waiting indicator, auto-detect incoming UTXO, progress through steps
+  >   (WaitingOnFunds → FundsReceived → ReadyToCreate → WaitingForAssetLock → WaitingForPlatformAcceptance → Success)
+  > - **Platform Address:** Select platform address from wallet, amount input
+  >
+  > **Step 7: Register**
+  > - Review summary: wallet, alias, funding method, amount
+  > - "Register Identity" button
+  > - Progress: spinner + elapsed time
+  >
+  > **Success Screen:**
+  > - Identity ID display + copy
+  > - Fee breakdown (base fee, processing fee, total in DASH)
+  > - Action buttons: "Go to Identities", "Register DPNS Name", "Create Another"
+  >
+  > ### Load Existing Identity (LoadIdentityScreen)
+  >
+  > **Three tabs at top: By Identity ID | By Wallet | By DPNS Name**
+  >
+  > **By Identity ID tab:**
+  > - Input field for Identity ID (accepts Hex and Base58)
+  > - Advanced options (collapsible):
+  >   - Identity Type selector (User/Masternode/Evonode)
+  >   - Manual private keys section: list of key inputs with + Add / - Remove
+  >   - Testnet only: "Fill Random HPMN" / "Fill Random Masternode" quick-fill buttons
+  > - "Load Identity" button
+  >
+  > **By Wallet tab:**
+  > - Wallet selector dropdown
+  > - Wallet unlock gate (if password-protected)
+  > - Advanced options (collapsible):
+  >   - Search mode: "Specific Index" (single input) or "Up to Index" (scan range)
+  > - "Search" button
+  >
+  > **By DPNS Name tab:**
+  > - Username input (min 3 chars, ".dash" suffix shown)
+  > - Advanced: wallet selector for key derivation
+  > - "Search by Username" button
+  >
+  > **All tabs share:**
+  > - Error banner (dismissible) at top of content
+  > - Loading state with elapsed time counter
+  > - Success state with identity details + "Load Another" / "Back to Identities" buttons
+  >
+  > ### Top Up Identity (TopUpIdentityScreen)
+  >
+  > **Same funding wizard pattern as Create, but for existing identity:**
+  > - Identity header shows which identity is being topped up
+  > - 4 funding methods (same as Create):
+  >   1. Unused Asset Lock (if available)
+  >   2. Wallet Balance
+  >   3. Address with QR Code
+  >   4. Platform Address
+  > - Amount input for wallet balance and platform address methods
+  > - QR code flow same as Create (generate address → wait → detect → create lock → submit)
+  > - Success screen with fee breakdown
+  >
+  > ### Withdraw Credits (WithdrawScreen)
+  >
+  > **Single-page form:**
+  > - Key selector: dropdown of identity keys with TRANSFER purpose
+  >   (uses add_key_chooser pattern — shows key ID, purpose, security level, type)
+  > - Available balance display (formatted DASH)
+  > - Amount input with Max button (max = balance - 0.005 DASH fee reserve)
+  > - Destination address input:
+  >   - For owner key (masternode): auto-filled with payout address, read-only
+  >   - For other keys: text input with address validation (network-specific)
+  >   - Inline error if invalid address format
+  > - Confirmation dialog (danger mode): "Are you sure you want to withdraw X DASH?"
+  > - "Withdraw" button (disabled until valid)
+  > - States: Form → Wallet Unlock → Sending (spinner + elapsed) → Success/Error
+  > - Error: inline banner with dismiss, recovery suggestion link
+  > - Success: amount withdrawn, fee breakdown
+  >
+  > ### Transfer Credits (TransferScreen)
+  >
+  > **Single-page form:**
+  > - Key selector: dropdown of TRANSFER-purpose keys
+  > - Transfer destination toggle: "To Identity" / "To Platform Address" buttons
+  > - **To Identity:** Identity selector (search loaded identities) + receiver identity ID input
+  > - **To Platform Address:** Platform address input field with validation
+  > - Amount input with Max button
+  > - Confirmation dialog: "Transfer X DASH credits?"
+  > - "Transfer" button
+  > - States: same as Withdraw (Form → Unlock → Sending → Success/Error)
+  >
+  > ### Register DPNS Name (RegisterDpnsNameScreen)
+  >
+  > **Single-page form:**
+  > - Identity selector (if multiple user identities loaded)
+  > - Key selector (advanced: choose specific key)
+  > - Username input: text field + ".dash" suffix display
+  >   - Minimum 3 characters
+  >   - Example: "Enter alice to register alice.dash"
+  > - "Register" button
+  > - States: Form → Wallet Unlock → Registering (spinner + elapsed) → Success/Error
+  > - Success: shows whether name was registered normally or is contested (enters voting period)
+  > - Fee breakdown on success
+  > - After success: "Register Another" or "Back to Identities"
+  > - Source tracking: knows if navigated from Identities or DPNS screen (back button behavior)
+  >
+  > ### Key Management (KeyManagementScreen at /identities/keys/:id)
+  >
+  > **Keys list with actions:**
+  > - Table: Key ID, Purpose, Security Level, Type, Status (Active/Disabled), Has Private Key
+  > - Private key indicator: green highlight if private key held, dim if not
+  > - Separate sections: Main Identity Keys / Voter Identity Keys (if voter identity exists)
+  > - Click key row → navigate to KeyInfoScreen
+  > - "+ Add Key" button (conditional: only if master key exists)
+  > - Back to identity detail
+  >
+  > ### Key Info (KeyInfoScreen at /identities/keys/:id/:keyId)
+  >
+  > **Key detail view:**
+  > - Key metadata grid: Key ID, Purpose, Security Level, Type, Read Only, Active/Disabled status
+  > - Contract bounds (if set): Contract ID + Document Type
+  > - Public key display: Hex format + Base64 format, with copy buttons
+  > - Private key section:
+  >   - If in wallet: "Stored in wallet [name]", derivation path display
+  >   - If encrypted: "Encrypted" with wallet unlock to decrypt
+  >   - If manual: display WIF with show/hide toggle
+  >   - If not available: text input to add private key manually
+  > - Message signing section:
+  >   - Text area for message input
+  >   - "Sign Message" button (requires private key)
+  >   - Signed message output (base64) with copy button
+  >   - Sign error display
+  > - Advanced actions (conditional on having master key):
+  >   - "Disable Key" button → confirmation dialog → dispatches DisableKey task
+  >   - "Replace Key" button (master key only) → confirmation dialog with new key type/private key inputs → dispatches ReplaceKey
+  >   - "Remove Private Key" button → confirmation dialog → removes local private key data
+  >
+  > ### Add Key (dialog/screen from KeyManagementScreen)
+  >
+  > **Form for adding a new key to identity:**
+  > - Private key input (hex format, 32 bytes)
+  > - Key Type selector: ECDSA_SECP256K1, ECDSA_HASH160
+  > - Purpose selector: Authentication, Transfer, Encryption, Decryption
+  > - Security Level selector: Critical, High, Medium (auto-set based on purpose)
+  > - Advanced: Contract bounds section (toggle):
+  >   - Contract ID input
+  >   - Document Type Name input
+  > - "Add Key" button
+  > - Wallet unlock gate
+  > - States: Form → Wallet Unlock → Adding (spinner + elapsed) → Success/Error
+  > - Success: fee breakdown
+  > - Special factory methods:
+  >   - `new_for_dashpay_encryption()` — pre-configured for DashPay encryption
+  >   - `new_for_dashpay_decryption()` — pre-configured for DashPay decryption
+  >
+  > ### UX Improvements Over egui
+  >
+  > 1. **Split-pane identity list**: See all identities + detail without navigation
+  > 2. **Inline alias editing**: Click to edit, Enter/Escape to confirm/cancel
+  > 3. **Route-based operations**: Each operation (top-up, withdraw, transfer) gets a dedicated
+  >    route with back navigation, instead of screen stack push/pop
+  > 4. **Unified key management**: Single route for all key operations per identity
+  > 5. **Better empty states**: Illustrations + clear CTAs when no identities
+  > 6. **Toast notifications**: Replace in-page message banners
+  > 7. **Breadcrumb navigation**: Always know where you are (Identities > Keys > Key #3)
+  > 8. **Stepper wizards**: Clear progress for multi-step Create/TopUp flows
+  > 9. **Consistent status badges**: Active/Failed/Unknown/Pending with color coding
+  > 10. **Key indicators in list**: Quick visual of which keys have private key data
+  >
+  > ### Backend Commands Already Available (27 commands)
+  >
+  > All identity IPC commands are implemented and TypeScript bindings generated:
+  > - Async: identity_load, identity_search_by_dpns_name, identity_search_from_wallet,
+  >   identity_search_up_to_index, identity_register, identity_register_dpns_name,
+  >   identity_refresh, identity_refresh_dpns_names, identity_withdraw, identity_transfer,
+  >   identity_add_key, identity_disable_keys, identity_replace_key, identity_top_up,
+  >   identity_top_up_from_platform_addresses, identity_transfer_to_addresses
+  > - Sync: identity_list_local, identity_list_user, identity_list_voting, identity_get_by_id,
+  >   identity_set_alias, identity_get_alias, identity_load_order, identity_save_order,
+  >   identity_delete, identity_list_summaries, identity_local_dpns_names
+
+  **Sub-tasks produced:**
+  - [ ] **4.1a** Create identity Zustand store: `useIdentityStore` with state for identities (IndexMap ordering), selected identity, loading/error/refreshing states. Actions: loadIdentities, selectIdentity, refreshIdentity, refreshAllIdentities, setAlias, reorderIdentity (up/down + persist via identity_save_order), removeIdentity. Subscribe to `task-completed` events for identity results. Follow walletStore.ts pattern. (P1)
+  - [ ] **4.1b** Create identity list component: `IdentityListPanel` with sortable table (Alias, ID, In Wallet, Type, Balance columns), custom order up/down buttons, inline alias editing, selection handling, context menu (View Keys, Register DPNS, Top Up, Withdraw, Transfer, Update Alias, Remove), status badges, type badges. Include empty state. (P1)
+  - [ ] **4.1c** Create identity detail component: `IdentityDetailPanel` with header (alias + full ID + copy + type/status badges), balance section (DASH formatted), DPNS names list, associated wallet link, action bar (Top Up, Withdraw, Transfer, Register DPNS, Refresh), keys quick-access dropdown with private key indicators. (P1)
+  - [ ] **4.1d** Create key management components: `KeyManagementScreen` (table of keys with ID/Purpose/SecurityLevel/Type/Status/HasPrivateKey, separate Main/Voter sections, + Add Key button), `KeyInfoScreen` (metadata grid, public key hex/base64, private key section with wallet unlock, message signing, disable/replace/remove actions), `AddKeyDialog` (form with private key input, type/purpose/security level selectors, contract bounds toggle). (P1)
+  - [ ] **4.1e** Create withdraw/transfer components: `WithdrawScreen` (key selector for TRANSFER keys, balance display, amount input with Max, address input with validation, owner key payout address auto-fill, confirmation dialog, states: form→unlock→sending→result), `TransferScreen` (key selector, destination type toggle Identity/PlatformAddress, identity selector or address input, amount with Max, confirmation, states). (P1)
+  - [ ] **4.1f** Create register DPNS name component: `RegisterDpnsNameScreen` with identity selector, key selector (advanced), username input with ".dash" suffix, min 3 chars validation, wallet unlock gate, registering state with elapsed time, success with contested/normal result and fee breakdown, source tracking (from Identities vs DPNS). (P1)
 
 - [ ] **4.2 Implement identity list screen** (P1)
   Build the main identity management interface:
@@ -1296,11 +1574,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tasks (top-level) | 77 |
+| Total tasks (top-level) | 83 |
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 64 |
-| Remaining | 27 |
+| Completed | 65 |
+| Remaining | 32 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

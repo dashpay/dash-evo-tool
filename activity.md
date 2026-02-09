@@ -428,3 +428,10 @@
 **Files changed:** src/frontend/components/wallet/EntropyGrid.tsx, src/frontend/components/wallet/EntropyGrid.test.tsx, src/frontend/components/wallet/index.ts, src/frontend/screens/CreateWalletScreen.tsx, src/frontend/screens/CreateWalletScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 27 (EntropyGrid: 9 unit tests for getBit/toggleBit/xorBytes, 13 component tests — grid rendering, instruction text, bit counter, pointer toggle, drag toggle, no hover-only toggle, pointer up stops drag, no double-toggle, frozen text, frozen non-interactive, ref getCombinedEntropy, XOR behavior, aria-readonly; CreateWalletScreen: 5 integration tests — grid renders in Generate step, instruction text, grid disappears after generating, grid reappears on Back, Uint8Array entropy passed to entropyToMnemonic)
 **Sub-tasks created:** 0
+
+## Run 62 — 2026-02-09
+**Task:** 4.1 [META] Design identity screens UX
+**What was done:** Reviewed all 12+ egui identity screen files (~7,000 lines total): identities_screen.rs, add_existing_identity_screen.rs, add_new_identity_screen/mod.rs + 5 funding submodules, top_up_identity_screen/mod.rs, withdraw_screen.rs, transfer_screen.rs, register_dpns_name_screen.rs, keys/key_info_screen.rs, keys/add_key_screen.rs, keys/keys_screen.rs, funding_common.rs. Cataloged 100+ user actions, 15+ backend task types, 10+ database operations. Designed route-based architecture with 9 routes, split-pane list/detail view (matching wallet pattern), multi-step wizards for Create/TopUp, dedicated screens for Withdraw/Transfer/RegisterDPNS/KeyManagement. Identified 10 UX improvements over egui: split-pane list, inline alias editing, route-based operations, unified key management, better empty states, toast notifications, breadcrumb navigation, stepper wizards, consistent status badges, key indicators. Confirmed all 27 identity IPC commands already available in backend.
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (META task — research only)
+**Sub-tasks created:** 6 (4.1a through 4.1f — identity store, list panel, detail panel, key management, withdraw/transfer, register DPNS)

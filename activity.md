@@ -309,3 +309,10 @@
 **Files changed:** src/frontend/DesignSystem.tsx, tasks.md, activity.md
 **Tests added:** 0 (single-line fix — all 322 existing tests pass)
 **Sub-tasks created:** 0
+
+## Run 45 — 2026-02-09
+**Task:** 3.1 [META] Design wallet screens UX
+**What was done:** Comprehensively reviewed all 6 egui wallet files (wallets_screen/mod.rs 2,030 lines, send_screen/mod.rs 1,725 lines, add_new_wallet_screen.rs, import_mnemonic_screen.rs, create_asset_lock_screen.rs, asset_lock_detail_screen.rs, single_key_send_screen.rs). Cataloged every user action, button, menu, dialog, form field, validation rule, conditional UI element, and backend task dispatch across all screens. Designed improved UX: split-pane wallet list+detail layout, unified HD/single-key send screen, tabbed wallet detail (Addresses/Transactions/Asset Locks), stepper wizard for create wallet, two-tab import (Seed Phrase/Private Key), receive dialog with Core/Platform tabs and QR, and 10 specific UX improvements over egui (persistent wallet list, inline rename, context menus, toast notifications, etc.). Produced 6 implementation sub-tasks (3.1a-3.1f).
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (META task — design/research only)
+**Sub-tasks created:** 6 (3.1a wallet store, 3.1b wallet list panel, 3.1c HD wallet detail, 3.1d single-key detail, 3.1e receive dialog, 3.1f private key dialog)

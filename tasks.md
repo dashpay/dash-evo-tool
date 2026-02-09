@@ -241,13 +241,61 @@
   Write a TypeScript test that imports the bindings and verifies key types exist.
   (Replaces manual TypeScript type definitions — tauri-specta auto-generates everything.)
 
-- [ ] **1.9 [REVIEW] Backend bridge completeness audit** (P1)
+- [x] **1.9 [REVIEW] Backend bridge completeness audit** (P1)
   Systematically compare every BackendTask variant, every AppContext method called by UI screens, and every database query used by the egui UI against the implemented Tauri commands. Catalog any gaps. Check that:
   - Every operation the egui UI performs has a corresponding Tauri command
   - All TypeScript types accurately mirror Rust types (via tauri-specta generation)
   - Error handling is consistent and informative
   - Event payloads contain all necessary data
   Create fix tasks for any gaps found.
+
+  > **Audit Findings (Run 20):**
+  >
+  > ### TypeScript Bindings: COMPLETE (A+)
+  > - 163/163 registered Rust commands exported to TypeScript
+  > - 8/8 events properly mapped with correct naming
+  > - 153 TypeScript types exported (all DTOs, enums, input types)
+  > - Consistent `Result<T, string>` error pattern across 134 commands
+  > - Proper camelCase conversion, nullable handling (`| null`), enum → string union
+  > - No `any`/`unknown` in public API types
+  >
+  > ### BackendTask Coverage: 7 GAPS FOUND
+  >
+  > **IdentityTask gaps (4 variants missing):**
+  > - `RegisterIdentity` — No `identity_register` Tauri command (critical: identity creation)
+  > - `TopUpIdentity` — No `identity_top_up` Tauri command (critical: identity funding)
+  > - `TopUpIdentityFromPlatformAddresses` — No Tauri command
+  > - `TransferToAddresses` — No `identity_transfer_to_addresses` command (only `identity_transfer` for single-identifier transfers)
+  >
+  > **WalletTask gaps (1 variant missing):**
+  > - `FundPlatformAddressFromAssetLock` — Not exposed (deferred: needs AssetLockProof serialization)
+  >
+  > **Other domains: COMPLETE** — All variants for Document (8/8), Contract (7/7), Core (10/10), DashPay (14/14), Token (22/22), ContestedResource (7/7), PlatformInfo (8/8), System (2/2), MnList (5/5), GroveSTARK (2/2), BroadcastStateTransition (1/1) are covered.
+  >
+  > ### AppContext Method Gaps (4 methods missing):
+  > - `set_core_backend_mode()` — Used in network_chooser_screen.rs (6 call sites), no Tauri command
+  > - `get_contract_by_token_id()` — Used in token detail screens, no Tauri command
+  > - `bootstrap_wallet_addresses()` — Used in wallet import/creation, no Tauri command
+  > - Wallet creation flow (save_wallet in add_new_wallet_screen.rs and import_mnemonic_screen.rs) — No Tauri command covers creating/importing wallets
+  >
+  > ### Event System: COMPLETE
+  > - All 8 events properly typed and exported
+  > - Error handling consistent (`Result<T, String>` mapped to `Result<T, string>`)
+  >
+  > ### Summary: 11 fix sub-tasks created below
+
+  **Fix sub-tasks:**
+  - [ ] **1.9a** Add `identity_register` Tauri command wrapping `IdentityTask::RegisterIdentity` with all 4 funding methods (UseAssetLock, FundWithWallet, FundWithUtxo, FundWithPlatformAddresses) (P1)
+  - [ ] **1.9b** Add `identity_top_up` Tauri command wrapping `IdentityTask::TopUpIdentity` with all funding methods (P1)
+  - [ ] **1.9c** Add `identity_top_up_from_platform_addresses` Tauri command wrapping `IdentityTask::TopUpIdentityFromPlatformAddresses` (P1)
+  - [ ] **1.9d** Add `identity_transfer_to_addresses` Tauri command wrapping `IdentityTask::TransferToAddresses` (P1)
+  - [ ] **1.9e** Add `wallet_fund_platform_from_asset_lock` Tauri command wrapping `WalletTask::FundPlatformAddressFromAssetLock` — requires AssetLockProof DTO serialization (P2)
+  - [ ] **1.9f** Add `context_set_core_backend_mode` Tauri command for switching between SPV and RPC modes (P1)
+  - [ ] **1.9g** Add `contract_get_by_token_id` Tauri command wrapping `AppContext::get_contract_by_token_id()` (P1)
+  - [ ] **1.9h** Add `wallet_create` Tauri command covering the full wallet creation flow (generate mnemonic, derive keys, encrypt seed, save to DB, bootstrap addresses) (P1)
+  - [ ] **1.9i** Add `wallet_import_mnemonic` Tauri command covering the mnemonic import flow (validate mnemonic, derive keys, encrypt, save, bootstrap) (P1)
+  - [ ] **1.9j** Add `wallet_bootstrap_addresses` Tauri command wrapping `AppContext::bootstrap_wallet_addresses()` (P1)
+  - [ ] **1.9k** Regenerate TypeScript bindings after all fix tasks are complete and verify new commands appear in bindings.ts (P1)
 
 ---
 
@@ -723,11 +771,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tasks (top-level) | 60 |
+| Total tasks (top-level) | 71 |
 | META tasks | 13 |
 | REVIEW tasks | 11 |
-| Implementation tasks | 36 |
-| Completed | 19 |
-| Remaining | 43 |
+| Implementation tasks | 47 |
+| Completed | 20 |
+| Remaining | 51 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

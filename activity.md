@@ -134,3 +134,10 @@
 **Files changed:** src/frontend/bindings.test.ts (new), tasks.md, activity.md
 **Tests added:** 35 Vitest tests (command completeness, event completeness, type structure, type import verification)
 **Sub-tasks created:** 0
+
+## Run 20 — 2026-02-09
+**Task:** 1.9 [REVIEW] Backend bridge completeness audit
+**What was done:** Performed systematic three-part audit: (1) BackendTask coverage — compared all ~120 task variants across 13 domains against 163 Tauri IPC commands, found 5 missing IdentityTask commands (RegisterIdentity, TopUpIdentity, TopUpIdentityFromPlatformAddresses, TransferToAddresses) and 1 missing WalletTask command (FundPlatformAddressFromAssetLock); (2) AppContext method coverage — audited ~76 public methods against Tauri commands, found 4 missing (set_core_backend_mode, get_contract_by_token_id, bootstrap_wallet_addresses, wallet creation/import flows); (3) TypeScript bindings — verified 163/163 commands exported, 8/8 events mapped, 153 types generated, consistent error handling, proper camelCase conversion, no any/unknown in public API. Created 11 fix sub-tasks (1.9a-1.9k) for identified gaps.
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (REVIEW task — audit only)
+**Sub-tasks created:** 11 (1.9a through 1.9k — missing commands and bindings regeneration)

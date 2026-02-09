@@ -20,6 +20,7 @@ import { IdentitiesScreen } from "@/screens/IdentitiesScreen";
 import { commands } from "@/bindings";
 import { DpnsActiveContestsScreen } from "@/screens/DpnsActiveContestsScreen";
 import { DpnsPastContestsScreen } from "@/screens/DpnsPastContestsScreen";
+import { DpnsOwnedNamesScreen } from "@/screens/DpnsOwnedNamesScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -153,7 +154,7 @@ const contractsDpnsPastRoute = createRoute({
 const contractsDpnsOwnedRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-owned",
-  component: () => <PlaceholderScreen title="DPNS Owned Names" />,
+  component: DpnsOwnedNamesScreen,
 });
 
 const contractsDpnsScheduledRoute = createRoute({

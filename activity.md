@@ -545,3 +545,10 @@
 **Files changed:** src/frontend/components/dpns/PastContestsTable.tsx, src/frontend/components/dpns/PastContestsTable.test.tsx, src/frontend/screens/DpnsPastContestsScreen.tsx, src/frontend/screens/DpnsPastContestsScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
 **Tests added:** 52 (31 PastContestsTable component tests + 21 DpnsPastContestsScreen screen tests covering empty states, rendering, state filtering, sorting, filtering, awarded-to display, read-only verification, accessibility, data loading, action buttons, error handling, filter/sort integration, multiple contests)
 **Sub-tasks created:** 0
+
+## Run 79 — 2026-02-09
+**Task:** 5.1f Create OwnedNamesPanel component and wire DpnsOwnedNamesScreen
+**What was done:** Created `OwnedNamesPanel` component showing DPNS names owned by loaded identities with 4 columns: Name, Owner ID (truncated with full ID tooltip), Acquired At (relative time with full date tooltip), Actions ("Set Alias" button per row). Internal sorting by name/ownerId/acquiredAt with toggle direction. Case-insensitive name filtering. Empty state when no owned names, "no matching" state when filter has no results. Created `DpnsOwnedNamesScreen` screen wired to contestStore with Refresh button (calls refreshDpnsNames), loading spinner, error toast handling, and real-time event subscription. Set Alias action calls `identitySetAlias` command with .dash suffix appended if missing, shows success/error toasts. Replaced placeholder route in routes.tsx.
+**Files changed:** src/frontend/components/dpns/OwnedNamesPanel.tsx, src/frontend/components/dpns/OwnedNamesPanel.test.tsx, src/frontend/screens/DpnsOwnedNamesScreen.tsx, src/frontend/screens/DpnsOwnedNamesScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
+**Tests added:** 55 (30 OwnedNamesPanel component tests + 25 DpnsOwnedNamesScreen screen tests covering empty states, rendering, filtering, sorting, set alias action, data loading, action buttons, error handling, filter integration, multiple names, accessibility)
+**Sub-tasks created:** 0

@@ -255,11 +255,8 @@ pub fn qualified_identity_to_dto(qi: &QualifiedIdentity) -> QualifiedIdentityDto
         })
         .collect();
 
-    let associated_wallet_hashes: Vec<WalletSeedHashDto> = qi
-        .associated_wallets
-        .keys()
-        .map(hex::encode)
-        .collect();
+    let associated_wallet_hashes: Vec<WalletSeedHashDto> =
+        qi.associated_wallets.keys().map(hex::encode).collect();
 
     let top_ups: Vec<TopUpEntryDto> = qi
         .top_ups
@@ -517,18 +514,17 @@ pub fn identity_withdraw(
     input: WithdrawFromIdentityInput,
 ) -> Result<DispatchTaskResponse, String> {
     let qi = lookup_identity(&state, &input.identity_id)?;
-    let to_address =
-        input
-            .to_address
-            .map(|addr_str| {
-                addr_str
+    let to_address = input
+        .to_address
+        .map(|addr_str| {
+            addr_str
                     .parse::<dash_sdk::dpp::dashcore::Address<
                         dash_sdk::dpp::dashcore::address::NetworkUnchecked,
                     >>()
                     .map_err(|e| format!("Invalid address: {e}"))
                     .map(|a| a.assume_checked())
-            })
-            .transpose()?;
+        })
+        .transpose()?;
     let key_id: Option<KeyID> = input.key_id.map(|id| id as KeyID);
 
     let task = BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(

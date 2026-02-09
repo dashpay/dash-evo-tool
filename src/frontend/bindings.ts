@@ -307,6 +307,324 @@ async identityLocalDpnsNames() : Promise<Result<DpnsNameEntryDto[], string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Get the best chain lock for the active network.
+ *
+ * Dispatches `CoreTask::GetBestChainLock`. Result via `TaskResultEvent`.
+ */
+async coreGetBestChainLock() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("core_get_best_chain_lock");
+},
+/**
+ * Get the best chain locks for all configured networks.
+ *
+ * Dispatches `CoreTask::GetBestChainLocks`. Result via `TaskResultEvent`.
+ */
+async coreGetBestChainLocks() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("core_get_best_chain_locks");
+},
+/**
+ * Refresh an HD wallet's info from Core, optionally syncing Platform balances.
+ *
+ * Dispatches `CoreTask::RefreshWalletInfo`. Result via `TaskResultEvent`.
+ */
+async coreRefreshWalletInfo(input: RefreshWalletInfoInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("core_refresh_wallet_info", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Refresh a single-key wallet's info from Core.
+ *
+ * Dispatches `CoreTask::RefreshSingleKeyWalletInfo`. Result via `TaskResultEvent`.
+ */
+async coreRefreshSingleKeyWalletInfo(input: RefreshSingleKeyWalletInfoInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("core_refresh_single_key_wallet_info", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Start DashQT on the active network.
+ *
+ * Dispatches `CoreTask::StartDashQT`. Result via `TaskResultEvent`.
+ */
+async coreStartDashQt(input: StartDashQtInput) : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("core_start_dash_qt", { input });
+},
+/**
+ * Create an asset lock for identity registration.
+ *
+ * Dispatches `CoreTask::CreateRegistrationAssetLock`. Result via `TaskResultEvent`.
+ */
+async coreCreateRegistrationAssetLock(input: CreateRegistrationAssetLockInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("core_create_registration_asset_lock", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Create an asset lock for identity top-up.
+ *
+ * Dispatches `CoreTask::CreateTopUpAssetLock`. Result via `TaskResultEvent`.
+ */
+async coreCreateTopUpAssetLock(input: CreateTopUpAssetLockInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("core_create_top_up_asset_lock", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send a payment from an HD wallet.
+ *
+ * Dispatches `CoreTask::SendWalletPayment`. Result via `TaskResultEvent`.
+ */
+async coreSendWalletPayment(input: SendWalletPaymentInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("core_send_wallet_payment", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Send a payment from a single-key wallet.
+ *
+ * Dispatches `CoreTask::SendSingleKeyWalletPayment`. Result via `TaskResultEvent`.
+ */
+async coreSendSingleKeyWalletPayment(input: SendSingleKeyWalletPaymentInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("core_send_single_key_wallet_payment", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Recover asset locks from an HD wallet.
+ *
+ * Dispatches `CoreTask::RecoverAssetLocks`. Result via `TaskResultEvent`.
+ */
+async coreRecoverAssetLocks(input: RecoverAssetLocksInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("core_recover_asset_locks", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Generate a new receive address for an HD wallet.
+ *
+ * Dispatches `WalletTask::GenerateReceiveAddress`. Result via `TaskResultEvent`.
+ */
+async walletGenerateReceiveAddress(input: GenerateReceiveAddressInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_generate_receive_address", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch platform address balances for a wallet.
+ *
+ * Dispatches `WalletTask::FetchPlatformAddressBalances`. Result via `TaskResultEvent`.
+ */
+async walletFetchPlatformAddressBalances(input: FetchPlatformAddressBalancesInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_fetch_platform_address_balances", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transfer credits between platform addresses.
+ *
+ * Dispatches `WalletTask::TransferPlatformCredits`. Result via `TaskResultEvent`.
+ */
+async walletTransferPlatformCredits(input: TransferPlatformCreditsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_transfer_platform_credits", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Withdraw from platform addresses to a Core script.
+ *
+ * Dispatches `WalletTask::WithdrawFromPlatformAddress`. Result via `TaskResultEvent`.
+ */
+async walletWithdrawFromPlatformAddress(input: WithdrawFromPlatformAddressInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_withdraw_from_platform_address", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fund a platform address from wallet UTXOs.
+ *
+ * Dispatches `WalletTask::FundPlatformAddressFromWalletUtxos`. Result via `TaskResultEvent`.
+ */
+async walletFundPlatformAddressFromUtxos(input: FundPlatformAddressFromWalletUtxosInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_fund_platform_address_from_utxos", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get all loaded wallets (HD + single-key) with current state.
+ */
+async walletListAll() : Promise<Result<WalletListDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_list_all") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get a single HD wallet by seed hash.
+ */
+async walletGetHd(walletSeedHash: string) : Promise<Result<WalletDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_get_hd", { walletSeedHash }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get a single-key wallet by key hash.
+ */
+async walletGetSingleKey(keyHash: string) : Promise<Result<SingleKeyWalletDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_get_single_key", { keyHash }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Select a wallet (HD or single-key) as the active wallet.
+ */
+async walletSelect(input: SelectWalletInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_select", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the alias for an HD wallet.
+ */
+async walletSetAlias(input: SetWalletAliasInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_set_alias", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the alias for a single-key wallet.
+ */
+async walletSetSingleKeyAlias(input: SetSingleKeyWalletAliasInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_set_single_key_alias", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove an HD wallet from the application.
+ */
+async walletRemove(input: RemoveWalletInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_remove", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove a single-key wallet from the application.
+ */
+async walletRemoveSingleKey(input: RemoveSingleKeyWalletInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_remove_single_key", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Start SPV for the current network.
+ */
+async walletStartSpv() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_start_spv") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop SPV for the current network.
+ */
+async walletStopSpv() : Promise<void> {
+    await TAURI_INVOKE("wallet_stop_spv");
+},
+/**
+ * Clear SPV data for the current network.
+ */
+async walletClearSpvData() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_clear_spv_data") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Notify the backend that a wallet has been unlocked (triggers SPV wallet load).
+ */
+async walletNotifyUnlocked(walletSeedHash: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_notify_unlocked", { walletSeedHash }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Notify the backend that a wallet has been locked (triggers SPV wallet unload).
+ */
+async walletNotifyLocked(walletSeedHash: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_notify_locked", { walletSeedHash }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -364,6 +682,66 @@ securityLevel: string;
  */
 privateKeyHex: string }
 /**
+ * An unused asset lock available for identity operations.
+ */
+export type AssetLockDto = {
+/**
+ * Transaction ID as hex string.
+ */
+txid: string;
+/**
+ * Address holding the locked funds.
+ */
+address: string;
+/**
+ * Amount locked in credits.
+ */
+amount: number;
+/**
+ * Whether an instant lock has been received.
+ */
+hasInstantLock: boolean;
+/**
+ * Whether an asset lock proof has been generated.
+ */
+hasAssetLockProof: boolean }
+/**
+ * Input for creating a registration asset lock.
+ */
+export type CreateRegistrationAssetLockInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Amount in credits to lock.
+ */
+amountCredits: number;
+/**
+ * Identity index for the registration.
+ */
+identityIndex: number }
+/**
+ * Input for creating a top-up asset lock.
+ */
+export type CreateTopUpAssetLockInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Amount in credits to lock.
+ */
+amountCredits: number;
+/**
+ * Identity index.
+ */
+identityIndex: number;
+/**
+ * Top-up index within the identity.
+ */
+topUpIndex: number }
+/**
  * Input for deleting a local identity.
  */
 export type DeleteIdentityInput = {
@@ -420,6 +798,46 @@ name: string;
  * Timestamp when the name was acquired.
  */
 acquiredAt: number }
+/**
+ * Input for fetching platform address balances.
+ */
+export type FetchPlatformAddressBalancesInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Sync mode to use.
+ */
+syncMode: PlatformSyncModeDto }
+/**
+ * Input for funding a platform address from wallet UTXOs.
+ */
+export type FundPlatformAddressFromWalletUtxosInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Amount in duffs to lock.
+ */
+amount: number;
+/**
+ * Destination platform address.
+ */
+destination: string;
+/**
+ * Whether fees are deducted from the output amount.
+ */
+feeDeductFromOutput: boolean }
+/**
+ * Input for generating a receive address.
+ */
+export type GenerateReceiveAddressInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string }
 /**
  * A sample DTO demonstrating tauri-specta type generation.
  */
@@ -546,6 +964,42 @@ activeNetwork: NetworkDto;
  */
 availableNetworks: NetworkDto[] }
 /**
+ * A payment recipient.
+ */
+export type PaymentRecipientDto = { address: string; amount: number }
+/**
+ * A platform address amount pair for transfer inputs/outputs.
+ */
+export type PlatformAddressAmountDto = {
+/**
+ * The address string.
+ */
+address: string;
+/**
+ * Amount in credits.
+ */
+amount: number }
+/**
+ * Platform address info (DIP-17).
+ */
+export type PlatformAddressDto = {
+/**
+ * The Core address string.
+ */
+address: string;
+/**
+ * Balance in credits.
+ */
+balance: number;
+/**
+ * Current nonce.
+ */
+nonce: number }
+/**
+ * Platform sync mode DTO for the IPC boundary.
+ */
+export type PlatformSyncModeDto = "auto" | "forceFull" | "terminalOnly"
+/**
  * Serializable version of `QualifiedIdentity`.
  * This is the primary identity DTO sent to the frontend for display and selection.
  */
@@ -603,6 +1057,14 @@ voterIdentityId: string | null;
  */
 operatorIdentityId: string | null }
 /**
+ * Input for recovering asset locks from a wallet.
+ */
+export type RecoverAssetLocksInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string }
+/**
  * Input for refreshing a single identity.
  */
 export type RefreshIdentityInput = {
@@ -610,6 +1072,26 @@ export type RefreshIdentityInput = {
  * Identity ID (hex) to refresh.
  */
 identityId: string }
+/**
+ * Input for refreshing a single-key wallet from Core.
+ */
+export type RefreshSingleKeyWalletInfoInput = {
+/**
+ * Single-key wallet hash (hex).
+ */
+keyHash: string }
+/**
+ * Input for refreshing an HD wallet from Core.
+ */
+export type RefreshWalletInfoInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Optional platform sync mode. None = skip platform sync.
+ */
+platformSyncMode: PlatformSyncModeDto | null }
 /**
  * Input for registering a DPNS name.
  */
@@ -622,6 +1104,22 @@ identityId: string;
  * The DPNS name to register (without .dash suffix).
  */
 name: string }
+/**
+ * Input for removing a single-key wallet.
+ */
+export type RemoveSingleKeyWalletInput = {
+/**
+ * Key hash (hex).
+ */
+keyHash: string }
+/**
+ * Input for removing a wallet.
+ */
+export type RemoveWalletInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string }
 /**
  * Input for replacing a key on an identity.
  */
@@ -715,6 +1213,62 @@ walletSeedHash: string;
  */
 identityIndex: number }
 /**
+ * Input for selecting a wallet.
+ */
+export type SelectWalletInput = {
+/**
+ * Which wallet to select: HD (by seed hash), SingleKey (by key hash), or None (deselect).
+ */
+selected: WalletRefDto | null }
+/**
+ * Input for sending a payment from a single-key wallet.
+ */
+export type SendSingleKeyWalletPaymentInput = {
+/**
+ * Single-key wallet hash (hex).
+ */
+keyHash: string;
+/**
+ * Payment recipients.
+ */
+recipients: PaymentRecipientDto[];
+/**
+ * Whether to subtract the fee from the send amount.
+ */
+subtractFeeFromAmount: boolean;
+/**
+ * Optional memo.
+ */
+memo: string | null;
+/**
+ * Optional override fee in duffs.
+ */
+overrideFee: number | null }
+/**
+ * Input for sending a wallet payment (HD wallet).
+ */
+export type SendWalletPaymentInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Payment recipients.
+ */
+recipients: PaymentRecipientDto[];
+/**
+ * Whether to subtract the fee from the send amount.
+ */
+subtractFeeFromAmount: boolean;
+/**
+ * Optional memo.
+ */
+memo: string | null;
+/**
+ * Optional override fee in duffs (for retry after min relay fee error).
+ */
+overrideFee: number | null }
+/**
  * Input for setting identity alias.
  */
 export type SetIdentityAliasInput = {
@@ -726,6 +1280,71 @@ identityId: string;
  * New alias (None to clear).
  */
 alias: string | null }
+/**
+ * Input for setting a single-key wallet alias.
+ */
+export type SetSingleKeyWalletAliasInput = {
+/**
+ * Key hash (hex).
+ */
+keyHash: string;
+/**
+ * New alias (None to clear).
+ */
+alias: string | null }
+/**
+ * Input for setting a wallet alias.
+ */
+export type SetWalletAliasInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * New alias (None to clear).
+ */
+alias: string | null }
+/**
+ * Serializable summary of a single-key wallet.
+ * Replaces `SingleKeyWallet` for IPC. Does NOT include private key material.
+ */
+export type SingleKeyWalletDto = {
+/**
+ * SHA-256 hex hash of the private key (unique identifier).
+ */
+keyHash: string;
+/**
+ * Whether this wallet requires a password to unlock.
+ */
+usesPassword: boolean;
+/**
+ * The public key as hex string.
+ */
+publicKey: string;
+/**
+ * The P2PKH address string.
+ */
+address: string;
+/**
+ * User-assigned alias.
+ */
+alias: string | null;
+/**
+ * Confirmed balance in duffs.
+ */
+confirmedBalance: number;
+/**
+ * Unconfirmed balance in duffs.
+ */
+unconfirmedBalance: number;
+/**
+ * Total balance in duffs.
+ */
+totalBalance: number;
+/**
+ * Number of UTXOs.
+ */
+utxoCount: number }
 /**
  * High-level SPV status values.
  */
@@ -758,6 +1377,18 @@ connectedPeers: number;
  * Error message, if status is Error.
  */
 error: string | null }
+/**
+ * Input for starting DashQT.
+ */
+export type StartDashQtInput = {
+/**
+ * Path to the custom Dash-Qt binary.
+ */
+dashQtPath: string;
+/**
+ * Whether to overwrite dash.conf.
+ */
+overwriteDashConf: boolean }
 /**
  * Emitted when a backend task fails.
  */
@@ -826,6 +1457,159 @@ credits: number;
  */
 keyId: number | null }
 /**
+ * Input for transferring credits between platform addresses.
+ */
+export type TransferPlatformCreditsInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Source addresses with amounts to transfer.
+ */
+inputs: PlatformAddressAmountDto[];
+/**
+ * Destination addresses with amounts.
+ */
+outputs: PlatformAddressAmountDto[];
+/**
+ * Index of the input to deduct fees from (in sorted order).
+ */
+feePayerIndex: number }
+/**
+ * An address within an HD wallet.
+ */
+export type WalletAddressDto = {
+/**
+ * The address string (e.g., "XpYv3N...").
+ */
+address: string;
+/**
+ * Current balance in duffs.
+ */
+balance: number;
+/**
+ * Total received over lifetime in duffs.
+ */
+totalReceived: number;
+/**
+ * Derivation path as string (e.g., "m/44'/5'/0'/0/0").
+ */
+derivationPath: string }
+/**
+ * Serializable summary of an HD wallet, suitable for list views.
+ * Replaces `Wallet` for IPC. Does NOT include private key material.
+ */
+export type WalletDto = {
+/**
+ * SHA-256 hex hash of the wallet seed (unique identifier).
+ */
+seedHash: string;
+/**
+ * Whether this wallet requires a password to unlock.
+ */
+usesPassword: boolean;
+/**
+ * User-assigned alias (e.g., "My Main Wallet").
+ */
+alias: string | null;
+/**
+ * Whether this is the main wallet.
+ */
+isMain: boolean;
+/**
+ * Confirmed balance in duffs.
+ */
+confirmedBalance: number;
+/**
+ * Unconfirmed balance in duffs.
+ */
+unconfirmedBalance: number;
+/**
+ * Total balance in duffs (confirmed + unconfirmed).
+ */
+totalBalance: number;
+/**
+ * Known addresses with their string representation and balance.
+ */
+addresses: WalletAddressDto[];
+/**
+ * Transactions associated with this wallet.
+ */
+transactions: WalletTransactionDto[];
+/**
+ * Unused asset locks available for identity creation/top-up.
+ */
+unusedAssetLocks: AssetLockDto[];
+/**
+ * Platform address info (DIP-17).
+ */
+platformAddresses: PlatformAddressDto[];
+/**
+ * Identity indexes registered from this wallet.
+ */
+identityIndexes: number[];
+/**
+ * Password hint (if set).
+ */
+passwordHint: string | null }
+/**
+ * Summary of all wallets for the wallet list screen.
+ */
+export type WalletListDto = { hdWallets: WalletDto[]; singleKeyWallets: SingleKeyWalletDto[];
+/**
+ * Which wallet is currently selected (if any).
+ */
+selected: WalletRefDto | null }
+/**
+ * Unified wallet reference — either HD or single-key.
+ */
+export type WalletRefDto =
+/**
+ * HD wallet, referenced by seed hash.
+ */
+{ type: "hd"; seedHash: string } |
+/**
+ * Single-key wallet, referenced by key hash.
+ */
+{ type: "singleKey"; keyHash: string }
+/**
+ * A wallet transaction.
+ */
+export type WalletTransactionDto = {
+/**
+ * Transaction ID as hex string.
+ */
+txid: string;
+/**
+ * Unix timestamp.
+ */
+timestamp: number;
+/**
+ * Block height (None if unconfirmed).
+ */
+height: number | null;
+/**
+ * Block hash as hex string (None if unconfirmed).
+ */
+blockHash: string | null;
+/**
+ * Net amount change in duffs (positive = incoming, negative = outgoing).
+ */
+netAmount: number;
+/**
+ * Transaction fee in duffs (if known).
+ */
+fee: number | null;
+/**
+ * User-assigned label.
+ */
+label: string | null;
+/**
+ * Whether all inputs are ours.
+ */
+isOurs: boolean }
+/**
  * Emitted when a wallet's balance or state changes.
  */
 export type WalletUpdatedEvent = {
@@ -857,6 +1641,30 @@ credits: number;
  * Optional key ID to use for signing.
  */
 keyId: number | null }
+/**
+ * Input for withdrawing from a platform address to Core.
+ */
+export type WithdrawFromPlatformAddressInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Platform addresses and amounts to withdraw.
+ */
+inputs: PlatformAddressAmountDto[];
+/**
+ * Core script (hex) to receive the withdrawal.
+ */
+outputScriptHex: string;
+/**
+ * Core fee per byte.
+ */
+coreFeePerByte: number;
+/**
+ * Index of the input to deduct fees from.
+ */
+feePayerIndex: number }
 /**
  * Emitted when a chain-locked block is received via ZMQ.
  */

@@ -4,4 +4,6 @@
 //! Commands are thin wrappers around the existing `BackendTask` dispatch
 //! mechanism or direct `AppContext`/`Database` reads.
 
+pub mod core;
 pub mod identity;
+pub mod wallet;

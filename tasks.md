@@ -199,7 +199,7 @@
   Each command: `#[tauri::command] #[specta::specta]`, accepts DTO args, constructs BackendTask, dispatches, returns Result<DTO, String>.
   Write Rust unit tests for serialization/deserialization of command args and results.
 
-- [ ] **1.5 Implement Wallet & Core IPC commands** (P1)
+- [x] **1.5 Implement Wallet & Core IPC commands** (P1)
   Create `src-tauri/src/commands/wallet.rs` and `commands/core.rs` with commands for:
   - **CoreTask (10 ops):** get_best_chain_lock, get_best_chain_locks, refresh_wallet_info, refresh_single_key_wallet_info, send_wallet_payment, send_single_key_wallet_payment, create_registration_asset_lock, create_top_up_asset_lock, recover_asset_locks, start_dash_qt
   - **WalletTask (6 ops):** generate_receive_address, fetch_platform_address_balances, transfer_platform_credits, fund_platform_address_from_asset_lock, fund_platform_address_from_wallet_utxos, withdraw_from_platform_address
@@ -727,7 +727,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 15 |
-| Remaining | 47 |
+| Completed | 16 |
+| Remaining | 46 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

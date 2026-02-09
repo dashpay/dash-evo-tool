@@ -389,6 +389,80 @@ impl AppContext {
         wallets.get(seed_hash).cloned()
     }
 
+    /// Get all loaded HD wallets as a list of (seed_hash, Arc<RwLock<Wallet>>) pairs.
+    pub fn loaded_wallets(&self) -> Vec<(WalletSeedHash, Arc<RwLock<Wallet>>)> {
+        let wallets = match self.wallets.read() {
+            Ok(w) => w,
+            Err(_) => return Vec::new(),
+        };
+        wallets
+            .iter()
+            .map(|(hash, arc)| (*hash, arc.clone()))
+            .collect()
+    }
+
+    /// Get a single-key wallet by its key hash.
+    pub fn single_key_wallet_by_hash(
+        &self,
+        key_hash: &SingleKeyHash,
+    ) -> Option<Arc<RwLock<SingleKeyWallet>>> {
+        let wallets = self.single_key_wallets.read().ok()?;
+        wallets.get(key_hash).cloned()
+    }
+
+    /// Get all loaded single-key wallets as a list of (key_hash, Arc<RwLock<SingleKeyWallet>>) pairs.
+    pub fn loaded_single_key_wallets(&self) -> Vec<(SingleKeyHash, Arc<RwLock<SingleKeyWallet>>)> {
+        let wallets = match self.single_key_wallets.read() {
+            Ok(w) => w,
+            Err(_) => return Vec::new(),
+        };
+        wallets
+            .iter()
+            .map(|(hash, arc)| (*hash, arc.clone()))
+            .collect()
+    }
+
+    /// Get the currently selected wallet seed hash.
+    pub fn selected_wallet_hash(&self) -> Option<WalletSeedHash> {
+        self.selected_wallet_hash.lock().ok().and_then(|g| *g)
+    }
+
+    /// Set the currently selected wallet seed hash.
+    pub fn set_selected_wallet_hash(&self, hash: Option<WalletSeedHash>) {
+        if let Ok(mut g) = self.selected_wallet_hash.lock() {
+            *g = hash;
+        }
+        if let Err(e) = self.db.update_selected_wallet_hash(hash.as_ref()) {
+            tracing::error!("Failed to persist selected wallet hash: {}", e);
+        }
+    }
+
+    /// Get the currently selected single-key wallet hash.
+    pub fn selected_single_key_hash(&self) -> Option<SingleKeyHash> {
+        self.selected_single_key_hash.lock().ok().and_then(|g| *g)
+    }
+
+    /// Set the currently selected single-key wallet hash.
+    pub fn set_selected_single_key_hash(&self, hash: Option<SingleKeyHash>) {
+        if let Ok(mut g) = self.selected_single_key_hash.lock() {
+            *g = hash;
+        }
+        if let Err(e) = self.db.update_selected_single_key_hash(hash.as_ref()) {
+            tracing::error!("Failed to persist selected single-key hash: {}", e);
+        }
+    }
+
+    /// Remove a single-key wallet from memory and database.
+    pub fn remove_single_key_wallet(&self, key_hash: &SingleKeyHash) -> Result<(), String> {
+        self.db
+            .remove_single_key_wallet(key_hash, self.network)
+            .map_err(|e| format!("Failed to remove single-key wallet from DB: {e}"))?;
+        if let Ok(mut wallets) = self.single_key_wallets.write() {
+            wallets.remove(key_hash);
+        }
+        Ok(())
+    }
+
     pub fn enable_developer_mode(&self, enable: bool) {
         self.developer_mode.store(enable, Ordering::Relaxed);
         // Animations are reverse of developer mode

@@ -1614,7 +1614,7 @@
 
 ## Phase 7: Token Screens
 
-- [ ] **7.1 [META] Design token screens UX** (P2)
+- [x] **7.1 [META] Design token screens UX** (P2)
   Review ALL token functionality — this is the largest screen group with 15+ sub-screens:
   - Token portfolio view (My Tokens tab)
   - Token search and discovery
@@ -1623,41 +1623,129 @@
   Files to review: All files in `src/ui/tokens/`
   Produce implementation sub-tasks.
 
-- [ ] **7.2 Implement token portfolio and search screens** (P2)
-  Build the main token interface:
-  - **My Tokens tab:** List all tokens owned by loaded identities with name, symbol, balance, decimals. Token actions accessible per row.
-  - **Search Tokens tab:** Keyword search, browse results, view details, purchase
-  - **Add Token by ID:** Input contract ID, fetch and track
-  - Token detail expansion with full metadata
-  Reference: `tokens_screen/mod.rs` (2,187 lines) — MyTokens and SearchTokens subscreens
-  Write component tests. Write Playwright test for token portfolio viewing.
+  > **Design Decisions (Run 86):**
+  >
+  > ### Complete Action Inventory (15+ egui screens, ~120 user actions, 22 backend tasks)
+  >
+  > **Backend Status:** All Tauri IPC commands fully implemented in `src-tauri/src/commands/token.rs`
+  > (1,511 lines): 21 async dispatch commands + 2 direct database commands. All input DTOs defined.
+  > TypeScript bindings auto-generated via tauri-specta in `src/frontend/bindings.ts`. 45+ backend
+  > unit tests. **No backend work needed.**
+  >
+  > **Missing Frontend Infrastructure:**
+  > - No `tokenStore.ts` (Zustand store)
+  > - No token components or screens (only placeholder routes at `/tokens/`, `/tokens/search`, `/tokens/creator`)
+  > - No `/token/` component directory
+  >
+  > ### Token Screens Architecture
+  >
+  > **Main Screen: 3 tabs (like egui's TokensSubscreen enum)**
+  > 1. **My Tokens** — Portfolio view of all owned tokens with sorting, detail expansion, per-row action menu
+  > 2. **Search Tokens** — Keyword search with pagination, contract detail expansion, "Add to My Tokens"
+  > 3. **Token Creator** — Multi-step wizard (7+ steps) for creating new token contracts
+  >
+  > **Action Screens (13 separate routes, all share a common operation base pattern):**
+  > - Transfer, Mint, Burn, Freeze, Unfreeze, Pause, Resume, Claim, View Claims,
+  >   Set Price, Purchase, Update Config, Destroy Frozen Funds
+  > - Each follows: token context → input form → advanced options (public note) →
+  >   key selection → wallet unlock → fee estimation → confirmation → broadcast → result
+  > - Group action support where applicable (mint, pause, resume, set price, update config)
+  >
+  > **Supplementary Screens:**
+  > - Add Token by ID — lookup by contract ID or token ID
+  > - Token Info Popup — modal with full token metadata + JSON schema viewer
+  > - Contract Details — expanded view when navigating from search results
+  >
+  > ### Store Design: `tokenStore.ts`
+  >
+  > Following walletStore/identityStore/contestStore patterns:
+  > - **State:** myTokens[] (with balance, metadata, contract info), searchResults[],
+  >   searchKeyword, searchCursor, tokenOrder[], selectedToken, loading, refreshing, error,
+  >   sortColumn, sortOrder
+  > - **Actions:** loadMyTokenBalances, searchByKeyword, clearSearch, fetchTokenByContractId,
+  >   fetchTokenByTokenId, saveTokenLocally, removeToken, loadTokenOrder, saveTokenOrder,
+  >   queryTokenPricing, queryFrozenIdentities, subscribeToUpdates
+  > - **Event listeners:** TaskResultEvent (filter resultType === "Token") for async operation results
+  > - Tauri commands already bound: tokenQueryMyBalances, tokenQueryIdentityBalance,
+  >   tokenQueryDescriptionsByKeyword, tokenFetchByContractId, tokenFetchByTokenId,
+  >   tokenSaveLocally, tokenRemove, tokenLoadOrder, tokenSaveOrder, tokenQueryPricing,
+  >   tokenQueryFrozenIdentities, tokenMint, tokenTransfer, tokenBurn, tokenFreeze,
+  >   tokenUnfreeze, tokenPause, tokenResume, tokenClaim, tokenEstimatePerpetualRewards,
+  >   tokenPurchase, tokenSetDirectPurchasePrice, tokenUpdateConfig, tokenDestroyFrozenFunds,
+  >   tokenRegisterContract
+  >
+  > ### Component Breakdown
+  >
+  > - `components/token/MyTokensTable.tsx` — sortable table (Owner Identity, Alias, Balance) with
+  >   per-row action dropdown (Transfer, Mint, Burn, Freeze, Unfreeze, Pause, Resume, Claim,
+  >   View Claims, Set Price, Purchase, Update Config, Destroy Frozen Funds, More Info, Remove)
+  > - `components/token/TokenInfoDialog.tsx` — modal with full token metadata (name, description,
+  >   contract ID, token ID, base/max supply, status, pricing, distribution rules) + "View Schema" JSON popup
+  > - `components/token/TokenSearchPanel.tsx` — keyword input, search button, results table with
+  >   pagination (Previous/Next), "More Info" per row, contract detail expansion
+  > - `components/token/TokenCreatorWizard.tsx` — multi-step wizard with sub-components:
+  >   - Step 1: BasicInfoStep (name, plural name, language selector 50+, description, decimals,
+  >     base supply, max supply, capitalize, start paused, allow transfers to frozen)
+  >   - Step 2: DistributionStep (perpetual + pre-programmed distribution config, recipient type
+  >     selector, function selector with formula visualization images, interval config, entry grid)
+  >   - Step 3: ControlRulesStep (mint/burn/freeze/unfreeze/destroy/pause/resume/max-supply/
+  >     conventions/marketplace rules — each with action taker combo, identity inputs, admin identity)
+  >   - Step 4: GroupsStep (add groups, member grid with identity + power inputs, required power)
+  >   - Step 5: HistoryStep (keep history checkbox options)
+  >   - Step 6: KeywordsStep (searchable keyword tags)
+  >   - Step 7: ReviewStep (identity selection, summary, create button, fee confirmation)
+  > - `components/token/TokenOperationForm.tsx` — shared operation layout: amount input, recipient
+  >   selector (where applicable), advanced options toggle (public note), key selector, fee display,
+  >   action button, confirmation dialog, group action support, progress/success/error states
+  > - `screens/TokenMyTokensScreen.tsx` — wires tokenStore to MyTokensTable + action routing
+  > - `screens/TokenSearchScreen.tsx` — wires tokenStore to TokenSearchPanel
+  > - `screens/TokenCreatorScreen.tsx` — wires tokenStore + identityStore to TokenCreatorWizard
+  > - `screens/TokenTransferScreen.tsx` — wires TokenOperationForm for transfer
+  > - `screens/TokenMintScreen.tsx` — wires TokenOperationForm for mint
+  > - `screens/TokenBurnScreen.tsx` — wires TokenOperationForm for burn
+  > - (etc. for each of the 13 action screens)
+  > - `screens/TokenAddByIdScreen.tsx` — contract/token ID lookup with search status
+  > - `screens/TokenViewClaimsScreen.tsx` — claims history table with fetch/refresh
+  >
+  > ### Complexity Notes
+  >
+  > - Token Creator is the single most complex screen in the entire application (~112K lines in egui).
+  >   It needs 7 wizard steps with deeply nested configuration forms. Breaking it into sub-components
+  >   per step is critical.
+  > - Distribution function visualization shows formula images (Linear, Polynomial, Exponential,
+  >   Logarithmic, Inverted Logarithmic). These can be SVG/inline components or static assets.
+  > - Control Rules have deeply nested configurations with ~10 rule types, each with action taker
+  >   selection (No One / Contract Owner / Identity / Main Group / Specific Group) and sub-rules.
+  > - Group action support means some action screens detect when the token is group-controlled
+  >   and adjust their UI text/behavior accordingly.
+  > - Pricing supports single price or tiered pricing (map of quantity thresholds to prices).
+  >
+  > ### Implementation Plan
+  >
+  > Tasks 7.2–7.4 are replaced with more granular sub-tasks below. The token creator wizard
+  > is split across multiple tasks due to its extreme complexity.
 
-- [ ] **7.3 Implement token creator screen** (P2)
-  Build the token creation wizard — one of the most complex screens:
-  - Basic info: name, symbol, description, decimals
-  - Supply: initial mint, maximum supply, mint cap per transaction
-  - Distribution: function selection (Linear, Log, Polynomial, Exponential, Inverse Log), parameter configuration, formula visualization/preview
-  - Perpetual distributions configuration
-  - Freezing: enable/disable, requirements, conditions
-  - Pausing: enable/disable, requirements
-  - Claims: enable/disable, amounts, intervals
-  - Access control: action takers configuration (who can mint, freeze, pause, etc.)
-  - Review and create: identity selection, wallet unlock, fee confirmation, broadcast
-  Reference: `tokens_screen/mod.rs` — TokenCreator subscreen, `token_creator.rs`, `distributions.rs`
-  Write component tests for each wizard step. Write Playwright test for token creation flow.
-
-- [ ] **7.4 Implement token action screens** (P2)
-  Build all token operation screens:
-  - Transfer, Mint, Burn, Freeze, Unfreeze, Pause, Resume tokens
-  - Claim tokens and view claims
-  - Update token configuration
-  - Purchase tokens and set token price
-  Each follows a similar pattern: select token, input parameters, select identity/key, wallet unlock, fee confirmation, broadcast
-  Reference: All token action screen files in `src/ui/tokens/` (transfer_tokens_screen.rs, mint_tokens_screen.rs, burn_tokens_screen.rs, freeze_tokens_screen.rs, unfreeze_tokens_screen.rs, pause_tokens_screen.rs, resume_tokens_screen.rs, claim_tokens_screen.rs, view_token_claims_screen.rs, update_token_config.rs, direct_token_purchase_screen.rs, set_token_price_screen.rs)
-  Write component tests. Write Playwright tests for transfer and mint flows.
-
-- [ ] **7.5 [REVIEW] Token screens functionality parity** (P2)
-  Exhaustive comparison. Token screens are the most feature-rich area — verify ALL 12+ action types work, token creator wizard has all options, portfolio displays correctly. Create fix tasks.
+  **Sub-tasks produced:**
+  - [ ] **7.2a** Create `tokenStore.ts` Zustand store: token list CRUD (load balances, search by keyword with pagination cursor, fetch by contract/token ID, save locally, remove), token ordering (load/save), pricing queries, frozen identity queries, sort state (column, order), loading/error/refreshing states, TaskResultEvent subscription filtering by "Token" result type. Follow walletStore/identityStore pattern. Write 20+ store tests.
+  - [ ] **7.2b** Create `MyTokensTable` component: sortable table with 3 columns (Owner Identity/Alias, Token Name, Balance). Per-row action dropdown menu with all 15 actions (Transfer, Mint, Burn, Freeze, Unfreeze, Pause, Resume, Claim, View Claims, Set Price, Purchase, Update Config, Destroy Frozen Funds, More Info, Remove). Sort by clicking column headers. "More Info" opens `TokenInfoDialog`. "Remove" shows confirmation. Empty state message. Write 20+ component tests.
+  - [ ] **7.2c** Create `TokenInfoDialog` modal: displays full token metadata (name, description, contract ID, token ID, base supply, max supply, paused status, owner identity, pricing info, distribution rules). "View Schema" button opens a nested JSON viewer dialog showing the token contract configuration. Close button. Write 10+ component tests.
+  - [ ] **7.2d** Wire `TokenMyTokensScreen`: compose MyTokensTable + TokenInfoDialog, connect to tokenStore, add top-right action buttons (Refresh, Add Token by ID, Create Token), handle action menu routing (navigate to `/tokens/transfer`, `/tokens/mint`, etc. with token context). Replace placeholder route. Write 15+ screen tests. Write 1 Playwright E2E test.
+  - [ ] **7.2e** Create `TokenSearchPanel` component and wire `TokenSearchScreen`: keyword input with Search/Clear buttons, results table with Contract ID + Description columns, "More Info" button per row, Previous/Next pagination, elapsed time counter during search, contract detail expansion view with token list and "Add to My Tokens" button per token. Replace placeholder route. Write 15+ component tests. Write 1 Playwright E2E test.
+  - [ ] **7.2f** Create `TokenAddByIdScreen`: text input for contract ID or token ID, Search button, search status states (idle, searching with elapsed time, found single, found multiple, error), results display with token info and "Add to My Tokens" action. Clear button resets. Wire to tokenStore. Add route `/tokens/add-by-id`. Write 15+ component tests.
+  - [ ] **7.3a** Create token creator wizard scaffold — `TokenCreatorWizard` component with step navigation (7 steps), step indicator, Next/Previous/Cancel buttons, form state management. Create `BasicInfoStep` (Step 1): token name, plural name, language selector (50+ languages), description (optional), decimals (default 8), base supply, max supply (optional), checkboxes for capitalize, start paused, allow transfers to frozen identities. Input validation. Replace placeholder route. Write 20+ component tests.
+  - [ ] **7.3b** Create `DistributionStep` (Step 2): toggles for "Add Perpetual Distribution" and "Add Pre-programmed Distribution". Each distribution config: recipient type selector (Contract Owner / Identity / Evonodes by Participation), distribution function selector (Fixed Amount, Step Decreasing, Stepwise, Linear, Polynomial, Exponential, Logarithmic, Inverted Logarithmic) with formula visualization (SVG or image), interval type selector (Block/Time/Epoch-based), time unit selector (Second through Year with ms conversion), entry grid (time offset + identity ID + amount rows) with Add/Delete controls. Write 20+ component tests.
+  - [ ] **7.3c** Create `ControlRulesStep` (Step 3): configuration forms for 10 rule types — Manual Minting, Manual Burning, Freeze, Unfreeze, Destroy Frozen Funds, Emergency Action (Pause/Resume), Max Supply Change, Conventions Change, Marketplace. Each rule: action taker combo selector (No One / Contract Owner / Identity / Main Group / Specific Group), identity input (if Identity selected), admin identity input. Minting rules additionally: destination defaults to contract owner checkbox, allow choosing destination checkbox, nested destination identity/choice sub-rules. Write 20+ component tests.
+  - [ ] **7.3d** Create `GroupsStep` (Step 4) + `HistoryStep` (Step 5) + `KeywordsStep` (Step 6): Groups — "Add Group" button, per-group required power input, member grid (identity ID + power) with Add/Delete. History — keep history checkbox options for token operations. Keywords — text input for adding searchable keyword tags to the token contract. Write 15+ component tests.
+  - [ ] **7.3e** Create `ReviewStep` (Step 7) and wire `TokenCreatorScreen`: identity selector, wallet unlock gate, full configuration summary display, "Create Token Contract" button with fee estimation, confirmation dialog, broadcast progress states (idle → waiting → success/error), success screen with transaction details. Wire all 7 steps together in TokenCreatorWizard. Connect to tokenStore + identityStore. Write 15+ component tests. Write 1 Playwright E2E test for token creation flow.
+  - [ ] **7.4a** Create `TokenOperationForm` shared component: reusable layout for all token action screens — token context header (name, ID, balance), amount input (where applicable), recipient identity input (where applicable), advanced options collapsible section (public note text input), key selector dropdown, fee estimation display, action button (disabled until valid), confirmation dialog, group action detection and info display, progress states (idle → waiting → success/error), success screen with fee result. Write 20+ component tests.
+  - [ ] **7.4b** Implement **Transfer**, **Mint**, and **Burn** token screens using TokenOperationForm: Transfer — recipient identity ID input + amount + optional public note. Mint — recipient selector + amount + group action support. Burn — amount input (max = current balance). Each with fee estimation, wallet unlock, confirmation, broadcast. Add routes `/tokens/transfer`, `/tokens/mint`, `/tokens/burn`. Write 15+ component tests per screen. Write 1 Playwright E2E test for transfer flow.
+  - [ ] **7.4c** Implement **Freeze**, **Unfreeze**, and **Destroy Frozen Funds** screens: Freeze — target identity selector + confirmation. Unfreeze — loads frozen identities list via `tokenQueryFrozenIdentities`, select from list + confirmation. Destroy Frozen Funds — select frozen identity + confirmation of destruction. Each with fee estimation, wallet unlock, broadcast. Add routes. Write 15+ component tests.
+  - [ ] **7.4d** Implement **Pause** and **Resume** token screens: Pause — no amount input needed, just key selection + group action support + confirmation. Resume — similar to pause, emergency action rules info display. Add routes. Write 10+ component tests.
+  - [ ] **7.4e** Implement **Claim Tokens** and **View Token Claims** screens: Claim — distribution type detection (perpetual/pre-programmed), estimated rewards display via `tokenEstimatePerpetualRewards`, claim button with fee estimation. View Claims — "Fetch Claims" button, claims history table (Amount, Timestamp, Block Height, Note), fetch status with elapsed time. Add routes. Write 15+ component tests.
+  - [ ] **7.4f** Implement **Set Token Price** and **Purchase Tokens** screens: Set Price — pricing type selector (Single Price / Tiered Pricing / Remove Pricing), single price amount input, tiered pricing grid (quantity threshold + price rows) with Add/Delete, group action support. Purchase — amount input, auto-fetch pricing schedule, calculated total price display, balance check. Add routes. Write 15+ component tests. Write 1 Playwright E2E test for purchase flow.
+  - [ ] **7.4g** Implement **Update Token Config** screen: change item selector dropdown (various config aspects), dynamic input fields based on selected change type (identity inputs, group selectors, text/numeric fields), group action support, fee estimation, broadcast. Add route. Write 10+ component tests.
+  - [ ] **7.5 [REVIEW] Token screens functionality parity** (P2)
+    Exhaustive comparison of all token screens against egui originals. Verify: all 13 action types work, token creator wizard has all 7 steps with every option, My Tokens table has all 15 action menu items, Search Tokens has pagination + contract details, Add by ID works for both contract and token IDs, pricing (single + tiered) is fully functional, distribution formula visualization renders, control rules cover all 10 types, group actions work. Create fix tasks for any gaps.
 
 ---
 
@@ -1817,11 +1905,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tasks (top-level) | 83 |
+| Total tasks (top-level) | 100 |
 | META tasks | 13 |
 | REVIEW tasks | 11 |
-| Implementation tasks | 53 |
-| Completed | 67 |
-| Remaining | 39 |
+| Implementation tasks | 70 |
+| Completed | 68 |
+| Remaining | 38 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

@@ -188,7 +188,7 @@
   - Handle the scheduled vote polling (every 60s) in the Tauri backend
   Verify: Can dispatch a backend task and receive the result in the frontend via event.
 
-- [ ] **1.4 Implement Identity IPC commands** (P1)
+- [x] **1.4 Implement Identity IPC commands** (P1)
   Create `src-tauri/src/commands/identity.rs` with Tauri commands for all IdentityTask variants (16 operations):
   - load_identity, search_identity_from_wallet, search_identities_up_to_index, search_identity_by_dpns_name
   - register_identity, top_up_identity, top_up_identity_from_platform_addresses
@@ -727,7 +727,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 14 |
-| Remaining | 48 |
+| Completed | 15 |
+| Remaining | 47 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

@@ -134,7 +134,9 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
 /// NOTE: Full payload serialization will be implemented as domain DTOs are built
 /// in tasks 1.4–1.7. For now we serialize what we can and use the type string
 /// as a discriminant for the frontend to match on.
-fn classify_success_result(result: &BackendTaskSuccessResult) -> (String, Option<serde_json::Value>) {
+fn classify_success_result(
+    result: &BackendTaskSuccessResult,
+) -> (String, Option<serde_json::Value>) {
     match result {
         BackendTaskSuccessResult::None => ("None".to_string(), None),
         BackendTaskSuccessResult::Refresh => ("Refresh".to_string(), None),
@@ -194,17 +196,12 @@ pub fn start_zmq_forwarding(
                             .emit(&handle_msg);
                         }
                         Err(e) => {
-                            tracing::error!(
-                                "Failed to process IS-locked transaction: {}",
-                                e
-                            );
+                            tracing::error!("Failed to process IS-locked transaction: {}", e);
                         }
                     }
                 }
                 ZMQMessage::ChainLockedLockedTransaction(ref tx, height) => {
-                    if let Err(e) =
-                        ctx.received_transaction_finality(tx, None, Some(height))
-                    {
+                    if let Err(e) = ctx.received_transaction_finality(tx, None, Some(height)) {
                         tracing::error!("Failed to process chain-locked transaction: {}", e);
                     }
                 }
@@ -212,9 +209,7 @@ pub fn start_zmq_forwarding(
                     let block_hash = format!("{}", block.block_hash());
                     let _ = ZmqChainLockedBlockEvent {
                         network: net_dto,
-                        block_height: block
-                            .bip34_block_height()
-                            .unwrap_or(0) as u32,
+                        block_height: block.bip34_block_height().unwrap_or(0) as u32,
                         block_hash,
                         tx_count: block.txdata.len() as u32,
                     }
@@ -291,13 +286,10 @@ pub fn start_scheduled_vote_polling(app_handle: AppHandle, app_state: Arc<AppSta
                 let voter_id_hex = hex::encode(vote.voter_id.as_slice());
                 let contested_name = vote.contested_name.clone();
 
-                if let Some(voter) = local_identities
-                    .iter()
-                    .find(|i| {
-                        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-                        i.identity.id() == vote.voter_id
-                    })
-                {
+                if let Some(voter) = local_identities.iter().find(|i| {
+                    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                    i.identity.id() == vote.voter_id
+                }) {
                     let task = BackendTask::ContestedResourceTask(
                         dash_evo_tool::backend_task::contested_names::ContestedResourceTask::CastScheduledVote(
                             vote.clone(),
@@ -373,10 +365,7 @@ pub fn start_spv_status_polling(app_handle: AppHandle, app_state: Arc<AppState>)
                 // SyncProgress from dash-spv has `header_height` (absolute height)
                 // rather than a total/current pair — we report it as-is.
                 let sync_pct = None::<f64>; // Not computable without a target height
-                let header_height = snapshot
-                    .sync_progress
-                    .as_ref()
-                    .map(|p| p.header_height);
+                let header_height = snapshot.sync_progress.as_ref().map(|p| p.header_height);
 
                 let _ = SpvStatusEvent {
                     network: network_dto,

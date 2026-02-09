@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+pub mod commands;
 pub mod dto;
 pub mod events;
 pub mod state;
@@ -82,7 +83,10 @@ fn get_network_info(state: tauri::State<'_, Arc<AppState>>) -> NetworkInfo {
 /// the requested network has no valid configuration.
 #[tauri::command]
 #[specta::specta]
-fn switch_network(network: NetworkDto, state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+fn switch_network(
+    network: NetworkDto,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
     let net = network.to_network();
     if state.switch_network(net) {
         Ok(())
@@ -97,9 +101,7 @@ fn switch_network(network: NetworkDto, state: tauri::State<'_, Arc<AppState>>) -
 /// Get the SPV status for all available networks.
 #[tauri::command]
 #[specta::specta]
-fn get_spv_status(
-    state: tauri::State<'_, Arc<AppState>>,
-) -> Vec<events::SpvStatusEvent> {
+fn get_spv_status(state: tauri::State<'_, Arc<AppState>>) -> Vec<events::SpvStatusEvent> {
     let mut statuses = Vec::new();
     for network in state.available_networks() {
         let ctx = state.context_for_network(network);
@@ -116,10 +118,7 @@ fn get_spv_status(
             dash_evo_tool::spv::SpvStatus::Error => events::SpvStatusDto::Error,
         };
         let sync_pct = None::<f64>; // Not computable without a target height
-        let header_height = snapshot
-            .sync_progress
-            .as_ref()
-            .map(|p| p.header_height);
+        let header_height = snapshot.sync_progress.as_ref().map(|p| p.header_height);
         statuses.push(events::SpvStatusEvent {
             network: network_dto,
             status,
@@ -144,6 +143,30 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             get_network_info,
             switch_network,
             get_spv_status,
+            // Identity commands
+            commands::identity::identity_load,
+            commands::identity::identity_search_by_dpns_name,
+            commands::identity::identity_search_from_wallet,
+            commands::identity::identity_search_up_to_index,
+            commands::identity::identity_register_dpns_name,
+            commands::identity::identity_refresh,
+            commands::identity::identity_refresh_dpns_names,
+            commands::identity::identity_withdraw,
+            commands::identity::identity_transfer,
+            commands::identity::identity_add_key,
+            commands::identity::identity_disable_keys,
+            commands::identity::identity_replace_key,
+            commands::identity::identity_list_local,
+            commands::identity::identity_list_user,
+            commands::identity::identity_list_voting,
+            commands::identity::identity_get_by_id,
+            commands::identity::identity_set_alias,
+            commands::identity::identity_get_alias,
+            commands::identity::identity_load_order,
+            commands::identity::identity_save_order,
+            commands::identity::identity_delete,
+            commands::identity::identity_list_summaries,
+            commands::identity::identity_local_dpns_names,
         ])
         .events(collect_events![
             TaskResultEvent,

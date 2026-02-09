@@ -380,6 +380,15 @@ impl AppContext {
         self.animate.store(animate, Ordering::Relaxed);
     }
 
+    /// Get a wallet Arc reference by its seed hash.
+    ///
+    /// Returns `None` if the wallet is not found. Used by the Tauri IPC layer
+    /// to look up wallets by their serializable seed hash identifiers.
+    pub fn wallet_by_seed_hash(&self, seed_hash: &WalletSeedHash) -> Option<Arc<RwLock<Wallet>>> {
+        let wallets = self.wallets.read().ok()?;
+        wallets.get(seed_hash).cloned()
+    }
+
     pub fn enable_developer_mode(&self, enable: bool) {
         self.developer_mode.store(enable, Ordering::Relaxed);
         // Animations are reverse of developer mode

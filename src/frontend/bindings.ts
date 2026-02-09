@@ -35,6 +35,278 @@ async switchNetwork(network: NetworkDto) : Promise<Result<null, string>> {
  */
 async getSpvStatus() : Promise<SpvStatusEvent[]> {
     return await TAURI_INVOKE("get_spv_status");
+},
+/**
+ * Load an existing identity by ID, optionally associating with wallets.
+ *
+ * Dispatches `IdentityTask::LoadIdentity`. Result arrives via `TaskResultEvent`.
+ */
+async identityLoad(input: LoadIdentityInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_load", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Search for an identity by DPNS name.
+ *
+ * Dispatches `IdentityTask::SearchIdentityByDpnsName`. Result via event.
+ */
+async identitySearchByDpnsName(input: SearchIdentityByDpnsNameInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_search_by_dpns_name", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Search for an identity from a wallet at a specific index.
+ *
+ * Dispatches `IdentityTask::SearchIdentityFromWallet`. Result via event.
+ */
+async identitySearchFromWallet(input: SearchIdentityFromWalletInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_search_from_wallet", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Batch search for identities from a wallet up to a max index.
+ *
+ * Dispatches `IdentityTask::SearchIdentitiesUpToIndex`. Result via event.
+ */
+async identitySearchUpToIndex(input: SearchIdentitiesUpToIndexInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_search_up_to_index", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Register a DPNS name for an identity.
+ *
+ * Dispatches `IdentityTask::RegisterDpnsName`. Result via event.
+ */
+async identityRegisterDpnsName(input: RegisterDpnsNameCommandInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_register_dpns_name", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Refresh a single identity's state from Platform.
+ *
+ * Dispatches `IdentityTask::RefreshIdentity`. Result via event.
+ */
+async identityRefresh(input: RefreshIdentityInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_refresh", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Refresh all loaded identities' DPNS names.
+ *
+ * Dispatches `IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames`. Result via event.
+ */
+async identityRefreshDpnsNames() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("identity_refresh_dpns_names");
+},
+/**
+ * Withdraw credits from an identity to a Core address.
+ *
+ * Dispatches `IdentityTask::WithdrawFromIdentity`. Result via event.
+ */
+async identityWithdraw(input: WithdrawFromIdentityInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_withdraw", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transfer credits from one identity to another.
+ *
+ * Dispatches `IdentityTask::Transfer`. Result via event.
+ */
+async identityTransfer(input: TransferCreditsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_transfer", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add a key to an identity.
+ *
+ * Dispatches `IdentityTask::AddKeyToIdentity`. Result via event.
+ */
+async identityAddKey(input: AddKeyToIdentityInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_add_key", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Disable one or more keys on an identity.
+ *
+ * Dispatches `IdentityTask::DisableKeys`. Result via event.
+ */
+async identityDisableKeys(input: DisableKeysInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_disable_keys", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace a key on an identity (disable old + add new atomically).
+ *
+ * Dispatches `IdentityTask::ReplaceKey`. Result via event.
+ */
+async identityReplaceKey(input: ReplaceKeyInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_replace_key", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load all local qualified identities from the database.
+ */
+async identityListLocal() : Promise<Result<QualifiedIdentityDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_list_local") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load all local user identities (non-masternode/evonode).
+ */
+async identityListUser() : Promise<Result<QualifiedIdentityDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_list_user") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load all local voting identities.
+ */
+async identityListVoting() : Promise<Result<QualifiedIdentityDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_list_voting") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get a single identity by its ID.
+ */
+async identityGetById(identityId: string) : Promise<Result<QualifiedIdentityDto | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_get_by_id", { identityId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the alias for an identity.
+ */
+async identitySetAlias(input: SetIdentityAliasInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_set_alias", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get the alias for an identity.
+ */
+async identityGetAlias(identityId: string) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_get_alias", { identityId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load the custom identity ordering.
+ */
+async identityLoadOrder() : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_load_order") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save the custom identity ordering.
+ */
+async identitySaveOrder(input: SaveIdentityOrderInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_save_order", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a local identity from the database.
+ */
+async identityDelete(input: DeleteIdentityInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_delete", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get identity summaries suitable for dropdown selectors.
+ */
+async identityListSummaries() : Promise<Result<IdentitySummaryDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_list_summaries") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get all local DPNS names across all loaded identities.
+ */
+async identityLocalDpnsNames() : Promise<Result<DpnsNameEntryDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_local_dpns_names") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -68,10 +340,195 @@ zmqIsLockedTransactionEvent: "zmq-is-locked-transaction-event"
 /** user-defined types **/
 
 /**
+ * Input for adding a key to an identity.
+ */
+export type AddKeyToIdentityInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key type (e.g., "ECDSA_SECP256K1", "BLS12_381").
+ */
+keyType: string;
+/**
+ * Key purpose (e.g., "AUTHENTICATION", "VOTING", "TRANSFER").
+ */
+purpose: string;
+/**
+ * Security level (e.g., "HIGH", "MEDIUM").
+ */
+securityLevel: string;
+/**
+ * Private key as hex string (32 bytes).
+ */
+privateKeyHex: string }
+/**
+ * Input for deleting a local identity.
+ */
+export type DeleteIdentityInput = {
+/**
+ * Identity ID (hex) to delete.
+ */
+identityId: string }
+/**
+ * Input for disabling keys on an identity.
+ */
+export type DisableKeysInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key IDs to disable.
+ */
+keyIds: number[] }
+/**
+ * Response from dispatching a backend task.
+ */
+export type DispatchTaskResponse = {
+/**
+ * Unique task ID. Listen for `TaskResultEvent` or `TaskErrorEvent` with
+ * this ID to receive the result.
+ */
+taskId: string }
+/**
+ * A DPNS name entry with its owning identity.
+ */
+export type DpnsNameEntryDto = {
+/**
+ * Identity ID (hex) that owns this name.
+ */
+identityId: string;
+/**
+ * The DPNS name (e.g., "alice.dash").
+ */
+name: string;
+/**
+ * Timestamp when the name was acquired.
+ */
+acquiredAt: number }
+/**
+ * DPNS name info attached to an identity.
+ */
+export type DpnsNameInfoDto = {
+/**
+ * The registered DPNS name (e.g., "alice.dash").
+ */
+name: string;
+/**
+ * Timestamp when the name was acquired.
+ */
+acquiredAt: number }
+/**
  * A sample DTO demonstrating tauri-specta type generation.
  */
 export type GreetResponse = { message: string; timestamp_ms: number }
+/**
+ * A public key on an identity.
+ */
+export type IdentityKeyDto = {
+/**
+ * Key ID within the identity.
+ */
+keyId: number;
+/**
+ * Key type (ECDSA_SECP256K1, BLS12_381, ECDSA_HASH160, etc.).
+ */
+keyType: string;
+/**
+ * Key purpose (AUTHENTICATION, VOTING, TRANSFER, OWNER, etc.).
+ */
+purpose: string;
+/**
+ * Security level (MASTER, CRITICAL, HIGH, MEDIUM, etc.).
+ */
+securityLevel: string;
+/**
+ * Public key data as hex string.
+ */
+data: string;
+/**
+ * Whether this key is disabled.
+ */
+isDisabled: boolean;
+/**
+ * Disabled at timestamp (if disabled).
+ */
+disabledAt: number | null;
+/**
+ * Whether we have the corresponding private key in local storage.
+ */
+hasPrivateKey: boolean }
+/**
+ * Status of an identity on the platform.
+ */
+export type IdentityStatusDto = "unknown" | "pendingCreation" | "active" | "notFound" | "failedCreation"
+/**
+ * Minimal identity reference for dropdowns and selectors.
+ */
+export type IdentitySummaryDto = {
+/**
+ * Platform identifier as hex string.
+ */
+id: string;
+/**
+ * Display name: alias or truncated ID.
+ */
+displayName: string;
+/**
+ * Identity type.
+ */
+identityType: IdentityTypeDto;
+/**
+ * Current balance in credits.
+ */
+balance: number }
+/**
+ * Type of identity (User, Masternode, Evonode).
+ */
+export type IdentityTypeDto = "user" | "masternode" | "evonode"
 export type JsonValue = null | boolean | number | string | JsonValue[] | Partial<{ [key in string]: JsonValue }>
+/**
+ * Input for loading an existing identity by ID or from a wallet.
+ */
+export type LoadIdentityInput = {
+/**
+ * Identity ID as hex or base58 string.
+ */
+identityId: string;
+/**
+ * Type of identity (User, Masternode, Evonode).
+ */
+identityType: IdentityTypeDto;
+/**
+ * User alias to assign.
+ */
+alias: string;
+/**
+ * Voting private key (hex or WIF, empty string if none).
+ */
+votingPrivateKey: string;
+/**
+ * Owner private key (hex or WIF, empty string if none).
+ */
+ownerPrivateKey: string;
+/**
+ * Payout address private key (hex or WIF, empty string if none).
+ */
+payoutAddressPrivateKey: string;
+/**
+ * Additional private keys (hex or WIF).
+ */
+keys: string[];
+/**
+ * Whether to try deriving keys from loaded wallets.
+ */
+deriveKeysFromWallets: boolean;
+/**
+ * Optional wallet seed hash to associate with.
+ */
+selectedWalletSeedHash: string | null }
 /**
  * Network identifier matching Dash SDK's Network enum.
  */
@@ -88,6 +545,119 @@ activeNetwork: NetworkDto;
  * All networks that have valid configurations.
  */
 availableNetworks: NetworkDto[] }
+/**
+ * Serializable version of `QualifiedIdentity`.
+ * This is the primary identity DTO sent to the frontend for display and selection.
+ */
+export type QualifiedIdentityDto = {
+/**
+ * Platform identifier as hex string.
+ */
+id: string;
+/**
+ * Identity type (User, Masternode, Evonode).
+ */
+identityType: IdentityTypeDto;
+/**
+ * User-assigned alias.
+ */
+alias: string | null;
+/**
+ * Current balance in credits.
+ */
+balance: number;
+/**
+ * Public keys on this identity.
+ */
+keys: IdentityKeyDto[];
+/**
+ * DPNS names registered for this identity.
+ */
+dpnsNames: DpnsNameInfoDto[];
+/**
+ * Seed hashes of associated wallets (hex-encoded).
+ */
+associatedWalletHashes: string[];
+/**
+ * The wallet index used during registration (if applicable).
+ */
+walletIndex: number | null;
+/**
+ * Top-up history: map of index → amount.
+ */
+topUps: TopUpEntryDto[];
+/**
+ * Current status on the platform.
+ */
+status: IdentityStatusDto;
+/**
+ * Network this identity belongs to.
+ */
+network: NetworkDto;
+/**
+ * Associated voter identity ID (if any, for masternodes/evonodes).
+ */
+voterIdentityId: string | null;
+/**
+ * Associated operator identity ID (if any).
+ */
+operatorIdentityId: string | null }
+/**
+ * Input for refreshing a single identity.
+ */
+export type RefreshIdentityInput = {
+/**
+ * Identity ID (hex) to refresh.
+ */
+identityId: string }
+/**
+ * Input for registering a DPNS name.
+ */
+export type RegisterDpnsNameCommandInput = {
+/**
+ * Identity ID (hex) that will own the name.
+ */
+identityId: string;
+/**
+ * The DPNS name to register (without .dash suffix).
+ */
+name: string }
+/**
+ * Input for replacing a key on an identity.
+ */
+export type ReplaceKeyInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key ID to replace (old key).
+ */
+oldKeyId: number;
+/**
+ * New key type.
+ */
+newKeyType: string;
+/**
+ * New key purpose.
+ */
+newPurpose: string;
+/**
+ * New security level.
+ */
+newSecurityLevel: string;
+/**
+ * New private key as hex string (32 bytes).
+ */
+newPrivateKeyHex: string }
+/**
+ * Input for saving custom identity ordering.
+ */
+export type SaveIdentityOrderInput = {
+/**
+ * Ordered list of identity IDs (hex).
+ */
+identityIds: string[] }
 /**
  * Emitted when a scheduled vote is automatically cast.
  */
@@ -108,6 +678,54 @@ success: boolean;
  * Error message if the vote failed.
  */
 error: string | null }
+/**
+ * Input for batch search of identities from a wallet.
+ */
+export type SearchIdentitiesUpToIndexInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Maximum identity index to search up to.
+ */
+maxIdentityIndex: number }
+/**
+ * Input for searching identity by DPNS name.
+ */
+export type SearchIdentityByDpnsNameInput = {
+/**
+ * DPNS name without .dash suffix.
+ */
+name: string;
+/**
+ * Optional wallet seed hash for key derivation.
+ */
+walletSeedHash: string | null }
+/**
+ * Input for searching identities from a wallet.
+ */
+export type SearchIdentityFromWalletInput = {
+/**
+ * Wallet seed hash (hex).
+ */
+walletSeedHash: string;
+/**
+ * Identity index to search at.
+ */
+identityIndex: number }
+/**
+ * Input for setting identity alias.
+ */
+export type SetIdentityAliasInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * New alias (None to clear).
+ */
+alias: string | null }
 /**
  * High-level SPV status values.
  */
@@ -184,6 +802,30 @@ resultType: string;
  */
 payload: JsonValue | null }
 /**
+ * A top-up history entry.
+ */
+export type TopUpEntryDto = { index: number; amount: number }
+/**
+ * Input for transferring credits to another identity.
+ */
+export type TransferCreditsInput = {
+/**
+ * Source identity ID (hex).
+ */
+fromIdentityId: string;
+/**
+ * Destination identity ID (hex).
+ */
+toIdentityId: string;
+/**
+ * Amount to transfer in credits.
+ */
+credits: number;
+/**
+ * Optional key ID to use for signing.
+ */
+keyId: number | null }
+/**
  * Emitted when a wallet's balance or state changes.
  */
 export type WalletUpdatedEvent = {
@@ -195,6 +837,26 @@ walletSeedHash: string;
  * The network this wallet belongs to.
  */
 network: NetworkDto }
+/**
+ * Input for withdrawing credits from an identity.
+ */
+export type WithdrawFromIdentityInput = {
+/**
+ * Identity ID (hex) to withdraw from.
+ */
+identityId: string;
+/**
+ * Optional destination Core address.
+ */
+toAddress: string | null;
+/**
+ * Amount to withdraw in credits.
+ */
+credits: number;
+/**
+ * Optional key ID to use for signing.
+ */
+keyId: number | null }
 /**
  * Emitted when a chain-locked block is received via ZMQ.
  */

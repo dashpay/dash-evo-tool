@@ -573,3 +573,10 @@
 **Files changed:** src/frontend/screens/DpnsRegisterNameScreen.tsx, src/frontend/screens/DpnsRegisterNameScreen.test.tsx, src/frontend/screens/DpnsActiveContestsScreen.tsx, src/frontend/screens/DpnsActiveContestsScreen.test.tsx, src/frontend/routes.tsx, tests/playwright/dpns-register-name.spec.ts, tasks.md, activity.md
 **Tests added:** 31 component tests (rendering, data loading, validation, registration submission/success/error, navigation, error dismissal, button state, multiple identities) + 14 Playwright E2E tests (heading, breadcrumb, input, validation, buttons, advanced toggle, info sections)
 **Sub-tasks created:** 0
+
+## Run 83 — 2026-02-09
+**Task:** 5.3 Implement DPNS past contests, my usernames, and scheduled votes
+**What was done:** Verified that all three DPNS screens (DpnsPastContestsScreen, DpnsOwnedNamesScreen, DpnsScheduledVotesScreen) and their underlying components (PastContestsTable, OwnedNamesPanel, ScheduledVotesTable) were already fully implemented in prior runs with comprehensive component and screen-level tests. Added missing Playwright E2E tests for all three screens covering: headings, descriptions, action buttons (Refresh, Clear Casted, Clear All), empty states with help text, button disabled states, and cross-route navigation.
+**Files changed:** tests/playwright/dpns-past-contests.spec.ts, tests/playwright/dpns-owned-names.spec.ts, tests/playwright/dpns-scheduled-votes.spec.ts, tasks.md, activity.md
+**Tests added:** 22 Playwright E2E tests (7 for past contests, 6 for owned names, 9 for scheduled votes)
+**Sub-tasks created:** 0

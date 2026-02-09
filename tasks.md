@@ -1471,7 +1471,7 @@
   Reference: `dpns_contested_names_screen.rs` — trace the Active and voting code paths
   Write component tests. Write Playwright test for viewing contests and casting a vote.
 
-- [ ] **5.3 Implement DPNS past contests, my usernames, and scheduled votes** (P2)
+- [x] **5.3 Implement DPNS past contests, my usernames, and scheduled votes** (P2)
   Build the remaining DPNS tabs:
   - **Past contests:** Historical view of completed contests with winners
   - **My usernames:** Names owned by loaded identities, renewal info, transfer

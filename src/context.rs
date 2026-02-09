@@ -464,8 +464,8 @@ impl AppContext {
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
-            // Note: Platform address sync and Core UTXO refresh are NOT done automatically on unlock.
-            // User must explicitly click Refresh to update balances.
+            // Note: Platform address sync is not done here.
+            // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
         }
     }
 
@@ -541,9 +541,50 @@ impl AppContext {
             guard.values().cloned().collect()
         };
 
-        for wallet in wallets {
-            self.bootstrap_wallet_addresses(&wallet);
-            self.handle_wallet_unlocked(&wallet);
+        for wallet in wallets.iter() {
+            self.bootstrap_wallet_addresses(wallet);
+            self.handle_wallet_unlocked(wallet);
+        }
+
+        // Auto-refresh UTXOs from Core on startup so balances are current
+        // without requiring the user to manually click Refresh (fixes GH#522).
+        // Only in RPC mode — SPV mode handles UTXO loading via reconciliation.
+        if self.core_backend_mode() == CoreBackendMode::Rpc {
+            for wallet in wallets {
+                let ctx = Arc::clone(self);
+                self.subtasks.spawn_sync(async move {
+                    if let Err(e) =
+                        tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                            .await
+                            .map_err(|e| format!("Task join error: {}", e))
+                            .and_then(|r| r.map(|_| ()))
+                    {
+                        tracing::warn!("Failed to auto-refresh wallet UTXOs on startup: {}", e);
+                    }
+                });
+            }
+
+            let single_key_wallets: Vec<_> = {
+                let guard = self.single_key_wallets.read().unwrap();
+                guard.values().cloned().collect()
+            };
+            for wallet in single_key_wallets {
+                let ctx = Arc::clone(self);
+                self.subtasks.spawn_sync(async move {
+                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                        ctx.refresh_single_key_wallet_info(wallet)
+                    })
+                    .await
+                    .map_err(|e| format!("Task join error: {}", e))
+                    .and_then(|r| r)
+                    {
+                        tracing::warn!(
+                            "Failed to auto-refresh single key wallet UTXOs on startup: {}",
+                            e
+                        );
+                    }
+                });
+            }
         }
     }
 

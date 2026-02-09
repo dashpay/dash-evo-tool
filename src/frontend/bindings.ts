@@ -2050,7 +2050,11 @@ securityLevel: string;
 /**
  * Private key as hex string (32 bytes).
  */
-privateKeyHex: string }
+privateKeyHex: string;
+/**
+ * Optional contract bounds for this key.
+ */
+contractBounds: ContractBoundsDto | null }
 /**
  * An unused asset lock available for identity operations.
  */

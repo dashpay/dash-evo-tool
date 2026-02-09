@@ -156,6 +156,8 @@ pub struct AddKeyToIdentityInput {
     pub security_level: String,
     /// Private key as hex string (32 bytes).
     pub private_key_hex: String,
+    /// Optional contract bounds for this key.
+    pub contract_bounds: Option<ContractBoundsDto>,
 }
 
 /// Input for disabling keys on an identity.
@@ -1143,13 +1145,20 @@ pub fn identity_add_key(
     // Derive the public key data from the private key
     let public_key_data = derive_public_key_data(key_type, &private_key)?;
 
+    // Parse optional contract bounds
+    let contract_bounds = input
+        .contract_bounds
+        .as_ref()
+        .map(parse_contract_bounds)
+        .transpose()?;
+
     // Construct the IdentityPublicKey with a temporary ID (backend will reassign)
     let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
         id: 0, // Backend will set the correct ID
         key_type,
         purpose,
         security_level,
-        contract_bounds: None,
+        contract_bounds,
         read_only: false,
         data: public_key_data.into(),
         disabled_at: None,
@@ -1712,11 +1721,33 @@ mod tests {
             purpose: "AUTHENTICATION".into(),
             security_level: "HIGH".into(),
             private_key_hex: "aa".repeat(32),
+            contract_bounds: None,
         };
         let json = serde_json::to_string(&input).unwrap();
         assert!(json.contains("\"keyType\":\"ECDSA_SECP256K1\""));
         assert!(json.contains("\"purpose\":\"AUTHENTICATION\""));
         assert!(json.contains("\"securityLevel\":\"HIGH\""));
+        assert!(json.contains("\"contractBounds\":null"));
+    }
+
+    #[test]
+    fn add_key_input_with_contract_bounds_serializes() {
+        let input = AddKeyToIdentityInput {
+            identity_id: "abc".into(),
+            key_type: "ECDSA_SECP256K1".into(),
+            purpose: "AUTHENTICATION".into(),
+            security_level: "HIGH".into(),
+            private_key_hex: "aa".repeat(32),
+            contract_bounds: Some(ContractBoundsDto::SingleContractDocumentType {
+                contract_id: "deadbeef".into(),
+                document_type_name: "profile".into(),
+            }),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"contractBounds\":{"));
+        assert!(json.contains("\"type\":\"singleContractDocumentType\""));
+        assert!(json.contains("\"contractId\":\"deadbeef\""));
+        assert!(json.contains("\"documentTypeName\":\"profile\""));
     }
 
     #[test]

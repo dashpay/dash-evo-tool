@@ -1332,7 +1332,7 @@
   > 11. **Identity encoding tooltip missing** — IDs shown without encoding type info (Base58 for User, Hex/ProTxHash for masternodes).
   > 12. **No recovery suggestions for errors** — Raw error strings from backend, no `recovery_suggestion()` equivalent.
 
-  - [ ] **4.5a Fix contract bounds not passed in AddKey IPC call** (P1)
+  - [x] **4.5a Fix contract bounds not passed in AddKey IPC call** (P1)
     AddKeyDialog collects contract bounds but the data is lost before reaching the backend:
     1. Add `contractBounds` field to `AddKeyToIdentityInput` type in bindings
     2. Pass `params.contractBounds` in the `identityAddKey` IPC call in IdentitiesScreen.tsx

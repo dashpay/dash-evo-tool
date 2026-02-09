@@ -615,3 +615,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (META task — research only)
 **Sub-tasks created:** 15 (9.1a: landing+shared components, 9.1b: Platform Info, 9.1c: Address Balance, 9.1d: Contract Visualizer, 9.1e: Document Visualizer, 9.1f: Proof Visualizer, 9.1g: Transition Visualizer, 9.1h: proof_log IPC command, 9.1i: Proof Log screen, 9.1j: GroveSTARK Generate, 9.1k: GroveSTARK Verify, 9.1l: MN List Core Items tab, 9.1m: MN List QR Info tab, 9.1n: MN List main+Quorum Viewer tab, 9.1o: E2E tests)
+
+## Run 89 — 2026-02-09
+**Task:** 4.5a Fix contract bounds not passed in AddKey IPC call
+**What was done:** Fixed the AddKey IPC flow so contract bounds from the AddKeyDialog are properly passed through to the backend. Added `contract_bounds: Option<ContractBoundsDto>` field to `AddKeyToIdentityInput` Rust struct. Updated the `identity_add_key` handler to parse and use the contract bounds instead of hardcoding `None`. Updated IdentitiesScreen.tsx to transform the dialog's `{ contractId, documentTypeName? }` format into the tagged union format (`singleContract` or `singleContractDocumentType`) expected by the IPC layer. Regenerated TypeScript bindings.
+**Files changed:** src-tauri/src/commands/identity.rs, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/bindings.ts
+**Tests added:** 1 new Rust test (add_key_input_with_contract_bounds_serializes — verifies ContractBoundsDto is included in serialized AddKeyToIdentityInput)
+**Sub-tasks created:** 0

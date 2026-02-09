@@ -381,9 +381,7 @@ fn main() {
             // Initialize AppState inside block_on so that the Tokio runtime
             // context is active — AppContext::new() calls tokio::spawn via
             // TaskManager::spawn_sync (e.g. SPV manager background tasks).
-            let init_result = tauri::async_runtime::block_on(async {
-                AppState::init()
-            });
+            let init_result = tauri::async_runtime::block_on(async { AppState::init() });
 
             match init_result {
                 Ok(app_state) => {

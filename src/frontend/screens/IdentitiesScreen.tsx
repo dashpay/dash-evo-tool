@@ -39,6 +39,7 @@ import type {
   RegisterIdentityFundingMethodDto,
   KeySpecDto,
   TopUpIdentityFundingMethodDto,
+  AddKeyToIdentityInput,
 } from "@/bindings";
 import type { AddKeyStatus } from "@/components/identity/AddKeyDialog";
 import type { IdentityOption } from "@/components/shared/IdentitySelector";
@@ -641,12 +642,28 @@ export function IdentitiesScreen() {
       if (!selectedIdentityId) return;
       setAddKeyStatus({ type: "submitting", startedAt: Date.now() });
       try {
+        // Transform contract bounds from dialog format to tagged union for IPC
+        let contractBounds: AddKeyToIdentityInput["contractBounds"] = null;
+        if (params.contractBounds) {
+          contractBounds = params.contractBounds.documentTypeName
+            ? {
+                type: "singleContractDocumentType" as const,
+                contractId: params.contractBounds.contractId,
+                documentTypeName: params.contractBounds.documentTypeName,
+              }
+            : {
+                type: "singleContract" as const,
+                contractId: params.contractBounds.contractId,
+              };
+        }
+
         const result = await commands.identityAddKey({
           identityId: selectedIdentityId,
           purpose: params.purpose,
           securityLevel: params.securityLevel,
           keyType: params.keyType,
           privateKeyHex: params.privateKeyHex,
+          contractBounds,
         });
         if (result.status === "ok") {
           setAddKeyStatus({ type: "success" });

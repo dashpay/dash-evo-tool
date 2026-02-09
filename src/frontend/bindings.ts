@@ -1689,6 +1689,20 @@ async contestedGetScheduledVotes() : Promise<Result<ScheduledVoteDto[], string>>
 }
 },
 /**
+ * Parse hex-encoded bytes into a DataContract and return pretty-printed JSON.
+ *
+ * This is a synchronous command — the deserialization happens inline.
+ * Supports hex-encoded input (the frontend decodes base64/CSV → hex before calling).
+ */
+async parseDataContract(input: ParseDataContractInput) : Promise<Result<ParseDataContractOutput, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("parse_data_contract", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Fetch current epoch info from Platform.
  */
 async platformCurrentEpochInfo() : Promise<DispatchTaskResponse> {
@@ -2891,6 +2905,22 @@ field: string;
  * Sort direction: "asc" or "desc".
  */
 direction: string }
+/**
+ * Input for parsing a serialized data contract.
+ */
+export type ParseDataContractInput = {
+/**
+ * Hex-encoded contract bytes.
+ */
+hexData: string }
+/**
+ * Output from successfully parsing a data contract.
+ */
+export type ParseDataContractOutput = {
+/**
+ * Pretty-printed JSON representation of the contract.
+ */
+json: string }
 /**
  * Input for pausing tokens.
  */

@@ -14,4 +14,5 @@ pub mod platform_info;
 pub mod settings;
 pub mod system;
 pub mod token;
+pub mod visualizer;
 pub mod wallet;

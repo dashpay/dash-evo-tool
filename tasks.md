@@ -2125,7 +2125,7 @@
 
   - [x] **9.1c** Implement Address Balance screen. Single-card form: text input for platform address (evo1.../tevo1...) with live validation, "Fetch Balance" button, results card showing address (monospace), balance (credits + Dash dual display), and nonce. Uses `platformFetchAddressBalance` IPC. Reference: `address_balance_screen.rs`. Write component tests.
 
-  - [ ] **9.1d** Implement Contract Visualizer screen. Uses `HexInput` for hex/base64/CSV input. Parsing should be done via a new Tauri command (`parse_data_contract`) that deserializes bytes to JSON on the Rust side. Output shown in `MonospaceOutput` or `JsonViewer`. Error display for invalid input. Reference: `contract_visualizer_screen.rs`. Write component tests + Tauri command.
+  - [x] **9.1d** Implement Contract Visualizer screen. Uses `HexInput` for hex/base64/CSV input. Parsing should be done via a new Tauri command (`parse_data_contract`) that deserializes bytes to JSON on the Rust side. Output shown in `MonospaceOutput` or `JsonViewer`. Error display for invalid input. Reference: `contract_visualizer_screen.rs`. Write component tests + Tauri command.
 
   - [ ] **9.1e** Implement Document Visualizer screen. Adds searchable contract selector (ComboBox) and document type selector on top of `HexInput`. Parsing via new Tauri command (`parse_document`) requiring contract ID + document type name + bytes. Shows parsed JSON or error. Reference: `document_visualizer_screen.rs`. Write component tests + Tauri command.
 

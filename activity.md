@@ -671,3 +671,10 @@
 **Files changed:** src/frontend/screens/AddressBalanceScreen.tsx (new), src/frontend/screens/AddressBalanceScreen.test.tsx (new), src/frontend/routes.tsx (updated import + route)
 **Tests added:** 23 component tests covering rendering, validation, fetch dispatch, Enter key, loading states, result display, error handling, event subscription, accessibility attributes, address trimming
 **Sub-tasks created:** 0
+
+## Run 97 — 2026-02-09
+**Task:** 9.1d Implement Contract Visualizer screen
+**What was done:** Built the Contract Visualizer screen with HexInput for multi-format input (hex/base64/CSV), debounced auto-parsing via new synchronous Tauri command `parse_data_contract`, and output display via JsonViewer (success) or dismissible error alert. Created `commands/visualizer.rs` Rust module with `ParseDataContractInput`/`ParseDataContractOutput` DTOs and the `parse_data_contract` command that deserializes bytes to DataContract using platform_version and returns pretty-printed JSON. Updated routes to replace placeholder. Wrote 13 component tests.
+**Files changed:** src-tauri/src/commands/visualizer.rs (new), src-tauri/src/commands/mod.rs, src-tauri/src/main.rs, src/frontend/screens/ContractVisualizerScreen.tsx (new), src/frontend/screens/ContractVisualizerScreen.test.tsx (new), src/frontend/routes.tsx, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts
+**Tests added:** 13 component tests (render, idle state, back nav, hex/base64/CSV input, debounce, success display, error display+dismiss, decode errors, exception handling, clear-to-idle) + 3 Rust DTO serialization tests
+**Sub-tasks created:** 0

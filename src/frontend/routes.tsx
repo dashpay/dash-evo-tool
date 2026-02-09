@@ -26,6 +26,7 @@ import { DpnsRegisterNameScreen } from "@/screens/DpnsRegisterNameScreen";
 import { ToolsScreen } from "@/screens/ToolsScreen";
 import { PlatformInfoScreen } from "@/screens/PlatformInfoScreen";
 import { AddressBalanceScreen } from "@/screens/AddressBalanceScreen";
+import { ContractVisualizerScreen } from "@/screens/ContractVisualizerScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -297,7 +298,7 @@ const toolsMnListRoute = createRoute({
 const toolsContractRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/contract-visualizer",
-  component: () => <PlaceholderScreen title="Contract Visualizer" />,
+  component: ContractVisualizerScreen,
 });
 
 const toolsGroveStarkRoute = createRoute({

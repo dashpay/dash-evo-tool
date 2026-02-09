@@ -287,6 +287,8 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::contested::contested_clear_executed_scheduled_votes,
             commands::contested::contested_delete_scheduled_vote,
             commands::contested::contested_get_scheduled_votes,
+            // Visualizer commands
+            commands::visualizer::parse_data_contract,
             // Platform info commands
             commands::platform_info::platform_current_epoch_info,
             commands::platform_info::platform_total_credits,

@@ -18,9 +18,18 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::prelude::AddressNonce;
+use dash_sdk::dpp::prelude::AssetLockProof;
+use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
+use dash_sdk::dpp::withdrawal::Pooling;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::BTreeMap;
@@ -56,6 +65,56 @@ fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -
     total.saturating_add(total / 5)
 }
 
+/// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
+fn estimate_withdrawal_fee_from_transition(
+    platform_version: &dash_sdk::dpp::version::PlatformVersion,
+    inputs: &BTreeMap<PlatformAddress, u64>,
+    output_script: &CoreScript,
+) -> u64 {
+    let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
+        .iter()
+        .map(|(addr, amount)| (*addr, (0, *amount)))
+        .collect();
+
+    let transition = AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
+        inputs: inputs_with_nonce,
+        output: None,
+        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+        core_fee_per_byte: 1,
+        pooling: Pooling::Never,
+        output_script: output_script.clone(),
+        user_fee_increase: 0,
+        input_witnesses: Vec::new(),
+    });
+
+    transition
+        .calculate_min_required_fee(platform_version)
+        .unwrap_or(0)
+}
+
+/// Calculate the estimated fee for funding a Platform address from an asset lock.
+fn estimate_address_funding_fee_from_transition(
+    platform_version: &dash_sdk::dpp::version::PlatformVersion,
+    destination: &PlatformAddress,
+) -> u64 {
+    let mut outputs = BTreeMap::new();
+    outputs.insert(*destination, None);
+
+    let transition =
+        AddressFundingFromAssetLockTransition::V0(AddressFundingFromAssetLockTransitionV0 {
+            asset_lock_proof: AssetLockProof::default(),
+            inputs: BTreeMap::new(),
+            outputs,
+            fee_strategy: vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
+            user_fee_increase: 0,
+            ..Default::default()
+        });
+
+    transition
+        .calculate_min_required_fee(platform_version)
+        .unwrap_or(0)
+}
+
 /// Result of allocating platform addresses for a transfer.
 #[derive(Debug, Clone)]
 struct AddressAllocationResult {
@@ -71,23 +130,16 @@ struct AddressAllocationResult {
     sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
 }
 
-/// Allocates platform addresses for a transfer, selecting which addresses to use
-/// and how much from each.
-///
-/// Algorithm:
-/// 1. Filters out the destination address (can't be both input and output)
-/// 2. Sorts addresses by balance descending (largest first)
-/// 3. The highest-balance address pays the fee
-/// 4. Iteratively allocates until fee estimate converges
-/// 5. Fee payer is always included in inputs (even with 0 contribution) so fee can be deducted
-///
-/// Returns the allocation result with inputs, fee payer index, and any shortfall.
-fn allocate_platform_addresses(
-    estimator: &PlatformFeeEstimator,
+/// Allocates platform addresses for a transfer, using a custom fee calculator.
+fn allocate_platform_addresses_with_fee<F>(
     addresses: &[(PlatformAddress, Address, u64)],
     amount_credits: u64,
     destination: Option<&PlatformAddress>,
-) -> AddressAllocationResult {
+    fee_for_inputs: F,
+) -> AddressAllocationResult
+where
+    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
+{
     // Filter out the destination address if provided (protocol doesn't allow same address as input and output)
     let filtered: Vec<_> = addresses
         .iter()
@@ -104,7 +156,7 @@ fn allocate_platform_addresses(
         return AddressAllocationResult {
             inputs: BTreeMap::new(),
             fee_payer_index: 0,
-            estimated_fee: estimate_platform_fee(estimator, 1),
+            estimated_fee: fee_for_inputs(&BTreeMap::new()),
             shortfall: amount_credits,
             sorted_addresses: vec![],
         };
@@ -113,33 +165,36 @@ fn allocate_platform_addresses(
     // The highest-balance address (first in sorted order) will pay the fee
     let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
 
-    // Calculate fee based on expected number of inputs (use worst-case for safety)
-    // This matches what the Max button calculation uses
-    let max_inputs = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
-    let estimated_fee = estimate_platform_fee(estimator, max_inputs.max(1));
+    let mut estimated_fee = fee_for_inputs(&BTreeMap::new());
+    let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
 
-    // Allocate inputs = outputs (protocol requires equality).
-    // Fee payer must reserve enough remaining balance to pay the fee separately.
-    let mut inputs = BTreeMap::new();
-    let mut remaining = amount_credits;
+    // Iterate until fee estimate stabilizes (input count affects fee)
+    for _ in 0..=MAX_PLATFORM_INPUTS {
+        inputs.clear();
+        let mut remaining = amount_credits;
 
-    for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
-        if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
+        for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
+            if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
+                break;
+            }
+            let is_fee_payer = idx == 0;
+            let available = if is_fee_payer {
+                balance.saturating_sub(estimated_fee)
+            } else {
+                *balance
+            };
+            let use_amount = remaining.min(available);
+            if use_amount > 0 || is_fee_payer {
+                inputs.insert(*platform_addr, use_amount);
+                remaining = remaining.saturating_sub(use_amount);
+            }
+        }
+
+        let new_fee = fee_for_inputs(&inputs);
+        if new_fee == estimated_fee {
             break;
         }
-        // Fee payer (idx 0, highest balance) must keep fee in reserve
-        let is_fee_payer = idx == 0;
-        let available = if is_fee_payer {
-            balance.saturating_sub(estimated_fee)
-        } else {
-            *balance
-        };
-        let use_amount = remaining.min(available);
-        // Fee payer must always be in inputs so fee can be deducted from their balance
-        if use_amount > 0 || is_fee_payer {
-            inputs.insert(*platform_addr, use_amount);
-            remaining = remaining.saturating_sub(use_amount);
-        }
+        estimated_fee = new_fee;
     }
 
     // Calculate shortfall (amount we couldn't allocate)
@@ -147,15 +202,13 @@ fn allocate_platform_addresses(
     let allocation_shortfall = amount_credits.saturating_sub(total_allocated);
 
     // Check if fee payer can actually afford the fee from their remaining balance.
-    // Fee payer's remaining balance = their original balance - their contribution.
-    // If remaining < estimated_fee, we have a fee deficit.
     let fee_deficit = if let Some(fee_payer) = fee_payer_addr {
         let fee_payer_balance = sorted_addresses.first().map(|(_, _, b)| *b).unwrap_or(0);
         let fee_payer_contribution = inputs.get(&fee_payer).copied().unwrap_or(0);
         let fee_payer_remaining = fee_payer_balance.saturating_sub(fee_payer_contribution);
         estimated_fee.saturating_sub(fee_payer_remaining)
     } else {
-        estimated_fee // No fee payer means we can't pay the fee at all
+        estimated_fee
     };
 
     let shortfall = allocation_shortfall.saturating_add(fee_deficit);
@@ -178,6 +231,35 @@ fn allocate_platform_addresses(
         shortfall,
         sorted_addresses,
     }
+}
+
+/// Allocates platform addresses for a transfer, selecting which addresses to use
+/// and how much from each.
+///
+/// Algorithm:
+/// 1. Filters out the destination address (can't be both input and output)
+/// 2. Sorts addresses by balance descending (largest first)
+/// 3. The highest-balance address pays the fee
+/// 4. Iteratively allocates until fee estimate converges
+/// 5. Fee payer is always included in inputs (even with 0 contribution) so fee can be deducted
+///
+/// Returns the allocation result with inputs, fee payer index, and any shortfall.
+fn allocate_platform_addresses(
+    estimator: &PlatformFeeEstimator,
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+    destination: Option<&PlatformAddress>,
+) -> AddressAllocationResult {
+    let max_inputs = addresses
+        .iter()
+        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
+        .count()
+        .min(MAX_PLATFORM_INPUTS);
+
+    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
+        // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
+        estimate_platform_fee(estimator, max_inputs.max(1))
+    })
 }
 
 /// Detected address type
@@ -340,6 +422,50 @@ impl WalletSendScreen {
         }
     }
 
+    fn estimate_max_fee_for_platform_send(
+        &self,
+        fee_estimator: &PlatformFeeEstimator,
+        addresses: &[(PlatformAddress, Address, u64)],
+        destination: Option<&PlatformAddress>,
+    ) -> u64 {
+        let mut sorted_addresses: Vec<_> = addresses
+            .iter()
+            .filter(|(addr, _, _)| destination != Some(addr))
+            .cloned()
+            .collect();
+        sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+
+        let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+        if usable_count == 0 {
+            return estimate_platform_fee(fee_estimator, 1);
+        }
+
+        let dest_type = Self::detect_address_type(&self.destination_address);
+        if dest_type == AddressType::Core {
+            let output_script = self
+                .destination_address
+                .trim()
+                .parse::<Address<NetworkUnchecked>>()
+                .ok()
+                .and_then(|addr| addr.require_network(self.app_context.network).ok())
+                .map(|addr| CoreScript::new(addr.script_pubkey()));
+            if let Some(output_script) = output_script {
+                let max_fee_inputs: BTreeMap<PlatformAddress, u64> = sorted_addresses
+                    .iter()
+                    .take(usable_count)
+                    .map(|(addr, _, _)| (*addr, 0))
+                    .collect();
+                return estimate_withdrawal_fee_from_transition(
+                    self.app_context.platform_version(),
+                    &max_fee_inputs,
+                    &output_script,
+                );
+            }
+        }
+
+        estimate_platform_fee(fee_estimator, usable_count)
+    }
+
     fn reset_form(&mut self) {
         self.destination_address.clear();
         self.amount = None;
@@ -354,6 +480,17 @@ impl WalletSendScreen {
         }];
         self.fee_strategy = PlatformFeeStrategy::default();
         self.send_status = SendStatus::NotStarted;
+    }
+
+    fn now_epoch_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs()
+    }
+
+    fn mark_sending(&mut self) {
+        self.send_status = SendStatus::WaitingForResult(Self::now_epoch_secs());
     }
 
     fn format_dash(amount_duffs: u64) -> String {
@@ -377,7 +514,7 @@ impl WalletSendScreen {
     }
 
     /// Detect address type from the address string
-    fn detect_address_type(&self, address: &str) -> AddressType {
+    fn detect_address_type(address: &str) -> AddressType {
         let trimmed = address.trim();
         if trimmed.is_empty() {
             return AddressType::Unknown;
@@ -508,7 +645,7 @@ impl WalletSendScreen {
 
     /// Get description of transaction type based on source and destination
     fn get_transaction_type_description(&self) -> &'static str {
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         match (&self.selected_source, dest_type) {
             (Some(SourceSelection::CoreWallet), AddressType::Core) => "Core Transaction",
             (Some(SourceSelection::CoreWallet), AddressType::Platform) => "Fund Platform Address",
@@ -540,7 +677,7 @@ impl WalletSendScreen {
             .ok_or("Please select a source")?;
 
         // Validate destination
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         if dest_type == AddressType::Unknown {
             return Err(
                 "Invalid destination address. Use a Dash address (X.../y...) or Platform address (evo1.../tevo1...)"
@@ -606,11 +743,7 @@ impl WalletSendScreen {
             amount_duffs,
         };
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
             CoreTask::SendWalletPayment {
@@ -635,8 +768,14 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Check balance (include fee for asset lock)
-        let required = amount_duffs.saturating_add(3000);
+        // Parse platform address
+        let address_str = self.destination_address.trim();
+        let destination = PlatformAddress::from_bech32m_string(address_str)
+            .map(|(addr, _)| addr)
+            .map_err(|e| format!("Invalid platform address: {}", e))?;
+
+        // Check balance; fees will be subtracted from amount
+        let required = amount_duffs;
         let balance = self.get_core_balance();
         if required > balance {
             return Err(format!(
@@ -646,17 +785,7 @@ impl WalletSendScreen {
             ));
         }
 
-        // Parse platform address
-        let address_str = self.destination_address.trim();
-        let destination = PlatformAddress::from_bech32m_string(address_str)
-            .map(|(addr, _)| addr)
-            .map_err(|e| format!("Invalid platform address: {}", e))?;
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -745,7 +874,11 @@ impl WalletSendScreen {
                 .take(MAX_PLATFORM_INPUTS)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee = estimate_platform_fee(&fee_estimator, addresses_available);
+            let max_fee = self.estimate_max_fee_for_platform_send(
+                &fee_estimator,
+                &allocation.sorted_addresses,
+                Some(&destination),
+            );
             let max_sendable = max_balance.saturating_sub(max_fee);
 
             return Err(format!(
@@ -781,11 +914,7 @@ impl WalletSendScreen {
             allocation.fee_payer_index
         );
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
@@ -812,9 +941,6 @@ impl WalletSendScreen {
         if amount_credits == 0 {
             return Err("Amount must be greater than 0".to_string());
         }
-
-        // Get fee estimator with current network multiplier
-        let fee_estimator = self.app_context.fee_estimator();
 
         // Calculate total balance across all platform addresses
         let total_balance: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
@@ -845,9 +971,13 @@ impl WalletSendScreen {
 
         let output_script = CoreScript::new(dest_address.script_pubkey());
 
-        // Allocate addresses using the helper function (no destination filter for withdrawals)
+        let platform_version = self.app_context.platform_version();
+
+        // Allocate addresses using state-transition-based fee estimation (no destination filter)
         let allocation =
-            allocate_platform_addresses(&fee_estimator, &addresses, amount_credits, None);
+            allocate_platform_addresses_with_fee(&addresses, amount_credits, None, |inputs| {
+                estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
+            });
 
         if allocation.shortfall > 0 {
             // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
@@ -858,7 +988,17 @@ impl WalletSendScreen {
                 .take(MAX_PLATFORM_INPUTS)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee = estimate_platform_fee(&fee_estimator, addresses_available);
+            let max_fee_inputs: BTreeMap<PlatformAddress, u64> = allocation
+                .sorted_addresses
+                .iter()
+                .take(addresses_available)
+                .map(|(addr, _, _)| (*addr, 0))
+                .collect();
+            let max_fee = estimate_withdrawal_fee_from_transition(
+                platform_version,
+                &max_fee_inputs,
+                &output_script,
+            );
             let max_sendable = max_balance.saturating_sub(max_fee);
 
             return Err(format!(
@@ -891,11 +1031,7 @@ impl WalletSendScreen {
             allocation.fee_payer_index
         );
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::WithdrawFromPlatformAddress {
@@ -908,6 +1044,132 @@ impl WalletSendScreen {
         )))
     }
 
+    fn render_unlock_gate(&mut self, ui: &mut Ui) -> bool {
+        let wallet_is_open = self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
+
+        if wallet_is_open {
+            return true;
+        }
+
+        let Some(wallet) = &self.selected_wallet else {
+            return true;
+        };
+
+        if let Err(e) = try_open_wallet_no_password(wallet) {
+            self.error_message = Some(e);
+        }
+        if wallet_needs_unlock(wallet) {
+            ui.add_space(10.0);
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 150, 50),
+                "Wallet is locked. Please unlock to continue.",
+            );
+            ui.add_space(8.0);
+            if ui.button("Unlock Wallet").clicked() {
+                self.wallet_unlock_popup.open();
+            }
+            ui.add_space(10.0);
+            return false;
+        }
+
+        true
+    }
+
+    fn format_elapsed_time(start_time: u64) -> String {
+        let elapsed_seconds = Self::now_epoch_secs().saturating_sub(start_time);
+        if elapsed_seconds < 60 {
+            format!(
+                "{} second{}",
+                elapsed_seconds,
+                if elapsed_seconds == 1 { "" } else { "s" }
+            )
+        } else {
+            let minutes = elapsed_seconds / 60;
+            let seconds = elapsed_seconds % 60;
+            format!(
+                "{} minute{} {} second{}",
+                minutes,
+                if minutes == 1 { "" } else { "s" },
+                seconds,
+                if seconds == 1 { "" } else { "s" }
+            )
+        }
+    }
+
+    fn render_send_status(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        match self.send_status.clone() {
+            SendStatus::Complete(message) => {
+                let mut action = AppAction::None;
+                ui.vertical_centered(|ui| {
+                    ui.add_space(100.0);
+                    ui.heading("🎉");
+                    ui.heading(&message);
+                    ui.add_space(20.0);
+
+                    if ui.button("Send Another").clicked() {
+                        self.reset_form();
+                    }
+                    ui.add_space(8.0);
+                    if ui.button("Back to Wallet").clicked() {
+                        action = AppAction::PopScreenAndRefresh;
+                    }
+
+                    ui.add_space(100.0);
+                });
+                Some(action)
+            }
+            SendStatus::WaitingForResult(start_time) => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(100.0);
+                    ui.add(egui::Spinner::new().size(40.0));
+                    ui.add_space(20.0);
+                    ui.heading("Sending...");
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(format!(
+                            "Time elapsed: {}",
+                            Self::format_elapsed_time(start_time)
+                        ))
+                        .color(DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.add_space(100.0);
+                });
+                Some(AppAction::None)
+            }
+            SendStatus::Error(error_msg) => {
+                let mut dismiss = false;
+                ui.horizontal(|ui| {
+                    Frame::new()
+                        .fill(Color32::from_rgb(255, 100, 100).gamma_multiply(0.1))
+                        .inner_margin(Margin::symmetric(10, 8))
+                        .corner_radius(5.0)
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(255, 100, 100)))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(&error_msg)
+                                        .color(Color32::from_rgb(255, 100, 100)),
+                                );
+                                ui.add_space(10.0);
+                                if ui.small_button("Dismiss").clicked() {
+                                    dismiss = true;
+                                }
+                            });
+                        });
+                });
+                if dismiss {
+                    self.send_status = SendStatus::NotStarted;
+                }
+                ui.add_space(10.0);
+                None
+            }
+            SendStatus::NotStarted => None,
+        }
+    }
+
     fn render_unified_send(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
@@ -915,28 +1177,8 @@ impl WalletSendScreen {
         self.render_wallet_info(ui);
 
         // Wallet unlock if needed
-        let wallet_is_open = self
-            .selected_wallet
-            .as_ref()
-            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
-
-        if !wallet_is_open && let Some(wallet) = &self.selected_wallet {
-            if let Err(e) = try_open_wallet_no_password(wallet) {
-                self.error_message = Some(e);
-            }
-            if wallet_needs_unlock(wallet) {
-                ui.add_space(10.0);
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 150, 50),
-                    "Wallet is locked. Please unlock to continue.",
-                );
-                ui.add_space(8.0);
-                if ui.button("Unlock Wallet").clicked() {
-                    self.wallet_unlock_popup.open();
-                }
-                ui.add_space(10.0);
-                return AppAction::None;
-            }
+        if !self.render_unlock_gate(ui) {
+            return AppAction::None;
         }
 
         ui.add_space(10.0);
@@ -1117,7 +1359,7 @@ impl WalletSendScreen {
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
 
         ui.horizontal(|ui| {
             ui.label(
@@ -1189,8 +1431,29 @@ impl WalletSendScreen {
                         .ok()
                         .map(|wallet| wallet.total_balance_duffs() * CREDITS_PER_DUFF) // duffs to credits
                 });
-
-                (max, None)
+                let dest_type = Self::detect_address_type(&self.destination_address);
+                let hint = if dest_type == AddressType::Platform {
+                    let destination =
+                        PlatformAddress::from_bech32m_string(self.destination_address.trim())
+                            .map(|(addr, _)| addr)
+                            .ok();
+                    if let Some(destination) = destination {
+                        let estimated_fee = estimate_address_funding_fee_from_transition(
+                            self.app_context.platform_version(),
+                            &destination,
+                        );
+                        // max = max.map(|amount| amount.saturating_sub(estimated_fee));
+                        Some(format!(
+                            "Estimated platform fee ~{} (deducted from amount)",
+                            Self::format_credits(estimated_fee)
+                        ))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                (max, hint)
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Parse destination to exclude it from max calculation (can't send to yourself)
@@ -1208,13 +1471,16 @@ impl WalletSendScreen {
                 sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
 
                 // Sum balances from top addresses, limited by MAX_PLATFORM_INPUTS.
-                let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
                 let total: u64 = sorted_addresses
                     .iter()
                     .take(MAX_PLATFORM_INPUTS)
                     .map(|(_, _, balance)| *balance)
                     .sum();
-                let max_fee = estimate_platform_fee(&fee_estimator, usable_count);
+                let max_fee = self.estimate_max_fee_for_platform_send(
+                    &fee_estimator,
+                    &sorted_addresses,
+                    destination.as_ref(),
+                );
 
                 // Build hint explaining the limit
                 let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
@@ -1236,7 +1502,7 @@ impl WalletSendScreen {
             Some(SourceSelection::PlatformAddresses(_)) => AddressType::Platform,
             None => AddressType::Unknown,
         };
-        let output_type = self.detect_address_type(&self.destination_address);
+        let output_type = Self::detect_address_type(&self.destination_address);
         let min_amount = self.min_output_amount(input_type, output_type);
 
         Frame::group(ui.style())
@@ -1281,7 +1547,7 @@ impl WalletSendScreen {
         }
 
         // Show subtract fee checkbox for Core wallet to Core address transactions
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         if matches!(self.selected_source, Some(SourceSelection::CoreWallet))
             && dest_type == AddressType::Core
         {
@@ -1415,7 +1681,7 @@ impl WalletSendScreen {
             .as_ref()
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-        let dest_type = self.detect_address_type(&self.destination_address);
+        let dest_type = Self::detect_address_type(&self.destination_address);
         let has_destination = dest_type != AddressType::Unknown;
         let has_amount = self.amount.as_ref().map(|a| a.value() > 0).unwrap_or(false);
         let has_source = self.selected_source.is_some();
@@ -1469,28 +1735,8 @@ impl WalletSendScreen {
         self.render_wallet_info(ui);
 
         // Wallet unlock if needed
-        let wallet_is_open = self
-            .selected_wallet
-            .as_ref()
-            .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
-
-        if !wallet_is_open && let Some(wallet) = &self.selected_wallet {
-            if let Err(e) = try_open_wallet_no_password(wallet) {
-                self.error_message = Some(e);
-            }
-            if wallet_needs_unlock(wallet) {
-                ui.add_space(10.0);
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 150, 50),
-                    "Wallet is locked. Please unlock to continue.",
-                );
-                ui.add_space(8.0);
-                if ui.button("Unlock Wallet").clicked() {
-                    self.wallet_unlock_popup.open();
-                }
-                ui.add_space(10.0);
-                return AppAction::None;
-            }
+        if !self.render_unlock_gate(ui) {
+            return AppAction::None;
         }
 
         ui.add_space(10.0);
@@ -1601,7 +1847,7 @@ impl WalletSendScreen {
         // ========== FEE STRATEGY SECTION ==========
         // Only show for platform source or platform outputs
         let has_platform_output = self.advanced_outputs.iter().any(|o| {
-            let addr_type = Self::detect_address_type_static(&o.address);
+            let addr_type = Self::detect_address_type(&o.address);
             addr_type == AddressType::Platform
         });
 
@@ -1913,7 +2159,7 @@ impl WalletSendScreen {
         let addr_types: Vec<AddressType> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_type_static(&o.address))
+            .map(|o| Self::detect_address_type(&o.address))
             .collect();
 
         for (idx, &addr_type) in addr_types.iter().enumerate() {
@@ -1988,26 +2234,6 @@ impl WalletSendScreen {
                 amount: String::new(),
             });
         }
-    }
-
-    /// Static version of detect_address_type that doesn't need self
-    fn detect_address_type_static(address: &str) -> AddressType {
-        let trimmed = address.trim();
-        if trimmed.is_empty() {
-            return AddressType::Unknown;
-        }
-
-        // Check for Platform address (Bech32m format)
-        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
-            return AddressType::Platform;
-        }
-
-        // Try to parse as Core address
-        if trimmed.parse::<Address<NetworkUnchecked>>().is_ok() {
-            return AddressType::Core;
-        }
-
-        AddressType::Unknown
     }
 
     /// Render the send button for advanced mode
@@ -2097,7 +2323,7 @@ impl WalletSendScreen {
         let output_types: Vec<AddressType> = self
             .advanced_outputs
             .iter()
-            .map(|o| Self::detect_address_type_static(&o.address))
+            .map(|o| Self::detect_address_type(&o.address))
             .collect();
 
         let has_core_output = output_types.contains(&AddressType::Core);
@@ -2191,11 +2417,7 @@ impl WalletSendScreen {
             ));
         }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::CoreTask(
             CoreTask::SendWalletPayment {
@@ -2258,11 +2480,7 @@ impl WalletSendScreen {
             PlatformFeeStrategy::ReduceFirstOutput | PlatformFeeStrategy::ReduceLastOutput
         );
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::FundPlatformAddressFromWalletUtxos {
@@ -2318,11 +2536,7 @@ impl WalletSendScreen {
             .map(|(idx, _)| idx as u16)
             .unwrap_or(0);
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::TransferPlatformCredits {
@@ -2380,11 +2594,7 @@ impl WalletSendScreen {
             .map(|(idx, _)| idx as u16)
             .unwrap_or(0);
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.send_status = SendStatus::WaitingForResult(now);
+        self.mark_sending();
 
         Ok(AppAction::BackendTask(BackendTask::WalletTask(
             WalletTask::WithdrawFromPlatformAddress {
@@ -2417,101 +2627,8 @@ impl ScreenLike for WalletSendScreen {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            // Handle different states - clone to avoid borrow issues
-            let current_status = self.send_status.clone();
-            match current_status {
-                SendStatus::Complete(message) => {
-                    // Show custom success screen
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(100.0);
-                        ui.heading("🎉");
-                        ui.heading(&message);
-                        ui.add_space(20.0);
-
-                        if ui.button("Send Another").clicked() {
-                            self.reset_form();
-                        }
-                        ui.add_space(8.0);
-                        if ui.button("Back to Wallet").clicked() {
-                            inner_action = AppAction::PopScreenAndRefresh;
-                        }
-
-                        ui.add_space(100.0);
-                    });
-
-                    return inner_action;
-                }
-                SendStatus::WaitingForResult(start_time) => {
-                    // Show sending spinner
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(100.0);
-                        ui.add(egui::Spinner::new().size(40.0));
-                        ui.add_space(20.0);
-                        ui.heading("Sending...");
-
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed_seconds = now.saturating_sub(start_time);
-
-                        let display_time = if elapsed_seconds < 60 {
-                            format!(
-                                "{} second{}",
-                                elapsed_seconds,
-                                if elapsed_seconds == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            let minutes = elapsed_seconds / 60;
-                            let seconds = elapsed_seconds % 60;
-                            format!(
-                                "{} minute{} {} second{}",
-                                minutes,
-                                if minutes == 1 { "" } else { "s" },
-                                seconds,
-                                if seconds == 1 { "" } else { "s" }
-                            )
-                        };
-
-                        ui.add_space(10.0);
-                        ui.label(
-                            RichText::new(format!("Time elapsed: {}", display_time))
-                                .color(DashColors::text_secondary(dark_mode)),
-                        );
-                        ui.add_space(100.0);
-                    });
-                    return inner_action;
-                }
-                SendStatus::Error(error_msg) => {
-                    // Show error at the top
-                    let mut dismiss = false;
-                    ui.horizontal(|ui| {
-                        Frame::new()
-                            .fill(Color32::from_rgb(255, 100, 100).gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(255, 100, 100)))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(&error_msg)
-                                            .color(Color32::from_rgb(255, 100, 100)),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        dismiss = true;
-                                    }
-                                });
-                            });
-                    });
-                    if dismiss {
-                        self.send_status = SendStatus::NotStarted;
-                    }
-                    ui.add_space(10.0);
-                }
-                SendStatus::NotStarted => {
-                    // Normal flow - continue to render the form
-                }
+            if let Some(status_action) = self.render_send_status(ui, dark_mode) {
+                return status_action;
             }
 
             egui::ScrollArea::vertical()

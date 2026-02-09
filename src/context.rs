@@ -464,8 +464,8 @@ impl AppContext {
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
-            // Note: Platform address sync and Core UTXO refresh are NOT done automatically on unlock.
-            // User must explicitly click Refresh to update balances.
+            // Note: Platform address sync is not done here.
+            // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
         }
     }
 
@@ -541,9 +541,50 @@ impl AppContext {
             guard.values().cloned().collect()
         };
 
-        for wallet in wallets {
-            self.bootstrap_wallet_addresses(&wallet);
-            self.handle_wallet_unlocked(&wallet);
+        for wallet in wallets.iter() {
+            self.bootstrap_wallet_addresses(wallet);
+            self.handle_wallet_unlocked(wallet);
+        }
+
+        // Auto-refresh UTXOs from Core on startup so balances are current
+        // without requiring the user to manually click Refresh (fixes GH#522).
+        // Only in RPC mode — SPV mode handles UTXO loading via reconciliation.
+        if self.core_backend_mode() == CoreBackendMode::Rpc {
+            for wallet in wallets {
+                let ctx = Arc::clone(self);
+                self.subtasks.spawn_sync(async move {
+                    if let Err(e) =
+                        tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                            .await
+                            .map_err(|e| format!("Task join error: {}", e))
+                            .and_then(|r| r.map(|_| ()))
+                    {
+                        tracing::warn!("Failed to auto-refresh wallet UTXOs on startup: {}", e);
+                    }
+                });
+            }
+
+            let single_key_wallets: Vec<_> = {
+                let guard = self.single_key_wallets.read().unwrap();
+                guard.values().cloned().collect()
+            };
+            for wallet in single_key_wallets {
+                let ctx = Arc::clone(self);
+                self.subtasks.spawn_sync(async move {
+                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                        ctx.refresh_single_key_wallet_info(wallet)
+                    })
+                    .await
+                    .map_err(|e| format!("Task join error: {}", e))
+                    .and_then(|r| r)
+                    {
+                        tracing::warn!(
+                            "Failed to auto-refresh single key wallet UTXOs on startup: {}",
+                            e
+                        );
+                    }
+                });
+            }
         }
     }
 
@@ -1706,6 +1747,39 @@ impl AppContext {
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         self.db.get_contract_by_id(contract_id, self)
     }
+}
+
+pub(crate) struct DapiTransactionInfo {
+    pub is_chain_locked: bool,
+    pub height: u32,
+    pub confirmations: u32,
+}
+
+/// Query transaction info from DAPI. Works in both SPV and RPC modes
+/// since DAPI (platform gRPC) is always available via the SDK.
+pub(crate) async fn get_transaction_info_via_dapi(
+    sdk: &Sdk,
+    tx_id: &Txid,
+) -> Result<DapiTransactionInfo, String> {
+    use dash_sdk::dapi_client::{DapiRequestExecutor, IntoInner, RequestSettings};
+    use dash_sdk::dapi_grpc::core::v0::GetTransactionRequest;
+
+    let response = sdk
+        .execute(
+            GetTransactionRequest {
+                id: tx_id.to_string(),
+            },
+            RequestSettings::default(),
+        )
+        .await
+        .into_inner()
+        .map_err(|e| format!("DAPI GetTransaction failed: {}", e))?;
+
+    Ok(DapiTransactionInfo {
+        is_chain_locked: response.is_chain_locked,
+        height: response.height,
+        confirmations: response.confirmations,
+    })
 }
 
 /// Returns the default platform version for the given network.

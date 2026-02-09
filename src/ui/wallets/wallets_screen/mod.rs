@@ -322,6 +322,49 @@ impl WalletsBalancesScreen {
         }
     }
 
+    fn persist_selected_wallet_hash(&self, hash: Option<WalletSeedHash>) {
+        if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
+            *guard = hash;
+        }
+        let _ = self
+            .app_context
+            .db
+            .update_selected_wallet_hash(hash.as_ref());
+    }
+
+    fn persist_selected_single_key_hash(&self, hash: Option<[u8; 32]>) {
+        if let Ok(mut guard) = self.app_context.selected_single_key_hash.lock() {
+            *guard = hash;
+        }
+        let _ = self
+            .app_context
+            .db
+            .update_selected_single_key_hash(hash.as_ref());
+    }
+
+    fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
+        self.selected_wallet = Some(wallet.clone());
+        self.selected_single_key_wallet = None;
+        self.selected_account = None;
+
+        if let Ok(hash) = wallet.read().map(|g| g.seed_hash()) {
+            self.persist_selected_wallet_hash(Some(hash));
+        }
+        self.persist_selected_single_key_hash(None);
+    }
+
+    fn select_single_key_wallet(&mut self, wallet: Arc<RwLock<SingleKeyWallet>>) {
+        self.selected_single_key_wallet = Some(wallet.clone());
+        self.selected_wallet = None;
+        self.selected_account = None;
+        self.utxo_page = 0;
+
+        if let Ok(hash) = wallet.read().map(|g| g.key_hash) {
+            self.persist_selected_single_key_hash(Some(hash));
+        }
+        self.persist_selected_wallet_hash(None);
+    }
+
     pub(crate) fn update_selected_wallet_for_network(&mut self) {
         // Check if HD wallet selection is still valid
         if let Some(wallet_arc) = &self.selected_wallet {
@@ -537,58 +580,12 @@ impl WalletsBalancesScreen {
                                 if ui.selectable_label(is_selected, label).clicked() {
                                     match wallet_item {
                                         WalletItem::Hd(w) => {
-                                            self.selected_wallet = Some(w.clone());
-                                            self.selected_single_key_wallet = None;
-                                            // Persist selection to AppContext and database
-                                            if let Ok(hash) = w.read().map(|g| g.seed_hash())
-                                                && let Ok(mut guard) =
-                                                    self.app_context.selected_wallet_hash.lock()
-                                            {
-                                                *guard = Some(hash);
-                                                // Save to database for persistence across restarts
-                                                let _ = self
-                                                    .app_context
-                                                    .db
-                                                    .update_selected_wallet_hash(Some(&hash));
-                                            }
-                                            if let Ok(mut guard) =
-                                                self.app_context.selected_single_key_hash.lock()
-                                            {
-                                                *guard = None;
-                                                let _ = self
-                                                    .app_context
-                                                    .db
-                                                    .update_selected_single_key_hash(None);
-                                            }
+                                            self.select_hd_wallet(w.clone());
                                         }
                                         WalletItem::SingleKey(w) => {
-                                            self.selected_single_key_wallet = Some(w.clone());
-                                            self.selected_wallet = None;
-                                            self.utxo_page = 0; // Reset pagination
-                                            // Persist selection to AppContext and database
-                                            if let Ok(hash) = w.read().map(|g| g.key_hash)
-                                                && let Ok(mut guard) =
-                                                    self.app_context.selected_single_key_hash.lock()
-                                            {
-                                                *guard = Some(hash);
-                                                // Save to database for persistence across restarts
-                                                let _ = self
-                                                    .app_context
-                                                    .db
-                                                    .update_selected_single_key_hash(Some(&hash));
-                                            }
-                                            if let Ok(mut guard) =
-                                                self.app_context.selected_wallet_hash.lock()
-                                            {
-                                                *guard = None;
-                                                let _ = self
-                                                    .app_context
-                                                    .db
-                                                    .update_selected_wallet_hash(None);
-                                            }
+                                            self.select_single_key_wallet(w.clone());
                                         }
                                     }
-                                    self.selected_account = None;
                                 }
                             }
                         });
@@ -698,12 +695,7 @@ impl WalletsBalancesScreen {
                                 }
                                 self.selected_single_key_wallet = None;
                                 // Clear persisted selection in AppContext and database
-                                if let Ok(mut guard) =
-                                    self.app_context.selected_single_key_hash.lock()
-                                {
-                                    *guard = None;
-                                }
-                                let _ = self.app_context.db.update_selected_single_key_hash(None);
+                                self.persist_selected_single_key_hash(None);
                                 self.display_message("Wallet removed", MessageType::Success);
                             }
                         }
@@ -953,26 +945,17 @@ impl WalletsBalancesScreen {
                 let network = self.app_context.network;
                 for data in &address_data {
                     body.row(25.0, |mut row| {
+                        let is_key_only = data.account_category.is_key_only();
+                        let is_platform_payment =
+                            data.account_category == AccountCategory::PlatformPayment;
+
                         row.col(|ui| {
                             ui.label(data.display_address(network));
                         });
                         row.col(|ui| {
-                            // These address types are used for key derivation/proofs, not holding funds
-                            let is_key_only_address = matches!(
-                                data.account_category,
-                                AccountCategory::IdentityRegistration
-                                    | AccountCategory::IdentityTopup
-                                    | AccountCategory::IdentityInvitation
-                                    | AccountCategory::IdentitySystem
-                                    | AccountCategory::ProviderVoting
-                                    | AccountCategory::ProviderOwner
-                                    | AccountCategory::ProviderOperator
-                                    | AccountCategory::ProviderPlatform
-                            );
-
-                            if is_key_only_address {
+                            if is_key_only {
                                 ui.label("N/A");
-                            } else if data.account_category == AccountCategory::PlatformPayment {
+                            } else if is_platform_payment {
                                 // Platform credits: convert from credits to DASH
                                 // Credits are in duffs * 1000, so divide by 1000 then by 1e8
                                 let dash_balance =
@@ -985,20 +968,7 @@ impl WalletsBalancesScreen {
                         });
                         row.col(|ui| {
                             // Key-only addresses and Platform addresses don't hold UTXOs
-                            let no_utxos = matches!(
-                                data.account_category,
-                                AccountCategory::IdentityRegistration
-                                    | AccountCategory::IdentityTopup
-                                    | AccountCategory::IdentityInvitation
-                                    | AccountCategory::IdentitySystem
-                                    | AccountCategory::ProviderVoting
-                                    | AccountCategory::ProviderOwner
-                                    | AccountCategory::ProviderOperator
-                                    | AccountCategory::ProviderPlatform
-                                    | AccountCategory::PlatformPayment
-                            );
-
-                            if no_utxos {
+                            if is_key_only || is_platform_payment {
                                 ui.label("N/A");
                             } else {
                                 ui.label(format!("{}", data.utxo_count));
@@ -1006,20 +976,7 @@ impl WalletsBalancesScreen {
                         });
                         row.col(|ui| {
                             // These address types don't track historical received amounts
-                            let no_total_received = matches!(
-                                data.account_category,
-                                AccountCategory::IdentityRegistration
-                                    | AccountCategory::IdentityTopup
-                                    | AccountCategory::IdentityInvitation
-                                    | AccountCategory::IdentitySystem
-                                    | AccountCategory::ProviderVoting
-                                    | AccountCategory::ProviderOwner
-                                    | AccountCategory::ProviderOperator
-                                    | AccountCategory::ProviderPlatform
-                                    | AccountCategory::PlatformPayment
-                            );
-
-                            if no_total_received {
+                            if is_key_only || is_platform_payment {
                                 ui.label("N/A");
                             } else {
                                 let dash_received = data.total_received as f64 * 1e-8;
@@ -1181,14 +1138,7 @@ impl WalletsBalancesScreen {
                 let new_hash = next_wallet
                     .as_ref()
                     .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
-                    *guard = new_hash;
-                }
-                // Persist to database
-                let _ = self
-                    .app_context
-                    .db
-                    .update_selected_wallet_hash(new_hash.as_ref());
+                self.persist_selected_wallet_hash(new_hash);
 
                 self.show_rename_dialog = false;
                 self.rename_input.clear();
@@ -1434,6 +1384,10 @@ impl WalletsBalancesScreen {
 
     fn check_message_expiration(&mut self) {
         // Messages no longer auto-expire, they must be dismissed manually
+    }
+
+    fn set_message(&mut self, message: String, message_type: MessageType) {
+        self.message = Some((message, message_type, Utc::now()));
     }
 
     fn format_dash(amount_duffs: u64) -> String {
@@ -1825,6 +1779,38 @@ impl WalletsBalancesScreen {
         action
     }
 
+    fn draw_modal_overlay(ctx: &Context, id: &str) {
+        let screen_rect = ctx.content_rect();
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::new(id),
+        ));
+        painter.rect_filled(
+            screen_rect,
+            0.0,
+            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
+        );
+    }
+
+    fn modal_frame(ctx: &Context) -> Frame {
+        Frame {
+            inner_margin: egui::Margin::same(20),
+            outer_margin: egui::Margin::same(0),
+            corner_radius: egui::CornerRadius::same(8),
+            shadow: egui::epaint::Shadow {
+                offset: [0, 8],
+                blur: 16,
+                spread: 0,
+                color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+            },
+            fill: ctx.style().visuals.window_fill,
+            stroke: egui::Stroke::new(
+                1.0,
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+            ),
+        }
+    }
+
     fn render_send_dialog(&mut self, ctx: &Context) -> AppAction {
         if !self.send_dialog.is_open {
             return AppAction::None;
@@ -1946,16 +1932,7 @@ impl WalletsBalancesScreen {
 
         // Draw dark overlay behind the dialog (only when open)
         if open {
-            let screen_rect = ctx.content_rect();
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("receive_dialog_overlay"),
-            ));
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-            );
+            Self::draw_modal_overlay(ctx, "receive_dialog_overlay");
         }
 
         egui::Window::new("Receive")
@@ -1963,22 +1940,7 @@ impl WalletsBalancesScreen {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
-            .frame(egui::Frame {
-                inner_margin: egui::Margin::same(20),
-                outer_margin: egui::Margin::same(0),
-                corner_radius: egui::CornerRadius::same(8),
-                shadow: egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 16,
-                    spread: 0,
-                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
-                },
-                fill: ctx.style().visuals.window_fill,
-                stroke: egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                ),
-            })
+            .frame(Self::modal_frame(ctx))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 ui.vertical_centered(|ui| {
@@ -2326,38 +2288,14 @@ impl WalletsBalancesScreen {
         let dark_mode = ctx.style().visuals.dark_mode;
 
         // Draw dark overlay behind the popup
-        let screen_rect = ctx.content_rect();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("fund_platform_dialog_overlay"),
-        ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-        );
+        Self::draw_modal_overlay(ctx, "fund_platform_dialog_overlay");
 
         egui::Window::new("Fund Platform Address from Asset Lock")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
-            .frame(egui::Frame {
-                inner_margin: egui::Margin::same(20),
-                outer_margin: egui::Margin::same(0),
-                corner_radius: egui::CornerRadius::same(8),
-                shadow: egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 16,
-                    spread: 0,
-                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
-                },
-                fill: ctx.style().visuals.window_fill,
-                stroke: egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                ),
-            })
+            .frame(Self::modal_frame(ctx))
             .show(ctx, |ui| {
                 ui.set_min_width(400.0);
 
@@ -2525,16 +2463,7 @@ impl WalletsBalancesScreen {
 
         // Draw dark overlay behind the dialog
         if open {
-            let screen_rect = ctx.content_rect();
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("private_key_dialog_overlay"),
-            ));
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-            );
+            Self::draw_modal_overlay(ctx, "private_key_dialog_overlay");
         }
 
         egui::Window::new("Private Key")
@@ -2542,22 +2471,7 @@ impl WalletsBalancesScreen {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
-            .frame(egui::Frame {
-                inner_margin: egui::Margin::same(20),
-                outer_margin: egui::Margin::same(0),
-                corner_radius: egui::CornerRadius::same(8),
-                shadow: egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 16,
-                    spread: 0,
-                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
-                },
-                fill: ctx.style().visuals.window_fill,
-                stroke: egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                ),
-            })
+            .frame(Self::modal_frame(ctx))
             .show(ctx, |ui| {
                 ui.set_min_width(400.0);
                 ui.vertical_centered(|ui| {
@@ -3181,6 +3095,19 @@ impl WalletsBalancesScreen {
 
     /// Creates the appropriate refresh action based on the current refresh mode
     fn create_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
+        self.create_refresh_action_for_mode(wallet_arc, self.refresh_mode)
+    }
+
+    /// Creates the appropriate refresh action using the pending refresh mode
+    fn create_pending_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
+        self.create_refresh_action_for_mode(wallet_arc, self.pending_refresh_mode)
+    }
+
+    fn create_refresh_action_for_mode(
+        &self,
+        wallet_arc: &Arc<RwLock<Wallet>>,
+        mode: RefreshMode,
+    ) -> AppAction {
         use crate::backend_task::wallet::PlatformSyncMode;
 
         let seed_hash = wallet_arc
@@ -3189,7 +3116,7 @@ impl WalletsBalancesScreen {
             .map(|w| w.seed_hash())
             .unwrap_or_default();
 
-        match self.refresh_mode {
+        match mode {
             RefreshMode::All => {
                 // Default behavior: Core + Platform (Auto)
                 AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
@@ -3231,47 +3158,6 @@ impl WalletsBalancesScreen {
             }
             RefreshMode::CoreAndPlatformTerminal => {
                 // Core + Platform with terminal sync
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    Some(PlatformSyncMode::TerminalOnly),
-                )))
-            }
-        }
-    }
-
-    /// Creates the appropriate refresh action using the pending refresh mode
-    fn create_pending_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
-        use crate::backend_task::wallet::PlatformSyncMode;
-
-        let seed_hash = wallet_arc
-            .read()
-            .ok()
-            .map(|w| w.seed_hash())
-            .unwrap_or_default();
-
-        match self.pending_refresh_mode {
-            RefreshMode::All => AppAction::BackendTask(BackendTask::CoreTask(
-                CoreTask::RefreshWalletInfo(wallet_arc.clone(), Some(PlatformSyncMode::Auto)),
-            )),
-            RefreshMode::CoreOnly => AppAction::BackendTask(BackendTask::CoreTask(
-                CoreTask::RefreshWalletInfo(wallet_arc.clone(), None),
-            )),
-            RefreshMode::PlatformFull => AppAction::BackendTask(BackendTask::WalletTask(
-                crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
-                    seed_hash,
-                    sync_mode: PlatformSyncMode::ForceFull,
-                },
-            )),
-            RefreshMode::PlatformTerminal => AppAction::BackendTask(BackendTask::WalletTask(
-                crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
-                    seed_hash,
-                    sync_mode: PlatformSyncMode::TerminalOnly,
-                },
-            )),
-            RefreshMode::CoreAndPlatformFull => AppAction::BackendTask(BackendTask::CoreTask(
-                CoreTask::RefreshWalletInfo(wallet_arc.clone(), Some(PlatformSyncMode::ForceFull)),
-            )),
-            RefreshMode::CoreAndPlatformTerminal => {
                 AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
                     wallet_arc.clone(),
                     Some(PlatformSyncMode::TerminalOnly),
@@ -3756,7 +3642,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 return;
             }
         }
-        self.message = Some((message.to_string(), message_type, Utc::now()))
+        self.set_message(message.to_string(), message_type);
     }
 
     fn display_task_result(
@@ -3767,17 +3653,15 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
                 if let Some(warn_msg) = warning {
-                    self.message = Some((
+                    self.set_message(
                         format!("Wallet refreshed with warning: {}", warn_msg),
                         MessageType::Info,
-                        Utc::now(),
-                    ));
+                    );
                 } else {
-                    self.message = Some((
+                    self.set_message(
                         "Successfully refreshed wallet".to_string(),
                         MessageType::Success,
-                        Utc::now(),
-                    ));
+                    );
                 }
             }
             crate::ui::BackendTaskSuccessResult::RecoveredAssetLocks {
@@ -3873,11 +3757,10 @@ impl ScreenLike for WalletsBalancesScreen {
                         wallet.set_platform_address_info(addr, balance, nonce);
                     }
                 }
-                self.message = Some((
+                self.set_message(
                     "Successfully synced Platform balances".to_string(),
                     MessageType::Success,
-                    Utc::now(),
-                ));
+                );
             }
             crate::ui::BackendTaskSuccessResult::Message(msg) => {
                 self.refreshing = false;
@@ -3889,27 +3772,26 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn refresh_on_arrival(&mut self) {
         // Check if there's a pending wallet selection (e.g., from wallet creation/import)
-        if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock()
-            && let Some(seed_hash) = pending.take()
-            && let Ok(wallets) = self.app_context.wallets.read()
-            && let Some(wallet) = wallets.get(&seed_hash)
-        {
-            self.selected_wallet = Some(wallet.clone());
-            self.selected_single_key_wallet = None; // Clear SK selection
-            self.selected_account = None;
-            // Persist selection to AppContext and database
-            if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
-                *guard = Some(seed_hash);
-            }
-            if let Ok(mut guard) = self.app_context.selected_single_key_hash.lock() {
-                *guard = None;
-            }
-            let _ = self
+        let pending_seed_hash = self
+            .app_context
+            .pending_wallet_selection
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.take());
+
+        if let Some(seed_hash) = pending_seed_hash {
+            let selected_wallet = self
                 .app_context
-                .db
-                .update_selected_wallet_hash(Some(&seed_hash));
-            let _ = self.app_context.db.update_selected_single_key_hash(None);
-            return;
+                .wallets
+                .read()
+                .ok()
+                .and_then(|wallets| wallets.get(&seed_hash).cloned());
+
+            if let Some(wallet) = selected_wallet {
+                self.select_hd_wallet(wallet);
+                self.persist_selected_wallet_hash(Some(seed_hash));
+                return;
+            }
         }
 
         // If no wallet of either type is selected but wallets exist, select the first HD wallet

@@ -1905,14 +1905,6 @@ impl ScreenLike for NetworkChooserScreen {
         }
     }
 
-    fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
-        let _ = message;
-    }
-
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        let _ = backend_task_success_result;
-    }
-
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,

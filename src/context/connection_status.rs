@@ -245,11 +245,11 @@ impl ConnectionStatus {
         }
         *last_update = now;
 
-        self.refersh_zmq_and_spv(app_context);
+        self.refresh_zmq_and_spv(app_context);
         AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLocks))
     }
 
-    fn refersh_zmq_and_spv(&self, app_context: &crate::context::AppContext) {
+    fn refresh_zmq_and_spv(&self, app_context: &crate::context::AppContext) {
         // Get current backend mode
         let backend_mode = app_context.core_backend_mode();
         self.set_backend_mode(backend_mode);

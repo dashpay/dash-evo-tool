@@ -14,10 +14,19 @@ import {
   TransferScreen,
   type TransferStatus,
 } from "@/components/identity/TransferScreen";
+import {
+  CreateIdentityScreen,
+  type CreateIdentityStatus,
+} from "@/components/identity/CreateIdentityScreen";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
 import { commands } from "@/bindings";
-import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
+import type {
+  QualifiedIdentityDto,
+  IdentityKeyDto,
+  RegisterIdentityFundingMethodDto,
+  KeySpecDto,
+} from "@/bindings";
 import type { AddKeyStatus } from "@/components/identity/AddKeyDialog";
 import type { IdentityOption } from "@/components/shared/IdentitySelector";
 import { toast } from "sonner";
@@ -30,7 +39,8 @@ type SubView =
   | { type: "keyInfo"; keyId: number }
   | { type: "addKey" }
   | { type: "withdraw" }
-  | { type: "transfer" };
+  | { type: "transfer" }
+  | { type: "createIdentity" };
 
 // ─── IdentitiesScreen ─────────────────────────────────────────────
 
@@ -71,6 +81,10 @@ export function IdentitiesScreen() {
   const [transferStatus, setTransferStatus] = useState<TransferStatus>({
     type: "form",
   });
+
+  // Create identity state
+  const [createIdentityStatus, setCreateIdentityStatus] =
+    useState<CreateIdentityStatus>({ type: "form" });
 
   // Add key state
   const [addKeyStatus, setAddKeyStatus] = useState<AddKeyStatus>({
@@ -114,6 +128,7 @@ export function IdentitiesScreen() {
     setSubView({ type: "detail" });
     setWithdrawStatus({ type: "form" });
     setTransferStatus({ type: "form" });
+    setCreateIdentityStatus({ type: "form" });
     setAddKeyStatus({ type: "idle" });
     setKeyInfoState({ isSubmitting: false, error: null, success: null });
   }, [selectedIdentityId]);
@@ -193,6 +208,11 @@ export function IdentitiesScreen() {
     toast.info("Register DPNS Name — coming in a future task");
   }, []);
 
+  const handleCreateIdentity = useCallback(() => {
+    setSubView({ type: "createIdentity" });
+    setCreateIdentityStatus({ type: "form" });
+  }, []);
+
   const handleNavigateToWallet = useCallback((_seedHash: string) => {
     // TODO: Navigate to wallet screen (requires cross-screen navigation)
     toast.info("Navigate to wallet — coming in a future task");
@@ -206,6 +226,49 @@ export function IdentitiesScreen() {
     setSubView({ type: "keys" });
     setKeyInfoState({ isSubmitting: false, error: null, success: null });
   }, []);
+
+  // ─── Create identity callbacks ────────────────────────────────────
+
+  const handleCreateIdentitySubmit = useCallback(
+    async (params: {
+      walletSeedHash: string;
+      identityIndex: number;
+      alias: string;
+      masterKeyType: string;
+      keySpecs: KeySpecDto[];
+      useDefaultKeys: boolean;
+      fundingMethod: RegisterIdentityFundingMethodDto;
+    }) => {
+      setCreateIdentityStatus({
+        type: "waitingForPlatform",
+        startedAt: Date.now(),
+      });
+      try {
+        const result = await commands.identityRegister({
+          walletSeedHash: params.walletSeedHash,
+          identityIndex: params.identityIndex,
+          alias: params.alias,
+          masterKeyType: params.masterKeyType,
+          keySpecs: params.keySpecs,
+          useDefaultKeys: params.useDefaultKeys,
+          fundingMethod: params.fundingMethod,
+        });
+        if (result.status === "ok") {
+          setCreateIdentityStatus({ type: "success" });
+          // Reload identities to pick up the new one
+          loadIdentities();
+        } else {
+          setCreateIdentityStatus({ type: "error", message: result.error });
+        }
+      } catch (e) {
+        setCreateIdentityStatus({
+          type: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    },
+    [loadIdentities],
+  );
 
   // ─── Withdraw callbacks ─────────────────────────────────────────
 
@@ -456,12 +519,15 @@ export function IdentitiesScreen() {
           onTopUp={handleTopUp}
           onWithdraw={handleWithdraw}
           onTransfer={handleTransfer}
+          onCreateIdentity={handleCreateIdentity}
         />
       </Island>
 
       {/* Right Panel — Detail / Sub-views */}
       <Island className="flex-1 min-w-0 overflow-auto">
-        {selectedIdentity ? (
+        {subView.type === "createIdentity" ? (
+          renderCreateIdentity()
+        ) : selectedIdentity ? (
           renderRightPanel()
         ) : (
           <div className="flex flex-1 items-center justify-center h-full text-muted-foreground">
@@ -471,6 +537,29 @@ export function IdentitiesScreen() {
       </Island>
     </div>
   );
+
+  // ─── Create identity renderer ───────────────────────────────────
+
+  function renderCreateIdentity() {
+    return (
+      <CreateIdentityScreen
+        wallets={hdWallets}
+        status={createIdentityStatus}
+        onSubmit={handleCreateIdentitySubmit}
+        onDismissError={() => setCreateIdentityStatus({ type: "form" })}
+        onBack={handleBackToDetail}
+        onBackToIdentities={() => {
+          setSubView({ type: "detail" });
+          setCreateIdentityStatus({ type: "form" });
+          loadIdentities();
+        }}
+        onRegisterDpns={() => {
+          // TODO: Navigate to DPNS registration for new identity
+          toast.info("Register DPNS Name — coming in a future task");
+        }}
+      />
+    );
+  }
 
   // ─── Right panel renderer ────────────────────────────────────────
 

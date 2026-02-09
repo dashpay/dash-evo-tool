@@ -1265,7 +1265,7 @@
   Reference: `identities_screen.rs` (1,258 lines)
   Write component tests. Write Playwright test for identity list interactions.
 
-- [ ] **4.3 Implement add new identity screen** (P1)
+- [x] **4.3 Implement add new identity screen** (P1)
   Build the identity creation flow with all 4 funding methods:
   - **By Wallet QR Code:** Generate receive address, display QR, wait for funding
   - **By Unused Balance:** Select wallet with balance, specify amount

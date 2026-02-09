@@ -477,3 +477,10 @@
 **Files changed:** src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/IdentitiesScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
 **Tests added:** 23 tests for IdentitiesScreen (loading, empty, list, selection, refresh, alias, removal, reorder, sub-view navigation, errors, events, placeholders, wallet names)
 **Sub-tasks created:** 0
+
+## Run 69 — 2026-02-09
+**Task:** 4.3 Implement add new identity screen
+**What was done:** Created `CreateIdentityScreen` component with all 4 funding methods from the egui version: asset lock selection, wallet balance with amount input, QR code with payment URI display, and platform address selection. Includes advanced options (identity index selector, master key type, key configuration with default/advanced modes and editable key table). Success screen with options to go back to identities or register DPNS. Integrated into IdentitiesScreen as a new sub-view accessible via the "Create Identity" button in IdentityListPanel. Auto-selects first available funding method based on wallet capabilities. Comprehensive test suite with 51 tests covering all funding methods, form states, advanced options, key editor, status displays, and submit validation.
+**Files changed:** src/frontend/components/identity/CreateIdentityScreen.tsx, src/frontend/components/identity/CreateIdentityScreen.test.tsx, src/frontend/screens/IdentitiesScreen.tsx, tasks.md, activity.md
+**Tests added:** 51 tests (header, no-wallets, wallet selection, alias, funding methods, asset locks, wallet balance, QR code, platform address, advanced options, key editor, status displays, success screen, create button, submit validation, disabled state)
+**Sub-tasks created:** 0

@@ -5,6 +5,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* === Border Radius (16px base, matching egui theme) === */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -12,6 +13,8 @@
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
+
+  /* === shadcn Semantic Color Mappings === */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -43,75 +46,171 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  /* === Custom Semantic Colors (Dash-specific) === */
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+
+  /* === Dash Brand Colors (static, not theme-dependent) === */
+  --color-dash-blue: var(--dash-blue);
+  --color-dash-deep-blue: var(--dash-deep-blue);
+  --color-dash-midnight: var(--dash-midnight);
+
+  /* === Network Accent Colors === */
+  --color-network-mainnet: var(--network-mainnet);
+  --color-network-testnet: var(--network-testnet);
+  --color-network-devnet: var(--network-devnet);
+  --color-network-local: var(--network-local);
 }
 
+/* ============================================================
+   LIGHT MODE — Dash Brand Palette
+   Colors derived from src/ui/theme.rs DashColors
+   ============================================================ */
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  /* Base radius: 16px (matching egui rounded-lg) */
+  --radius: 1rem;
+
+  /* --- Dash Brand Constants --- */
+  --dash-blue: #008de4;
+  --dash-deep-blue: #012060;
+  --dash-midnight: #0b0f3b;
+
+  /* --- Core UI Colors --- */
+  --background: #f0f2f7;           /* DashColors::BACKGROUND rgb(240,242,247) */
+  --foreground: #111921;           /* DashColors::BLACK rgb(17,25,33) */
+  --card: #ffffff;                 /* DashColors::SURFACE = WHITE */
+  --card-foreground: #111921;      /* DashColors::TEXT_PRIMARY */
+  --popover: #ffffff;              /* DashColors::SURFACE */
+  --popover-foreground: #111921;   /* DashColors::TEXT_PRIMARY */
+
+  /* --- Primary: Dash Blue --- */
+  --primary: #008de4;              /* DashColors::DASH_BLUE rgb(0,141,228) */
+  --primary-foreground: #ffffff;   /* DashColors::WHITE */
+
+  /* --- Secondary --- */
+  --secondary: #f0f5fb;            /* DashColors::BORDER_LIGHT rgb(240,245,251) */
+  --secondary-foreground: #111921; /* DashColors::TEXT_PRIMARY */
+
+  /* --- Muted --- */
+  --muted: #f8fafc;                /* DashColors::INPUT_BACKGROUND rgb(248,250,252) */
+  --muted-foreground: #64788c;     /* DashColors::TEXT_SECONDARY rgb(100,120,140) */
+
+  /* --- Accent (interactive hover/active) --- */
+  --accent: #c8dcfa;               /* DashColors::HOVER rgb(200,220,250) */
+  --accent-foreground: #111921;    /* DashColors::TEXT_PRIMARY */
+
+  /* --- Destructive --- */
+  --destructive: #eb5757;          /* DashColors::ERROR rgb(235,87,87) */
+
+  /* --- Borders & Inputs --- */
+  --border: #e2e8f0;               /* DashColors::BORDER rgb(226,232,240) */
+  --input: #e2e8f0;                /* DashColors::BORDER */
+  --ring: #008de4;                 /* Dash Blue for focus rings */
+
+  /* --- Semantic Status Colors --- */
+  --success: #27ae60;              /* DashColors::SUCCESS rgb(39,174,96) */
+  --success-foreground: #ffffff;
+  --warning: #f1c40f;              /* DashColors::WARNING rgb(241,196,15) */
+  --warning-foreground: #111921;
+  --info: #3498db;                 /* DashColors::INFO rgb(52,152,219) */
+  --info-foreground: #ffffff;
+
+  /* --- Network Accent Colors --- */
+  --network-mainnet: #008de4;      /* Dash Blue */
+  --network-testnet: #ffa500;      /* DashColors::TESTNET_ORANGE rgb(255,165,0) */
+  --network-devnet: #8b0000;       /* DashColors::DEVNET_RED rgb(139,0,0) */
+  --network-local: #8b4513;        /* DashColors::REGTEST_BROWN rgb(139,69,19) */
+
+  /* --- Chart Colors (Dash-branded) --- */
+  --chart-1: #008de4;              /* Dash Blue */
+  --chart-2: #27ae60;              /* Success Green */
+  --chart-3: #012060;              /* Deep Blue */
+  --chart-4: #f1c40f;              /* Warning Yellow */
+  --chart-5: #3498db;              /* Info Blue */
+
+  /* --- Sidebar (slightly elevated surface) --- */
+  --sidebar: #f8fafc;              /* DashColors::INPUT_BACKGROUND */
+  --sidebar-foreground: #111921;   /* DashColors::TEXT_PRIMARY */
+  --sidebar-primary: #008de4;      /* Dash Blue */
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #c8dcfa;       /* DashColors::HOVER */
+  --sidebar-accent-foreground: #111921;
+  --sidebar-border: #e2e8f0;       /* DashColors::BORDER */
+  --sidebar-ring: #008de4;         /* Dash Blue */
 }
 
+/* ============================================================
+   DARK MODE — Dash Brand Palette
+   Colors derived from src/ui/theme.rs DashColors DARK_ variants
+   ============================================================ */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* --- Core UI Colors --- */
+  --background: #121212;           /* DashColors::DARK_BACKGROUND rgb(18,18,18) */
+  --foreground: #f0f0f0;           /* DashColors::DARK_TEXT_PRIMARY rgb(240,240,240) */
+  --card: #202020;                 /* DashColors::DARK_SURFACE rgb(32,32,32) */
+  --card-foreground: #f0f0f0;      /* DashColors::DARK_TEXT_PRIMARY */
+  --popover: #282828;              /* DashColors::DARK_INPUT_BACKGROUND rgb(40,40,40) */
+  --popover-foreground: #f0f0f0;   /* DashColors::DARK_TEXT_PRIMARY */
+
+  /* --- Primary: Dash Blue (same hue, slightly muted) --- */
+  --primary: #008de4;              /* Dash Blue stays vibrant in dark mode */
+  --primary-foreground: #ffffff;
+
+  /* --- Secondary --- */
+  --secondary: #323232;            /* DashColors::DARK_BORDER_LIGHT rgb(50,50,50) */
+  --secondary-foreground: #f0f0f0; /* DashColors::DARK_TEXT_PRIMARY */
+
+  /* --- Muted --- */
+  --muted: #282828;                /* DashColors::DARK_INPUT_BACKGROUND */
+  --muted-foreground: #a0a0a0;     /* DashColors::DARK_TEXT_SECONDARY rgb(160,160,160) */
+
+  /* --- Accent (interactive hover/active) --- */
+  --accent: #2d2d37;               /* DashColors::DARK_HOVER rgb(45,45,55) */
+  --accent-foreground: #f0f0f0;    /* DashColors::DARK_TEXT_PRIMARY */
+
+  /* --- Destructive --- */
+  --destructive: #ff6464;          /* DashColors::error_color dark rgb(255,100,100) */
+
+  /* --- Borders & Inputs --- */
+  --border: #3c3c3c;               /* DashColors::DARK_BORDER rgb(60,60,60) */
+  --input: #3c3c3c;                /* DashColors::DARK_BORDER */
+  --ring: #008de4;                 /* Dash Blue for focus rings */
+
+  /* --- Semantic Status Colors (dark mode variants) --- */
+  --success: #50a050;              /* DashColors::success_color dark rgb(80,160,80) */
+  --success-foreground: #ffffff;
+  --warning: #ffc864;              /* DashColors::warning_color dark rgb(255,200,100) */
+  --warning-foreground: #111921;
+  --info: #3498db;                 /* DashColors::INFO (same in both modes) */
+  --info-foreground: #ffffff;
+
+  /* --- Network Accent Colors (muted for dark mode) --- */
+  --network-mainnet: #0071b6;      /* DashColors::DASH_BLUE_DARK rgb(0,113,182) */
+  --network-testnet: #cc8400;      /* DashColors::TESTNET_ORANGE_DARK rgb(204,132,0) */
+  --network-devnet: #6f0000;       /* DashColors::DEVNET_RED_DARK rgb(111,0,0) */
+  --network-local: #6f370f;        /* DashColors::REGTEST_BROWN_DARK rgb(111,55,15) */
+
+  /* --- Chart Colors (Dash-branded, dark mode) --- */
+  --chart-1: #008de4;              /* Dash Blue */
+  --chart-2: #50a050;              /* Success Green (muted) */
+  --chart-3: #3498db;              /* Info Blue */
+  --chart-4: #ffc864;              /* Warning (muted) */
+  --chart-5: #8e44ad;              /* Purple accent */
+
+  /* --- Sidebar --- */
+  --sidebar: #1c1c1c;             /* DashColors::DARK_BACKGROUND_ELEVATED rgb(28,28,28) */
+  --sidebar-foreground: #f0f0f0;   /* DashColors::DARK_TEXT_PRIMARY */
+  --sidebar-primary: #008de4;      /* Dash Blue */
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #2d2d37;       /* DashColors::DARK_HOVER */
+  --sidebar-accent-foreground: #f0f0f0;
+  --sidebar-border: #3c3c3c;       /* DashColors::DARK_BORDER */
+  --sidebar-ring: #008de4;         /* Dash Blue */
 }
 
 @layer base {

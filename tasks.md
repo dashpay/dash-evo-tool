@@ -560,7 +560,7 @@
   > - Screen reader announcements for toasts and status changes
 
   **Sub-tasks produced:**
-  - [ ] **2.1a** Override shadcn CSS variables with Dash brand color palette: replace neutral OKLCH values with Dash-specific light/dark mode colors in `index.css`. Add custom CSS variables for `--dash-blue`, `--success`, `--warning`, `--info`, network accent colors. Update `--radius` to 16px base. (P0)
+  - [x] **2.1a** Override shadcn CSS variables with Dash brand color palette: replace neutral OKLCH values with Dash-specific light/dark mode colors in `index.css`. Add custom CSS variables for `--dash-blue`, `--success`, `--warning`, `--info`, network accent colors. Update `--radius` to 16px base. (P0)
   - [ ] **2.1b** Set up typography: install Noto Sans and JetBrains Mono web fonts, configure Tailwind font-family, create `@font-face` declarations, set up `prose` classes for rich text areas. (P0)
   - [ ] **2.1c** Create Tailwind theme extensions: add custom shadow utilities (shadow-elevated, shadow-glow), spacing tokens, network-accent color classes (`bg-network-mainnet`, etc.), and animation utilities (pulse for connection indicator). (P0)
   - [ ] **2.1d** Create layout primitives: `<AppShell>` (flex container with sidebar + content), `<Island>` (elevated card with surface bg, border, shadow, rounded-lg), `<PageHeader>` (title + breadcrumbs + actions row). (P0)
@@ -1030,7 +1030,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 32 |
-| Remaining | 45 |
+| Completed | 33 |
+| Remaining | 44 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

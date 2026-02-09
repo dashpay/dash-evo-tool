@@ -204,3 +204,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (META task — design/research only)
 **Sub-tasks created:** 6 (2.1a through 2.1f — CSS overrides, typography, Tailwind extensions, layout primitives, theme provider, loading/empty components)
+
+## Run 30 — 2026-02-09
+**Task:** 2.1a Override shadcn CSS variables with Dash brand color palette
+**What was done:** Replaced all shadcn default neutral OKLCH color values in `index.css` with Dash brand-specific hex colors derived from `src/ui/theme.rs` DashColors. Light mode maps to DashColors::BACKGROUND (#f0f2f7), SURFACE (white), TEXT_PRIMARY (#111921), TEXT_SECONDARY (#64788c), BORDER (#e2e8f0), HOVER (#c8dcfa), INPUT_BACKGROUND (#f8fafc). Dark mode maps to DARK_BACKGROUND (#121212), DARK_SURFACE (#202020), DARK_TEXT_PRIMARY (#f0f0f0), DARK_TEXT_SECONDARY (#a0a0a0), DARK_BORDER (#3c3c3c), DARK_HOVER (#2d2d37), DARK_INPUT_BACKGROUND (#282828). Primary color is Dash Blue (#008de4) in both modes. Added custom semantic CSS variables: `--success` (#27ae60/#50a050), `--warning` (#f1c40f/#ffc864), `--info` (#3498db), `--dash-blue`, `--dash-deep-blue` (#012060), `--dash-midnight` (#0b0f3b). Added network accent colors: mainnet (#008de4/#0071b6), testnet (#ffa500/#cc8400), devnet (#8b0000/#6f0000), local (#8b4513/#6f370f). Updated `--radius` from 0.625rem to 1rem (16px). Registered all custom colors in `@theme inline` for Tailwind utility generation (bg-success, text-warning, bg-dash-blue, bg-network-mainnet, etc.). All checks pass: lint, typecheck, 36 tests, Vite build (258KB JS + 47KB CSS).
+**Files changed:** src/frontend/index.css, tasks.md, activity.md
+**Tests added:** 0 (CSS-only change — visual theming)
+**Sub-tasks created:** 0

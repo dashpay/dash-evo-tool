@@ -368,6 +368,21 @@ async identityLocalDpnsNames() : Promise<Result<DpnsNameEntryDto[], string>> {
 }
 },
 /**
+ * Sign a message using Dash's signed message protocol.
+ *
+ * Uses the private key associated with the given key ID on the identity.
+ * Supports ECDSA_SECP256K1 and ECDSA_HASH160 key types.
+ * Returns the signature as a Base64-encoded string (65 bytes: 1 recovery flag + 64 compact sig).
+ */
+async identitySignMessage(input: SignMessageInput) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_sign_message", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Get the best chain lock for the active network.
  *
  * Dispatches `CoreTask::GetBestChainLock`. Result via `TaskResultEvent`.
@@ -3667,6 +3682,22 @@ alias: string | null }
  * Full application settings DTO.
  */
 export type SettingsDto = { network: NetworkDto; themeMode: ThemeModeDto; overwriteDashConf: boolean; disableZmq: boolean; onboardingCompleted: boolean; showEvonodeTools: boolean; userMode: UserModeDto; closeDashQtOnExit: boolean; coreBackendMode: CoreBackendModeDto; hasPassword: boolean; dashQtPath: string | null }
+/**
+ * Input for signing a message with an identity key.
+ */
+export type SignMessageInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key ID on the identity to sign with.
+ */
+keyId: number;
+/**
+ * The message text to sign.
+ */
+message: string }
 /**
  * Serializable summary of a single-key wallet.
  * Replaces `SingleKeyWallet` for IPC. Does NOT include private key material.

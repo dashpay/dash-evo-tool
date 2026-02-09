@@ -809,11 +809,17 @@ export function IdentitiesScreen() {
   );
 
   const handleSignMessage = useCallback(
-    async (_keyId: number, _message: string): Promise<string> => {
-      // TODO: Add identitySignMessage IPC command when backend supports it
-      throw new Error("Message signing is not yet implemented");
+    async (keyId: number, message: string): Promise<string> => {
+      if (!selectedIdentity) throw new Error("No identity selected");
+      const result = await commands.identitySignMessage({
+        identityId: selectedIdentity.id,
+        keyId,
+        message,
+      });
+      if (result.status === "error") throw new Error(result.error);
+      return result.data;
     },
-    [],
+    [selectedIdentity],
   );
 
   // ─── Render ──────────────────────────────────────────────────────

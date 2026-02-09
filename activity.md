@@ -678,3 +678,10 @@
 **Files changed:** src-tauri/src/commands/visualizer.rs (new), src-tauri/src/commands/mod.rs, src-tauri/src/main.rs, src/frontend/screens/ContractVisualizerScreen.tsx (new), src/frontend/screens/ContractVisualizerScreen.test.tsx (new), src/frontend/routes.tsx, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts
 **Tests added:** 13 component tests (render, idle state, back nav, hex/base64/CSV input, debounce, success display, error display+dismiss, decode errors, exception handling, clear-to-idle) + 3 Rust DTO serialization tests
 **Sub-tasks created:** 0
+
+## Run 98 — 2026-02-09
+**Task:** 4.5e Implement message signing in KeyInfoScreen
+**What was done:** Added `identity_sign_message` Tauri IPC command that implements Dash's signed message protocol using ECDSA. The command takes an identity ID, key ID, and message text; resolves the private key (supporting Clear, AlwaysClear, and AtWalletDerivationPath variants via `KeyStorage::get_resolve()`); hashes the message with `signed_msg_hash()` (which applies the `\x19Dash Signed Message:\n` prefix); signs with secp256k1 ECDSA; prepends a recovery flag byte (0x20); and returns the 65-byte signature as Base64. Supports ECDSA_SECP256K1 and ECDSA_HASH160 key types, matching the egui implementation exactly. Wired the frontend `handleSignMessage` callback in IdentitiesScreen.tsx to call the new `identitySignMessage` IPC command instead of the previous placeholder that threw an error. Added `base64` crate dependency to src-tauri/Cargo.toml, `PrivateKeyTarget` import, registered the command in main.rs, and regenerated TypeScript bindings (178 commands, up from 177).
+**Files changed:** src-tauri/Cargo.toml, src-tauri/src/commands/identity.rs, src-tauri/src/main.rs, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/bindings.ts (auto-generated), src/frontend/bindings.test.ts, tasks.md, activity.md
+**Tests added:** 2 Rust tests (SignMessageInput camelCase serialization, SignMessageInput roundtrip deserialization). Updated 2 frontend tests (total commands 177→178, identity commands 27→28).
+**Sub-tasks created:** 0

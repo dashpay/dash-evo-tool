@@ -22,7 +22,7 @@ use dash_evo_tool::backend_task::identity::{
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::lock_helper::RwLockExt;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
-use dash_evo_tool::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use dash_evo_tool::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use dash_evo_tool::model::wallet::WalletSeedHash;
 
 use dash_sdk::dpp::fee::Credits;
@@ -1561,6 +1561,91 @@ pub struct DpnsNameEntryDto {
 }
 
 // ---------------------------------------------------------------------------
+// Message signing
+// ---------------------------------------------------------------------------
+
+/// Input for signing a message with an identity key.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SignMessageInput {
+    /// Identity ID (hex).
+    pub identity_id: IdentifierDto,
+    /// Key ID on the identity to sign with.
+    pub key_id: u32,
+    /// The message text to sign.
+    pub message: String,
+}
+
+/// Sign a message using Dash's signed message protocol.
+///
+/// Uses the private key associated with the given key ID on the identity.
+/// Supports ECDSA_SECP256K1 and ECDSA_HASH160 key types.
+/// Returns the signature as a Base64-encoded string (65 bytes: 1 recovery flag + 64 compact sig).
+#[tauri::command]
+#[specta::specta]
+pub fn identity_sign_message(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: SignMessageInput,
+) -> Result<String, String> {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use dash_sdk::dpp::dashcore::key::Secp256k1;
+    use dash_sdk::dpp::dashcore::secp256k1::{Message, SecretKey};
+    use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
+
+    let identifier = parse_identifier(&input.identity_id)?;
+    let ctx = state.current_context();
+    let qi = ctx
+        .get_identity_by_id(&identifier)
+        .map_err(|e| format!("Failed to get identity: {e}"))?
+        .ok_or("Identity not found")?;
+
+    // Determine the private key target from the key's purpose
+    let key_id = input.key_id as KeyID;
+    let identity_key = qi
+        .identity
+        .get_public_key_by_id(key_id)
+        .ok_or(format!("Key with ID {} not found on identity", key_id))?;
+
+    let target = PrivateKeyTarget::from(identity_key.purpose());
+
+    // Resolve the private key bytes (handles Clear, AlwaysClear, and AtWalletDerivationPath)
+    let wallets: Vec<_> = ctx.loaded_wallets().into_iter().map(|(_, w)| w).collect();
+    let (_pub_key, private_key_bytes) = qi
+        .private_keys
+        .get_resolve(&(target, key_id), &wallets, ctx.network())
+        .map_err(|e| format!("Failed to resolve private key: {e}"))?
+        .ok_or("Private key not available for this key")?;
+
+    // Only ECDSA key types support message signing
+    let key_type = identity_key.key_type();
+    match key_type {
+        KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {
+            let secp = Secp256k1::new();
+
+            let message_hash = signed_msg_hash(&input.message);
+            let message = Message::from_digest(*message_hash.as_byte_array());
+
+            let secret_key = SecretKey::from_byte_array(&private_key_bytes)
+                .map_err(|e| format!("Invalid private key: {e}"))?;
+
+            let signature = secp.sign_ecdsa(&message, &secret_key);
+
+            // Compact signature (64 bytes) with recovery flag (0x20) prepended
+            let mut serialized = signature.serialize_compact().to_vec();
+            serialized.insert(0, 32u8);
+
+            Ok(STANDARD.encode(serialized))
+        }
+        _ => Err(format!(
+            "Unsupported key type for signing: {:?}. Only ECDSA_SECP256K1 and ECDSA_HASH160 are supported.",
+            key_type
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper: String parsing for key types / purposes / security levels
 // ---------------------------------------------------------------------------
 
@@ -2202,5 +2287,32 @@ mod tests {
         assert!(json.contains("\"method\":\"fundWithUtxo\""));
         assert!(json.contains("\"vout\":2"));
         assert!(json.contains("\"topUpIndex\":1"));
+    }
+
+    #[test]
+    fn sign_message_input_serializes_with_camel_case() {
+        let input = SignMessageInput {
+            identity_id: "abc123".into(),
+            key_id: 2,
+            message: "Hello, Dash!".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"identityId\":\"abc123\""));
+        assert!(json.contains("\"keyId\":2"));
+        assert!(json.contains("\"message\":\"Hello, Dash!\""));
+    }
+
+    #[test]
+    fn sign_message_input_roundtrip() {
+        let input = SignMessageInput {
+            identity_id: "ff".repeat(32),
+            key_id: 0,
+            message: "test message".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        let parsed: SignMessageInput = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.identity_id, input.identity_id);
+        assert_eq!(parsed.key_id, input.key_id);
+        assert_eq!(parsed.message, input.message);
     }
 }

@@ -32,6 +32,7 @@ directories = "6.0"
 hex = "0.4"
 rand = "0.8"
 bip39 = { version = "2.2.0", features = ["all-languages", "rand"] }
+base64 = "0.22"
 
 [lints.clippy]
 uninlined_format_args = "allow"

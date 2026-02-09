@@ -1370,7 +1370,7 @@
     - Disable key / Replace key (if signing with master key in encrypted wallet)
     Reference: WalletUnlockDialog.tsx, egui pattern in withdraw_screen.rs, transfer_screen.rs
 
-  - [ ] **4.5e Implement message signing in KeyInfoScreen** (P1)
+  - [x] **4.5e Implement message signing in KeyInfoScreen** (P1)
     1. Add `identitySignMessage` IPC command to backend (Tauri command + bindings)
     2. Implement Dash signed message protocol in backend command
     3. Wire up frontend handleSignMessage to call the IPC command

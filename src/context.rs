@@ -447,6 +447,12 @@ impl AppContext {
     }
 
     pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
+        // Skip if SPV is already active — avoids orphaned listener tasks from
+        // re-registering channels while existing handlers still hold old senders.
+        if self.spv_manager.status().status.is_active() {
+            return Ok(());
+        }
+
         // Count wallets that will be loaded into SPV (open wallets with accessible seeds).
         // This is read synchronously so the SPV thread can wait for exactly this many.
         let expected_wallets = self
@@ -834,7 +840,9 @@ impl AppContext {
                 self.received_asset_lock_finality(&tx, Some(*instant_lock), None)
                     .map_err(|e| format!("Finality processing error: {}", e))?;
             }
-            AssetLockFinalityEvent::ChainLock { height, .. } => {
+            AssetLockFinalityEvent::ChainLock {
+                height: _height, ..
+            } => {
                 // Get all pending txids (where proof is None)
                 let pending_txids: Vec<Txid> = {
                     let transactions = self.transactions_waiting_for_finality.lock().unwrap();
@@ -855,7 +863,7 @@ impl AppContext {
                 };
 
                 for txid in pending_txids {
-                    match get_transaction_info_via_dapi(&sdk, &txid).await {
+                    match get_transaction_info(&sdk, &txid).await {
                         Ok(tx_info) if tx_info.is_chain_locked && tx_info.height > 0 => {
                             if let Ok(Some((tx, ..))) =
                                 self.db.get_asset_lock_transaction(txid.as_byte_array())
@@ -870,7 +878,6 @@ impl AppContext {
                         _ => {
                             // Transaction not yet chain-locked at this height, or DAPI
                             // lookup failed — will retry on next chain lock event.
-                            let _ = height; // suppress unused warning
                         }
                     }
                 }
@@ -1628,6 +1635,52 @@ impl AppContext {
         }
     }
 
+    /// Wait for an asset lock proof (InstantLock or ChainLock) for the given transaction.
+    ///
+    /// Polls `transactions_waiting_for_finality` until a proof appears, with a
+    /// backend-mode-dependent timeout (SPV: 5 min, RPC: 2 min). Cleans up the
+    /// tracking entry on both success and timeout.
+    pub(crate) async fn wait_for_asset_lock_proof(
+        &self,
+        tx_id: Txid,
+    ) -> Result<AssetLockProof, String> {
+        use tokio::time::Duration;
+
+        let timeout_duration = match self.core_backend_mode() {
+            CoreBackendMode::Spv => Duration::from_secs(300),
+            CoreBackendMode::Rpc => Duration::from_secs(120),
+        };
+
+        match tokio::time::timeout(timeout_duration, async {
+            loop {
+                {
+                    let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                        return proof.clone();
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        {
+            Ok(proof) => {
+                let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                proofs.remove(&tx_id);
+                Ok(proof)
+            }
+            Err(_) => {
+                let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                proofs.remove(&tx_id);
+                Err(format!(
+                    "Timeout waiting for asset lock proof after {} seconds. \
+                     The transaction may not have been confirmed by the network.",
+                    timeout_duration.as_secs()
+                ))
+            }
+        }
+    }
+
     pub(crate) fn received_transaction_finality(
         &self,
         tx: &Transaction,
@@ -1922,7 +1975,7 @@ pub(crate) struct DapiTransactionInfo {
 
 /// Query transaction info from DAPI. Works in both SPV and RPC modes
 /// since DAPI (platform gRPC) is always available via the SDK.
-pub(crate) async fn get_transaction_info_via_dapi(
+pub(crate) async fn get_transaction_info(
     sdk: &Sdk,
     tx_id: &Txid,
 ) -> Result<DapiTransactionInfo, String> {

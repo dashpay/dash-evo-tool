@@ -9,7 +9,8 @@ use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::sync::SyncEvent;
 use dash_sdk::dash_spv::sync::SyncProgress as WatchSyncProgress;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode};
+use dash_sdk::dash_spv::sync::SyncState;
+use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, SyncStage, ValidationMode};
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -513,6 +514,9 @@ impl SpvManager {
 
     /// Create a reconciliation signal channel for external listeners.
     /// Returns a receiver that will get a signal when SPV wallet state likely changed.
+    ///
+    /// Only one subscriber is supported at a time. Calling this again replaces
+    /// the previous sender, so the earlier receiver will stop receiving signals.
     pub fn register_reconcile_channel(&self) -> mpsc::Receiver<()> {
         let (tx, rx) = mpsc::channel(64);
         if let Ok(mut guard) = self.reconcile_tx.lock() {
@@ -523,6 +527,9 @@ impl SpvManager {
 
     /// Create a finality event channel for external listeners.
     /// Returns a receiver that will get events when SPV detects instant locks or chain locks.
+    ///
+    /// Only one subscriber is supported at a time. Calling this again replaces
+    /// the previous sender, so the earlier receiver will stop receiving events.
     pub(crate) fn register_finality_channel(&self) -> mpsc::Receiver<AssetLockFinalityEvent> {
         let (tx, rx) = mpsc::channel(64);
         if let Ok(mut guard) = self.finality_tx.lock() {
@@ -1029,6 +1036,7 @@ impl SpvManager {
     ) {
         let status = Arc::clone(&self.status);
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
+        let detailed_progress_state = Arc::clone(&self.detailed_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
@@ -1042,23 +1050,60 @@ impl SpvManager {
                         }
                         let watch_progress = progress_rx.borrow();
 
-                        // Convert sync::SyncProgress to types::SyncProgress for UI
+                        // Extract all available heights from WatchSyncProgress
                         let header_height = watch_progress
                             .headers()
                             .map(|h| h.current_height())
                             .unwrap_or(0);
+                        let masternode_height = watch_progress
+                            .masternodes()
+                            .map(|m| m.current_height())
+                            .unwrap_or(0);
+                        let filter_header_height = watch_progress
+                            .filter_headers()
+                            .map(|fh| fh.current_height())
+                            .unwrap_or(0);
 
                         let sync_progress = SyncProgress {
                             header_height,
+                            masternode_height,
+                            filter_header_height,
                             ..Default::default()
+                        };
+
+                        // Build detailed progress with sync stage information
+                        let peer_best_height = watch_progress
+                            .headers()
+                            .map(|h| h.target_height())
+                            .unwrap_or(0);
+                        let sync_stage = Self::determine_sync_stage(&watch_progress);
+                        let detailed = DetailedSyncProgress {
+                            sync_progress: sync_progress.clone(),
+                            peer_best_height,
+                            percentage: if peer_best_height > 0 {
+                                (header_height as f64 / peer_best_height as f64 * 100.0).min(100.0)
+                            } else {
+                                0.0
+                            },
+                            headers_per_second: 0.0,
+                            bytes_per_second: 0,
+                            estimated_time_remaining: None,
+                            sync_stage,
+                            total_headers_processed: 0,
+                            total_bytes_downloaded: 0,
+                            sync_start_time: SystemTime::now(),
+                            last_update_time: SystemTime::now(),
                         };
 
                         // Update sync progress state
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
                             *stored_sync = Some(sync_progress);
                         }
+                        if let Ok(mut stored_detailed) = detailed_progress_state.write() {
+                            *stored_detailed = Some(detailed);
+                        }
                         if let Ok(mut updated_at) = progress_updated_at.write() {
-                            *updated_at = Some(std::time::SystemTime::now());
+                            *updated_at = Some(SystemTime::now());
                         }
 
                         // Update status based on progress
@@ -1074,6 +1119,61 @@ impl SpvManager {
             }
             tracing::info!("SPV progress watcher exiting");
         });
+    }
+
+    /// Map the parallel WatchSyncProgress managers into a single UI-facing SyncStage.
+    ///
+    /// The parallel sync system has independent managers for headers, masternodes,
+    /// filter-headers, filters, and blocks. We map to a single stage by checking
+    /// which manager is actively syncing, preferring later pipeline stages.
+    fn determine_sync_stage(watch: &WatchSyncProgress) -> SyncStage {
+        // Check stages from latest to earliest in the pipeline
+        if let Ok(blocks) = watch.blocks()
+            && blocks.state() == SyncState::Syncing
+        {
+            return SyncStage::DownloadingBlocks {
+                pending: blocks.requested().saturating_sub(blocks.processed()) as usize,
+            };
+        }
+        if let Ok(filters) = watch.filters()
+            && filters.state() == SyncState::Syncing
+        {
+            return SyncStage::DownloadingFilters {
+                completed: filters.downloaded(),
+                total: filters
+                    .target_height()
+                    .saturating_sub(filters.current_height()),
+            };
+        }
+        if let Ok(fh) = watch.filter_headers()
+            && fh.state() == SyncState::Syncing
+        {
+            return SyncStage::DownloadingFilterHeaders {
+                current: fh.current_height(),
+                target: fh.target_height(),
+            };
+        }
+        if let Ok(mn) = watch.masternodes()
+            && mn.state() == SyncState::Syncing
+        {
+            return SyncStage::ValidatingHeaders {
+                batch_size: mn.diffs_processed() as usize,
+            };
+        }
+        if let Ok(headers) = watch.headers()
+            && headers.state() == SyncState::Syncing
+        {
+            return SyncStage::DownloadingHeaders {
+                start: 0,
+                end: headers.target_height(),
+            };
+        }
+
+        if watch.is_synced() {
+            SyncStage::Complete
+        } else {
+            SyncStage::Connecting
+        }
     }
 
     fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {

@@ -1813,6 +1813,37 @@ impl Wallet {
             .map_err(|e| e.to_string())
     }
 
+    /// Recalculate and persist balances for all addresses affected by spent UTXOs.
+    ///
+    /// Call this after removing entries from `self.utxos` to keep `address_balances`
+    /// and the database in sync.
+    pub fn recalculate_affected_address_balances(
+        &mut self,
+        used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
+        context: &AppContext,
+    ) -> Result<(), String> {
+        let affected_addresses: BTreeSet<_> =
+            used_utxos.values().map(|(_, addr)| addr.clone()).collect();
+        for address in affected_addresses {
+            self.recalculate_address_balance(&address, context)?;
+        }
+        Ok(())
+    }
+
+    /// Recalculate and persist the balance for a single address from its remaining UTXOs.
+    pub fn recalculate_address_balance(
+        &mut self,
+        address: &Address,
+        context: &AppContext,
+    ) -> Result<(), String> {
+        let new_balance = self
+            .utxos
+            .get(address)
+            .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
+            .unwrap_or(0);
+        self.update_address_balance(address, new_balance, context)
+    }
+
     pub fn update_address_total_received(
         &mut self,
         address: &Address,

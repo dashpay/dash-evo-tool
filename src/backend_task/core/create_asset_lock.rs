@@ -57,18 +57,7 @@ impl AppContext {
                     .map_err(|e| e.to_string())?;
             }
 
-            // Update address_balances for affected addresses
-            let affected_addresses: std::collections::BTreeSet<_> =
-                used_utxos.values().map(|(_, addr)| addr.clone()).collect();
-            for address in affected_addresses {
-                // Recalculate balance from remaining UTXOs for this address
-                let new_balance = wallet_guard
-                    .utxos
-                    .get(&address)
-                    .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-                    .unwrap_or(0);
-                wallet_guard.update_address_balance(&address, new_balance, self)?;
-            }
+            wallet_guard.recalculate_affected_address_balances(&used_utxos, self)?;
         }
 
         Ok(BackendTaskSuccessResult::Message(format!(
@@ -130,18 +119,7 @@ impl AppContext {
                     .map_err(|e| e.to_string())?;
             }
 
-            // Update address_balances for affected addresses
-            let affected_addresses: std::collections::BTreeSet<_> =
-                used_utxos.values().map(|(_, addr)| addr.clone()).collect();
-            for address in affected_addresses {
-                // Recalculate balance from remaining UTXOs for this address
-                let new_balance = wallet_guard
-                    .utxos
-                    .get(&address)
-                    .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-                    .unwrap_or(0);
-                wallet_guard.update_address_balance(&address, new_balance, self)?;
-            }
+            wallet_guard.recalculate_affected_address_balances(&used_utxos, self)?;
         }
 
         Ok(BackendTaskSuccessResult::Message(format!(

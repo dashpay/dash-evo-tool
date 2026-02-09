@@ -144,12 +144,16 @@ impl AppContext {
         loop {
             tokio::select! {
                 _ = &mut timeout => {
-                    // Clean up the finality tracking entry before returning error
-                    let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                    proofs.remove(&tx_id);
+                    // Best-effort cleanup: use try_lock to avoid blocking the
+                    // async runtime if another thread holds the mutex.
+                    if let Ok(mut proofs) = self.transactions_waiting_for_finality.try_lock() {
+                        proofs.remove(&tx_id);
+                    }
                     return Err("Timeout waiting for asset lock proof — no InstantLock or ChainLock received within 5 minutes".to_string());
                 }
                 _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                    // Brief lock to check for proof — acquired and released quickly
+                    // so contention is minimal.
                     let proofs = self.transactions_waiting_for_finality.lock().unwrap();
                     if let Some(Some(proof)) = proofs.get(&tx_id) {
                         asset_lock_proof = proof.clone();
@@ -175,21 +179,17 @@ impl AppContext {
                     .ok_or_else(|| "Wallet not found".to_string())?
             };
 
-            // Derive a fresh change address while we have write access (only
-            // needed when fees are NOT deducted from the output).
+            // Derive a fresh change address from the BIP44 internal (change) path
+            // while we have write access (only needed when fees are NOT deducted
+            // from the output). Using change_address() ensures proper BIP44
+            // separation between receive and change addresses.
             let change_platform_address = if !fee_deduct_from_output {
                 let mut wallet_w = wallet_arc.write().map_err(|e| e.to_string())?;
-                let addr = wallet_w.receive_address(self.network, true, Some(self))?;
-                match PlatformAddress::try_from(addr) {
-                    Ok(pa) if pa != destination => Some(pa),
-                    // First address matched destination or failed to convert;
-                    // derive another — two consecutive fresh addresses can't collide.
-                    _ => {
-                        let addr2 =
-                            wallet_w.receive_address(self.network, true, Some(self))?;
-                        PlatformAddress::try_from(addr2).ok()
-                    }
-                }
+                let addr = wallet_w.change_address(self.network, Some(self))?;
+                Some(
+                    PlatformAddress::try_from(addr)
+                        .map_err(|e| format!("Failed to convert change address: {}", e))?,
+                )
             } else {
                 None
             };
@@ -223,7 +223,8 @@ impl AppContext {
                 let change_index = outputs
                     .keys()
                     .position(|k| *k == change_address)
-                    .unwrap_or(0) as u16;
+                    .ok_or("Change address not found in outputs map")?
+                    as u16;
                 vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
             } else {
                 return Err("Failed to derive a change address for platform funding".to_string());

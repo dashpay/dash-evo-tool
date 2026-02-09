@@ -400,3 +400,10 @@
 **Files changed:** src/frontend/screens/SingleKeySendScreen.tsx, src/frontend/screens/SingleKeySendScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 10 (6 parseMinRelayFeeError unit tests, 4 fee confirmation dialog integration tests)
 **Sub-tasks created:** 0
+
+## Run 58 — 2026-02-09
+**Task:** 3.6b Add transaction size estimation display to SingleKeySendScreen
+**What was done:** Added client-side transaction size estimation to `SingleKeySendScreen`, porting the `estimate_fee()` logic from egui `single_key_send_screen.rs`. Created three exported helper functions: `estimateP2pkhTxSize()` (calculates P2PKH transaction byte size from input/output counts — 8-byte overhead + 148 bytes/input + 34 bytes/output + varint encoding, matching the Rust `estimate_p2pkh_tx_size`), `estimateFee()` (simulates greedy UTXO selection sorted by value descending, iteratively adding UTXOs until `selected >= sendAmount + fee`, with fee recalculated at each step using 1 duff/byte rate). Added a `txEstimation` useMemo hook that recomputes reactively as recipients or amounts change. The estimation display appears as a muted info box between the subtract-fee checkbox and Send/Cancel buttons, showing: "Estimated fee: {duffs} ({DASH} DASH)" and "Transaction details: {N} input(s), ~{size} bytes". When >100 UTXOs are needed, an amber warning with AlertTriangle icon displays "Large number of inputs may require higher network fee". The display appears in both simple and advanced modes.
+**Files changed:** src/frontend/screens/SingleKeySendScreen.tsx, src/frontend/screens/SingleKeySendScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 17 (4 estimateP2pkhTxSize unit tests: 1/2/10-input sizes + varint boundary at 253; 5 estimateFee unit tests: empty UTXOs, zero amount, greedy selection, multi-UTXO, multi-recipient output count, insufficient funds; 8 display integration tests: shows estimation with UTXOs, hides when no UTXOs, input count + bytes, duffs + DASH format, reactive update on amount change, no warning at low count, large input warning at >100 UTXOs, estimation in advanced mode)
+**Sub-tasks created:** 0

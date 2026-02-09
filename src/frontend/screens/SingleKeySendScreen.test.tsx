@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SingleKeySendScreen, parseMinRelayFeeError } from "./SingleKeySendScreen";
+import {
+  SingleKeySendScreen,
+  parseMinRelayFeeError,
+  estimateP2pkhTxSize,
+  estimateFee,
+} from "./SingleKeySendScreen";
 
 // ─── Mocks ──────────────────────────────────────────────────────────
 
@@ -547,5 +552,207 @@ describe("parseMinRelayFeeError", () => {
 
   it("parses large fee values", () => {
     expect(parseMinRelayFeeError("min relay fee not met, 5000 < 50000")).toBe(50000);
+  });
+});
+
+// ─── estimateP2pkhTxSize unit tests ─────────────────────────────────
+
+describe("estimateP2pkhTxSize", () => {
+  it("calculates 1-input, 2-output transaction", () => {
+    // 8 (overhead) + 1 (varint in) + 1 (varint out) + 148*1 + 34*2 = 226
+    expect(estimateP2pkhTxSize(1, 2)).toBe(226);
+  });
+
+  it("calculates 2-input, 2-output transaction", () => {
+    // 8 + 1 + 1 + 148*2 + 34*2 = 374
+    expect(estimateP2pkhTxSize(2, 2)).toBe(374);
+  });
+
+  it("calculates 10-input, 3-output transaction", () => {
+    // 8 + 1 + 1 + 148*10 + 34*3 = 1592
+    expect(estimateP2pkhTxSize(10, 3)).toBe(1592);
+  });
+
+  it("uses 3-byte varint for >252 inputs", () => {
+    // 8 + 3 (varint for 253) + 1 + 148*253 + 34*2 = 37524
+    expect(estimateP2pkhTxSize(253, 2)).toBe(37524);
+  });
+});
+
+// ─── estimateFee unit tests ──────────────────────────────────────────
+
+describe("estimateFee", () => {
+  it("returns null for empty utxos", () => {
+    expect(estimateFee([], 100000, 1)).toBe(null);
+  });
+
+  it("estimates minimum tx when send amount is 0", () => {
+    const utxos = [{ amount: 1000000 }];
+    const result = estimateFee(utxos, 0, 1);
+    expect(result).not.toBe(null);
+    // 1 input, 2 outputs (1 recipient + 1 change) → 226 bytes × 1 duff/byte = 226
+    expect(result!.inputCount).toBe(1);
+    expect(result!.txSize).toBe(226);
+    expect(result!.fee).toBe(226);
+  });
+
+  it("selects minimum UTXOs needed (greedy highest-first)", () => {
+    const utxos = [
+      { amount: 100000 },
+      { amount: 500000 },
+      { amount: 200000 },
+    ];
+    // Sending 400000 duffs — the 500000 UTXO alone should cover it + fee
+    const result = estimateFee(utxos, 400000, 1);
+    expect(result).not.toBe(null);
+    expect(result!.inputCount).toBe(1); // 500000 > 400000 + 226
+  });
+
+  it("uses multiple UTXOs when largest is insufficient", () => {
+    const utxos = [
+      { amount: 100000 },
+      { amount: 200000 },
+      { amount: 150000 },
+    ];
+    // Sending 300000 — need 200000 + 150000 (sorted: 200000, 150000, 100000)
+    const result = estimateFee(utxos, 300000, 1);
+    expect(result).not.toBe(null);
+    expect(result!.inputCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("accounts for multiple recipients in output count", () => {
+    const utxos = [{ amount: 10000000 }];
+    const result1 = estimateFee(utxos, 1000000, 1); // 2 outputs
+    const result3 = estimateFee(utxos, 1000000, 3); // 4 outputs
+    expect(result3!.txSize).toBeGreaterThan(result1!.txSize);
+  });
+
+  it("returns all-UTXO estimate when funds insufficient", () => {
+    const utxos = [{ amount: 100 }, { amount: 200 }];
+    // Sending way more than available
+    const result = estimateFee(utxos, 999999999, 1);
+    expect(result).not.toBe(null);
+    expect(result!.inputCount).toBe(2); // used all UTXOs
+  });
+});
+
+// ─── Transaction estimation display tests ────────────────────────────
+
+describe("SingleKeySendScreen transaction estimation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    walletStoreState = { singleKeyWallets: [], selectedWallet: null };
+    taskResultListeners = [];
+    taskErrorListeners = [];
+  });
+
+  it("shows estimated fee when wallet has UTXOs", () => {
+    setupWallet({
+      utxos: [
+        { txid: "aaa", vout: 0, amount: 5000000 },
+        { txid: "bbb", vout: 1, amount: 3000000 },
+      ],
+    });
+    render(<SingleKeySendScreen />);
+    expect(screen.getByText(/Estimated fee:/)).toBeInTheDocument();
+    expect(screen.getByText(/Transaction details:/)).toBeInTheDocument();
+  });
+
+  it("does not show estimation when wallet has no UTXOs", () => {
+    setupWallet({ utxos: [] });
+    render(<SingleKeySendScreen />);
+    expect(screen.queryByText(/Estimated fee:/)).not.toBeInTheDocument();
+  });
+
+  it("shows input count and byte size", () => {
+    setupWallet({
+      utxos: [{ txid: "aaa", vout: 0, amount: 5000000 }],
+    });
+    render(<SingleKeySendScreen />);
+    expect(screen.getByText(/1 input, ~226 bytes/)).toBeInTheDocument();
+  });
+
+  it("shows fee in both duffs and DASH", () => {
+    setupWallet({
+      utxos: [{ txid: "aaa", vout: 0, amount: 5000000 }],
+    });
+    render(<SingleKeySendScreen />);
+    // Fee display shows "226 (0.00000226 DASH)"
+    expect(screen.getByText(/226 \(0\.00000226 DASH\)/)).toBeInTheDocument();
+  });
+
+  it("updates estimation as amount changes", async () => {
+    const user = userEvent.setup();
+    setupWallet({
+      utxos: [
+        { txid: "aaa", vout: 0, amount: 100000 },
+        { txid: "bbb", vout: 1, amount: 500000 },
+        { txid: "ccc", vout: 2, amount: 300000 },
+      ],
+    });
+    render(<SingleKeySendScreen />);
+
+    // Initially shows 1-input estimate (no amount entered)
+    expect(screen.getByText(/1 input/)).toBeInTheDocument();
+
+    // Type an amount that requires multiple UTXOs
+    // 0.004 DASH = 400000 duffs. Largest UTXO is 500000.
+    // 500000 >= 400000 + 226 (fee) = 400226, so 1 UTXO suffices? Yes.
+    // 0.005 DASH = 500000 duffs. 500000 >= 500226? No.
+    // Need 500000 + 300000 = 800000. 2-input fee = 374. 800000 >= 500374? Yes.
+    await user.type(screen.getByPlaceholderText("Enter amount"), "0.005");
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 inputs/)).toBeInTheDocument();
+    });
+  });
+
+  it("shows large input warning when >100 UTXOs needed", () => {
+    // Create 105 small UTXOs
+    const utxos = Array.from({ length: 105 }, (_, i) => ({
+      txid: `tx${i}`,
+      vout: 0,
+      amount: 1000, // 1000 duffs each
+    }));
+    setupWallet({
+      totalBalance: 105000,
+      utxos,
+    });
+    render(<SingleKeySendScreen />);
+
+    // The estimation with 0 send amount should show 1 input (no warning)
+    expect(screen.queryByText(/Large number of inputs/)).not.toBeInTheDocument();
+  });
+
+  it("shows large input warning for high-value sends requiring many UTXOs", async () => {
+    const user = userEvent.setup();
+    // Create 105 small UTXOs
+    const utxos = Array.from({ length: 105 }, (_, i) => ({
+      txid: `tx${i}`,
+      vout: 0,
+      amount: 1000,
+    }));
+    setupWallet({
+      totalBalance: 105000,
+      utxos,
+    });
+    render(<SingleKeySendScreen />);
+
+    // Enter amount requiring all UTXOs
+    await user.type(screen.getByPlaceholderText("Enter amount"), "0.001");
+
+    await waitFor(() => {
+      expect(screen.getByText(/Large number of inputs/)).toBeInTheDocument();
+    });
+  });
+
+  it("shows estimation in advanced mode too", async () => {
+    const user = userEvent.setup();
+    setupWallet({
+      utxos: [{ txid: "aaa", vout: 0, amount: 5000000 }],
+    });
+    render(<SingleKeySendScreen />);
+    await user.click(screen.getByText("Advanced Options").closest("label")!);
+    expect(screen.getByText(/Estimated fee:/)).toBeInTheDocument();
   });
 });

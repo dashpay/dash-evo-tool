@@ -18,6 +18,7 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   X,
   Plus,
   Trash2,
@@ -69,6 +70,77 @@ function duffsFromDashString(value: string): number | null {
   if (isNaN(num) || num < 0) return null;
   return Math.round(num * DUFFS_PER_DASH);
 }
+
+// ─── Transaction size estimation ────────────────────────────────────
+
+/**
+ * Estimate the byte size of a P2PKH transaction given input/output counts.
+ * Matches the Rust `estimate_p2pkh_tx_size` in model/fee_estimation.rs.
+ */
+export function estimateP2pkhTxSize(inputs: number, outputs: number): number {
+  function varintSize(value: number): number {
+    if (value <= 0xfc) return 1;
+    if (value <= 0xffff) return 3;
+    if (value <= 0xffffffff) return 5;
+    return 9;
+  }
+  let size = 8; // version/type/lock_time
+  size += varintSize(inputs);
+  size += varintSize(outputs);
+  size += inputs * 148; // P2PKH input size
+  size += outputs * 34; // P2PKH output size
+  return size;
+}
+
+/** Fee rate in duffs per byte (Normal fee level). */
+const FEE_RATE_DUFFS_PER_BYTE = 1;
+
+/**
+ * Estimate the fee, input count, and tx size for a single-key send.
+ * Returns [estimatedFee, inputCount, txSize] or null if estimation isn't possible.
+ * Mirrors the Rust estimate_fee() logic in single_key_send_screen.rs.
+ */
+export function estimateFee(
+  utxos: { amount: number }[],
+  totalSendDuffs: number,
+  recipientCount: number,
+): { fee: number; inputCount: number; txSize: number } | null {
+  if (utxos.length === 0) return null;
+
+  const outputCount = recipientCount + 1; // +1 for change
+
+  if (totalSendDuffs <= 0) {
+    // No valid amounts yet — show estimate for minimum tx (1 input)
+    const txSize = estimateP2pkhTxSize(1, outputCount);
+    const fee = txSize * FEE_RATE_DUFFS_PER_BYTE;
+    return { fee, inputCount: 1, txSize };
+  }
+
+  // Sort UTXOs by value descending to minimize input count
+  const sortedValues = utxos.map((u) => u.amount).sort((a, b) => b - a);
+
+  let selectedCount = 0;
+  let selectedTotal = 0;
+
+  for (const value of sortedValues) {
+    selectedCount += 1;
+    selectedTotal += value;
+
+    const currentSize = estimateP2pkhTxSize(selectedCount, outputCount);
+    const currentFee = currentSize * FEE_RATE_DUFFS_PER_BYTE;
+
+    if (selectedTotal >= totalSendDuffs + currentFee) {
+      return { fee: currentFee, inputCount: selectedCount, txSize: currentSize };
+    }
+  }
+
+  // Not enough funds — show estimate with all UTXOs
+  const txSize = estimateP2pkhTxSize(selectedCount, outputCount);
+  const fee = txSize * FEE_RATE_DUFFS_PER_BYTE;
+  return { fee, inputCount: selectedCount, txSize };
+}
+
+// ─── Fee error parsing ─────────────────────────────────────────────
 
 /**
  * Parse a "min relay fee not met" error to extract the required fee.
@@ -241,6 +313,18 @@ export function SingleKeySendScreen() {
     );
     return hasValidRecipient;
   }, [sendStatus.state, walletUnlocked, hasAddressErrors, recipients]);
+
+  // Transaction size estimation (updates reactively as recipients change)
+  const txEstimation = useMemo(() => {
+    if (!wallet) return null;
+    const utxos = (wallet.utxos ?? []).map((u) => ({ amount: u.amount }));
+    const totalDuffs = recipients.reduce((sum, r) => {
+      const d = duffsFromDashString(r.amount);
+      return sum + (d && d > 0 ? d : 0);
+    }, 0);
+    const recipientCount = Math.max(recipients.length, 1);
+    return estimateFee(utxos, totalDuffs, recipientCount);
+  }, [wallet, recipients]);
 
   // ─── Handlers ─────────────────────────────────────────────────────
 
@@ -722,6 +806,29 @@ export function SingleKeySendScreen() {
                     </span>
                   )}
                 </label>
+              </div>
+            )}
+
+            {/* Transaction estimation */}
+            {txEstimation && (
+              <div className="rounded-md border bg-muted/30 p-3 space-y-1">
+                <div className="text-sm text-muted-foreground">
+                  Estimated fee:{" "}
+                  <span className="font-medium text-foreground">
+                    {txEstimation.fee} ({(txEstimation.fee / DUFFS_PER_DASH).toFixed(8)} DASH)
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Transaction details: {txEstimation.inputCount} input{txEstimation.inputCount !== 1 ? "s" : ""}, ~{txEstimation.txSize} bytes
+                </div>
+                {txEstimation.inputCount > 100 && (
+                  <div className="flex items-center gap-1.5 mt-1">
+                    <AlertTriangle className="h-3.5 w-3.5 text-warning shrink-0" />
+                    <span className="text-xs text-warning">
+                      Large number of inputs may require higher network fee
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 

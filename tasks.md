@@ -69,7 +69,7 @@
   - Add npm scripts: `test`, `test:e2e`, `test:components`, `lint`, `typecheck`
   Verify: `npm run test` and `npx playwright test` both pass.
 
-- [ ] **0.4 Set up CI pipeline configuration** (P2)
+- [x] **0.4 Set up CI pipeline configuration** (P2)
   Create GitHub Actions workflow (or equivalent) that runs on PR:
   - Rust: fmt check, clippy, cargo test
   - Frontend: lint, typecheck, component tests
@@ -645,7 +645,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 8 |
-| Remaining | 52 |
+| Completed | 9 |
+| Remaining | 51 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

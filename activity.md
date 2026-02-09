@@ -57,3 +57,10 @@
 **Files changed:** src/frontend/App.test.tsx, tests/playwright/app.spec.ts, src-tauri/src/main.rs, playwright.config.ts, tasks.md, activity.md
 **Tests added:** 4 (1 Vitest component test, 1 Playwright e2e test, 2 Rust unit tests)
 **Sub-tasks created:** 0
+
+## Run 9 — 2026-02-09
+**Task:** 0.4 Set up CI pipeline configuration
+**What was done:** Created `.github/workflows/tauri-ci.yml` with 4 parallel jobs: (1) Frontend — lint, typecheck, and Vitest component tests; (2) Playwright E2E — installs Chromium, runs Playwright tests against Vite dev server, uploads HTML report as artifact; (3) Rust — fmt check, clippy with -D warnings, cargo test for src-tauri/; (4) Tauri build — full debug build on Ubuntu to verify the complete app compiles (depends on frontend + rust jobs passing). Uses disk cleanup, Cargo caching, Tauri system dependencies (webkit2gtk, appindicator, librsvg, patchelf, GTK3), dtolnay/rust-toolchain for Rust 1.92. Validated YAML syntax. All local checks pass.
+**Files changed:** .github/workflows/tauri-ci.yml, tasks.md, activity.md
+**Tests added:** 0 (CI configuration — no application tests)
+**Sub-tasks created:** 0

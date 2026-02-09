@@ -1579,20 +1579,22 @@ impl NetworkChooserScreen {
                         0.0
                     }
                 }
-                SyncStage::ValidatingHeaders { .. }
-                | SyncStage::StoringHeaders { .. }
-                | SyncStage::DownloadingFilterHeaders { .. }
-                | SyncStage::DownloadingFilters { .. }
-                | SyncStage::DownloadingBlocks { .. }
-                | SyncStage::Complete => 1.0,
                 SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
+                // Any stage past headers means headers are done
+                _ => {
+                    if detailed.peer_best_height > 0 {
+                        (detailed.sync_progress.header_height as f32
+                            / detailed.peer_best_height as f32)
+                            .clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                }
             }
         } else if let Some(progress) = &snapshot.sync_progress {
             if progress.header_height == 0 {
                 0.0
             } else {
-                // Without detailed context fall back to comparing against masternode progress
                 (progress.masternode_height as f32 / progress.header_height as f32).clamp(0.0, 1.0)
             }
         } else {
@@ -1625,13 +1627,11 @@ impl NetworkChooserScreen {
                         (progress as f32 / span as f32).clamp(0.0, 1.0)
                     }
                 }
-                SyncStage::DownloadingFilters { .. }
-                | SyncStage::DownloadingBlocks { .. }
-                | SyncStage::Complete => (detailed.sync_progress.filter_header_height as f32
+                SyncStage::Failed(_) => 0.0,
+                // Any other stage: show actual progress from data
+                _ => (detailed.sync_progress.filter_header_height as f32
                     / detailed.peer_best_height as f32)
                     .clamp(0.0, 1.0),
-                SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
             }
         } else {
             0.0
@@ -1648,9 +1648,26 @@ impl NetworkChooserScreen {
                         (*completed as f32 / *total as f32).clamp(0.0, 1.0)
                     }
                 }
-                SyncStage::DownloadingBlocks { .. } | SyncStage::Complete => 1.0,
                 SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
+                // Any other stage: derive from flat data
+                _ => {
+                    let filter_height = detailed
+                        .sync_progress
+                        .last_synced_filter_height
+                        .unwrap_or(0);
+                    if detailed.peer_best_height > 0 && filter_height > 0 {
+                        (filter_height as f32 / detailed.peer_best_height as f32)
+                            .clamp(0.0, 1.0)
+                    } else if detailed.sync_progress.filters_downloaded > 0
+                        && detailed.peer_best_height > 0
+                    {
+                        (detailed.sync_progress.filters_downloaded as f32
+                            / detailed.peer_best_height as f32)
+                            .clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    }
+                }
             }
         } else {
             0.0
@@ -1664,21 +1681,17 @@ impl NetworkChooserScreen {
 
         if let Some(detailed) = &snapshot.detailed_progress {
             match &detailed.sync_stage {
-                SyncStage::ValidatingHeaders { .. } | SyncStage::StoringHeaders { .. } => {
+                SyncStage::Failed(_) => 0.0,
+                // All stages: show actual masternode progress from data
+                _ => {
                     if detailed.peer_best_height == 0 {
                         0.0
                     } else {
-                        let best_height = detailed.peer_best_height as f32;
-                        let validated = detailed.sync_progress.masternode_height as f32;
-                        (validated / best_height).clamp(0.0, 1.0)
+                        (detailed.sync_progress.masternode_height as f32
+                            / detailed.peer_best_height as f32)
+                            .clamp(0.0, 1.0)
                     }
                 }
-                SyncStage::DownloadingFilterHeaders { .. }
-                | SyncStage::DownloadingFilters { .. }
-                | SyncStage::DownloadingBlocks { .. }
-                | SyncStage::Complete => 1.0,
-                SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
             }
         } else if let Some(progress) = &snapshot.sync_progress {
             if progress.header_height == 0 {
@@ -1698,7 +1711,10 @@ impl NetworkChooserScreen {
 
         if let Some(detailed) = &snapshot.detailed_progress {
             match &detailed.sync_stage {
-                SyncStage::DownloadingBlocks { .. } => {
+                SyncStage::Failed(_) => 0.0,
+                SyncStage::Complete => 1.0,
+                // All other stages: show actual block processing progress from data
+                _ => {
                     if detailed.peer_best_height == 0 {
                         0.0
                     } else {
@@ -1706,12 +1722,10 @@ impl NetworkChooserScreen {
                             .sync_progress
                             .last_synced_filter_height
                             .unwrap_or(0);
-                        (processed_height as f32 / detailed.peer_best_height as f32).clamp(0.0, 1.0)
+                        (processed_height as f32 / detailed.peer_best_height as f32)
+                            .clamp(0.0, 1.0)
                     }
                 }
-                SyncStage::Complete => 1.0,
-                SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
             }
         } else {
             0.0

@@ -9,7 +9,8 @@ use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::sync::SyncEvent;
 use dash_sdk::dash_spv::sync::SyncProgress as WatchSyncProgress;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode};
+use dash_sdk::dash_spv::sync::SyncState as WatchSyncState;
+use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, SyncStage, ValidationMode};
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -1050,10 +1051,12 @@ impl SpvManager {
     ) {
         let status = Arc::clone(&self.status);
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
+        let detailed_progress_state = Arc::clone(&self.detailed_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
         self.subtasks.spawn_sync(async move {
+            let sync_start_time = SystemTime::now();
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1063,23 +1066,82 @@ impl SpvManager {
                         }
                         let watch_progress = progress_rx.borrow();
 
-                        // Convert sync::SyncProgress to types::SyncProgress for UI
+                        // Extract rich progress data from all sub-managers
                         let header_height = watch_progress
                             .headers()
                             .map(|h| h.current_height())
                             .unwrap_or(0);
+                        let masternode_height = watch_progress
+                            .masternodes()
+                            .map(|m| m.current_height())
+                            .unwrap_or(0);
+                        let filter_header_height = watch_progress
+                            .filter_headers()
+                            .map(|fh| fh.current_height())
+                            .unwrap_or(0);
+                        let filters_current = watch_progress
+                            .filters()
+                            .map(|f| f.current_height())
+                            .unwrap_or(0);
+                        let filters_downloaded = watch_progress
+                            .filters()
+                            .map(|f| f.downloaded() as u64)
+                            .unwrap_or(0);
 
+                        let peer_best_height = watch_progress
+                            .headers()
+                            .map(|h| h.target_height())
+                            .unwrap_or(0);
+
+                        // Build the flat types::SyncProgress
                         let sync_progress = SyncProgress {
                             header_height,
-                            ..Default::default()
+                            filter_header_height,
+                            masternode_height,
+                            peer_count: 0,
+                            filter_sync_available: true,
+                            filters_downloaded,
+                            last_synced_filter_height: if filters_current > 0 {
+                                Some(filters_current)
+                            } else {
+                                None
+                            },
+                            sync_start: sync_start_time,
+                            last_update: SystemTime::now(),
                         };
 
-                        // Update sync progress state
+                        // Determine the current sync stage from sub-manager states
+                        let sync_stage = Self::determine_sync_stage(&watch_progress);
+
+                        let percentage = if peer_best_height > 0 {
+                            watch_progress.percentage()
+                        } else {
+                            0.0
+                        };
+
+                        let detailed = DetailedSyncProgress {
+                            sync_progress: sync_progress.clone(),
+                            peer_best_height,
+                            percentage,
+                            headers_per_second: 0.0,
+                            bytes_per_second: 0,
+                            estimated_time_remaining: None,
+                            sync_stage,
+                            total_headers_processed: header_height as u64,
+                            total_bytes_downloaded: 0,
+                            sync_start_time,
+                            last_update_time: SystemTime::now(),
+                        };
+
+                        // Update both sync progress and detailed progress
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
                             *stored_sync = Some(sync_progress);
                         }
+                        if let Ok(mut stored_detailed) = detailed_progress_state.write() {
+                            *stored_detailed = Some(detailed);
+                        }
                         if let Ok(mut updated_at) = progress_updated_at.write() {
-                            *updated_at = Some(std::time::SystemTime::now());
+                            *updated_at = Some(SystemTime::now());
                         }
 
                         // Update status based on progress
@@ -1095,6 +1157,103 @@ impl SpvManager {
             }
             tracing::info!("SPV progress watcher exiting");
         });
+    }
+
+    /// Map the rich sync::SyncProgress sub-manager states into a types::SyncStage.
+    ///
+    /// Uses pipeline order (earliest incomplete stage wins) so the stage advances
+    /// monotonically and never bounces back, even though dash-spv runs managers
+    /// in parallel.
+    fn determine_sync_stage(watch_progress: &WatchSyncProgress) -> SyncStage {
+        if watch_progress.is_synced() {
+            return SyncStage::Complete;
+        }
+
+        // Helper: a manager is "done" if it reported Synced or WaitForEvents.
+        // If the manager hasn't started yet (Err), treat it as done/skipped.
+        let is_done = |state: WatchSyncState| {
+            matches!(
+                state,
+                WatchSyncState::Synced | WatchSyncState::WaitForEvents
+            )
+        };
+
+        // Pipeline order: headers → masternodes → filter headers → filters → blocks.
+        // The first stage that is NOT done determines the displayed stage.
+
+        // 1. Headers
+        let headers_done = watch_progress
+            .headers()
+            .map(|h| is_done(h.state()))
+            .unwrap_or(true);
+        if !headers_done {
+            if let Ok(h) = watch_progress.headers() {
+                if h.state() == WatchSyncState::WaitingForConnections {
+                    return SyncStage::Connecting;
+                }
+                return SyncStage::DownloadingHeaders {
+                    start: 0,
+                    end: h.target_height(),
+                };
+            }
+            return SyncStage::Connecting;
+        }
+
+        // 2. Masternodes
+        let mn_done = watch_progress
+            .masternodes()
+            .map(|m| is_done(m.state()))
+            .unwrap_or(true);
+        if !mn_done {
+            let diffs = watch_progress
+                .masternodes()
+                .map(|m| m.diffs_processed() as usize)
+                .unwrap_or(0);
+            return SyncStage::ValidatingHeaders { batch_size: diffs };
+        }
+
+        // 3. Filter headers
+        let fh_done = watch_progress
+            .filter_headers()
+            .map(|fh| is_done(fh.state()))
+            .unwrap_or(true);
+        if !fh_done
+            && let Ok(fh) = watch_progress.filter_headers()
+        {
+            return SyncStage::DownloadingFilterHeaders {
+                current: fh.current_height(),
+                target: fh.target_height(),
+            };
+        }
+
+        // 4. Filters
+        let filters_done = watch_progress
+            .filters()
+            .map(|f| is_done(f.state()))
+            .unwrap_or(true);
+        if !filters_done
+            && let Ok(f) = watch_progress.filters()
+        {
+            return SyncStage::DownloadingFilters {
+                completed: f.current_height(),
+                total: f.target_height(),
+            };
+        }
+
+        // 5. Blocks
+        let blocks_done = watch_progress
+            .blocks()
+            .map(|b| is_done(b.state()))
+            .unwrap_or(true);
+        if !blocks_done
+            && let Ok(b) = watch_progress.blocks()
+        {
+            return SyncStage::DownloadingBlocks {
+                pending: b.requested().saturating_sub(b.processed()) as usize,
+            };
+        }
+
+        SyncStage::Complete
     }
 
     fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {

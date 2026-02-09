@@ -456,3 +456,10 @@
 **Files changed:** src/frontend/components/identity/IdentityDetailPanel.tsx, src/frontend/components/identity/IdentityDetailPanel.test.tsx, tasks.md, activity.md
 **Tests added:** 66 tests (header: 13, balance: 4, action bar: 15, DPNS names: 3, associated wallets: 7, associated identities: 4, keys: 9, details section: 3, refreshing state: 2, accessibility: 2, key purpose abbreviations: 5)
 **Sub-tasks created:** 0
+
+## Run 66 — 2026-02-09
+**Task:** 4.1d Create key management components (KeyManagementScreen, KeyInfoScreen, AddKeyDialog)
+**What was done:** Created three key management components matching egui keys_screen.rs, key_info_screen.rs, and add_key_screen.rs functionality. `KeyManagementScreen`: table of keys split into Main Keys and Voter Keys sections, with Key ID/Purpose/Security Level/Type/Status/Has Private Key columns, sorting by purpose then security level, clickable rows to view key details, empty state, Add Key button. `KeyInfoScreen`: full key metadata grid, public key display (hex/base64 with copy), private key section (add/remove/view), message signing with Base64 output, disable key and replace master key actions with confirmation dialogs, error/success status messages. `AddKeyDialog`: form with purpose/security level/key type selectors, private key input with Generate Random, optional contract bounds (auto-sets Encryption purpose), hex validation, fee estimate display, idle→submitting→success/error states, pre-configuration support for DashPay.
+**Files changed:** src/frontend/components/identity/KeyManagementScreen.tsx, src/frontend/components/identity/KeyManagementScreen.test.tsx, src/frontend/components/identity/KeyInfoScreen.tsx, src/frontend/components/identity/KeyInfoScreen.test.tsx, src/frontend/components/identity/AddKeyDialog.tsx, src/frontend/components/identity/AddKeyDialog.test.tsx, tasks.md, activity.md
+**Tests added:** 119 tests (KeyManagementScreen: 29, KeyInfoScreen: 52, AddKeyDialog: 38)
+**Sub-tasks created:** 0

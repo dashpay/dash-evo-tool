@@ -1,10 +1,25 @@
 import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import App from "./App";
+import { ThemeProvider } from "@/components/theme";
+
+vi.mock("@/bindings", () => ({
+  commands: {
+    settingsGet: vi.fn().mockResolvedValue({
+      status: "ok",
+      data: { themeMode: "system" },
+    }),
+    systemUpdateTheme: vi.fn().mockResolvedValue({ taskId: "1" }),
+  },
+}));
 
 describe("App", () => {
   it("renders the main heading and IPC test card", () => {
-    render(<App />);
+    render(
+      <ThemeProvider>
+        <App />
+      </ThemeProvider>,
+    );
 
     expect(
       screen.getByRole("heading", { name: /dash evo tool/i }),

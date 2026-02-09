@@ -10,6 +10,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { ThemeToggle } from "@/components/theme";
 
 function App() {
   const [name, setName] = useState("");
@@ -44,6 +45,9 @@ function App() {
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-background p-8 text-foreground">
+      <div className="absolute right-4 top-4">
+        <ThemeToggle />
+      </div>
       <div className="flex flex-col items-center gap-2">
         <h1 className="text-4xl font-bold tracking-tight">Dash Evo Tool</h1>
         <p className="text-muted-foreground">Tauri 2.0 + React Frontend</p>

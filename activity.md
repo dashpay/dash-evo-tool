@@ -232,3 +232,10 @@
 **Files changed:** package.json, package-lock.json, src/frontend/index.css, tasks.md, activity.md
 **Tests added:** 0 (CSS/typography setup — visual change only)
 **Sub-tasks created:** 0
+
+## Run 34 — 2026-02-09
+**Task:** 2.1e Create theme provider and toggle
+**What was done:** Created `ThemeProvider` React context component that manages dark/light/system theme mode. Features: loads initial theme from backend via `settingsGet` IPC on mount, persists theme changes to backend via `systemUpdateTheme` IPC (fire-and-forget), resolves "system" mode using `window.matchMedia("(prefers-color-scheme: dark)")`, listens for system theme changes when in system mode, applies `dark`/`light` CSS class to `document.documentElement` for Tailwind dark mode. Created `ThemeToggle` dropdown button component using Lucide icons (Sun/Moon/Monitor) and shadcn DropdownMenu. Wired `ThemeProvider` into `main.tsx` as root wrapper with `defaultTheme="system"`. Added `ThemeToggle` to `App.tsx` top-right corner. Added `matchMedia` polyfill to test setup for jsdom. Updated `App.test.tsx` to wrap with `ThemeProvider`.
+**Files changed:** src/frontend/components/theme/ThemeProvider.tsx (new), src/frontend/components/theme/ThemeToggle.tsx (new), src/frontend/components/theme/index.ts (new), src/frontend/components/theme/ThemeProvider.test.tsx (new), src/frontend/components/theme/ThemeToggle.test.tsx (new), src/frontend/main.tsx, src/frontend/App.tsx, src/frontend/App.test.tsx, src/frontend/test/setup.ts, tasks.md, activity.md
+**Tests added:** 19 (13 ThemeProvider tests: renders children, default/custom theme, system resolution light/dark, DOM class application, setTheme updates, backend persistence, settings load on mount, system listener registration/non-registration; 6 ThemeToggle tests: renders button, opens dropdown, dark/light switching, backend IPC call, accessibility)
+**Sub-tasks created:** 0

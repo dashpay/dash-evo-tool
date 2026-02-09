@@ -564,7 +564,7 @@
   - [x] **2.1b** Set up typography: install Noto Sans and JetBrains Mono web fonts, configure Tailwind font-family, create `@font-face` declarations, set up `prose` classes for rich text areas. (P0)
   - [x] **2.1c** Create Tailwind theme extensions: add custom shadow utilities (shadow-elevated, shadow-glow), spacing tokens, network-accent color classes (`bg-network-mainnet`, etc.), and animation utilities (pulse for connection indicator). (P0)
   - [x] **2.1d** Create layout primitives: `<AppShell>` (flex container with sidebar + content), `<Island>` (elevated card with surface bg, border, shadow, rounded-lg), `<PageHeader>` (title + breadcrumbs + actions row). (P0)
-  - [ ] **2.1e** Create theme provider and toggle: React context for dark/light mode, persist to backend settings via `settings_update_theme` IPC command, `<ThemeToggle>` button component, system theme detection. (P0)
+  - [x] **2.1e** Create theme provider and toggle: React context for dark/light mode, persist to backend settings via `settings_update_theme` IPC command, `<ThemeToggle>` button component, system theme detection. (P0)
   - [ ] **2.1f** Create empty state and loading components: `<EmptyState>` (icon + message + action), `<LoadingSkeleton>` (shimmer), `<LoadingSpinner>` (inline + overlay variants), `<ProgressBar>`. (P1)
 
 - [ ] **2.2 Implement design system foundation** (P0)
@@ -1030,7 +1030,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 36 |
-| Remaining | 41 |
+| Completed | 37 |
+| Remaining | 40 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

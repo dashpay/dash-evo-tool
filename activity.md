@@ -442,3 +442,10 @@
 **Files changed:** src/frontend/stores/identityStore.ts, src/frontend/stores/identityStore.test.ts, tasks.md, activity.md
 **Tests added:** 45 tests covering all state and actions (initial state, loadIdentities with ordering, selectIdentity, refreshIdentity, refreshAllIdentities, setAlias, reorderIdentityUp/Down, removeIdentity, setSortColumn, reloadIdentity, subscribeToUpdates, clearError)
 **Sub-tasks created:** 0
+
+## Run 64 — 2026-02-09
+**Task:** 4.1b Create identity list component (IdentityListPanel)
+**What was done:** Created `IdentityListPanel` component following the established WalletListPanel card-based pattern. Features: identity cards with type icons (User/Masternode/Evonode), inline alias editing (with Radix dropdown focus fix pattern), balance display in DASH, identity type badges, status badges for non-active identities (Pending/Failed/Unknown/Not Found), private key indicators, copy-to-clipboard for identity IDs, reorder up/down buttons, context menu with all actions (Update Alias, View Keys, Refresh, Top Up, Withdraw, Transfer, Register DPNS Name, Remove), confirmation dialog for removal with identity type in message, refresh-all button in header, empty state with Load Identity and Create Identity actions. Uses `role="option"` with `aria-selected` inside `role="listbox"` for proper ARIA semantics (avoids button-in-button nesting). Added ResizeObserver polyfill to test setup for Radix Tooltip support in jsdom.
+**Files changed:** src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/components/identity/IdentityListPanel.test.tsx, src/frontend/test/setup.ts, tasks.md, activity.md
+**Tests added:** 60 tests (empty state: 6, identity display: 14, selection: 3, alias editing: 6, remove: 4, context menu actions: 14, reorder: 4, refresh all: 3, balance formatting: 3, accessibility: 4)
+**Sub-tasks created:** 0

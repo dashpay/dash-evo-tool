@@ -491,3 +491,10 @@
 **Files changed:** src/frontend/components/identity/TopUpIdentityScreen.tsx, src/frontend/components/identity/TopUpIdentityScreen.test.tsx, src/frontend/components/identity/LoadIdentityScreen.tsx, src/frontend/components/identity/LoadIdentityScreen.test.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/IdentitiesScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 68 new tests (28 TopUpIdentityScreen + 40 LoadIdentityScreen); 1 existing test updated
 **Sub-tasks created:** 0
+
+## Run 71 — 2026-02-09
+**Task:** 4.5 [REVIEW] Identity screens functionality parity
+**What was done:** Exhaustive comparison of all 11 egui identity screens against their React/Tauri implementations. Cataloged every user action, dialog, display element, form field, IPC interaction, and navigation flow in both versions. Identified 12 gaps organized by priority: 5 P1 functionality gaps (contract bounds not passed in AddKey, master key replacement UI missing, QR code placeholders, no wallet unlock for identity ops, message signing not implemented), 4 P2 UX gaps (no sort controls, no progress messages, no recovery suggestions, no UTXO monitoring), and 3 P3 polish items (encoding tooltips, testnet helpers). DPNS name registration confirmed as Phase 5 scope. Created 10 specific fix sub-tasks (4.5a through 4.5j).
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (review-only task)
+**Sub-tasks created:** 10 (4.5a through 4.5j)

@@ -1288,8 +1288,109 @@
   Reference: `keys/keys_screen.rs`, `keys/key_info_screen.rs`, `keys/add_key_screen.rs`, `add_existing_identity_screen.rs`, `top_up_identity_screen/`, `withdraw_screen.rs`, `transfer_screen.rs`
   Write component tests. Write Playwright tests for key operations.
 
-- [ ] **4.5 [REVIEW] Identity screens functionality parity** (P1)
+- [x] **4.5 [REVIEW] Identity screens functionality parity** (P1)
   Exhaustive comparison against all egui identity screens. Verify every action, dialog, and display element is present and working. Check DPNS name registration flow (which bridges identities and DPNS). Create fix tasks for gaps.
+
+  > **Review Findings (Run 71):**
+  >
+  > **Screens Reviewed:** IdentitiesScreen, IdentityListPanel, IdentityDetailPanel, CreateIdentityScreen, LoadIdentityScreen, TopUpIdentityScreen, WithdrawScreen, TransferScreen, KeyManagementScreen, KeyInfoScreen, AddKeyDialog
+  > **Tests:** 1407 passing (48/49 test files pass; 1 pre-existing failure in NetworkChooserScreen unrelated to identities)
+  >
+  > ### Fully Implemented (matching egui parity):
+  > - Identity list with cards, context menus, inline alias editing
+  > - Identity detail panel with balance, keys, DPNS names, wallets, type info
+  > - Create identity with 4 funding methods + advanced options (key editor, index selector)
+  > - Load identity with 3 modes (by ID, by wallet, by DPNS name) + advanced options
+  > - Top up identity with 4 funding methods
+  > - Withdraw with amount/address/key selection + confirmation dialog
+  > - Transfer with identity/platform-address destinations + confirmation dialog
+  > - Key management table with purpose/security/type/status/private indicators
+  > - Key info with public key display, add/remove private key, disable key
+  > - Add key dialog with purpose/security/type/private key + contract bounds UI
+  > - Concurrent identity refresh (Promise.allSettled)
+  > - Identity status display with color-coded badges
+  > - Balance hover tooltip showing raw credits
+  > - Copy to clipboard for IDs, keys, addresses
+  > - Reorder identities up/down with persistence
+  > - Fee estimation display
+  >
+  > ### Gaps Found (fix tasks created below):
+  >
+  > **P1 — Functionality gaps:**
+  > 1. **DPNS name registration screen not implemented** — Only stubs/toasts exist. The full RegisterDpnsNameScreen (identity selection, name validation, contested detection, registration) is deferred to Phase 5.
+  > 2. **Message signing not implemented** — KeyInfoScreen UI exists but handler throws "not yet implemented". Backend IPC command missing.
+  > 3. **Contract bounds not sent to backend in AddKey** — UI collects data but IPC call omits contractBounds field. Backend `AddKeyToIdentityInput` type lacks the field. Backend hardcodes `contract_bounds: None`.
+  > 4. **Master key replacement missing key generation UI** — No key type selector, no "Regenerate" button, no display of new private key. Uses hardcoded empty values.
+  > 5. **Wallet unlock not integrated for identity operations** — WalletUnlockDialog exists but is not used in any identity screen (withdraw, transfer, add key, etc.).
+  > 6. **QR code placeholder in CreateIdentityScreen** — Shows dashed border box with "QR Code" text instead of actual QR code (QRCodeSVG from qrcode.react is used in ReceiveDialog but not here).
+  > 7. **UTXO monitoring for QR funding not implemented** — No active detection of incoming funds when using QR code funding method.
+  >
+  > **P2 — UX polish gaps:**
+  > 8. **No sortable table/columns for identity list** — Zustand store has sorting infrastructure but no UI to trigger it (egui has clickable column headers).
+  > 9. **No progress messages during wallet identity search** — Shows generic "Searching..." instead of "Searching index 5 of 10...".
+  > 10. **No testnet-only helper buttons** — "Fill Random HPMN" / "Fill Random Masternode" missing from LoadIdentityScreen.
+  > 11. **Identity encoding tooltip missing** — IDs shown without encoding type info (Base58 for User, Hex/ProTxHash for masternodes).
+  > 12. **No recovery suggestions for errors** — Raw error strings from backend, no `recovery_suggestion()` equivalent.
+
+  - [ ] **4.5a Fix contract bounds not passed in AddKey IPC call** (P1)
+    AddKeyDialog collects contract bounds but the data is lost before reaching the backend:
+    1. Add `contractBounds` field to `AddKeyToIdentityInput` type in bindings
+    2. Pass `params.contractBounds` in the `identityAddKey` IPC call in IdentitiesScreen.tsx
+    3. Update backend command handler to use contract bounds instead of hardcoding `None`
+    Reference: AddKeyDialog.tsx lines 236-250, IdentitiesScreen.tsx lines 600-606, identity.rs line 1152
+
+  - [ ] **4.5b Implement master key replacement UI in KeyInfoScreen** (P1)
+    Currently uses hardcoded empty values. Needs:
+    1. Key type selector dropdown (ECDSA_SECP256K1, BLS12_381, ECDSA_HASH160, EDDSA_25519_HASH160)
+    2. "Generate Random" button that creates random private key hex
+    3. Display of generated private key (read-only, copyable)
+    4. State management for selected type and generated key
+    Reference: egui key_info_screen.rs lines 1001-1096
+
+  - [ ] **4.5c Implement QR code generation in CreateIdentityScreen and TopUpIdentityScreen** (P1)
+    Replace placeholder "QR Code" box with actual QRCodeSVG from qrcode.react (already used in ReceiveDialog).
+    Generate proper dash: payment URI from the funding address.
+    Reference: CreateIdentityScreen.tsx lines 1230-1260, ReceiveDialog.tsx lines 280-286
+
+  - [ ] **4.5d Add wallet unlock integration for identity operations** (P1)
+    WalletUnlockDialog exists but is not used in identity screens. Add unlock prompts before:
+    - Withdraw (if signing key is in encrypted wallet)
+    - Transfer (if signing key is in encrypted wallet)
+    - Add key (if wallet needs unlock for key derivation)
+    - Disable key / Replace key (if signing with master key in encrypted wallet)
+    Reference: WalletUnlockDialog.tsx, egui pattern in withdraw_screen.rs, transfer_screen.rs
+
+  - [ ] **4.5e Implement message signing in KeyInfoScreen** (P1)
+    1. Add `identitySignMessage` IPC command to backend (Tauri command + bindings)
+    2. Implement Dash signed message protocol in backend command
+    3. Wire up frontend handleSignMessage to call the IPC command
+    4. Display Base64-encoded signature result
+    Reference: egui key_info_screen.rs lines 890-935
+
+  - [ ] **4.5f Add UTXO monitoring for QR code funding** (P2)
+    When using "Address with QR Code" funding in Create/TopUp, actively monitor wallet for incoming funds.
+    Options: periodic polling via IPC, or backend event emission when UTXO detected.
+    Reference: egui funding_common.rs lines 57-91
+
+  - [ ] **4.5g Add sort controls to identity list** (P2)
+    Zustand store has sorting infrastructure (sortColumn, sortOrder, setSortColumn) but no UI.
+    Add sort dropdown or clickable column headers to expose sorting.
+    Reference: identityStore.ts lines 8-17, 41-48, 119-151
+
+  - [ ] **4.5h Add progress messages for long identity operations** (P2)
+    Show intermediate progress messages (e.g., "Searching index 5 of 10...") during wallet identity search.
+    Backend likely emits these via task messages; frontend needs to listen and display them.
+    Reference: egui add_existing_identity_screen.rs lines 1143-1147
+
+  - [ ] **4.5i Add error recovery suggestions** (P2)
+    Implement frontend equivalent of egui's `recovery_suggestion()` / `translate_backend_error()`.
+    Translate common backend error strings into user-friendly guidance.
+    Reference: egui helpers.rs lines 35-100+
+
+  - [ ] **4.5j Add identity encoding tooltips and testnet helpers** (P3)
+    1. Show encoding type in ID tooltip (Base58/UserId for User, Hex/ProTxHash for masternodes)
+    2. Add "Fill Random HPMN" / "Fill Random Masternode" buttons in LoadIdentityScreen (testnet only)
+    Reference: egui identities_screen.rs lines 249-263, add_existing_identity_screen.rs lines 156-165
 
 ---
 

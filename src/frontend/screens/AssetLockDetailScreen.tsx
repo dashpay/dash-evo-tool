@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { useWalletStore } from "@/stores/walletStore";
 import { commands } from "@/bindings";
-import type { WalletDto, AssetLockDto } from "@/bindings";
+import type { WalletDto, AssetLockDto, AssetLockProofDetailsDto } from "@/bindings";
 import { formatAmount } from "@/components/shared/AmountInput";
 import {
   ArrowLeft,
@@ -19,6 +19,8 @@ import {
   Lock,
   CheckCircle2,
   Clock,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 
 // ─── Constants ──────────────────────────────────────────────────────
@@ -35,6 +37,105 @@ function creditsToDisplayDash(credits: number): string {
 function creditsToDisplayDuffs(credits: number): string {
   const duffs = Math.round(credits / CREDITS_PER_DUFF);
   return duffs.toLocaleString() + " duffs";
+}
+
+// ─── ProofDetailsSection ────────────────────────────────────────────
+
+function ProofDetailsSection({
+  proofDetails,
+  proofHex,
+}: {
+  proofDetails: AssetLockProofDetailsDto;
+  proofHex: string | null;
+}) {
+  const [rawExpanded, setRawExpanded] = useState(false);
+
+  return (
+    <section className="space-y-4">
+      <h2 className="text-lg font-semibold">Asset Lock Proof Details</h2>
+
+      <div className="grid grid-cols-[140px_1fr] gap-y-3 gap-x-4 text-sm">
+        <Label className="text-muted-foreground">Type</Label>
+        <code className="text-xs">
+          {proofDetails.type === "instantSend" ? "Instant Send" : "Chain Lock"}
+        </code>
+
+        {proofDetails.type === "instantSend" && (
+          <>
+            <Label className="text-muted-foreground">InstantLock TxID</Label>
+            <div className="flex items-center gap-2">
+              <code className="text-xs break-all">{proofDetails.instantLockTxid}</code>
+              <CopyButton value={proofDetails.instantLockTxid} label="Copy InstantLock TxID" />
+            </div>
+
+            <Label className="text-muted-foreground">Output Index</Label>
+            <code className="text-xs">{proofDetails.outputIndex}</code>
+          </>
+        )}
+
+        {proofDetails.type === "chainLock" && (
+          <>
+            <Label className="text-muted-foreground">Core Chain Locked Height</Label>
+            <code className="text-xs">{proofDetails.coreChainLockedHeight}</code>
+
+            <Label className="text-muted-foreground">OutPoint</Label>
+            <div className="flex items-center gap-2">
+              <code className="text-xs break-all">
+                {proofDetails.outPointTxid}:{proofDetails.outPointVout}
+              </code>
+              <CopyButton
+                value={`${proofDetails.outPointTxid}:${proofDetails.outPointVout}`}
+                label="Copy OutPoint"
+              />
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Proof Hex */}
+      {proofHex && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Label className="text-muted-foreground text-sm">Asset Lock Proof (hex)</Label>
+            <CopyButton value={proofHex} label="Copy proof hex" />
+          </div>
+          <div className="overflow-x-auto rounded bg-muted px-3 py-2">
+            <code className="text-xs text-muted-foreground break-all font-mono whitespace-pre-wrap">
+              {proofHex}
+            </code>
+          </div>
+        </div>
+      )}
+
+      {/* Raw Proof Details (collapsible) */}
+      {proofHex && (
+        <button
+          type="button"
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+          onClick={() => setRawExpanded((v) => !v)}
+          aria-expanded={rawExpanded}
+        >
+          {rawExpanded ? (
+            <ChevronDown className="h-4 w-4" />
+          ) : (
+            <ChevronRight className="h-4 w-4" />
+          )}
+          View Raw Proof Details
+        </button>
+      )}
+      {rawExpanded && proofHex && (
+        <div className="overflow-x-auto rounded bg-muted px-3 py-2">
+          <pre className="text-xs text-muted-foreground font-mono whitespace-pre-wrap">
+            {JSON.stringify(
+              proofDetails,
+              null,
+              2,
+            )}
+          </pre>
+        </div>
+      )}
+    </section>
+  );
 }
 
 // ─── AssetLockDetailScreen ──────────────────────────────────────────
@@ -262,6 +363,17 @@ export function AssetLockDetailScreen() {
             </span>
           </div>
         </section>
+
+        {/* Proof Details Section — only when proof exists */}
+        {assetLock.proofDetails && (
+          <>
+            <Separator />
+            <ProofDetailsSection
+              proofDetails={assetLock.proofDetails}
+              proofHex={assetLock.proofHex}
+            />
+          </>
+        )}
 
         <Separator />
 

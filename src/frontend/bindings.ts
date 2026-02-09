@@ -2074,7 +2074,27 @@ hasInstantLock: boolean;
 /**
  * Whether an asset lock proof has been generated.
  */
-hasAssetLockProof: boolean }
+hasAssetLockProof: boolean;
+/**
+ * Proof details (None when no proof is available yet).
+ */
+proofDetails: AssetLockProofDetailsDto | null;
+/**
+ * Serialized proof as hex (JSON bytes → hex encoded). None when no proof.
+ */
+proofHex: string | null }
+/**
+ * Detailed proof information for an asset lock.
+ */
+export type AssetLockProofDetailsDto =
+/**
+ * Instant Send proof.
+ */
+{ type: "instantSend"; instantLockTxid: string; outputIndex: number } |
+/**
+ * Chain Lock proof.
+ */
+{ type: "chainLock"; coreChainLockedHeight: number; outPointTxid: string; outPointVout: number }
 /**
  * Input for broadcasting (creating) a document.
  */

@@ -38,6 +38,12 @@ function makeAssetLock(overrides: Record<string, unknown> = {}) {
     amount: 50000000000,
     hasInstantLock: true,
     hasAssetLockProof: true,
+    proofDetails: {
+      type: "instantSend" as const,
+      instantLockTxid: "islocktxid0000000000000000000001",
+      outputIndex: 0,
+    },
+    proofHex: "7b2274797065223a22496e7374616e74222c226f75747075745f696e646578223a307d",
     ...overrides,
   };
 }
@@ -195,6 +201,104 @@ describe("AssetLockDetailScreen", () => {
     });
   });
 
+  describe("proof details section", () => {
+    it("shows proof details heading for instant send proof", () => {
+      setupWallet();
+      render(<AssetLockDetailScreen />);
+      expect(screen.getByText("Asset Lock Proof Details")).toBeInTheDocument();
+    });
+
+    it("shows Instant Send type label", () => {
+      setupWallet();
+      render(<AssetLockDetailScreen />);
+      expect(screen.getByText("Instant Send")).toBeInTheDocument();
+    });
+
+    it("shows InstantLock TxID", () => {
+      setupWallet();
+      render(<AssetLockDetailScreen />);
+      expect(screen.getByText("islocktxid0000000000000000000001")).toBeInTheDocument();
+    });
+
+    it("shows output index", () => {
+      setupWallet();
+      render(<AssetLockDetailScreen />);
+      expect(screen.getByText("0")).toBeInTheDocument();
+    });
+
+    it("shows copy button for InstantLock TxID", () => {
+      setupWallet();
+      render(<AssetLockDetailScreen />);
+      expect(screen.getByLabelText("Copy InstantLock TxID")).toBeInTheDocument();
+    });
+
+    it("shows chain lock details", () => {
+      setupWallet({}, {
+        hasInstantLock: false,
+        proofDetails: {
+          type: "chainLock" as const,
+          coreChainLockedHeight: 123456,
+          outPointTxid: "chainlocktxid00000000000000000002",
+          outPointVout: 2,
+        },
+      });
+      render(<AssetLockDetailScreen />);
+      expect(screen.getByText("Chain Lock")).toBeInTheDocument();
+      expect(screen.getByText("123456")).toBeInTheDocument();
+      expect(screen.getByText("chainlocktxid00000000000000000002:2")).toBeInTheDocument();
+    });
+
+    it("shows copy button for chain lock OutPoint", () => {
+      setupWallet({}, {
+        hasInstantLock: false,
+        proofDetails: {
+          type: "chainLock" as const,
+          coreChainLockedHeight: 99,
+          outPointTxid: "txid123",
+          outPointVout: 1,
+        },
+      });
+      render(<AssetLockDetailScreen />);
+      expect(screen.getByLabelText("Copy OutPoint")).toBeInTheDocument();
+    });
+
+    it("shows proof hex with copy button", () => {
+      setupWallet();
+      render(<AssetLockDetailScreen />);
+      expect(screen.getByLabelText("Copy proof hex")).toBeInTheDocument();
+      expect(screen.getByText(/7b2274797065/)).toBeInTheDocument();
+    });
+
+    it("shows collapsible raw proof details button", () => {
+      setupWallet();
+      render(<AssetLockDetailScreen />);
+      const toggle = screen.getByText("View Raw Proof Details");
+      expect(toggle).toBeInTheDocument();
+      expect(toggle.closest("button")).toHaveAttribute("aria-expanded", "false");
+    });
+
+    it("expands raw proof details on click", async () => {
+      const user = userEvent.setup();
+      setupWallet();
+      render(<AssetLockDetailScreen />);
+      const toggle = screen.getByText("View Raw Proof Details");
+      await user.click(toggle);
+      expect(toggle.closest("button")).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText(/"instantLockTxid"/)).toBeInTheDocument();
+    });
+
+    it("does not show proof details when no proof", () => {
+      setupWallet({}, {
+        hasAssetLockProof: false,
+        hasInstantLock: false,
+        proofDetails: null,
+        proofHex: null,
+      });
+      render(<AssetLockDetailScreen />);
+      expect(screen.queryByText("Asset Lock Proof Details")).not.toBeInTheDocument();
+    });
+  });
+
   describe("private key section", () => {
     it("shows private key heading", () => {
       setupWallet();
@@ -306,6 +410,7 @@ describe("AssetLockDetailScreen", () => {
       render(<AssetLockDetailScreen />);
       expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Asset Lock Detail");
       expect(screen.getByRole("heading", { level: 2, name: "Transaction Information" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 2, name: "Asset Lock Proof Details" })).toBeInTheDocument();
       expect(screen.getByRole("heading", { level: 2, name: "Private Key" })).toBeInTheDocument();
     });
 

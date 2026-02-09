@@ -88,12 +88,65 @@ fn asset_lock_dto_roundtrip() {
         amount: 100_000,
         has_instant_lock: true,
         has_asset_lock_proof: false,
+        proof_details: None,
+        proof_hex: None,
     };
     let json = serde_json::to_string(&dto).unwrap();
     assert!(json.contains("\"hasInstantLock\":true"));
     assert!(json.contains("\"hasAssetLockProof\":false"));
+    assert!(json.contains("\"proofDetails\":null"));
+    assert!(json.contains("\"proofHex\":null"));
     let back: AssetLockDto = serde_json::from_str(&json).unwrap();
     assert_eq!(back.amount, 100_000);
+    assert!(back.proof_details.is_none());
+}
+
+#[test]
+fn asset_lock_dto_with_instant_send_proof() {
+    let dto = AssetLockDto {
+        txid: "aa".repeat(32),
+        address: "XtestAddr456".into(),
+        amount: 200_000,
+        has_instant_lock: true,
+        has_asset_lock_proof: true,
+        proof_details: Some(AssetLockProofDetailsDto::InstantSend {
+            instant_lock_txid: "bb".repeat(32),
+            output_index: 0,
+        }),
+        proof_hex: Some("deadbeef".into()),
+    };
+    let json = serde_json::to_string(&dto).unwrap();
+    assert!(json.contains("\"type\":\"instantSend\""));
+    assert!(json.contains("\"instantLockTxid\""));
+    assert!(json.contains("\"outputIndex\":0"));
+    assert!(json.contains("\"proofHex\":\"deadbeef\""));
+    let back: AssetLockDto = serde_json::from_str(&json).unwrap();
+    assert!(back.proof_details.is_some());
+    assert!(back.proof_hex.is_some());
+}
+
+#[test]
+fn asset_lock_dto_with_chain_lock_proof() {
+    let dto = AssetLockDto {
+        txid: "cc".repeat(32),
+        address: "XtestAddr789".into(),
+        amount: 300_000,
+        has_instant_lock: false,
+        has_asset_lock_proof: true,
+        proof_details: Some(AssetLockProofDetailsDto::ChainLock {
+            core_chain_locked_height: 123456,
+            out_point_txid: "dd".repeat(32),
+            out_point_vout: 2,
+        }),
+        proof_hex: Some("cafebabe".into()),
+    };
+    let json = serde_json::to_string(&dto).unwrap();
+    assert!(json.contains("\"type\":\"chainLock\""));
+    assert!(json.contains("\"coreChainLockedHeight\":123456"));
+    assert!(json.contains("\"outPointTxid\""));
+    assert!(json.contains("\"outPointVout\":2"));
+    let back: AssetLockDto = serde_json::from_str(&json).unwrap();
+    assert!(back.proof_details.is_some());
 }
 
 // ─── SingleKeyWalletDto ──────────────────────────────────

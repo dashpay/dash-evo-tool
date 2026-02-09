@@ -6,8 +6,8 @@
 
 use crate::dto::common::{CreditsDto, SingleKeyHashDto, WalletSeedHashDto};
 use crate::dto::wallet::{
-    AssetLockDto, PlatformAddressDto, SingleKeyWalletDto, UtxoDto, WalletAddressDto, WalletDto,
-    WalletListDto, WalletRefDto, WalletTransactionDto,
+    AssetLockDto, AssetLockProofDetailsDto, PlatformAddressDto, SingleKeyWalletDto, UtxoDto,
+    WalletAddressDto, WalletDto, WalletListDto, WalletRefDto, WalletTransactionDto,
 };
 use crate::state::AppState;
 use crate::task_dispatcher;
@@ -313,15 +313,41 @@ fn wallet_to_dto(wallet: &Wallet) -> WalletDto {
     let unused_asset_locks: Vec<AssetLockDto> = wallet
         .unused_asset_locks
         .iter()
-        .map(
-            |(tx, addr, credits, instant_lock, asset_lock_proof)| AssetLockDto {
+        .map(|(tx, addr, credits, instant_lock, asset_lock_proof)| {
+            let (proof_details, proof_hex) = match asset_lock_proof {
+                Some(proof) => {
+                    let details = match proof {
+                        dash_sdk::dpp::prelude::AssetLockProof::Instant(instant_proof) => {
+                            AssetLockProofDetailsDto::InstantSend {
+                                instant_lock_txid: format!("{}", instant_proof.instant_lock.txid),
+                                output_index: instant_proof.output_index,
+                            }
+                        }
+                        dash_sdk::dpp::prelude::AssetLockProof::Chain(chain_proof) => {
+                            AssetLockProofDetailsDto::ChainLock {
+                                core_chain_locked_height: chain_proof.core_chain_locked_height,
+                                out_point_txid: format!("{}", chain_proof.out_point.txid),
+                                out_point_vout: chain_proof.out_point.vout,
+                            }
+                        }
+                    };
+                    let hex = serde_json::to_vec(proof)
+                        .map(hex::encode)
+                        .unwrap_or_else(|e| format!("Error serializing proof: {}", e));
+                    (Some(details), Some(hex))
+                }
+                None => (None, None),
+            };
+            AssetLockDto {
                 txid: format!("{}", tx.txid()),
                 address: addr.to_string(),
                 amount: *credits,
                 has_instant_lock: instant_lock.is_some(),
                 has_asset_lock_proof: asset_lock_proof.is_some(),
-            },
-        )
+                proof_details,
+                proof_hex,
+            }
+        })
         .collect();
 
     let platform_addresses: Vec<PlatformAddressDto> = wallet

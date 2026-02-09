@@ -92,6 +92,34 @@ pub struct AssetLockDto {
     pub has_instant_lock: bool,
     /// Whether an asset lock proof has been generated.
     pub has_asset_lock_proof: bool,
+    /// Proof details (None when no proof is available yet).
+    pub proof_details: Option<AssetLockProofDetailsDto>,
+    /// Serialized proof as hex (JSON bytes → hex encoded). None when no proof.
+    pub proof_hex: Option<String>,
+}
+
+/// Detailed proof information for an asset lock.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum AssetLockProofDetailsDto {
+    /// Instant Send proof.
+    #[serde(rename_all = "camelCase")]
+    InstantSend {
+        /// The InstantLock's transaction ID.
+        instant_lock_txid: String,
+        /// The output index in the transaction.
+        output_index: u32,
+    },
+    /// Chain Lock proof.
+    #[serde(rename_all = "camelCase")]
+    ChainLock {
+        /// The height at which the Core chain was locked.
+        core_chain_locked_height: u32,
+        /// The outpoint transaction ID.
+        out_point_txid: String,
+        /// The outpoint output index.
+        out_point_vout: u32,
+    },
 }
 
 /// Platform address info (DIP-17).

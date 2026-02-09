@@ -463,3 +463,10 @@
 **Files changed:** src/frontend/components/identity/KeyManagementScreen.tsx, src/frontend/components/identity/KeyManagementScreen.test.tsx, src/frontend/components/identity/KeyInfoScreen.tsx, src/frontend/components/identity/KeyInfoScreen.test.tsx, src/frontend/components/identity/AddKeyDialog.tsx, src/frontend/components/identity/AddKeyDialog.test.tsx, tasks.md, activity.md
 **Tests added:** 119 tests (KeyManagementScreen: 29, KeyInfoScreen: 52, AddKeyDialog: 38)
 **Sub-tasks created:** 0
+
+## Run 67 — 2026-02-09
+**Task:** 4.1e Create withdraw/transfer components (WithdrawScreen, TransferScreen)
+**What was done:** Created `WithdrawScreen` and `TransferScreen` components matching egui withdraw_screen.rs and transfer_screen.rs functionality. `WithdrawScreen`: step-based form (1. Amount with Max button and fee reserve of 0.005 DASH, 2. Dash address to withdraw to, 3. Key selector in advanced mode), supports TRANSFER and OWNER keys, owner key allows empty address for masternode payout, confirmation dialog with danger styling, states: form→sending→success/error, no-keys state with Check Owner/Transfer Key and Add Key buttons, fee estimation display, elapsed time indicator during sending, success screen with Core chain delay note. `TransferScreen`: step-based form (1. Amount with Max button and fee reserve of 0.0002 DASH, 2. Destination type toggle Identity/PlatformAddress, 3. Receiver identity selector or platform address input, 4. Key selector in advanced mode), only TRANSFER keys supported, separate confirmation dialogs per destination type, separate submit callbacks per type, dual fee estimation (identity vs address), all states matching withdraw pattern.
+**Files changed:** src/frontend/components/identity/WithdrawScreen.tsx, src/frontend/components/identity/WithdrawScreen.test.tsx, src/frontend/components/identity/TransferScreen.tsx, src/frontend/components/identity/TransferScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 96 tests (WithdrawScreen: 48, TransferScreen: 48)
+**Sub-tasks created:** 0

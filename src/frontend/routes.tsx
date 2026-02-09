@@ -28,6 +28,7 @@ import { PlatformInfoScreen } from "@/screens/PlatformInfoScreen";
 import { AddressBalanceScreen } from "@/screens/AddressBalanceScreen";
 import { ContractVisualizerScreen } from "@/screens/ContractVisualizerScreen";
 import { DocumentVisualizerScreen } from "@/screens/DocumentVisualizerScreen";
+import { DocumentQueryScreen } from "@/screens/DocumentQueryScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -143,7 +144,7 @@ const contractsRoute = createRoute({
 const contractsIndexRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/",
-  component: () => <PlaceholderScreen title="Document Query" />,
+  component: DocumentQueryScreen,
 });
 
 const contractsDpnsActiveRoute = createRoute({

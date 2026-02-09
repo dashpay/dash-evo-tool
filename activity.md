@@ -113,3 +113,10 @@
 **Files changed:** src-tauri/src/commands/core.rs (new), src-tauri/src/commands/wallet.rs (new), src-tauri/src/commands/mod.rs, src-tauri/src/main.rs, src/context/mod.rs, src/frontend/bindings.ts (auto-generated), tasks.md, activity.md
 **Tests added:** 33 new Rust tests (17 in core.rs: PlatformSyncModeDto serialization/roundtrip, all input DTO serialization with camelCase verification, payment request builder validation, hash parsing; 16 in wallet.rs: all input DTO serialization with camelCase verification, wallet ref serialization variants, select wallet roundtrip)
 **Sub-tasks created:** 0
+
+## Run 17 — 2026-02-09
+**Task:** 1.6 Implement Contract, Document & Token IPC commands
+**What was done:** Fixed compilation errors and warnings in the already-implemented contract, document, and token IPC command files. The three command modules (`contract.rs`, `document.rs`, `token.rs`) were created in a previous run with full implementations but had build errors preventing compilation. Fixed 3 errors in `document.rs`: incorrect import path `dash_sdk::dpp::drive::query` → `dash_sdk::drive::query` for `WhereClause`/`OrderClause`/`WhereOperator`, return type mismatch in `lookup_contract` (wrapped in `Arc::new()`), and incorrect `limit` cast from `u32` to `u16`. Fixed warnings: removed unused `GroupActionDto` import from `contract.rs` (moved to test module), removed unused `TokenPaymentInfo` import from `document.rs`, removed dead `lookup_contract` helper from `contract.rs`, fixed unnecessary `u32` cast on `contract.version()`. Fixed 6 test compilation errors in `token.rs` where `TokenAmount` is `u64` not `u128`. Verified complete API coverage: 10 contract commands, 8 document commands, 25 token commands (43 total). All checks pass: Rust (fmt, clippy, 154 tests), Frontend (lint, typecheck, 1 test).
+**Files changed:** src-tauri/src/commands/contract.rs, src-tauri/src/commands/document.rs, src-tauri/src/commands/token.rs, src/frontend/bindings.ts (auto-generated), tasks.md, activity.md
+**Tests added:** 0 new (fixed 6 existing tests with type mismatches; all 154 existing tests pass)
+**Sub-tasks created:** 0

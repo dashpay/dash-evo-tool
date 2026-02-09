@@ -2135,6 +2135,7 @@ dependencies = [
  "dash-sdk",
  "directories",
  "hex",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "specta",

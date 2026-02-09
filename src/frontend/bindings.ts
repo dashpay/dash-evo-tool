@@ -625,6 +625,551 @@ async walletNotifyLocked(walletSeedHash: string) : Promise<Result<null, string>>
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Fetch contracts from Platform by their IDs.
+ *
+ * Dispatches `ContractTask::FetchContracts`. Result arrives via `TaskResultEvent`.
+ */
+async contractFetch(input: FetchContractsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_fetch", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch contracts from Platform with descriptions.
+ *
+ * Dispatches `ContractTask::FetchContractsWithDescriptions`. Result via event.
+ */
+async contractFetchWithDescriptions(input: FetchContractsWithDescriptionsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_fetch_with_descriptions", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch active group actions for a contract and identity.
+ *
+ * Dispatches `ContractTask::FetchActiveGroupActions`. Result via event.
+ */
+async contractFetchActiveGroupActions(input: FetchActiveGroupActionsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_fetch_active_group_actions", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Register a new data contract on Platform.
+ *
+ * Dispatches `ContractTask::RegisterDataContract`. Result via event.
+ */
+async contractRegister(input: RegisterDataContractInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_register", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update an existing data contract on Platform.
+ *
+ * Dispatches `ContractTask::UpdateDataContract`. Result via event.
+ */
+async contractUpdate(input: UpdateDataContractInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_update", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save a contract to the local database (without broadcasting).
+ *
+ * Dispatches `ContractTask::SaveDataContract`. Result via event.
+ */
+async contractSave(input: SaveDataContractInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_save", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove a contract from the local database.
+ *
+ * Dispatches `ContractTask::RemoveContract`. Result via event.
+ */
+async contractRemove(input: RemoveContractInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_remove", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * List all locally stored contracts.
+ */
+async contractListLocal() : Promise<Result<ContractSummaryDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_list_local") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get a contract by its ID from the local database.
+ */
+async contractGetById(contractId: string) : Promise<Result<DataContractDto | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_get_by_id", { contractId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set or clear the alias for a contract.
+ */
+async contractSetAlias(input: SetContractAliasInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("contract_set_alias", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Broadcast (create) a new document on Platform.
+ *
+ * Dispatches `DocumentTask::BroadcastDocument`. Result arrives via `TaskResultEvent`.
+ */
+async documentBroadcast(input: BroadcastDocumentInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_broadcast", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Delete a document from Platform.
+ *
+ * Dispatches `DocumentTask::DeleteDocument`. Result via event.
+ */
+async documentDelete(input: DeleteDocumentInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_delete", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Replace (update) a document on Platform.
+ *
+ * Dispatches `DocumentTask::ReplaceDocument`. Result via event.
+ */
+async documentReplace(input: ReplaceDocumentInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_replace", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transfer a document to a new owner.
+ *
+ * Dispatches `DocumentTask::TransferDocument`. Result via event.
+ */
+async documentTransfer(input: TransferDocumentInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_transfer", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Purchase a document.
+ *
+ * Dispatches `DocumentTask::PurchaseDocument`. Result via event.
+ */
+async documentPurchase(input: PurchaseDocumentInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_purchase", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set a price on a document.
+ *
+ * Dispatches `DocumentTask::SetDocumentPrice`. Result via event.
+ */
+async documentSetPrice(input: SetDocumentPriceInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_set_price", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch documents from Platform.
+ *
+ * Dispatches `DocumentTask::FetchDocuments`. Result via event.
+ */
+async documentFetch(input: FetchDocumentsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_fetch", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch documents from Platform with pagination.
+ *
+ * Dispatches `DocumentTask::FetchDocumentsPage`. Result via event.
+ */
+async documentFetchPage(input: FetchDocumentsPageInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_fetch_page", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Query all token balances for loaded identities.
+ *
+ * Dispatches `TokenTask::QueryMyTokenBalances`. Result via event.
+ */
+async tokenQueryMyBalances() : Promise<DispatchTaskResponse> {
+    return await TAURI_INVOKE("token_query_my_balances");
+},
+/**
+ * Query a specific identity's balance for a specific token.
+ *
+ * Dispatches `TokenTask::QueryIdentityTokenBalance`. Result via event.
+ */
+async tokenQueryIdentityBalance(input: QueryIdentityTokenBalanceInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_query_identity_balance", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Query which identities are frozen for a given token.
+ *
+ * Dispatches `TokenTask::QueryFrozenIdentities`. Result via event.
+ */
+async tokenQueryFrozenIdentities(input: QueryFrozenIdentitiesInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_query_frozen_identities", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Query token descriptions by keyword.
+ *
+ * Dispatches `TokenTask::QueryDescriptionsByKeyword`. Result via event.
+ */
+async tokenQueryDescriptionsByKeyword(input: QueryDescriptionsByKeywordInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_query_descriptions_by_keyword", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch a token by its contract ID.
+ *
+ * Dispatches `TokenTask::FetchTokenByContractId`. Result via event.
+ */
+async tokenFetchByContractId(input: FetchTokenByContractIdInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_fetch_by_contract_id", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch a token by its token ID.
+ *
+ * Dispatches `TokenTask::FetchTokenByTokenId`. Result via event.
+ */
+async tokenFetchByTokenId(input: FetchTokenByTokenIdInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_fetch_by_token_id", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save a token to the local database.
+ *
+ * Dispatches `TokenTask::SaveTokenLocally`. Result via event.
+ */
+async tokenSaveLocally(input: SaveTokenLocallyInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_save_locally", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Query token pricing.
+ *
+ * Dispatches `TokenTask::QueryTokenPricing`. Result via event.
+ */
+async tokenQueryPricing(input: QueryTokenPricingInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_query_pricing", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Mint tokens.
+ *
+ * Dispatches `TokenTask::MintTokens`. Result via event.
+ */
+async tokenMint(input: MintTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_mint", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transfer tokens to another identity.
+ *
+ * Dispatches `TokenTask::TransferTokens`. Result via event.
+ */
+async tokenTransfer(input: TransferTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_transfer", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Burn tokens.
+ *
+ * Dispatches `TokenTask::BurnTokens`. Result via event.
+ */
+async tokenBurn(input: BurnTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_burn", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Destroy frozen funds of a target identity.
+ *
+ * Dispatches `TokenTask::DestroyFrozenFunds`. Result via event.
+ */
+async tokenDestroyFrozenFunds(input: DestroyFrozenFundsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_destroy_frozen_funds", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Freeze tokens for a target identity.
+ *
+ * Dispatches `TokenTask::FreezeTokens`. Result via event.
+ */
+async tokenFreeze(input: FreezeTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_freeze", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Unfreeze tokens for a target identity.
+ *
+ * Dispatches `TokenTask::UnfreezeTokens`. Result via event.
+ */
+async tokenUnfreeze(input: UnfreezeTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_unfreeze", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Pause a token.
+ *
+ * Dispatches `TokenTask::PauseTokens`. Result via event.
+ */
+async tokenPause(input: PauseTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_pause", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Resume a paused token.
+ *
+ * Dispatches `TokenTask::ResumeTokens`. Result via event.
+ */
+async tokenResume(input: ResumeTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_resume", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Claim tokens from a distribution.
+ *
+ * Dispatches `TokenTask::ClaimTokens`. Result via event.
+ */
+async tokenClaim(input: ClaimTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_claim", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Estimate perpetual token rewards.
+ *
+ * Dispatches `TokenTask::EstimatePerpetualTokenRewardsWithExplanation`. Result via event.
+ */
+async tokenEstimatePerpetualRewards(input: EstimatePerpetualRewardsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_estimate_perpetual_rewards", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Update token configuration.
+ *
+ * Dispatches `TokenTask::UpdateTokenConfig`. Result via event.
+ */
+async tokenUpdateConfig(input: UpdateTokenConfigInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_update_config", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Purchase tokens via direct purchase.
+ *
+ * Dispatches `TokenTask::PurchaseTokens`. Result via event.
+ */
+async tokenPurchase(input: PurchaseTokensInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_purchase", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the direct purchase price for a token.
+ *
+ * Dispatches `TokenTask::SetDirectPurchasePrice`. Result via event.
+ */
+async tokenSetDirectPurchasePrice(input: SetDirectPurchasePriceInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_set_direct_purchase_price", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Register a new token contract.
+ *
+ * This is a complex operation. The frontend sends the full configuration
+ * as JSON, and this command deserializes and constructs the RegisterTokenContract task.
+ *
+ * Dispatches `TokenTask::RegisterTokenContract`. Result via event.
+ */
+async tokenRegisterContract(input: RegisterTokenContractInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_register_contract", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove a token from the local database.
+ */
+async tokenRemove(input: RemoveTokenInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_remove", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Load the custom token ordering from the database.
+ */
+async tokenLoadOrder() : Promise<Result<IdentityTokenIdentifierDto[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_load_order") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save the custom token ordering to the database.
+ */
+async tokenSaveOrder(input: SaveTokenOrderInput) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_save_order", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -706,6 +1251,82 @@ hasInstantLock: boolean;
  */
 hasAssetLockProof: boolean }
 /**
+ * Input for broadcasting (creating) a document.
+ */
+export type BroadcastDocumentInput = {
+/**
+ * The document data as JSON.
+ */
+documentJson: JsonValue;
+/**
+ * Optional token payment info.
+ */
+tokenPayment: TokenPaymentInfoDto | null;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Contract ID (hex) the document belongs to.
+ */
+contractId: string;
+/**
+ * Identity ID (hex) that owns the document.
+ */
+identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number }
+/**
+ * Input for burning tokens.
+ */
+export type BurnTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Amount to burn (string for u128).
+ */
+amount: string;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
+/**
+ * Input for claiming tokens.
+ */
+export type ClaimTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Distribution type as a string (e.g., "Perpetual").
+ */
+distributionType: string }
+/**
+ * Brief contract info for list views.
+ */
+export type ContractSummaryDto = {
+/**
+ * Platform contract identifier as hex string.
+ */
+id: string;
+/**
+ * User-assigned alias.
+ */
+alias: string | null;
+/**
+ * Number of document types.
+ */
+documentTypeCount: number;
+/**
+ * Number of tokens.
+ */
+tokenCount: number }
+/**
  * Input for creating a registration asset lock.
  */
 export type CreateRegistrationAssetLockInput = {
@@ -742,6 +1363,67 @@ identityIndex: number;
  */
 topUpIndex: number }
 /**
+ * Serializable version of `QualifiedContract`.
+ * Represents a data contract loaded in the application.
+ */
+export type DataContractDto = {
+/**
+ * Platform contract identifier as hex string.
+ */
+id: string;
+/**
+ * Owner identity identifier as hex string.
+ */
+ownerId: string;
+/**
+ * User-assigned alias for this contract.
+ */
+alias: string | null;
+/**
+ * Contract version.
+ */
+version: number;
+/**
+ * Document type names defined in this contract.
+ */
+documentTypeNames: string[];
+/**
+ * Number of token configurations in this contract.
+ */
+tokenCount: number;
+/**
+ * Full contract JSON schema (for display/editing).
+ */
+schemaJson: JsonValue }
+/**
+ * Input for deleting a document.
+ */
+export type DeleteDocumentInput = {
+/**
+ * Document ID (hex) to delete.
+ */
+documentId: string;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * Identity ID (hex) that owns the document.
+ */
+identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number;
+/**
+ * Optional token payment info.
+ */
+tokenPayment: TokenPaymentInfoDto | null }
+/**
  * Input for deleting a local identity.
  */
 export type DeleteIdentityInput = {
@@ -749,6 +1431,22 @@ export type DeleteIdentityInput = {
  * Identity ID (hex) to delete.
  */
 identityId: string }
+/**
+ * Input for destroying frozen funds.
+ */
+export type DestroyFrozenFundsInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Frozen identity ID (hex) whose funds to destroy.
+ */
+frozenIdentityId: string;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
 /**
  * Input for disabling keys on an identity.
  */
@@ -799,6 +1497,94 @@ name: string;
  */
 acquiredAt: number }
 /**
+ * Input for estimating perpetual token rewards.
+ */
+export type EstimatePerpetualRewardsInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * Token ID (hex).
+ */
+tokenId: string }
+/**
+ * Input for fetching active group actions.
+ */
+export type FetchActiveGroupActionsInput = {
+/**
+ * The contract ID (hex) to query group actions for.
+ */
+contractId: string;
+/**
+ * The identity ID (hex) to check group membership.
+ */
+identityId: string }
+/**
+ * Input for fetching contracts by IDs.
+ */
+export type FetchContractsInput = {
+/**
+ * Contract IDs (hex) to fetch.
+ */
+contractIds: string[] }
+/**
+ * Input for fetching contracts with descriptions.
+ */
+export type FetchContractsWithDescriptionsInput = {
+/**
+ * Contract IDs (hex) to fetch with descriptions.
+ */
+contractIds: string[] }
+/**
+ * Input for fetching documents.
+ */
+export type FetchDocumentsInput = {
+/**
+ * Contract ID (hex) to query.
+ */
+contractId: string;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Where clauses.
+ */
+whereClauses: WhereClauseDto[];
+/**
+ * Order-by clauses.
+ */
+orderByClauses: OrderByClauseDto[];
+/**
+ * Max documents to return.
+ */
+limit: number }
+/**
+ * Input for fetching documents with pagination.
+ */
+export type FetchDocumentsPageInput = {
+/**
+ * Contract ID (hex) to query.
+ */
+contractId: string;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Where clauses.
+ */
+whereClauses: WhereClauseDto[];
+/**
+ * Order-by clauses.
+ */
+orderByClauses: OrderByClauseDto[];
+/**
+ * Optional cursor (hex bytes of the last document ID from previous page).
+ */
+startAfter: string | null }
+/**
  * Input for fetching platform address balances.
  */
 export type FetchPlatformAddressBalancesInput = {
@@ -810,6 +1596,38 @@ walletSeedHash: string;
  * Sync mode to use.
  */
 syncMode: PlatformSyncModeDto }
+/**
+ * Input for fetching a token by contract ID.
+ */
+export type FetchTokenByContractIdInput = {
+/**
+ * Contract ID (hex).
+ */
+contractId: string }
+/**
+ * Input for fetching a token by token ID.
+ */
+export type FetchTokenByTokenIdInput = {
+/**
+ * Token ID (hex).
+ */
+tokenId: string }
+/**
+ * Input for freezing tokens (on a target identity).
+ */
+export type FreezeTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Identity ID (hex) to freeze.
+ */
+freezeIdentityId: string;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
 /**
  * Input for funding a platform address from wallet UTXOs.
  */
@@ -903,6 +1721,10 @@ identityType: IdentityTypeDto;
  */
 balance: number }
 /**
+ * Token identifier combining identity and token IDs.
+ */
+export type IdentityTokenIdentifierDto = { identityId: string; tokenId: string }
+/**
  * Type of identity (User, Masternode, Evonode).
  */
 export type IdentityTypeDto = "user" | "masternode" | "evonode"
@@ -948,6 +1770,26 @@ deriveKeysFromWallets: boolean;
  */
 selectedWalletSeedHash: string | null }
 /**
+ * Input for minting tokens.
+ */
+export type MintTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Amount to mint (string for u128).
+ */
+amount: string;
+/**
+ * Optional recipient identity ID (hex). None = mint to self.
+ */
+recipientId: string | null;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
+/**
  * Network identifier matching Dash SDK's Network enum.
  */
 export type NetworkDto = "dash" | "testnet" | "devnet" | "regtest"
@@ -963,6 +1805,30 @@ activeNetwork: NetworkDto;
  * All networks that have valid configurations.
  */
 availableNetworks: NetworkDto[] }
+/**
+ * An order-by clause for document queries.
+ */
+export type OrderByClauseDto = {
+/**
+ * Field name.
+ */
+field: string;
+/**
+ * Sort direction: "asc" or "desc".
+ */
+direction: string }
+/**
+ * Input for pausing tokens.
+ */
+export type PauseTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
 /**
  * A payment recipient.
  */
@@ -999,6 +1865,54 @@ nonce: number }
  * Platform sync mode DTO for the IPC boundary.
  */
 export type PlatformSyncModeDto = "auto" | "forceFull" | "terminalOnly"
+/**
+ * Input for purchasing a document.
+ */
+export type PurchaseDocumentInput = {
+/**
+ * Price to pay in credits.
+ */
+price: number;
+/**
+ * Document ID (hex) to purchase.
+ */
+documentId: string;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * Buyer identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number;
+/**
+ * Optional token payment info.
+ */
+tokenPayment: TokenPaymentInfoDto | null }
+/**
+ * Input for purchasing tokens.
+ */
+export type PurchaseTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Amount to purchase (string for u128).
+ */
+amount: string;
+/**
+ * Total agreed price in credits.
+ */
+totalAgreedPrice: number }
 /**
  * Serializable version of `QualifiedIdentity`.
  * This is the primary identity DTO sent to the frontend for display and selection.
@@ -1057,6 +1971,50 @@ voterIdentityId: string | null;
  */
 operatorIdentityId: string | null }
 /**
+ * Input for querying token descriptions by keyword.
+ */
+export type QueryDescriptionsByKeywordInput = {
+/**
+ * Keyword to search for.
+ */
+keyword: string;
+/**
+ * Optional cursor for pagination (hex bytes).
+ */
+startAfter: string | null }
+/**
+ * Input for querying frozen identities.
+ */
+export type QueryFrozenIdentitiesInput = {
+/**
+ * Token ID (hex).
+ */
+tokenId: string;
+/**
+ * Identity IDs (hex) to check.
+ */
+identityIds: string[] }
+/**
+ * Input for querying a specific identity's token balance.
+ */
+export type QueryIdentityTokenBalanceInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * Token ID (hex).
+ */
+tokenId: string }
+/**
+ * Input for querying token pricing.
+ */
+export type QueryTokenPricingInput = {
+/**
+ * Token ID (hex).
+ */
+tokenId: string }
+/**
  * Input for recovering asset locks from a wallet.
  */
 export type RecoverAssetLocksInput = {
@@ -1093,6 +2051,26 @@ walletSeedHash: string;
  */
 platformSyncMode: PlatformSyncModeDto | null }
 /**
+ * Input for registering a new data contract.
+ */
+export type RegisterDataContractInput = {
+/**
+ * The contract schema as a JSON value.
+ */
+contractJson: JsonValue;
+/**
+ * Alias for the contract.
+ */
+alias: string;
+/**
+ * Identity ID (hex) that will own the contract.
+ */
+identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number }
+/**
  * Input for registering a DPNS name.
  */
 export type RegisterDpnsNameCommandInput = {
@@ -1105,6 +2083,33 @@ identityId: string;
  */
 name: string }
 /**
+ * Input for registering a token contract.
+ * This is a complex operation with many parameters. The frontend sends
+ * them as a structured JSON to avoid a function with 25+ parameters.
+ */
+export type RegisterTokenContractInput = {
+/**
+ * Full token contract configuration as JSON.
+ * Must contain all fields needed by `TokenTask::RegisterTokenContract`.
+ */
+configJson: JsonValue;
+/**
+ * Identity ID (hex) that will own the contract.
+ */
+identityId: string;
+/**
+ * Key ID for signing.
+ */
+keyId: number }
+/**
+ * Input for removing a contract.
+ */
+export type RemoveContractInput = {
+/**
+ * Contract ID (hex) to remove.
+ */
+contractId: string }
+/**
  * Input for removing a single-key wallet.
  */
 export type RemoveSingleKeyWalletInput = {
@@ -1113,6 +2118,14 @@ export type RemoveSingleKeyWalletInput = {
  */
 keyHash: string }
 /**
+ * Input for removing a token.
+ */
+export type RemoveTokenInput = {
+/**
+ * Token ID (hex) to remove.
+ */
+tokenId: string }
+/**
  * Input for removing a wallet.
  */
 export type RemoveWalletInput = {
@@ -1120,6 +2133,34 @@ export type RemoveWalletInput = {
  * Wallet seed hash (hex).
  */
 walletSeedHash: string }
+/**
+ * Input for replacing a document.
+ */
+export type ReplaceDocumentInput = {
+/**
+ * The updated document data as JSON.
+ */
+documentJson: JsonValue;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * Identity ID (hex) that owns the document.
+ */
+identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number;
+/**
+ * Optional token payment info.
+ */
+tokenPayment: TokenPaymentInfoDto | null }
 /**
  * Input for replacing a key on an identity.
  */
@@ -1149,6 +2190,34 @@ newSecurityLevel: string;
  */
 newPrivateKeyHex: string }
 /**
+ * Input for resuming tokens.
+ */
+export type ResumeTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
+/**
+ * Input for saving a contract locally.
+ */
+export type SaveDataContractInput = {
+/**
+ * The contract JSON to save.
+ */
+contractJson: JsonValue;
+/**
+ * Optional alias.
+ */
+alias: string | null;
+/**
+ * Whether to also insert tokens from this contract.
+ */
+insertTokens: boolean }
+/**
  * Input for saving custom identity ordering.
  */
 export type SaveIdentityOrderInput = {
@@ -1156,6 +2225,22 @@ export type SaveIdentityOrderInput = {
  * Ordered list of identity IDs (hex).
  */
 identityIds: string[] }
+/**
+ * Input for saving a token locally.
+ */
+export type SaveTokenLocallyInput = {
+/**
+ * Token info as JSON (serialized TokenInfo).
+ */
+tokenInfoJson: JsonValue }
+/**
+ * Input for saving token ordering.
+ */
+export type SaveTokenOrderInput = {
+/**
+ * Ordered list of (identity_id, token_id) pairs.
+ */
+tokenIds: IdentityTokenIdentifierDto[] }
 /**
  * Emitted when a scheduled vote is automatically cast.
  */
@@ -1268,6 +2353,66 @@ memo: string | null;
  * Optional override fee in duffs (for retry after min relay fee error).
  */
 overrideFee: number | null }
+/**
+ * Input for setting a contract alias.
+ */
+export type SetContractAliasInput = {
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * New alias (None to clear).
+ */
+alias: string | null }
+/**
+ * Input for setting direct purchase price.
+ */
+export type SetDirectPurchasePriceInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Pricing schedule as JSON (None to clear pricing).
+ */
+tokenPricingSchedule: JsonValue | null;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
+/**
+ * Input for setting a price on a document.
+ */
+export type SetDocumentPriceInput = {
+/**
+ * Price in credits.
+ */
+price: number;
+/**
+ * Document ID (hex).
+ */
+documentId: string;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * Owner identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number;
+/**
+ * Optional token payment info.
+ */
+tokenPayment: TokenPaymentInfoDto | null }
 /**
  * Input for setting identity alias.
  */
@@ -1433,6 +2578,43 @@ resultType: string;
  */
 payload: JsonValue | null }
 /**
+ * Shared input pattern for token operations that require identity, contract,
+ * token position, and signing key.
+ */
+export type TokenOperationInput = {
+/**
+ * Identity ID (hex) performing the operation.
+ */
+identityId: string;
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * Token position within the contract.
+ */
+tokenPosition: number;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number;
+/**
+ * Optional public note.
+ */
+publicNote: string | null }
+/**
+ * Token payment info for document operations that support token payments.
+ */
+export type TokenPaymentInfoDto = {
+/**
+ * Token ID (hex).
+ */
+tokenId: string;
+/**
+ * Amount to pay in token credits.
+ */
+amount: number }
+/**
  * A top-up history entry.
  */
 export type TopUpEntryDto = { index: number; amount: number }
@@ -1457,6 +2639,38 @@ credits: number;
  */
 keyId: number | null }
 /**
+ * Input for transferring a document to a new owner.
+ */
+export type TransferDocumentInput = {
+/**
+ * Document ID (hex) to transfer.
+ */
+documentId: string;
+/**
+ * New owner identity ID (hex).
+ */
+newOwnerId: string;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * Current owner identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number;
+/**
+ * Optional token payment info.
+ */
+tokenPayment: TokenPaymentInfoDto | null }
+/**
  * Input for transferring credits between platform addresses.
  */
 export type TransferPlatformCreditsInput = {
@@ -1476,6 +2690,78 @@ outputs: PlatformAddressAmountDto[];
  * Index of the input to deduct fees from (in sorted order).
  */
 feePayerIndex: number }
+/**
+ * Input for transferring tokens.
+ */
+export type TransferTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Recipient identity ID (hex).
+ */
+recipientId: string;
+/**
+ * Amount to transfer (string for u128).
+ */
+amount: string }
+/**
+ * Input for unfreezing tokens (on a target identity).
+ */
+export type UnfreezeTokensInput = {
+/**
+ * Base operation fields.
+ */
+operation: TokenOperationInput;
+/**
+ * Identity ID (hex) to unfreeze.
+ */
+unfreezeIdentityId: string;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
+/**
+ * Input for updating an existing data contract.
+ */
+export type UpdateDataContractInput = {
+/**
+ * The updated contract schema as a JSON value.
+ */
+contractJson: JsonValue;
+/**
+ * Identity ID (hex) that owns the contract.
+ */
+identityId: string;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number }
+/**
+ * Input for updating token configuration.
+ */
+export type UpdateTokenConfigInput = {
+/**
+ * Identity-token info as JSON (serialized IdentityTokenInfo).
+ */
+identityTokenInfoJson: JsonValue;
+/**
+ * The configuration change item as JSON.
+ */
+changeItemJson: JsonValue;
+/**
+ * Key ID to use for signing.
+ */
+keyId: number;
+/**
+ * Optional public note.
+ */
+publicNote: string | null;
+/**
+ * Optional group info as JSON.
+ */
+groupInfo: JsonValue | null }
 /**
  * An address within an HD wallet.
  */
@@ -1621,6 +2907,22 @@ walletSeedHash: string;
  * The network this wallet belongs to.
  */
 network: NetworkDto }
+/**
+ * A where clause for document queries.
+ */
+export type WhereClauseDto = {
+/**
+ * Field name.
+ */
+field: string;
+/**
+ * Operator (e.g., "==", "<", ">", ">=", "<=", "in", "startsWith").
+ */
+operator: string;
+/**
+ * Value as JSON.
+ */
+value: JsonValue }
 /**
  * Input for withdrawing credits from an identity.
  */

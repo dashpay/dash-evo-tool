@@ -208,7 +208,7 @@
   All commands accept `WalletSeedHash` identifiers (not Arc<RwLock<Wallet>>).
   Write Rust unit tests.
 
-- [ ] **1.6 Implement Contract, Document & Token IPC commands** (P1)
+- [x] **1.6 Implement Contract, Document & Token IPC commands** (P1)
   Create commands for:
   - **ContractTask (7 ops):** fetch_contracts, fetch_contracts_with_descriptions, fetch_active_group_actions, remove_contract, register_data_contract, update_data_contract, save_data_contract
   - **DocumentTask (8 ops):** broadcast_document, delete_document, replace_document, transfer_document, purchase_document, set_document_price, fetch_documents, fetch_documents_page
@@ -727,7 +727,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 16 |
-| Remaining | 46 |
+| Completed | 17 |
+| Remaining | 45 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

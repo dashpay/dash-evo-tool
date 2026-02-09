@@ -295,3 +295,10 @@
 **Files changed:** src/frontend/components/shared/WalletUnlockDialog.tsx, tasks.md, activity.md
 **Tests added:** 0 (single-line fix — all 322 existing tests pass)
 **Sub-tasks created:** 0
+
+## Run 43 — 2026-02-09
+**Task:** 2.7b Fix light mode muted-foreground contrast
+**What was done:** Darkened `--muted-foreground` from #64788c to #5a6d80 in `index.css` light mode `:root` block. This improves the contrast ratio from 4.36:1 to ~5.1:1 on the `--muted` (#f8fafc) background, meeting WCAG AA's 4.5:1 minimum requirement. The color change is subtle (slightly darker gray-blue) and maintains the design intent while ensuring accessibility compliance.
+**Files changed:** src/frontend/index.css, tasks.md, activity.md
+**Tests added:** 0 (CSS-only change — all 322 existing tests pass)
+**Sub-tasks created:** 0

@@ -118,7 +118,7 @@
 
   /* --- Muted --- */
   --muted: #f8fafc;                /* DashColors::INPUT_BACKGROUND rgb(248,250,252) */
-  --muted-foreground: #64788c;     /* DashColors::TEXT_SECONDARY rgb(100,120,140) */
+  --muted-foreground: #5a6d80;     /* DashColors::TEXT_SECONDARY darkened for WCAG AA (≥4.5:1 on muted bg) */
 
   /* --- Accent (interactive hover/active) --- */
   --accent: #c8dcfa;               /* DashColors::HOVER rgb(200,220,250) */

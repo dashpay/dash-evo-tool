@@ -15,3 +15,11 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
+
+# DET backend crate dependency — will be added in Phase 1 (task 1.2)
+# when the backend modules (backend_task, model, database, context, spv)
+# are wired up through the Tauri IPC layer.
+# dash-evo-tool = { path = "../", default-features = false }
+
+[lints.clippy]
+uninlined_format_args = "allow"

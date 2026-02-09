@@ -51,7 +51,7 @@
   - [x] **0.1d** Install dev dependencies: vitest, @testing-library/react, @testing-library/jest-dom, @testing-library/user-event, jsdom, @playwright/test, eslint, prettier, eslint-plugin-react-hooks, @typescript-eslint/eslint-plugin
   - [x] **0.1e** Configure Tauri 2.0: install @tauri-apps/cli, @tauri-apps/api, create tauri.conf.json, set up src-tauri/ Cargo.toml with workspace deps
 
-- [ ] **0.2 Initialize Tauri 2.0 project with chosen frontend framework** (P0)
+- [x] **0.2 Initialize Tauri 2.0 project with chosen frontend framework** (P0)
   Create the Tauri project scaffolding inside this worktree. Set up:
   - `src-tauri/` with Cargo.toml that depends on the existing DET crates (backend_task, model, database, context, spv)
   - Frontend project (package.json, tsconfig, framework config)
@@ -645,7 +645,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 6 |
-| Remaining | 54 |
+| Completed | 7 |
+| Remaining | 53 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

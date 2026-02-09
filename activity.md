@@ -43,3 +43,10 @@
 **Files changed:** package.json, package-lock.json, .gitignore, src-tauri/Cargo.toml, src-tauri/build.rs, src-tauri/src/main.rs, src-tauri/tauri.conf.json, src-tauri/icons/*, tasks.md, activity.md
 **Tests added:** 0 (infrastructure setup — Tauri scaffolding)
 **Sub-tasks created:** 0
+
+## Run 7 — 2026-02-09
+**Task:** 0.2 Initialize Tauri 2.0 project with chosen frontend framework
+**What was done:** Completed the Tauri project initialization by updating App.tsx to demonstrate Tauri IPC — the frontend now calls the `greet` Rust command and displays the result, with graceful fallback when running in browser-only mode. Updated src-tauri/Cargo.toml with clippy lints and a commented placeholder for the DET backend crate dependency (to be wired in Phase 1, task 1.2). Most scaffolding (Cargo.toml, tauri.conf.json, build.rs, main.rs, icons, package.json, tsconfig, vite config, .gitignore) was already completed in tasks 0.1a-0.1e. Verified all checks pass: lint, typecheck, Vite build (227KB JS + 46KB CSS), cargo build, cargo clippy, cargo test.
+**Files changed:** src/frontend/App.tsx, src-tauri/Cargo.toml, tasks.md, activity.md
+**Tests added:** 0 (Hello World demo — testing infrastructure comes in task 0.3)
+**Sub-tasks created:** 0

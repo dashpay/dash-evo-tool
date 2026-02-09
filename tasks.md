@@ -1547,7 +1547,7 @@
 
 ## Phase 6: Contract & Document Screens
 
-- [ ] **6.1 [META] Design contract/document browser UX** (P2)
+- [x] **6.1 [META] Design contract/document browser UX** (P2)
   Review the contract and document management functionality:
   - Contract browser with system contracts and user contracts
   - Document querying with index selection, pagination, JSON/YAML display
@@ -1557,31 +1557,58 @@
   Files to review: All files in `src/ui/contracts_documents/`
   Produce implementation sub-tasks.
 
-- [ ] **6.2 Implement contract browser and document query screen** (P2)
-  Build the main contract/document interface:
-  - Contract list (system contracts + user-added contracts)
-  - Contract search/add by ID
-  - Document type selector per contract
-  - Query index selection
-  - Document query execution with results display
-  - Pagination (next/previous)
-  - Toggle between JSON and YAML display
-  - Copy document data
-  Reference: `contracts_documents_screen.rs` — very complex, trace carefully
-  Write component tests. Write Playwright test for querying documents.
+  > **Design Decisions (Run 85):**
+  >
+  > ### Complete Action Inventory (6 egui screens, ~50 user actions)
+  >
+  > **Backend Status:** All Tauri IPC commands fully implemented (11 contract + 8 document commands).
+  > All DTOs defined. TypeScript bindings auto-generated via tauri-specta. No backend work needed.
+  >
+  > **Missing Frontend Infrastructure:**
+  > - No `contractStore.ts` or `documentStore.ts` (Zustand stores)
+  > - No contract/document components or screens (only DPNS screens exist under /contracts/)
+  > - The `/contracts/` route is a placeholder
+  >
+  > ### UX Design
+  >
+  > **Main Screen Layout (3-panel):**
+  > - Left sidebar: Contract tree browser (collapsible) with search, showing contract → document types → indexes → properties. Right-click context menu for copy hex/JSON. Remove button for user contracts.
+  > - Center: SQL-like query input bar at top, document results below with JSON/YAML toggle, field selector, search filter, pagination
+  > - Top bar: Action buttons (Load Contracts, Register, Update, Create/Delete/Replace/Transfer/Purchase/SetPrice Document, Group Actions)
+  >
+  > **Sub-screens (each accessible from top bar buttons):**
+  > 1. Add Contracts — multi-ID input, fetch, set aliases
+  > 2. Register Contract — identity/key selection, JSON editor with auto-wrap detection, fee estimation, broadcast
+  > 3. Update Contract — contract selector, JSON editor, identity/key selection, fee estimation, broadcast
+  > 4. Document Actions (6 types sharing common layout) — contract/doc-type selection, identity/key selection, wallet unlock, type-specific inputs, fee estimation, broadcast
+  > 5. Group Actions — contract selector (filtered to group-enabled), identity selector, fetch & display table, "Take Action" routing to token screens
+  >
+  > ### Implementation Plan
+  >
+  > Tasks 6.2–6.4 are replaced with more granular sub-tasks below to ensure each is completable in one agent run.
 
-- [ ] **6.3 Implement contract registration, update, and document action screens** (P2)
-  Build the remaining contract/document screens:
-  - **Register contract:** JSON input, identity selection, key selection, wallet unlock, fee confirmation, broadcast
-  - **Update contract:** Select existing contract, edit JSON, identity/key selection, broadcast
-  - **Add contracts:** Input contract ID, fetch from platform
-  - **Document actions:** Create, delete, replace, transfer, purchase, set price — each is a form with identity/key selection, wallet unlock, and fee confirmation
-  - **Group actions:** Batch operations on documents
-  Reference: `register_contract_screen.rs`, `update_contract_screen.rs`, `add_contracts_screen.rs`, `document_action_screen.rs`, `group_actions_screen.rs`
-  Write component tests. Write Playwright tests.
-
-- [ ] **6.4 [REVIEW] Contract/document screens functionality parity** (P2)
-  Verify all contract and document operations work. Create fix tasks for gaps.
+  **Sub-tasks produced:**
+  - [ ] **6.2a** Create `contractStore.ts` Zustand store: local contract list CRUD (list, get by ID, set alias, remove), loading/error states, subscribe to `task-completed` events for contract fetch results. Follow `walletStore.ts` pattern. Write 15+ tests.
+  - [ ] **6.2b** Create `documentStore.ts` Zustand store: document query state (query text, results, pagination cursors, display mode JSON/YAML), field selection, search filter. Write 10+ tests.
+  - [ ] **6.2c** Create `ContractTreePanel` component: collapsible tree sidebar showing all contracts → document types → indexes → token info → contract JSON. Search/filter input. Selection updates document query. Remove contract button (with confirmation dialog, excluded for system contracts). Write 20+ component tests.
+  - [ ] **6.2d** Create `DocumentQueryScreen` main screen: query input bar with "Fetch Documents" button, document results area with JSON/YAML toggle, field selector dialog, document search filter, pagination (Previous/Page N/Next). Wire to `ContractTreePanel` for contract/doc-type/index selection. Action buttons in toolbar. Write 15+ component tests. Write 1 Playwright E2E test.
+  - [ ] **6.3a** Create `AddContractsScreen`: multi-field contract ID input (up to 10), hex+Base58 support, fetch button with progress, success view with alias editing per contract, "Back to Contracts" navigation. Write 15+ component tests. Write 1 Playwright E2E test.
+  - [ ] **6.3b** Create `RegisterContractScreen`: step-by-step form — (1) identity selector with auto-key selection (HIGH/CRITICAL), (2) optional alias input, (3) JSON code editor with auto-detect raw document schemas and auto-wrap, link to dashpay.io, real-time validation, (4) fee estimation, (5) "Register Contract" broadcast. Progress states and success screen. Write 15+ component tests.
+  - [ ] **6.3c** Create `UpdateContractScreen`: identity selector (CRITICAL keys only), contract dropdown (exclude system contracts), auto-load selected contract JSON, JSON editor, fee estimation, "Update Contract" broadcast. Progress states and success screen. Write 15+ component tests.
+  - [ ] **6.3d** Create `DocumentActionScreen` with shared layout for all 6 action types: contract/doc-type selector, identity/key selector, wallet unlock gate, fee estimation, broadcast button, progress/success states. Implement **Create Document** action: dynamic form fields based on document type schema (integers, floats, strings, byte arrays, identifiers, booleans, dates, objects, arrays), required field validation, token cost info. Write 20+ component tests.
+  - [ ] **6.3e** Implement remaining document actions in `DocumentActionScreen`: **Delete** (document ID input, "Fetch Owned Documents" with list + View popup + Select), **Replace** (fetch original, populate form, edit, broadcast), **Purchase** (fetch price, display, broadcast), **Set Price** (ID + price inputs), **Transfer** (ID + recipient inputs). Write 20+ component tests. Write 1 Playwright E2E test covering Create + Delete flow.
+  - [ ] **6.3f** Create `GroupActionsScreen`: contract selector (filtered to contracts with group-action-enabled tokens), identity selector, "Fetch Group Actions" button, results table (Action ID, Type, Info, Note, Take Action), "Take Action" navigates to corresponding token action screen pre-populated. Write 15+ component tests.
+  - [ ] **6.4 [REVIEW] Contract/document screens functionality parity** (P2)
+    Verify all contract and document operations match egui version. Check:
+    - All 9 top-bar action buttons present and functional
+    - Contract tree panel: expand/collapse, search, select doc type, select index, remove contract, copy hex/JSON
+    - Document query: SQL input, fetch, pagination, JSON/YAML toggle, field selector, search filter
+    - Register: raw schema auto-wrap, fee estimation, broadcast states
+    - Update: contract selector excludes system contracts, auto-loads JSON
+    - Add Contracts: multi-ID, alias editing
+    - All 6 document actions: Create, Delete, Replace, Purchase, SetPrice, Transfer
+    - Group Actions: filtered contracts, fetch, table, Take Action routing
+    Create fix tasks for any gaps.
 
 ---
 
@@ -1794,7 +1821,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 53 |
-| Completed | 66 |
-| Remaining | 31 |
+| Completed | 67 |
+| Remaining | 39 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

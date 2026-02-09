@@ -587,3 +587,10 @@
 **Files changed:** tasks.md, activity.md
 **Tests added:** 0 (review task — no code changes)
 **Sub-tasks created:** 2 (5.4a: Fix contested success detection, 5.4b: Add wallet-locked state display)
+
+## Run 85 — 2026-02-09
+**Task:** 6.1 [META] Design contract/document browser UX
+**What was done:** Comprehensive review of all 6 egui contract/document screens (~2,700 lines): DocumentQueryScreen (3-panel layout with contract tree browser, SQL query input, paginated results with JSON/YAML toggle), RegisterDataContractScreen (identity/key selection, JSON editor with raw schema auto-wrap, fee estimation, broadcast), UpdateDataContractScreen (contract selector, JSON editor, CRITICAL key requirement), AddContractsScreen (multi-ID input, alias editing), DocumentActionScreen (6 action types: Create with dynamic form, Delete with fetch-owned, Replace with fetch-and-edit, Purchase with price fetch, SetPrice, Transfer), GroupActionsScreen (filtered contract selector, group action table with Take Action routing to token screens). Verified all backend IPC commands (11 contract + 8 document) and DTOs are fully implemented. Identified missing frontend: no contract/document Zustand stores, no contract tree component, no document query screen (placeholder only), no action screens. Produced 11 granular sub-tasks (6.2a–6.3f + 6.4 review).
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (META task — research only)
+**Sub-tasks created:** 11 (6.2a: contractStore, 6.2b: documentStore, 6.2c: ContractTreePanel, 6.2d: DocumentQueryScreen, 6.3a: AddContractsScreen, 6.3b: RegisterContractScreen, 6.3c: UpdateContractScreen, 6.3d: DocumentActionScreen+Create, 6.3e: remaining doc actions, 6.3f: GroupActionsScreen, 6.4: review)

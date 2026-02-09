@@ -446,15 +446,12 @@ impl NetworkChooserScreen {
             let ctx = self.current_app_context();
             let status = ctx.connection_status();
             let disable_zmq = status.disable_zmq();
-            let rpc_online = self.current_app_context()
-                .connection_status()
-                .rpc_online();
+            let rpc_online = status.rpc_online();
             let zmq_connected = status.zmq_connected();
-            let spv_snapshot = ctx.spv_manager().status();
             let spv_status = status.spv_status();
             let spv_connected = ConnectionStatus::spv_connected(spv_status);
             let snapshot = if current_backend_mode == CoreBackendMode::Spv {
-                Some(spv_snapshot.clone())
+                Some(ctx.spv_manager().status().clone())
             } else {
                 None
             };

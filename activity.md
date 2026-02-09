@@ -36,3 +36,10 @@
 **Files changed:** package.json, package-lock.json, vitest.config.ts, eslint.config.js, .prettierrc.json, playwright.config.ts, src/frontend/test/setup.ts, tsconfig.app.json, tasks.md, activity.md
 **Tests added:** 0 (infrastructure setup — tests/e2e directory created for Playwright)
 **Sub-tasks created:** 0
+
+## Run 6 — 2026-02-09
+**Task:** 0.1e Configure Tauri 2.0
+**What was done:** Configured Tauri 2.0 for the project. Installed @tauri-apps/cli 2.10.0 and @tauri-apps/api 2.10.1 npm packages (moved @tauri-apps/api to runtime dependencies). Created `src-tauri/` directory with: Cargo.toml (tauri 2, tauri-build 2, serde, serde_json, tokio), build.rs (tauri_build::build()), src/main.rs (minimal Tauri app with greet command), and tauri.conf.json (1280x800 window, port 1420 dev server, CSP, app metadata). Generated app icons from existing 1024px logo using `npx tauri icon`. Added `tauri` npm script. Updated .gitignore for Tauri-specific directories (android/ios icons, gen/). All checks pass: frontend (lint, typecheck, test), Rust (fmt, clippy, build, test).
+**Files changed:** package.json, package-lock.json, .gitignore, src-tauri/Cargo.toml, src-tauri/build.rs, src-tauri/src/main.rs, src-tauri/tauri.conf.json, src-tauri/icons/*, tasks.md, activity.md
+**Tests added:** 0 (infrastructure setup — Tauri scaffolding)
+**Sub-tasks created:** 0

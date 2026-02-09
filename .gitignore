@@ -35,3 +35,8 @@ explorer.log
 node_modules/
 dist/
 *.tsbuildinfo
+
+# Tauri
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/gen/

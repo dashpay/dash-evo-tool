@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach } from "vitest";
 import {
   TopUpIdentityScreen,
   type TopUpStatus,
@@ -12,6 +12,23 @@ import type {
   PlatformAddressDto,
 } from "@/bindings";
 import { TooltipProvider } from "@/components/ui/tooltip";
+
+// ─── Polyfills for Radix in jsdom ───────────────────────────────────
+
+beforeAll(() => {
+  if (!Element.prototype.hasPointerCapture) {
+    Element.prototype.hasPointerCapture = () => false;
+  }
+  if (!Element.prototype.setPointerCapture) {
+    Element.prototype.setPointerCapture = () => {};
+  }
+  if (!Element.prototype.releasePointerCapture) {
+    Element.prototype.releasePointerCapture = () => {};
+  }
+  if (!Element.prototype.scrollIntoView) {
+    Element.prototype.scrollIntoView = () => {};
+  }
+});
 
 // ─── Test fixtures ─────────────────────────────────────────────────
 
@@ -262,8 +279,50 @@ describe("TopUpIdentityScreen — platform address funding", () => {
 // ─── QR code funding ───────────────────────────────────────────────
 
 describe("TopUpIdentityScreen — QR code funding", () => {
-  it("has amount input for QR method", () => {
-    // QR code method is less commonly the default
+  async function switchToQrCode(user: ReturnType<typeof userEvent.setup>) {
+    const selector = screen.getByRole("combobox", {
+      name: /funding method/i,
+    });
+    await user.click(selector);
+    const option = screen.getByRole("option", {
+      name: /address with qr code/i,
+    });
+    await user.click(option);
+  }
+
+  it("shows QR code when amount entered", async () => {
+    const { user } = setup();
+    await switchToQrCode(user);
+    const amountInput = screen.getByPlaceholderText("Enter amount (e.g., 0.5)");
+    await user.type(amountInput, "1.5");
+    expect(screen.getByTestId("qr-code")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: /QR code for address/ }),
+    ).toBeInTheDocument();
+  });
+
+  it("generates dash: payment URI with correct amount", async () => {
+    const { user } = setup();
+    await switchToQrCode(user);
+    const amountInput = screen.getByPlaceholderText("Enter amount (e.g., 0.5)");
+    await user.type(amountInput, "2.0");
+    expect(screen.getByText(/dash:yXaddress1234\?amount=2\.00000000/)).toBeInTheDocument();
+  });
+
+  it("does not show QR code when amount is empty", async () => {
+    const { user } = setup();
+    await switchToQrCode(user);
+    expect(screen.queryByTestId("qr-code")).not.toBeInTheDocument();
+  });
+
+  it("has copy button for payment URI", async () => {
+    const { user } = setup();
+    await switchToQrCode(user);
+    const amountInput = screen.getByPlaceholderText("Enter amount (e.g., 0.5)");
+    await user.type(amountInput, "0.5");
+    expect(
+      screen.getByRole("button", { name: /copy payment uri/i }),
+    ).toBeInTheDocument();
   });
 });
 

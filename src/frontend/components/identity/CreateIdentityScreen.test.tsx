@@ -308,7 +308,8 @@ describe("CreateIdentityScreen — QR code funding", () => {
       "Enter amount (e.g., 0.5)",
     );
     await user.type(amountInput, "1.0");
-    expect(screen.getByTestId("qr-code-placeholder")).toBeInTheDocument();
+    expect(screen.getByTestId("qr-code")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /QR code for address/ })).toBeInTheDocument();
   });
 
   it("shows funds received message", async () => {
@@ -350,7 +351,7 @@ describe("CreateIdentityScreen — QR code funding", () => {
     );
     expect(props.onCopy).toHaveBeenCalledOnce();
     expect(props.onCopy).toHaveBeenCalledWith(
-      "yTestAddr?amount=2.00000000",
+      "dash:yTestAddr?amount=2.00000000",
     );
   });
 });

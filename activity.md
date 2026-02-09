@@ -629,3 +629,10 @@
 **Files changed:** src/frontend/components/identity/KeyInfoScreen.tsx, src/frontend/components/identity/KeyInfoScreen.test.tsx
 **Tests added:** 3 updated/new tests (replace dialog shows key type selector and generated key, calls onReplaceKey with generated key, regenerate button produces new key)
 **Sub-tasks created:** 0
+
+## Run 91 — 2026-02-09
+**Task:** 4.5c Implement QR code generation in CreateIdentityScreen and TopUpIdentityScreen
+**What was done:** Replaced placeholder dashed-border QR code box in CreateIdentityScreen with actual QRCodeSVG component from qrcode.react (already a dependency). Fixed payment URI format from `{address}?amount=...` to proper `dash:{address}?amount=...` scheme. Added QR code display to TopUpIdentityScreen's QR code funding method (previously showed only address text with copy button). Both screens now show a 192px QR code encoding the full dash: payment URI, with accessible role="img" and aria-label. Also added missing aria-label="Funding method" to TopUpIdentityScreen's Select trigger for accessibility.
+**Files changed:** src/frontend/components/identity/CreateIdentityScreen.tsx, src/frontend/components/identity/TopUpIdentityScreen.tsx, src/frontend/components/identity/CreateIdentityScreen.test.tsx, src/frontend/components/identity/TopUpIdentityScreen.test.tsx
+**Tests added:** 4 new tests (TopUp: shows QR code when amount entered, generates dash: payment URI with correct amount, does not show QR code when amount is empty, has copy button for payment URI). 2 updated tests (CreateIdentity: updated testid from qr-code-placeholder to qr-code, updated expected URI to include dash: prefix).
+**Sub-tasks created:** 0

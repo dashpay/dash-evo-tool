@@ -1347,7 +1347,7 @@
     4. State management for selected type and generated key
     Reference: egui key_info_screen.rs lines 1001-1096
 
-  - [ ] **4.5c Implement QR code generation in CreateIdentityScreen and TopUpIdentityScreen** (P1)
+  - [x] **4.5c Implement QR code generation in CreateIdentityScreen and TopUpIdentityScreen** (P1)
     Replace placeholder "QR Code" box with actual QRCodeSVG from qrcode.react (already used in ReceiveDialog).
     Generate proper dash: payment URI from the funding address.
     Reference: CreateIdentityScreen.tsx lines 1230-1260, ReceiveDialog.tsx lines 280-286

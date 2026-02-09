@@ -7,6 +7,7 @@ import {
   Copy,
   Check,
 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -477,7 +478,7 @@ export function TopUpIdentityScreen({
             value={fundingMethod}
             onValueChange={(v) => setFundingMethod(v as FundingMethod)}
           >
-            <SelectTrigger>
+            <SelectTrigger aria-label="Funding method">
               <SelectValue placeholder="Select funding method" />
             </SelectTrigger>
             <SelectContent>
@@ -625,38 +626,52 @@ export function TopUpIdentityScreen({
           />
         </div>
 
-        {qrAmount.isValid && qrAmount.parsedAmount && qrAmount.parsedAmount > 0 && selectedWallet && (
-          <div className="p-4 bg-muted rounded-md space-y-3">
-            <p className="text-sm font-medium">
-              Send funds to this address:
-            </p>
-            <div className="flex items-center gap-2">
-              <code className="text-xs font-mono bg-background p-2 rounded flex-1 break-all">
-                {selectedWallet.addresses[0]?.address ?? "No address available"}
-              </code>
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={() =>
-                  handleCopyAddress(
-                    selectedWallet.addresses[0]?.address ?? "",
-                  )
-                }
-                aria-label="Copy address"
+        {qrAmount.isValid && qrAmount.parsedAmount && qrAmount.parsedAmount > 0 && selectedWallet && (() => {
+          const addr = selectedWallet.addresses[0]?.address ?? "";
+          const dashAmount = formatAmount(qrAmount.parsedAmount, DASH_DECIMAL_PLACES);
+          const paymentUri = `dash:${addr}?amount=${dashAmount}`;
+          return (
+            <div className="p-4 bg-muted rounded-md space-y-3">
+              <p className="text-sm font-medium">
+                Send funds to this address:
+              </p>
+              <div
+                className="flex items-center justify-center p-3 bg-white rounded-lg border mx-auto w-fit"
+                role="img"
+                aria-label={`QR code for address ${addr}`}
+                data-testid="qr-code"
               >
-                {copiedAddress ? (
-                  <Check className="w-3.5 h-3.5" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5" />
-                )}
-              </Button>
+                <QRCodeSVG
+                  value={paymentUri}
+                  size={192}
+                  level="M"
+                  includeMargin={false}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <code className="text-xs font-mono bg-background p-2 rounded flex-1 break-all">
+                  {paymentUri}
+                </code>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => handleCopyAddress(paymentUri)}
+                  aria-label="Copy payment URI"
+                >
+                  {copiedAddress ? (
+                    <Check className="w-3.5 h-3.5" />
+                  ) : (
+                    <Copy className="w-3.5 h-3.5" />
+                  )}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Once funds are received, the top-up will be processed
+                automatically.
+              </p>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Once funds are received, the top-up will be processed
-              automatically.
-            </p>
-          </div>
-        )}
+          );
+        })()}
       </div>
     );
   }

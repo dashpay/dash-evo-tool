@@ -12,6 +12,7 @@ import {
   Info,
   UserPlus,
 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1213,7 +1214,7 @@ function QrCodePanel({
     if (!address) return null;
     if (!amount.parsedAmount || amount.parsedAmount <= 0) return null;
     const dashAmount = formatAmount(amount.parsedAmount, DASH_DECIMAL_PLACES);
-    return `${address}?amount=${dashAmount}`;
+    return `dash:${address}?amount=${dashAmount}`;
   }, [address, amount.parsedAmount]);
 
   return (
@@ -1229,18 +1230,18 @@ function QrCodePanel({
 
       {paymentUri && (
         <div className="rounded-md border bg-muted/30 p-4 space-y-3">
-          {/* QR code would be rendered here by the parent with a library */}
           <div
-            className="flex items-center justify-center p-4 bg-white rounded-md mx-auto w-fit"
-            data-testid="qr-code-placeholder"
+            className="flex items-center justify-center p-3 bg-white rounded-lg border mx-auto w-fit"
+            role="img"
+            aria-label={`QR code for address ${address ?? ""}`}
+            data-testid="qr-code"
           >
-            <div className="w-48 h-48 flex items-center justify-center border-2 border-dashed border-gray-300 rounded-md">
-              <p className="text-xs text-gray-400 text-center px-2">
-                QR Code
-                <br />
-                {truncateAddress(address ?? "")}
-              </p>
-            </div>
+            <QRCodeSVG
+              value={paymentUri}
+              size={192}
+              level="M"
+              includeMargin={false}
+            />
           </div>
 
           <div className="flex items-center gap-2">

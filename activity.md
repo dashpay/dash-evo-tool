@@ -643,3 +643,10 @@
 **Files changed:** src/frontend/components/identity/WithdrawScreen.tsx, src/frontend/components/identity/TransferScreen.tsx, src/frontend/components/identity/AddKeyDialog.tsx, src/frontend/components/identity/KeyInfoScreen.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/components/identity/WithdrawScreen.test.tsx, src/frontend/components/identity/TransferScreen.test.tsx, src/frontend/components/identity/AddKeyDialog.test.tsx, src/frontend/components/identity/KeyInfoScreen.test.tsx
 **Tests added:** 23 new tests (6 for WithdrawScreen, 6 for TransferScreen, 5 for AddKeyDialog, 6 for KeyInfoScreen — covering locked gate visibility, unlock button, callback invocation, disabled states)
 **Sub-tasks created:** 0
+
+## Run 93 — 2026-02-09
+**Task:** 9.1a Build tools landing page and shared tool components
+**What was done:** Built 3 shared tool components (ToolPageLayout, HexInput, MonospaceOutput) and the Tools landing page (ToolsScreen). ToolPageLayout provides consistent back-nav + title + Island wrapper for all tool screens. HexInput is a multiline textarea with auto-format detection (hex/base64/CSV) and byte decoding helpers. MonospaceOutput is a scrollable monospace text area with copy button. The Tools landing page renders a categorized card grid (Query & Inspection, Deserializers, Advanced) linking to all 9 tool sub-screens. Updated routes.tsx to use ToolsScreen at /tools index and added /tools/platform-info route.
+**Files changed:** src/frontend/components/tools/ToolPageLayout.tsx, src/frontend/components/tools/HexInput.tsx, src/frontend/components/tools/MonospaceOutput.tsx, src/frontend/screens/ToolsScreen.tsx, src/frontend/routes.tsx, src/frontend/components/tools/ToolPageLayout.test.tsx, src/frontend/components/tools/HexInput.test.tsx, src/frontend/components/tools/MonospaceOutput.test.tsx, src/frontend/screens/ToolsScreen.test.tsx
+**Tests added:** 47 new tests (9 ToolPageLayout, 12 HexInput + detectFormat + decodeToHex unit tests, 12 MonospaceOutput, 13 ToolsScreen, 1 detectFormat edge case)
+**Sub-tasks created:** 0

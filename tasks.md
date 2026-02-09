@@ -2109,7 +2109,7 @@
 
   **Sub-tasks:**
 
-  - [ ] **9.1a** Build tools landing page and shared tool components (`ToolPageLayout`, `HexInput`, `MonospaceOutput`). The tools index route (`/tools`) renders a categorized card grid linking to each sub-tool. Write component tests.
+  - [x] **9.1a** Build tools landing page and shared tool components (`ToolPageLayout`, `HexInput`, `MonospaceOutput`). The tools index route (`/tools`) renders a categorized card grid linking to each sub-tool. Write component tests.
 
   - [ ] **9.1b** Implement Platform Info screen. Two-column layout: left shows 7 query-type cards (Basic Info, Epoch, Credits, Version Voting, Validators, Withdrawals In Queue, Completed Withdrawals); clicking a card dispatches the IPC command and shows results in the right panel with loading skeleton. Results formatted as key-value pairs with copy button. All 8 `platform_*` IPC commands already exist. Reference: `platform_info_screen.rs`. Write component tests.
 

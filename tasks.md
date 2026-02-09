@@ -1461,7 +1461,7 @@
   - [x] **5.1g** Create `ScheduledVotesTable` component and wire `DpnsScheduledVotesScreen` — sortable table with 6 columns (Name, Voter, Vote Choice, Scheduled Time, Status, Actions). Per-row "Remove" and "Cast Now" buttons (Cast Now only if Pending/Failed). Top-right "Clear All" and "Clear Casted" buttons. Empty state with instructions. Replace placeholder route. Write component + screen tests.
   - [ ] **5.1h** Create `RegisterDpnsNameScreen` — identity selector, name input with real-time validation (3-63 chars, alphanumeric + hyphen, no start/end hyphen), contested name detection (length < 20, no non-0/1 digits) with warning, fee estimation, balance check, registration status flow (form → waiting → success/error), success screen with "register another" option. Wire to identityStore + contestStore. Replace any existing placeholder. Write component tests.
 
-- [ ] **5.2 Implement DPNS active contests and voting screens** (P2)
+- [x] **5.2 Implement DPNS active contests and voting screens** (P2)
   Build the contest viewing and voting interface:
   - Sortable table: Contested Name, Locked Votes, Abstain Votes, Ending Time, Last Updated, Awarded To
   - Click to expand contest details and vote

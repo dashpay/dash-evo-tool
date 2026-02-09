@@ -559,3 +559,10 @@
 **Files changed:** src/frontend/components/dpns/ScheduledVotesTable.tsx, src/frontend/components/dpns/ScheduledVotesTable.test.tsx, src/frontend/screens/DpnsScheduledVotesScreen.tsx, src/frontend/screens/DpnsScheduledVotesScreen.test.tsx, src/frontend/routes.tsx, tasks.md, activity.md
 **Tests added:** 70 (49 ScheduledVotesTable component tests + 21 DpnsScheduledVotesScreen screen tests covering helper functions, empty states, rendering, filtering, sorting, Cast Now/Remove actions, disabled states, accessibility, data loading, action buttons, error handling, multiple votes)
 **Sub-tasks created:** 0
+
+## Run 81 — 2026-02-09
+**Task:** 5.2 Implement DPNS active contests and voting screens
+**What was done:** Verified that all DPNS active contests and voting functionality was already fully implemented in prior runs (DpnsActiveContestsScreen, ActiveContestsTable, VoteCastingDialog, contestStore). All 241 component tests pass across 5 test files. Added Playwright E2E test for the DPNS Active Contests screen covering: heading, description, action buttons (Refresh, Register Name, Cast/Schedule Votes), empty state, help text, and navigation.
+**Files changed:** tests/playwright/dpns-active-contests.spec.ts, tasks.md, activity.md
+**Tests added:** 8 Playwright E2E tests for DPNS Active Contests screen
+**Sub-tasks created:** 0

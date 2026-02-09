@@ -81,7 +81,7 @@
 
 ## Phase 1: Backend Bridge (Tauri IPC Layer)
 
-- [ ] **1.1 [META] Design the Tauri IPC command API surface** (P0)
+- [x] **1.1 [META] Design the Tauri IPC command API surface** (P0)
   Map every `BackendTask` variant and `AppContext` direct-call method to Tauri IPC commands. The existing backend has:
   - 13 BackendTask domains (Identity, Document, Contract, ContestedResource, Core, DashPay, Token, Wallet, System, MnList, PlatformInfo, GroveSTARK, BroadcastStateTransition)
   - ~70 distinct operations
@@ -89,6 +89,84 @@
   - Direct database read methods (load_local_user_identities, get_contracts, etc.)
   - Direct context methods (fee_estimator, platform_version, network, etc.)
   Design the command grouping, naming convention, serialization strategy (serde JSON), and error handling pattern. Define TypeScript type generation strategy (manual types vs. ts-rs vs. specta). Produce sub-tasks for implementing each command group.
+
+  > **Decision (Run 10):**
+  >
+  > ### Complete Backend Inventory
+  >
+  > **13 BackendTask domains, ~120 task variants, ~100 result variants:**
+  > - IdentityTask: 16 variants → IdentityResult: 10 variants
+  > - DocumentTask: 8 variants → DocumentResult: 9 variants
+  > - ContractTask: 7 variants → ContractResult: 11 variants
+  > - ContestedResourceTask: 7 variants → ContestResult: 6 variants
+  > - CoreTask: 10 variants → CoreResult: 1 variant (wraps CoreItem: 5 variants)
+  > - WalletTask: 6 variants → WalletResult: 8 variants
+  > - DashPayTask: 14 variants → DashPayResult: 14 variants
+  > - TokenTask: 23 variants → TokenResult: 20 variants
+  > - SystemTask: 2 variants → SystemResult: 1 variant
+  > - MnListTask: 5 variants → MnListResult: 4 variants
+  > - PlatformInfoTask: 8 variants → PlatformResult: 1 variant (wraps 3 sub-variants)
+  > - GroveSTARKTask: 2 variants → GroveSTARKResult: 2 variants
+  > - BroadcastStateTransition: 1 (no separate enum)
+  >
+  > **18 direct database methods called by UI** (bypassing BackendTask):
+  > - Identity ordering, alias management, deletion
+  > - Token ordering
+  > - DashPay contacts, profiles, payments (save/load/update)
+  > - Contract listing
+  > - Onboarding completion, SPV auto-start, wallet address management
+  >
+  > **~76 AppContext public methods** across 6 modules:
+  > - Core: initialization, animation, developer mode, fee management, platform info
+  > - Settings: get/update settings, password, Dash Core config, ZMQ config
+  > - Identity DB: CRUD for identities, aliases, DPNS names, scheduled votes
+  > - Contract/Token DB: CRUD for contracts, tokens, balances
+  > - Wallet lifecycle: SPV management, wallet bootstrapping, address registration
+  > - Transaction processing: finality, asset locks
+  >
+  > ### TypeScript Type Generation Strategy: tauri-specta
+  >
+  > **Chosen: `tauri-specta` v2 (Specta + Tauri 2.0 native integration)**
+  > - Automatic dependency resolution — when a parent type is registered, all dependent types are included automatically (critical for 100+ types)
+  > - Native Tauri 2.0 integration — Tauri added a `specta` feature flag for AppHandle, State, Window types
+  > - Generates both TypeScript types AND type-safe command wrapper functions
+  > - Event type generation supported in v2
+  > - `#[specta::specta]` decorator on each `#[tauri::command]` function
+  > - `tauri_specta::collect_commands!` macro gathers all commands
+  > - Types exported to `src/frontend/bindings.ts` automatically during dev builds
+  >
+  > ### IPC Command Design Decisions
+  >
+  > **1. Command Grouping:** One Rust module per domain (13 modules in `src-tauri/src/commands/`)
+  >
+  > **2. Naming Convention:** `snake_case` Rust functions, auto-converted to `camelCase` by tauri-specta for TypeScript. Prefix with domain: `identity_load`, `wallet_send_payment`, `token_mint`, etc.
+  >
+  > **3. Serialization:** serde JSON (Tauri default). All command args and return types derive `Serialize + Deserialize + specta::Type`. Complex Rust types (Arc, RwLock) replaced with serializable DTOs at the IPC boundary.
+  >
+  > **4. Error Handling:** All commands return `Result<T, String>` at the Tauri boundary. Domain errors mapped to descriptive strings. Frontend receives structured error objects.
+  >
+  > **5. Async Pattern:** Commands that dispatch BackendTasks are `async`. Long-running operations use Tauri events for progress/results rather than blocking the IPC call. Short reads (database queries, config) return directly.
+  >
+  > **6. State Access:** `tauri::State<AppState>` injected into every command. AppState wraps `Arc<AppContext>` per network + active network selection.
+  >
+  > **7. Direct DB Access:** The 18 UI-direct database calls will be exposed as dedicated Tauri commands (not routed through BackendTask). Grouped into `commands/db.rs` or folded into the relevant domain module.
+  >
+  > **8. Wallet References:** The egui code passes `Arc<RwLock<Wallet>>` to tasks. For IPC, commands accept `WalletSeedHash` (a serializable identifier) and look up the wallet from AppState.
+  >
+  > **9. Events (Backend → Frontend):**
+  > - `task-completed` — BackendTaskSuccessResult payloads
+  > - `task-error` — BackendTaskError payloads
+  > - `zmq-instant-lock` — InstantLock transaction data
+  > - `zmq-chain-lock` — ChainLock data
+  > - `zmq-chain-locked-block` — Block + ChainLock data
+  > - `zmq-connection-status` — ZMQ connection state changes
+  > - `spv-status` — SPV sync progress
+  > - `wallet-updated` — Wallet balance/state changes
+  > - `scheduled-vote-executed` — Vote casting results
+
+  **Sub-tasks produced:**
+  - [ ] **1.1a** Install and configure tauri-specta v2: Add `specta`, `tauri-specta` to src-tauri/Cargo.toml. Set up the `tauri_specta::ts::builder()` in main.rs to export bindings to `src/frontend/bindings.ts`. Add `specta` feature to the `tauri` dependency. Create a minimal test command with `#[specta::specta]` and verify TypeScript types are generated.
+  - [ ] **1.1b** Create IPC DTO types module: Create `src-tauri/src/dto/` with serializable Data Transfer Objects for all complex Rust types that cross the IPC boundary. These replace `Arc<RwLock<T>>`, `Arc<DataContract>`, etc. with owned, serializable structs. Start with: `WalletDto`, `SingleKeyWalletDto`, `QualifiedIdentityDto`, `DataContractDto`, `DocumentDto`, `TokenInfoDto`, `FeeResultDto`. All derive `Serialize, Deserialize, specta::Type, Clone`.
 
 - [ ] **1.2 Implement Tauri app state and initialization** (P0)
   Create `src-tauri/src/state.rs` that:
@@ -106,63 +184,67 @@
   - ZMQ events (instant-locked transactions, chain-locked blocks) forwarded as Tauri events
   - SPV status updates forwarded as Tauri events
   - Frontend listens with `listen("task-result", callback)`
-  - Define TypeScript types for all event payloads
+  - TypeScript types auto-generated by tauri-specta for all event payloads
   - Handle the scheduled vote polling (every 60s) in the Tauri backend
   Verify: Can dispatch a backend task and receive the result in the frontend via event.
 
 - [ ] **1.4 Implement Identity IPC commands** (P1)
-  Create `src-tauri/src/commands/identity.rs` with Tauri commands for all IdentityTask variants:
+  Create `src-tauri/src/commands/identity.rs` with Tauri commands for all IdentityTask variants (16 operations):
   - load_identity, search_identity_from_wallet, search_identities_up_to_index, search_identity_by_dpns_name
   - register_identity, top_up_identity, top_up_identity_from_platform_addresses
   - add_key_to_identity, disable_keys, replace_key
   - withdraw_from_identity, transfer_credits, transfer_to_addresses
   - register_dpns_name, refresh_identity, refresh_loaded_identities_owned_dpns_names
-  Also: load_local_user_identities, load_local_voting_identities (direct context methods)
-  Each command should be a thin wrapper: deserialize args → construct BackendTask → dispatch → return result.
+  Also: load_local_user_identities, load_local_voting_identities, get_identity_by_id, set_identity_alias, get_identity_alias, load_identity_order, save_identity_order, delete_identity (direct DB methods)
+  Each command: `#[tauri::command] #[specta::specta]`, accepts DTO args, constructs BackendTask, dispatches, returns Result<DTO, String>.
   Write Rust unit tests for serialization/deserialization of command args and results.
 
 - [ ] **1.5 Implement Wallet & Core IPC commands** (P1)
   Create `src-tauri/src/commands/wallet.rs` and `commands/core.rs` with commands for:
-  - **CoreTask:** refresh_wallet_info, refresh_single_key_wallet_info, send_wallet_payment, send_single_key_wallet_payment, create_registration_asset_lock, create_top_up_asset_lock, recover_asset_locks, start_dash_qt, get_best_chain_lock(s)
-  - **WalletTask:** generate_receive_address, fetch_platform_address_balances, transfer_platform_credits, fund_platform_address_from_asset_lock, fund_platform_address_from_wallet_utxos, withdraw_from_platform_address
-  - **Direct reads:** get_wallets, get_wallet, get_selected_wallet_hashes, wallet balance queries
+  - **CoreTask (10 ops):** get_best_chain_lock, get_best_chain_locks, refresh_wallet_info, refresh_single_key_wallet_info, send_wallet_payment, send_single_key_wallet_payment, create_registration_asset_lock, create_top_up_asset_lock, recover_asset_locks, start_dash_qt
+  - **WalletTask (6 ops):** generate_receive_address, fetch_platform_address_balances, transfer_platform_credits, fund_platform_address_from_asset_lock, fund_platform_address_from_wallet_utxos, withdraw_from_platform_address
+  - **Direct reads:** get_wallets, get_wallet, get_selected_wallet_hash, select_wallet, wallet balance queries, remove_wallet, add_wallet_address
+  - **SPV:** start_spv, stop_spv, clear_spv_data, spv_status
+  All commands accept `WalletSeedHash` identifiers (not Arc<RwLock<Wallet>>).
   Write Rust unit tests.
 
 - [ ] **1.6 Implement Contract, Document & Token IPC commands** (P1)
   Create commands for:
-  - **ContractTask:** fetch_contracts, fetch_contracts_with_descriptions, fetch_active_group_actions, remove_contract, register_data_contract, update_data_contract, save_data_contract
-  - **DocumentTask:** broadcast_document, delete_document, replace_document, transfer_document, purchase_document, set_document_price, fetch_documents
-  - **TokenTask:** All 20+ token operations (register, mint, burn, freeze, unfreeze, transfer, purchase, set_price, pause, resume, claim, update_config, query_balances, query_frozen, search, etc.)
+  - **ContractTask (7 ops):** fetch_contracts, fetch_contracts_with_descriptions, fetch_active_group_actions, remove_contract, register_data_contract, update_data_contract, save_data_contract
+  - **DocumentTask (8 ops):** broadcast_document, delete_document, replace_document, transfer_document, purchase_document, set_document_price, fetch_documents, fetch_documents_page
+  - **TokenTask (23 ops):** register_token_contract, query_my_token_balances, query_identity_token_balance, query_frozen_identities, query_descriptions_by_keyword, fetch_token_by_contract_id, fetch_token_by_token_id, save_token_locally, query_token_pricing, mint_tokens, transfer_tokens, burn_tokens, destroy_frozen_funds, freeze_tokens, unfreeze_tokens, pause_tokens, resume_tokens, claim_tokens, estimate_perpetual_rewards, update_token_config, purchase_tokens, set_direct_purchase_price, load_token_order, save_token_order
+  - **Direct DB:** get_contracts (local), get_contract_by_id, set_contract_alias, remove_token, identity_token_balances
   Write Rust unit tests.
 
 - [ ] **1.7 Implement DashPay, DPNS & remaining IPC commands** (P1)
   Create commands for:
-  - **DashPayTask:** All DashPay operations (profile, contacts, payments, search)
-  - **ContestedResourceTask:** query_dpns_contests, vote_on_dpns_names, schedule_dpns_votes, cast_scheduled_vote, clear/delete scheduled votes
-  - **PlatformInfo:** All 8 platform info query types
-  - **SystemTask:** wipe_platform_data, update_theme_preference
-  - **MnListTask:** Masternode list diff operations
-  - **GroveSTARKTask:** STARK proof operations
-  - **BroadcastStateTransition:** Direct state transition broadcast
-  - **Settings:** get_settings, update_settings, network switching
+  - **DashPayTask (14 ops):** load_profile, update_profile, load_contacts, load_contact_requests, fetch_contact_profile, search_profiles, send_contact_request, send_contact_request_with_proof, accept_contact_request, reject_contact_request, load_payment_history, send_payment_to_contact, update_contact_info, register_dashpay_addresses
+  - **DashPay direct DB (10 ops):** save_dashpay_profile, save_dashpay_contact, save_contact_request, load_contact_private_info, save_contact_private_info, set_contact_hidden, load_pending_contact_requests, load_payment_history (local), save_payment, save_dashpay_profile_avatar_bytes
+  - **ContestedResourceTask (7 ops):** query_dpns_contests, vote_on_dpns_names, schedule_dpns_votes, cast_scheduled_vote, clear_all_scheduled_votes, clear_executed_scheduled_votes, delete_scheduled_vote
+  - **DPNS direct DB:** all_contested_names, ongoing_contested_names, local_dpns_names, get_scheduled_votes
+  - **PlatformInfo (8 ops):** current_epoch_info, total_credits_on_platform, current_version_voting_state, current_validator_set_info, current_withdrawals_in_queue, recently_completed_withdrawals, basic_platform_info, fetch_address_balance
+  - **SystemTask (2 ops):** wipe_platform_data, update_theme_preference
+  - **MnListTask (5 ops):** fetch_end_dml_diff, fetch_end_qr_info, fetch_end_qr_info_with_dmls, fetch_chain_locks, fetch_diffs_chain
+  - **GroveSTARKTask (2 ops):** generate_proof, verify_proof
+  - **BroadcastStateTransition (1 op):** broadcast_state_transition
+  - **Settings (6 ops):** get_settings, update_settings, update_main_password, update_dash_core_execution_settings, update_disable_zmq, update_onboarding_completed
+  - **Context (5 ops):** get_network, get_fee_multiplier, set_fee_multiplier, is_developer_mode, enable_developer_mode
   Write Rust unit tests.
 
-- [ ] **1.8 Implement TypeScript type definitions for all IPC types** (P1)
-  Create `src/types/` with TypeScript interfaces matching every Rust struct/enum used in IPC:
-  - Identity types (QualifiedIdentity, IdentityPublicKey, etc.)
-  - Wallet types (Wallet, SingleKeyWallet, UTXO, etc.)
-  - Contract/Document types
-  - Token types (TokenInfo, distribution configs, etc.)
-  - Result types (FeeResult, all *Result enums)
-  - Error types
-  - Event payload types
-  If ts-rs or specta was chosen in 1.1, generate these automatically. Otherwise, manually define and document them.
-  Write type validation tests.
+- [ ] **1.8 Configure tauri-specta TypeScript type generation** (P1)
+  After all commands are implemented, verify that tauri-specta generates complete TypeScript bindings:
+  - All command functions exported with correct parameter and return types
+  - All DTO types exported as TypeScript interfaces
+  - All event payload types exported
+  - Bindings file at `src/frontend/bindings.ts` is complete and valid
+  - Frontend can import and use the generated types
+  Write a TypeScript test that imports the bindings and verifies key types exist.
+  (Replaces manual TypeScript type definitions — tauri-specta auto-generates everything.)
 
 - [ ] **1.9 [REVIEW] Backend bridge completeness audit** (P1)
   Systematically compare every BackendTask variant, every AppContext method called by UI screens, and every database query used by the egui UI against the implemented Tauri commands. Catalog any gaps. Check that:
   - Every operation the egui UI performs has a corresponding Tauri command
-  - All TypeScript types accurately mirror Rust types
+  - All TypeScript types accurately mirror Rust types (via tauri-specta generation)
   - Error handling is consistent and informative
   - Event payloads contain all necessary data
   Create fix tasks for any gaps found.
@@ -645,7 +727,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 36 |
-| Completed | 9 |
-| Remaining | 51 |
+| Completed | 10 |
+| Remaining | 52 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

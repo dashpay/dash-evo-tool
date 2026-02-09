@@ -64,3 +64,10 @@
 **Files changed:** .github/workflows/tauri-ci.yml, tasks.md, activity.md
 **Tests added:** 0 (CI configuration — no application tests)
 **Sub-tasks created:** 0
+
+## Run 10 — 2026-02-09
+**Task:** 1.1 [META] Design the Tauri IPC command API surface
+**What was done:** Performed comprehensive inventory of the entire backend task system: cataloged all 13 BackendTask domains (~120 task variants, ~100 result variants), 76 AppContext public methods across 6 modules, and 18 direct database calls made by UI code. Evaluated TypeScript type generation strategies (ts-rs, specta, tauri-specta, TauRPC, tauri-bindgen, tauri-typegen) and chose tauri-specta v2 for automatic dependency resolution, native Tauri 2.0 integration, and auto-generated TypeScript types + command wrappers. Designed IPC command architecture: domain-grouped modules, DTO boundary types replacing Arc/RwLock, WalletSeedHash identifiers instead of wallet references, Result<T, String> error pattern, and 9 event types for async communication. Updated existing tasks 1.2-1.8 with precise operation counts and added 2 new sub-tasks for tauri-specta setup and DTO module creation.
+**Files changed:** tasks.md, activity.md
+**Tests added:** 0 (META task — research/design only)
+**Sub-tasks created:** 2 (1.1a tauri-specta configuration, 1.1b DTO types module)

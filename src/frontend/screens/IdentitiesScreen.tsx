@@ -1130,6 +1130,8 @@ export function IdentitiesScreen() {
             preselectedIdentityId={selectedIdentityId}
             status={registerDpnsStatus}
             source="identities"
+            walletLocked={walletLocked}
+            onRequestUnlock={handleRequestUnlock}
             onSubmit={handleRegisterDpnsSubmit}
             onDismissError={() => setRegisterDpnsStatus({ type: "form" })}
             onBack={handleBackToDetail}

@@ -541,7 +541,7 @@
     and pass the correct value. This ensures the contested success message ("DPNS Name Submitted (Contested)")
     is shown when appropriate. Small fix — ~3 lines changed.
 
-  - [ ] **5.4b Add wallet-locked state display to Register Name screen** (P3)
+  - [x] **5.4b Add wallet-locked state display to Register Name screen** (P3)
     The egui version shows a wallet-locked warning and "Unlock Wallet" button when the selected identity's
     wallet is locked. Consider adding a similar check using wallet store state, showing a warning panel
     when the wallet is locked, with a link/button to unlock. Low priority since the backend handles this.
@@ -916,7 +916,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 70 |
-| Completed | 72 |
-| Remaining | 34 |
+| Completed | 73 |
+| Remaining | 33 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

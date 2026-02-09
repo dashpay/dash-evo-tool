@@ -734,3 +734,10 @@
 **Files changed:** src/frontend/screens/DpnsRegisterNameScreen.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/DpnsRegisterNameScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 2 (contested name shows contested success message, non-contested name shows normal success message)
 **Sub-tasks created:** 0
+
+## Run 106 — 2026-02-09
+**Task:** 5.4b Add wallet-locked state display to Register Name screen
+**What was done:** Added wallet-locked warning and unlock button to the DPNS Register Name screen, matching the egui pattern. When the selected identity's wallet is password-protected and locked, a warning panel with Lock icon appears between the identity selector and the form, with an "Unlock Wallet" button. The Register button is disabled while the wallet is locked. Updated both the presentational component (RegisterDpnsNameScreen.tsx) with `walletLocked`, `onRequestUnlock`, and `onIdentityChange` props, and the container component (DpnsRegisterNameScreen.tsx) with wallet store integration and WalletUnlockDialog. Also wired the existing wallet lock state from IdentitiesScreen to the embedded RegisterDpnsNameScreen.
+**Files changed:** src/frontend/components/identity/RegisterDpnsNameScreen.tsx, src/frontend/screens/DpnsRegisterNameScreen.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/components/identity/RegisterDpnsNameScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 7 (wallet locked warning display, unlock button render, unlock button click handler, register button disabled when locked, no warning when unlocked, no warning with no identity, onIdentityChange callback on mount)
+**Sub-tasks created:** 0

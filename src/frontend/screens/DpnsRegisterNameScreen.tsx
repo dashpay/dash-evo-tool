@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   RegisterDpnsNameScreen,
@@ -7,9 +7,13 @@ import {
 } from "@/components/identity/RegisterDpnsNameScreen";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useContestStore } from "@/stores/contestStore";
+import { useWalletStore } from "@/stores/walletStore";
 import { commands } from "@/bindings";
 import { LoadingSpinner } from "@/components/feedback";
-import { useState } from "react";
+import {
+  WalletUnlockDialog,
+  type WalletUnlockResult,
+} from "@/components/shared/WalletUnlockDialog";
 
 export function DpnsRegisterNameScreen() {
   const navigate = useNavigate();
@@ -26,15 +30,74 @@ export function DpnsRegisterNameScreen() {
   // Contest store — for refreshing DPNS names after registration
   const { refreshDpnsNames } = useContestStore();
 
+  // Wallet store — for wallet lock state
+  const { hdWallets, singleKeyWallets, loadWallets } = useWalletStore();
+
   // Registration status
   const [status, setStatus] = useState<RegisterDpnsNameStatus>({
     type: "form",
   });
 
-  // Load identities on mount
+  // Track which identity is selected (synced from child component via onSubmit identity ID)
+  const [selectedIdentityId, setSelectedIdentityId] = useState<string | null>(
+    null,
+  );
+
+  // Wallet unlock state
+  const [walletUnlockOpen, setWalletUnlockOpen] = useState(false);
+  const [walletUnlockError, setWalletUnlockError] = useState<string | null>(
+    null,
+  );
+  const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<
+    Set<string>
+  >(new Set());
+
+  // Resolve which identity is currently selected
+  const currentIdentityId =
+    selectedIdentityId ?? identities[0]?.id ?? null;
+
+  // Find associated wallet for current identity
+  const currentIdentity = currentIdentityId
+    ? identities.find((i) => i.id === currentIdentityId)
+    : null;
+  const associatedWallet = (() => {
+    if (!currentIdentity) return null;
+    const hashes = currentIdentity.associatedWalletHashes;
+    if (hashes.length === 0) return null;
+    for (const hash of hashes) {
+      const hd = hdWallets.find((w) => w.seedHash === hash);
+      if (hd)
+        return {
+          seedHash: hd.seedHash,
+          alias: hd.alias,
+          usesPassword: hd.usesPassword,
+          passwordHint: hd.passwordHint,
+        };
+    }
+    for (const hash of hashes) {
+      const sk = singleKeyWallets.find((w) => w.keyHash === hash);
+      if (sk)
+        return {
+          seedHash: sk.keyHash,
+          alias: sk.alias,
+          usesPassword: sk.usesPassword,
+          passwordHint: null,
+        };
+    }
+    return null;
+  })();
+
+  // Whether wallet is locked
+  const walletLocked =
+    !!associatedWallet &&
+    associatedWallet.usesPassword &&
+    !walletUnlockedHashes.has(associatedWallet.seedHash);
+
+  // Load identities and wallets on mount
   useEffect(() => {
     loadIdentities();
-  }, [loadIdentities]);
+    loadWallets();
+  }, [loadIdentities, loadWallets]);
 
   // Subscribe to identity updates
   useEffect(() => {
@@ -47,7 +110,11 @@ export function DpnsRegisterNameScreen() {
     };
   }, [subscribeIdentityUpdates]);
 
-  // Submit registration
+  // Track identity selection from child component
+  const handleIdentityChange = useCallback((identityId: string) => {
+    setSelectedIdentityId(identityId);
+  }, []);
+
   const handleSubmit = useCallback(
     async (params: { identityId: string; name: string }) => {
       setStatus({ type: "registering", startedAt: Date.now() });
@@ -92,6 +159,33 @@ export function DpnsRegisterNameScreen() {
     setStatus({ type: "form" });
   }, []);
 
+  // Wallet unlock handlers
+  const handleRequestUnlock = useCallback(() => {
+    setWalletUnlockOpen(true);
+    setWalletUnlockError(null);
+  }, []);
+
+  const handleWalletUnlockResult = useCallback(
+    async (result: WalletUnlockResult) => {
+      if (result.status === "unlocked" && associatedWallet) {
+        setWalletUnlockError(null);
+        try {
+          await commands.walletNotifyUnlocked(associatedWallet.seedHash);
+          setWalletUnlockedHashes(
+            (prev) => new Set([...prev, associatedWallet.seedHash]),
+          );
+        } catch (e) {
+          setWalletUnlockError(
+            e instanceof Error ? e.message : String(e),
+          );
+          return;
+        }
+      }
+      setWalletUnlockOpen(false);
+    },
+    [associatedWallet],
+  );
+
   // Show loading while identities are loading
   if (identitiesLoading && identities.length === 0) {
     return (
@@ -107,11 +201,29 @@ export function DpnsRegisterNameScreen() {
         identities={identities}
         status={status}
         source="dpns"
+        walletLocked={walletLocked}
+        onRequestUnlock={handleRequestUnlock}
+        onIdentityChange={handleIdentityChange}
         onSubmit={handleSubmit}
         onDismissError={handleDismissError}
         onBack={handleBack}
         onRegisterAnother={handleRegisterAnother}
       />
+
+      {/* Wallet unlock dialog */}
+      {associatedWallet && (
+        <WalletUnlockDialog
+          open={walletUnlockOpen}
+          onOpenChange={setWalletUnlockOpen}
+          walletAlias={
+            associatedWallet.alias ||
+            associatedWallet.seedHash.slice(0, 10)
+          }
+          passwordHint={associatedWallet.passwordHint ?? null}
+          error={walletUnlockError}
+          onResult={handleWalletUnlockResult}
+        />
+      )}
     </div>
   );
 }

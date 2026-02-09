@@ -555,6 +555,80 @@ describe("RegisterDpnsNameScreen", () => {
     ).toBeInTheDocument();
   });
 
+  // ─── Wallet locked state ─────────────────────────────────────
+
+  it("shows wallet locked warning when walletLocked is true", () => {
+    render(
+      <RegisterDpnsNameScreen
+        {...makeProps({ walletLocked: true })}
+      />,
+    );
+    expect(screen.getByTestId("wallet-locked-warning")).toBeInTheDocument();
+    expect(screen.getByText("Wallet is locked")).toBeInTheDocument();
+    expect(screen.getByText(/Please unlock it to continue/)).toBeInTheDocument();
+  });
+
+  it("shows unlock wallet button when walletLocked and onRequestUnlock provided", () => {
+    const onRequestUnlock = vi.fn();
+    render(
+      <RegisterDpnsNameScreen
+        {...makeProps({ walletLocked: true, onRequestUnlock })}
+      />,
+    );
+    expect(screen.getByTestId("unlock-wallet-btn")).toBeInTheDocument();
+  });
+
+  it("calls onRequestUnlock when unlock button clicked", async () => {
+    const user = userEvent.setup();
+    const onRequestUnlock = vi.fn();
+    render(
+      <RegisterDpnsNameScreen
+        {...makeProps({ walletLocked: true, onRequestUnlock })}
+      />,
+    );
+    await user.click(screen.getByTestId("unlock-wallet-btn"));
+    expect(onRequestUnlock).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables register button when wallet is locked", async () => {
+    const user = userEvent.setup();
+    render(
+      <RegisterDpnsNameScreen
+        {...makeProps({ walletLocked: true })}
+      />,
+    );
+    await user.type(screen.getByTestId("name-input"), "alice");
+    expect(screen.getByTestId("register-btn")).toBeDisabled();
+  });
+
+  it("does not show wallet locked warning when walletLocked is false", () => {
+    render(
+      <RegisterDpnsNameScreen
+        {...makeProps({ walletLocked: false })}
+      />,
+    );
+    expect(screen.queryByTestId("wallet-locked-warning")).not.toBeInTheDocument();
+  });
+
+  it("does not show wallet locked warning when no identity is selected", () => {
+    render(
+      <RegisterDpnsNameScreen
+        {...makeProps({ identities: [], walletLocked: true })}
+      />,
+    );
+    expect(screen.queryByTestId("wallet-locked-warning")).not.toBeInTheDocument();
+  });
+
+  it("calls onIdentityChange on mount with initial identity", () => {
+    const onIdentityChange = vi.fn();
+    render(
+      <RegisterDpnsNameScreen
+        {...makeProps({ onIdentityChange })}
+      />,
+    );
+    expect(onIdentityChange).toHaveBeenCalledWith(defaultIdentity.id);
+  });
+
   // ─── Preselected identity ─────────────────────────────────────
 
   it("uses preselected identity ID", () => {

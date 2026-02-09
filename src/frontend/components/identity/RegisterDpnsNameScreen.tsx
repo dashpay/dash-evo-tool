@@ -8,6 +8,7 @@ import {
   ChevronUp,
   Info,
   AlertTriangle,
+  Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,6 +53,12 @@ export interface RegisterDpnsNameScreenProps {
   status: RegisterDpnsNameStatus;
   /** Where the user came from. */
   source?: RegisterDpnsNameSource;
+  /** Whether the selected identity's wallet is locked. */
+  walletLocked?: boolean;
+  /** Called when the user requests to unlock the wallet. */
+  onRequestUnlock?: () => void;
+  /** Called when the selected identity changes (for parent wallet lookup). */
+  onIdentityChange?: (identityId: string) => void;
   /** Called to submit the registration. */
   onSubmit?: (params: { identityId: string; name: string }) => void;
   /** Called to dismiss an error. */
@@ -150,6 +157,9 @@ export function RegisterDpnsNameScreen({
   preselectedIdentityId,
   status,
   source = "identities",
+  walletLocked = false,
+  onRequestUnlock,
+  onIdentityChange,
   onSubmit,
   onDismissError,
   onBack,
@@ -213,9 +223,10 @@ export function RegisterDpnsNameScreen({
     if (nameInput.trim().length === 0) return false;
     if (signingKeys.length === 0) return false;
     if (hasInsufficientBalance) return false;
+    if (walletLocked) return false;
     if (status.type !== "form") return false;
     return true;
-  }, [selectedIdentity, validation, nameInput, signingKeys, hasInsufficientBalance, status]);
+  }, [selectedIdentity, validation, nameInput, signingKeys, hasInsufficientBalance, walletLocked, status]);
 
   // ─── Elapsed time ticker ────────────────────────────────────────
 
@@ -246,9 +257,17 @@ export function RegisterDpnsNameScreen({
     (id: string) => {
       setSelectedIdentityId(id);
       setManualKeyId(null); // reset key selection
+      onIdentityChange?.(id);
     },
-    [],
+    [onIdentityChange],
   );
+
+  // Notify parent of initial identity selection
+  useEffect(() => {
+    if (selectedIdentityId) {
+      onIdentityChange?.(selectedIdentityId);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- only on mount
 
   // ─── Breadcrumbs ────────────────────────────────────────────────
 
@@ -417,6 +436,37 @@ export function RegisterDpnsNameScreen({
               ({selectedIdentity.balance.toLocaleString()} credits)
             </p>
           )}
+        </div>
+      )}
+
+      {/* Wallet locked warning */}
+      {walletLocked && selectedIdentity && (
+        <div
+          className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-700 p-4"
+          data-testid="wallet-locked-warning"
+        >
+          <div className="flex items-start gap-3">
+            <Lock className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
+            <div className="flex-1 space-y-2">
+              <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                Wallet is locked
+              </p>
+              <p className="text-sm text-amber-700 dark:text-amber-300">
+                The wallet associated with this identity is locked. Please unlock it to continue.
+              </p>
+              {onRequestUnlock && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onRequestUnlock}
+                  data-testid="unlock-wallet-btn"
+                >
+                  <Lock className="h-3.5 w-3.5 mr-1.5" />
+                  Unlock Wallet
+                </Button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

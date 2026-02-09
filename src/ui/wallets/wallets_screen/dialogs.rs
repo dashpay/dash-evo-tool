@@ -97,7 +97,7 @@ pub(super) struct PrivateKeyDialogState {
 
 impl WalletsBalancesScreen {
     pub(super) fn draw_modal_overlay(ctx: &Context, id: &str) {
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new(id),

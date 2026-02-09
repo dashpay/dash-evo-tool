@@ -95,7 +95,7 @@ impl Wallet {
         ),
         String,
     > {
-        use rand::rngs::OsRng;
+        use bip39::rand::rngs::OsRng;
 
         // Generate a random private key for the asset lock
         let secp = Secp256k1::new();

@@ -402,37 +402,25 @@ impl SpvManager {
         let manager = Arc::clone(self);
         let global_cancel = self.subtasks.cancellation_token.clone();
 
-        // Spawn a dedicated OS thread with a multi-thread Tokio runtime for SPV operations
-        // This ensures SPV sync doesn't compete with UI thread resources
-        std::thread::Builder::new()
-            .name("spv".to_string())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(4)
-                    .enable_all()
-                    .thread_name("spv-rt")
-                    .build()
-                    .expect("Failed to create SPV runtime");
+        // Spawn SPV operations on the main application runtime
+        // This avoids creating a second runtime and simplifies the threading model
+        tokio::spawn(async move {
+            let manager_for_loop = Arc::clone(&manager);
+            if let Err(err) = manager_for_loop.run_spv_loop(stop_token, global_cancel, expected_wallet_count).await {
+                tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
+                if let Err(e) = manager.write_last_error(Some(err.clone())) {
+                    tracing::error!("Failed to write SPV error: {}", e);
+                }
+                if let Err(e) = manager.write_status(SpvStatus::Error) {
+                    tracing::error!("Failed to write SPV status: {}", e);
+                }
+            }
 
-                rt.block_on(async move {
-                    let manager_for_loop = Arc::clone(&manager);
-                    if let Err(err) = manager_for_loop.run_spv_loop(stop_token, global_cancel, expected_wallet_count).await {
-                        tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
-                        if let Err(e) = manager.write_last_error(Some(err.clone())) {
-                            tracing::error!("Failed to write SPV error: {}", e);
-                        }
-                        if let Err(e) = manager.write_status(SpvStatus::Error) {
-                            tracing::error!("Failed to write SPV status: {}", e);
-                        }
-                    }
-
-                    // Clean up on exit
-                    if let Ok(mut guard) = manager.stop_token.lock() {
-                        *guard = None;
-                    }
-                });
-            })
-            .map_err(|e| format!("Failed to spawn SPV thread: {e}"))?;
+            // Clean up on exit
+            if let Ok(mut guard) = manager.stop_token.lock() {
+                *guard = None;
+            }
+        });
 
         Ok(())
     }

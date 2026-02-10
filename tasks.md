@@ -661,7 +661,7 @@
   - `getEventListeners(eventName)` for assertions
   Write tests for the mock infrastructure itself (15+ tests).
 
-- [ ] **7.5.1b Create test fixture factories** (P0)
+- [x] **7.5.1b Create test fixture factories** (P0)
   Create `src/frontend/test/fixtures/`:
   - `wallets.ts`: `createMockHdWallet(overrides?)`, `createMockSingleKeyWallet(overrides?)`, `createMockUtxo()`, `createMockAssetLock()`
   - `identities.ts`: `createMockIdentity(overrides?)`, `createMockIdentityKey()`, `createMockQualifiedIdentity()`

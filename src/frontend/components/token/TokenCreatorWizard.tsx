@@ -19,6 +19,21 @@ import {
   createDefaultControlRulesState,
 } from "./ControlRulesStep";
 import type { ControlRulesState } from "./ControlRulesStep";
+import {
+  GroupsStep,
+  createDefaultGroupsState,
+} from "./GroupsStep";
+import type { GroupsState } from "./GroupsStep";
+import {
+  HistoryStep,
+  createDefaultHistoryState,
+} from "./HistoryStep";
+import type { HistoryState } from "./HistoryStep";
+import {
+  KeywordsStep,
+  createDefaultKeywordsState,
+} from "./KeywordsStep";
+import type { KeywordsState } from "./KeywordsStep";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -352,6 +367,9 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
   const [controlRules, setControlRules] = useState<ControlRulesState>(
     createDefaultControlRulesState,
   );
+  const [groups, setGroups] = useState<GroupsState>(createDefaultGroupsState);
+  const [history, setHistory] = useState<HistoryState>(createDefaultHistoryState);
+  const [keywords, setKeywords] = useState<KeywordsState>(createDefaultKeywordsState);
 
   const canGoNext = useCallback(() => {
     if (currentStep === 0) {
@@ -427,16 +445,16 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
           <DistributionStep state={distribution} onChange={setDistribution} />
         )}
         {currentStep === 2 && (
-          <ControlRulesStep state={controlRules} onChange={setControlRules} />
+          <ControlRulesStep state={controlRules} onChange={setControlRules} groups={groups.groups} />
         )}
         {currentStep === 3 && (
-          <PlaceholderStep label="Groups" />
+          <GroupsStep state={groups} onChange={setGroups} />
         )}
         {currentStep === 4 && (
-          <PlaceholderStep label="History" />
+          <HistoryStep state={history} onChange={setHistory} />
         )}
         {currentStep === 5 && (
-          <PlaceholderStep label="Keywords" />
+          <KeywordsStep state={keywords} onChange={setKeywords} />
         )}
         {currentStep === 6 && (
           <PlaceholderStep label="Review & Create" />

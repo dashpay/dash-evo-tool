@@ -467,7 +467,7 @@ impl AddNewWalletScreen {
         }
 
         // Draw dark overlay behind the dialog
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("receive_funds_overlay"),

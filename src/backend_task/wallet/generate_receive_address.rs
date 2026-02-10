@@ -35,7 +35,7 @@ impl AppContext {
         } else {
             let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
             wallet
-                .receive_address(self.network, false, Some(self))?
+                .receive_address(self.network, true, Some(self))?
                 .to_string()
         };
 

@@ -1,9 +1,10 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::wallet::WalletSeedHash;
+use crate::spv::CoreBackendMode;
 use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,9 +32,12 @@ impl AppContext {
             // Fees deducted from output: use the requested amount, allow core fee to be taken from it
             (amount, true)
         } else {
-            // Fees paid from wallet: add estimated platform fee to asset lock amount
-            let estimated_platform_fee_duffs =
-                PlatformFeeEstimator::new().estimate_address_funding_from_asset_lock_duffs(1);
+            // Fees paid from wallet: add estimated platform fee to asset lock amount.
+            // We use 2 outputs: the destination (explicit amount) and a change address
+            // (remainder recipient that absorbs the fee).
+            let estimated_platform_fee_duffs = self
+                .fee_estimator()
+                .estimate_address_funding_from_asset_lock_duffs(2);
             let asset_lock_amount = amount.saturating_add(estimated_platform_fee_duffs);
             (asset_lock_amount, false)
         };
@@ -120,31 +124,51 @@ impl AppContext {
                     .map_err(|e| e.to_string())?;
             }
 
-            // Update address_balances for affected addresses
-            let affected_addresses: std::collections::BTreeSet<_> =
-                used_utxos.values().map(|(_, addr)| addr.clone()).collect();
-            for address in affected_addresses {
-                // Recalculate balance from remaining UTXOs for this address
-                let new_balance = wallet
-                    .utxos
-                    .get(&address)
-                    .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-                    .unwrap_or(0);
-                let _ = wallet.update_address_balance(&address, new_balance, self);
-            }
+            wallet.recalculate_affected_address_balances(&used_utxos, self)?;
         }
 
-        // Step 5: Wait for asset lock proof (InstantLock or ChainLock)
+        // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout
         let asset_lock_proof: AssetLockProof;
+        let timeout = tokio::time::sleep(Duration::from_secs(300)); // 5 minute timeout
+        tokio::pin!(timeout);
+
         loop {
-            {
-                let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                if let Some(Some(proof)) = proofs.get(&tx_id) {
-                    asset_lock_proof = proof.clone();
-                    break;
+            tokio::select! {
+                _ = &mut timeout => {
+                    // Best-effort cleanup: use try_lock to avoid blocking the
+                    // async runtime if another thread holds the mutex.
+                    if let Ok(mut proofs) = self.transactions_waiting_for_finality.try_lock() {
+                        proofs.remove(&tx_id);
+                    }
+
+                    // Auto-refresh wallet UTXOs in RPC mode so the broadcast tx's
+                    // spent inputs are reconciled (the tx was already broadcast and
+                    // may confirm later). SPV handles its own reconciliation.
+                    if self.core_backend_mode() == CoreBackendMode::Rpc
+                        && let Some(wallet_arc) = self.wallets.read().ok()
+                            .and_then(|w| w.get(&seed_hash).cloned())
+                    {
+                        let ctx = Arc::clone(self);
+                        // Fire-and-forget — don't block the error return on refresh
+                        tokio::task::spawn_blocking(move || {
+                            if let Err(e) = ctx.refresh_wallet_info(wallet_arc) {
+                                tracing::warn!("Failed to auto-refresh wallet after timeout: {}", e);
+                            }
+                        });
+                    }
+
+                    return Err("Timeout waiting for asset lock proof — no InstantLock or ChainLock received within 5 minutes".to_string());
+                }
+                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                    // Brief lock to check for proof — acquired and released quickly
+                    // so contention is minimal.
+                    let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                        asset_lock_proof = proof.clone();
+                        break;
+                    }
                 }
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
         // Step 6: Clean up the finality tracking
@@ -153,8 +177,8 @@ impl AppContext {
             proofs.remove(&tx_id);
         }
 
-        // Step 7: Get wallet and SDK for the platform funding operation
-        let (wallet, sdk) = {
+        // Step 7: Get wallet, SDK, and derive a fresh change address if needed
+        let (wallet, sdk, change_platform_address) = {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
                 wallets
@@ -162,16 +186,62 @@ impl AppContext {
                     .cloned()
                     .ok_or_else(|| "Wallet not found".to_string())?
             };
+
+            // Derive a fresh change address from the BIP44 internal (change) path
+            // while we have write access (only needed when fees are NOT deducted
+            // from the output). Using change_address() ensures proper BIP44
+            // separation between receive and change addresses.
+            let change_platform_address = if !fee_deduct_from_output {
+                let mut wallet_w = wallet_arc.write().map_err(|e| e.to_string())?;
+                let addr = wallet_w.change_address(self.network, Some(self))?;
+                Some(
+                    PlatformAddress::try_from(addr)
+                        .map_err(|e| format!("Failed to convert change address: {}", e))?,
+                )
+            } else {
+                None
+            };
+
             let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
             let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
-            (wallet, sdk)
+            (wallet, sdk, change_platform_address)
         };
 
         // Step 8: Fund the destination platform address
         let mut outputs = std::collections::BTreeMap::new();
-        outputs.insert(destination, None); // None means use all available funds
 
-        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+        let fee_strategy = if fee_deduct_from_output {
+            // Fee deducted from output: destination is the remainder recipient (gets
+            // asset lock value minus fee). ReduceOutput(0) tells Platform to deduct
+            // the fee from the single output.
+            outputs.insert(destination, None);
+            vec![AddressFundsFeeStrategyStep::ReduceOutput(0)]
+        } else {
+            // Fee NOT deducted from output: destination receives the exact requested
+            // amount. We use a fresh wallet-controlled change address to absorb the
+            // fee estimate surplus, keeping it spendable.
+            let amount_credits = amount.checked_mul(CREDITS_PER_DUFF).ok_or_else(|| {
+                format!(
+                    "Overflow converting {amount} duffs to credits (CREDITS_PER_DUFF = {CREDITS_PER_DUFF})"
+                )
+            })?;
+
+            if let Some(change_address) = change_platform_address {
+                outputs.insert(destination, Some(amount_credits));
+                outputs.insert(change_address, None); // Remainder recipient
+
+                // Determine the BTreeMap index of the change address to target it
+                // with the fee strategy (BTreeMap iterates in key order).
+                let change_index = outputs
+                    .keys()
+                    .position(|k| *k == change_address)
+                    .ok_or("Change address not found in outputs map")?
+                    as u16;
+                vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
+            } else {
+                return Err("Failed to derive a change address for platform funding".to_string());
+            }
+        };
 
         outputs
             .top_up(

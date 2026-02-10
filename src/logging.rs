@@ -13,27 +13,45 @@ pub fn initialize_logger() {
 }
 
 fn initialize_logger_internal() {
-    // Initialize log file, with improved error handling
-    let log_file_path = app_user_data_file_path("det.log").expect("should create log file path");
-    let log_file = match std::fs::File::create(&log_file_path) {
-        Ok(file) => file,
-        Err(e) => panic!("Failed to create log file: {:?}", e),
-    };
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::try_new(
             "info,dash_evo_tool=trace,dash_sdk=debug,dash_sdk::platform::transition=trace,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug,h2=warn,dash_spv=debug",
         )
-        .unwrap_or_else(|e| panic!("Failed to create EnvFilter: {:?}", e))
+        .unwrap_or_else(|_| EnvFilter::new("info"))
     });
 
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(log_file)
-        .with_ansi(false)
-        .finish();
+    // Try to create a log file; fall back to stderr if it fails
+    let log_file_result = app_user_data_file_path("det.log").and_then(std::fs::File::create);
 
-    // Set global subscriber - ignore error if already set (can happen in tests)
-    if let Err(_e) = tracing::subscriber::set_global_default(subscriber) {
+    let (subscriber_set, log_file_path_for_msg) = match log_file_result {
+        Ok(log_file) => {
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(log_file)
+                .with_ansi(false)
+                .finish();
+            let set = tracing::subscriber::set_global_default(subscriber).is_ok();
+            (set, Some(app_user_data_file_path("det.log").ok()))
+        }
+        Err(e) => {
+            // Fall back to stderr logging
+            let subscriber = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(std::io::stderr)
+                .with_ansi(true)
+                .finish();
+            let set = tracing::subscriber::set_global_default(subscriber).is_ok();
+            if set {
+                eprintln!(
+                    "Warning: Could not create log file, logging to stderr: {}",
+                    e
+                );
+            }
+            (set, None)
+        }
+    };
+
+    if !subscriber_set {
         // Logger already initialized, this is fine
         return;
     }
@@ -59,9 +77,16 @@ fn initialize_logger_internal() {
         default_panic_hook(panic_info);
     }));
 
-    info!(
-        version = VERSION,
-        log_file = ?log_file_path,
-        "Dash-Evo-Tool logging initialized successfully"
-    );
+    if let Some(Some(path)) = log_file_path_for_msg {
+        info!(
+            version = VERSION,
+            log_file = ?path,
+            "Dash-Evo-Tool logging initialized successfully"
+        );
+    } else {
+        info!(
+            version = VERSION,
+            "Dash-Evo-Tool logging initialized (stderr fallback)"
+        );
+    }
 }

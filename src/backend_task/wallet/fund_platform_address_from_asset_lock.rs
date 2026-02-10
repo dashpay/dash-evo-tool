@@ -46,7 +46,7 @@ impl AppContext {
         };
 
         // Check if we need to convert an old instant lock proof to a chain lock proof
-        use crate::context::get_transaction_info_via_dapi;
+        use crate::context::get_transaction_info;
         use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
         use dash_sdk::platform::Fetch;
 
@@ -57,7 +57,7 @@ impl AppContext {
             let tx_id = instant_asset_lock_proof.transaction().txid();
 
             // Query DAPI to check if the transaction has been chain-locked
-            let tx_info = get_transaction_info_via_dapi(&sdk, &tx_id).await?;
+            let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
             if tx_info.is_chain_locked && tx_info.height > 0 && tx_info.confirmations > 8 {
                 // Transaction has been chain-locked with sufficient confirmations

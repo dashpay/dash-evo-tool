@@ -10,6 +10,7 @@ use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdenti
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
@@ -371,17 +372,30 @@ impl TopUpIdentityScreen {
 
         // Only apply max amount restriction when using wallet balance
         // For QR code funding, funds come from external source so no max applies
-        let (max_amount, show_max_button) = if funding_method == FundingMethod::UseWalletBalance {
-            let max_amount_duffs = self
-                .wallet
-                .as_ref()
-                .map(|w| w.read().unwrap().total_balance_duffs())
-                .unwrap_or(0);
-            // Convert Duffs to Credits (1 Duff = 1000 Credits)
-            (Some(max_amount_duffs * 1000), true)
-        } else {
-            (None, false)
-        };
+        let (max_amount, show_max_button, fee_hint) =
+            if funding_method == FundingMethod::UseWalletBalance {
+                let max_amount_duffs = self
+                    .wallet
+                    .as_ref()
+                    .map(|w| w.read().unwrap().total_balance_duffs())
+                    .unwrap_or(0);
+                // Convert Duffs to Credits (1 Duff = 1000 Credits)
+                let total_credits = max_amount_duffs * 1000;
+                // Reserve estimated fees so "Max" doesn't exceed spendable amount
+                let fee_estimator = self.app_context.fee_estimator();
+                let estimated_fee = fee_estimator.estimate_identity_topup();
+                let max_with_fee_reserved = total_credits.saturating_sub(estimated_fee);
+                (
+                    Some(max_with_fee_reserved),
+                    true,
+                    Some(format!(
+                        "~{} reserved for fees",
+                        format_credits_as_dash(estimated_fee)
+                    )),
+                )
+            } else {
+                (None, false, None)
+            };
 
         // Lazy initialization of the AmountInput component
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {
@@ -394,6 +408,7 @@ impl TopUpIdentityScreen {
         // Update max amount and button visibility in case funding method or wallet balance changed
         amount_input.set_max_amount(max_amount);
         amount_input.set_show_max_button(show_max_button);
+        amount_input.set_max_exceeded_hint(fee_hint);
 
         let response = amount_input.show(ui);
 

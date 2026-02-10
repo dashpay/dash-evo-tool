@@ -33,21 +33,22 @@ Test locations:
 
 ### Core Module Structure
 
-- **app.rs** - Main application state, task result handling, screen management
-- **ui/** - Screens (network_chooser, dpns, identities, wallets, contracts_documents, tokens, dashpay, tools) and reusable components
-- **backend_task/** - Async business logic (contract, document, platform_info, identity, wallet operations)
+- **app.rs** - `AppState`: owns all screens, polls task results each frame, dispatches to visible screen
+- **ui/** - Screens and reusable components (`ui/components/`)
+- **backend_task/** - Async business logic, one submodule per domain (identity, wallet, contract, etc.)
 - **model/** - Data types (amounts, fees, settings, wallet/identity models)
-- **database/** - SQLite persistence (rusqlite) for wallets, identities, settings, proof logs
-- **context.rs** - Application context (network config, SDK client, database connection)
+- **database/** - SQLite persistence (rusqlite), one module per domain
+- **context/** - `AppContext`: network config, SDK client, database, wallets, settings cache (split into submodules: `identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.)
 - **spv/** - Simplified Payment Verification for light wallet support
-- **components/core_zmq_listener** - Real-time Dash Core event listening
+- **components/core_zmq_listener** - Real-time Dash Core event listening via ZMQ
 
 ### Key Dependencies
 
-- `dash-sdk` - Dash blockchain SDK (platform protocol, core interactions)
-- `egui/eframe` - Immediate mode GUI framework
+- `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)
+- `egui/eframe 0.33` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
+- Rust edition 2024, minimum rust-version 1.92
 
 ### Configuration
 
@@ -57,6 +58,50 @@ Environment config via `.env` in app directory:
 - Windows: `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config\.env`
 
 See `.env.example` for network configuration options.
+
+## App Task System (Critical Pattern)
+
+The UI and async backend communicate through an action/channel pattern:
+
+1. **Screens return `AppAction`** from their `ui()` method (e.g., `AppAction::BackendTask(task)`)
+2. **`AppState` spawns a tokio task** that calls `app_context.run_backend_task(task, sender)`
+3. **`AppContext::run_backend_task()`** matches on the `BackendTask` enum and dispatches to domain-specific async methods
+4. **Results come back** via tokio MPSC channel as `TaskResult` (Success/Error/Refresh)
+5. **Main `update()` loop** polls `task_result_receiver.try_recv()` each frame and routes results to the visible screen's `display_task_result()`
+
+```
+Screen::ui() → AppAction::BackendTask(task)
+    → tokio::spawn → AppContext::run_backend_task()
+    → sender.send(TaskResult::Success(result))
+    → AppState::update() polls receiver → Screen::display_task_result()
+```
+
+**Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
+
+## Screen Pattern
+
+All screens implement the `ScreenLike` trait:
+- `ui(&mut self, ctx: &Context) -> AppAction` - Render UI, return actions
+- `display_task_result(&mut self, result: BackendTaskSuccessResult)` - Handle async results
+- `display_message(&mut self, msg: &str, type: MessageType)` - Show user feedback
+- `refresh(&mut self)` / `refresh_on_arrival(&mut self)` - Re-fetch data
+- `change_context(&mut self, app_context: &Arc<AppContext>)` - Handle network switch
+
+**Screen types**:
+- **Root screens**: Stored in `AppState.main_screens` (BTreeMap by `RootScreenType`), persist across navigation
+- **Modal/detail screens**: Pushed onto `AppState.screen_stack`, popped when dismissed
+
+Screens hold `Arc<AppContext>` and manage their own UI state.
+
+## AppContext
+
+`AppContext` (~50 fields) is `Arc`-wrapped and shared across all screens and async tasks. Key contents:
+- `sdk: RwLock<Sdk>` - Dash SDK (clone for async use to avoid holding lock across await)
+- `db: Arc<Database>` - SQLite persistence
+- `wallets: RwLock<BTreeMap<...>>` - Loaded wallets
+- Cached system contracts (DPNS, DashPay, withdrawals, tokens, keyword search)
+- `connection_status`, `developer_mode`, `fee_multiplier_permille`
+- Per-network instances (mainnet always present, others created on demand)
 
 ## UI Component Pattern
 
@@ -77,14 +122,18 @@ response.inner.update(&mut self.amount);
 **Requirements:**
 - Private fields only
 - Builder methods for configuration (`with_label()`, etc.)
-- Response struct with `ComponentResponse` trait
+- Response struct with `ComponentResponse` trait (`has_changed()`, `is_valid()`, `changed_value()`)
 - Self-contained validation and error handling
 - Support both light and dark mode via `ComponentStyles`
 
 **Anti-patterns:** public mutable fields, eager initialization, not clearing invalid data
 
+## Database
+
+Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors are `Result<T, String>` — string errors display directly to users.
+
 ## Platform Targets
 
 Linux (x86_64/aarch64), Windows (x86_64), macOS (x86_64/aarch64 with code signing)
 
-Requires protoc v25.2+ for protocol buffer compilation.
+Requires protoc v25.2+ for protocol buffer compilation. Different ZMQ libraries for Windows (`zeromq`) vs Unix (`zmq`).

@@ -36,7 +36,7 @@ fn load_icon() -> egui::IconData {
     let image = image::imageops::resize(&image, 64, 64, image::imageops::FilterType::Lanczos3);
     let (width, height) = image.dimensions();
     egui::IconData {
-        rgba: image.into_raw(),
+        rgba: image.to_vec(),
         width,
         height,
     }

@@ -255,9 +255,11 @@ impl AppContext {
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => self
                 .create_registration_asset_lock(wallet, amount, true, identity_index)
+                .await
                 .map_err(|e| format!("Error creating asset lock: {}", e)),
             CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => self
                 .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
+                .await
                 .map_err(|e| format!("Error creating top up asset lock: {}", e)),
             CoreTask::SendWalletPayment { wallet, request } => {
                 self.send_wallet_payment(wallet, request).await
@@ -483,7 +485,12 @@ impl AppContext {
         const FALLBACK_STEP: u64 = 100;
 
         let network = self.wallet_network_key();
-        let current_height = wm.current_height();
+        let current_height = self
+            .spv_manager()
+            .status()
+            .sync_progress
+            .map(|p| p.header_height)
+            .ok_or("Cannot build transaction: SPV sync height is not yet known")?;
         let total_amount: u64 = recipients.iter().map(|(_, amt)| *amt).sum();
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;

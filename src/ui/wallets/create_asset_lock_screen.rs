@@ -107,7 +107,7 @@ impl CreateAssetLockScreen {
 
         // Generate a new asset lock funding address
         let receive_address =
-            wallet.receive_address(self.app_context.network, false, Some(&self.app_context))?;
+            wallet.receive_address(self.app_context.network, true, Some(&self.app_context))?;
 
         // Import address to core if needed
         if let Some(has_address) = self.core_has_funding_address {

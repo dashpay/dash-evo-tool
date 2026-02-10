@@ -1,11 +1,11 @@
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
-use crate::context::{AppContext, get_transaction_info_via_dapi};
+use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use crate::spv::CoreBackendMode;
 use dash_sdk::dash_spv::Network;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
@@ -22,7 +22,6 @@ use dash_sdk::platform::{Fetch, FetchMany, Identity};
 use dash_sdk::query_types::AddressInfo;
 use dash_sdk::{Error, Sdk};
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 impl AppContext {
     pub(super) async fn register_identity(
@@ -65,7 +64,7 @@ impl AppContext {
                     asset_lock_proof.as_ref()
                 {
                     // we need to make sure the instant send asset lock is recent
-                    let tx_info = get_transaction_info_via_dapi(&sdk, &tx_id).await?;
+                    let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
                     if tx_info.is_chain_locked && tx_info.height > 0 && tx_info.confirmations > 8 {
                         // Transaction is old enough that instant lock may have expired
@@ -107,24 +106,34 @@ impl AppContext {
                         Some(self),
                     ) {
                         Ok(transaction) => transaction,
-                        Err(_) => {
-                            wallet
-                                .reload_utxos(
-                                    &self
-                                        .core_client
-                                        .read()
-                                        .expect("Core client lock was poisoned"),
-                                    self.network,
-                                    Some(self),
-                                )
-                                .map_err(|e| e.to_string())?;
-                            wallet.registration_asset_lock_transaction(
-                                sdk.network,
-                                amount,
-                                true,
-                                identity_index,
-                                Some(self),
-                            )?
+                        Err(e) => {
+                            match self.core_backend_mode() {
+                                CoreBackendMode::Rpc => {
+                                    wallet
+                                        .reload_utxos(
+                                            &self
+                                                .core_client
+                                                .read()
+                                                .expect("Core client lock was poisoned"),
+                                            self.network,
+                                            Some(self),
+                                        )
+                                        .map_err(|e| e.to_string())?;
+                                    wallet.registration_asset_lock_transaction(
+                                        sdk.network,
+                                        amount,
+                                        true,
+                                        identity_index,
+                                        Some(self),
+                                    )?
+                                }
+                                CoreBackendMode::Spv => {
+                                    // SPV wallet state is authoritative — UTXOs are synced
+                                    // continuously via compact block filters. No Core RPC
+                                    // fallback available.
+                                    return Err(e);
+                                }
+                            }
                         }
                     }
                 };
@@ -136,11 +145,8 @@ impl AppContext {
                     proofs.insert(tx_id, None);
                 }
 
-                self.core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
-                    .send_raw_transaction(&asset_lock_transaction)
-                    .map_err(|e| e.to_string())?;
+                self.broadcast_raw_transaction(&asset_lock_transaction)
+                    .await?;
 
                 // Store the asset lock transaction in the database immediately after sending.
                 // This ensures it's tracked even if the proof times out or identity creation fails.
@@ -172,47 +178,10 @@ impl AppContext {
                             .map_err(|e| e.to_string())?;
                     }
 
-                    // Update address_balances for affected addresses
-                    let affected_addresses: std::collections::BTreeSet<_> =
-                        used_utxos.values().map(|(_, addr)| addr.clone()).collect();
-                    for address in affected_addresses {
-                        // Recalculate balance from remaining UTXOs for this address
-                        let new_balance = wallet
-                            .utxos
-                            .get(&address)
-                            .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-                            .unwrap_or(0);
-                        let _ = wallet.update_address_balance(&address, new_balance, self);
-                    }
+                    wallet.recalculate_affected_address_balances(&used_utxos, self)?;
                 }
 
-                // Wait for asset lock proof with timeout (2 minutes)
-                const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
-                let asset_lock_proof = match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                return proof.clone();
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-                })
-                .await
-                {
-                    Ok(proof) => proof,
-                    Err(_) => {
-                        // Clean up on timeout
-                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                        proofs.remove(&tx_id);
-                        return Err(format!(
-                            "Timeout waiting for asset lock proof after {} seconds. \
-                             The transaction may not have been confirmed by the network.",
-                            ASSET_LOCK_PROOF_TIMEOUT.as_secs()
-                        ));
-                    }
-                };
+                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -287,11 +256,8 @@ impl AppContext {
                     proofs.insert(tx_id, None);
                 }
 
-                self.core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
-                    .send_raw_transaction(&asset_lock_transaction)
-                    .map_err(|e| e.to_string())?;
+                self.broadcast_raw_transaction(&asset_lock_transaction)
+                    .await?;
 
                 // Store the asset lock transaction in the database immediately after sending.
                 // This ensures it's tracked even if the proof times out or identity creation fails.
@@ -317,42 +283,10 @@ impl AppContext {
                         .drop_utxo(&utxo, &self.network.to_string())
                         .map_err(|e| e.to_string())?;
 
-                    // Update address_balance for the affected address
-                    let new_balance = wallet
-                        .utxos
-                        .get(&input_address)
-                        .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
-                        .unwrap_or(0);
-                    let _ = wallet.update_address_balance(&input_address, new_balance, self);
+                    wallet.recalculate_address_balance(&input_address, self)?;
                 }
 
-                // Wait for asset lock proof with timeout (2 minutes)
-                const ASSET_LOCK_PROOF_TIMEOUT: Duration = Duration::from_secs(120);
-                let asset_lock_proof = match tokio::time::timeout(ASSET_LOCK_PROOF_TIMEOUT, async {
-                    loop {
-                        {
-                            let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                            if let Some(Some(proof)) = proofs.get(&tx_id) {
-                                return proof.clone();
-                            }
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    }
-                })
-                .await
-                {
-                    Ok(proof) => proof,
-                    Err(_) => {
-                        // Clean up on timeout
-                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                        proofs.remove(&tx_id);
-                        return Err(format!(
-                            "Timeout waiting for asset lock proof after {} seconds. \
-                             The transaction may not have been confirmed by the network.",
-                            ASSET_LOCK_PROOF_TIMEOUT.as_secs()
-                        ));
-                    }
-                };
+                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -481,7 +415,7 @@ impl AppContext {
                     || e.contains("wasn't created recently")
                 {
                     // Try to use chain asset lock proof instead
-                    let tx_info = get_transaction_info_via_dapi(&sdk, &tx_id).await?;
+                    let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
                     if tx_info.is_chain_locked && tx_info.height > 0 {
                         let tx_block_height = tx_info.height;

@@ -54,8 +54,8 @@ impl Encode for WalletDerivationPath {
     }
 }
 
-impl<Context> Decode<Context> for WalletDerivationPath {
-    fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, DecodeError> {
+impl<C> Decode<C> for WalletDerivationPath {
+    fn decode<D: Decoder<Context = C>>(decoder: &mut D) -> Result<Self, DecodeError> {
         // Decode `wallet_seed_hash`
         let wallet_seed_hash = WalletSeedHash::decode(decoder)?;
 
@@ -92,8 +92,10 @@ impl<Context> Decode<Context> for WalletDerivationPath {
     }
 }
 
-impl<'de, Context> BorrowDecode<'de, Context> for WalletDerivationPath {
-    fn borrow_decode<D: BorrowDecoder<'de>>(decoder: &mut D) -> Result<Self, DecodeError> {
+impl<'de, C> BorrowDecode<'de, C> for WalletDerivationPath {
+    fn borrow_decode<D: BorrowDecoder<'de, Context = C>>(
+        decoder: &mut D,
+    ) -> Result<Self, DecodeError> {
         // Decode `wallet_seed_hash`
         let wallet_seed_hash = WalletSeedHash::decode(decoder)?;
 

@@ -38,6 +38,9 @@ import { TokenMyTokensScreen } from "@/screens/TokenMyTokensScreen";
 import { TokenSearchScreen } from "@/screens/TokenSearchScreen";
 import { TokenAddByIdScreen } from "@/screens/TokenAddByIdScreen";
 import { TokenCreatorScreen } from "@/screens/TokenCreatorScreen";
+import { TokenTransferScreen } from "@/screens/TokenTransferScreen";
+import { TokenMintScreen } from "@/screens/TokenMintScreen";
+import { TokenBurnScreen } from "@/screens/TokenBurnScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -279,19 +282,19 @@ const tokensAddByIdRoute = createRoute({
 const tokensTransferRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/transfer",
-  component: () => <PlaceholderScreen title="Transfer Tokens" />,
+  component: TokenTransferScreen,
 });
 
 const tokensMintRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/mint",
-  component: () => <PlaceholderScreen title="Mint Tokens" />,
+  component: TokenMintScreen,
 });
 
 const tokensBurnRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/burn",
-  component: () => <PlaceholderScreen title="Burn Tokens" />,
+  component: TokenBurnScreen,
 });
 
 const tokensFreezeRoute = createRoute({

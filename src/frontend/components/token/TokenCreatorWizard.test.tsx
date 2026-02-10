@@ -505,9 +505,8 @@ describe("TokenCreatorWizard", () => {
 
     await user.click(screen.getByTestId("wizard-next"));
     expect(
-      screen.getByTestId("placeholder-step-distribution"),
+      screen.getByTestId("distribution-step"),
     ).toBeInTheDocument();
-    expect(screen.getByText("Distribution — coming soon")).toBeInTheDocument();
   });
 
   it("allows clicking on completed step indicators to navigate back", async () => {

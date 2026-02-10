@@ -9,6 +9,11 @@ import {
   Minus,
   Plus,
 } from "lucide-react";
+import {
+  DistributionStep,
+  createDefaultDistributionState,
+} from "./DistributionStep";
+import type { DistributionState } from "./DistributionStep";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -336,6 +341,9 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
   const [basicInfo, setBasicInfo] = useState<BasicInfoState>(
     createDefaultBasicInfo,
   );
+  const [distribution, setDistribution] = useState<DistributionState>(
+    createDefaultDistributionState,
+  );
 
   const canGoNext = useCallback(() => {
     if (currentStep === 0) {
@@ -408,7 +416,7 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
           <BasicInfoStep state={basicInfo} onChange={setBasicInfo} />
         )}
         {currentStep === 1 && (
-          <PlaceholderStep label="Distribution" />
+          <DistributionStep state={distribution} onChange={setDistribution} />
         )}
         {currentStep === 2 && (
           <PlaceholderStep label="Control Rules" />

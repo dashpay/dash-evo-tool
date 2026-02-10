@@ -119,36 +119,35 @@ export function TokenMyTokensScreen() {
     loadMyTokenBalances();
   }, [loadMyTokenBalances]);
 
-  // Handle token action from dropdown menu
+  // Handle token action from Level 2 detail view (has full entry with identityId)
   const handleAction = useCallback(
-    (tokenId: string, action: TokenAction) => {
-      if (action === "moreInfo") {
-        const entry = tokens.find((t) => t.tokenId === tokenId);
-        if (entry) {
-          setSelectedTokenInfo(toTokenInfoData(entry));
-          setInfoDialogOpen(true);
-        }
-        return;
-      }
-
+    (entry: TokenEntry, action: TokenAction) => {
       const route = actionToRoute(action);
       if (route) {
-        // Find the token to pass context via search params
-        const entry = tokens.find((t) => t.tokenId === tokenId);
-        if (entry) {
-          navigate({
-            to: route,
-            search: {
-              tokenId: entry.tokenId,
-              contractId: entry.contractId,
-              tokenPosition: String(entry.tokenPosition),
-              identityId: entry.identityId,
-            },
-          });
-        }
+        navigate({
+          to: route,
+          search: {
+            tokenId: entry.tokenId,
+            contractId: entry.contractId,
+            tokenPosition: String(entry.tokenPosition),
+            identityId: entry.identityId,
+          },
+        });
       }
     },
-    [tokens, navigate],
+    [navigate],
+  );
+
+  // Handle "More Info" (token-level, no specific identity needed)
+  const handleMoreInfo = useCallback(
+    (tokenId: string) => {
+      const entry = tokens.find((t) => t.tokenId === tokenId);
+      if (entry) {
+        setSelectedTokenInfo(toTokenInfoData(entry));
+        setInfoDialogOpen(true);
+      }
+    },
+    [tokens],
   );
 
   // Handle remove
@@ -227,6 +226,7 @@ export function TokenMyTokensScreen() {
             sortOrder={sortOrder}
             onSortChange={setSortColumn}
             onAction={handleAction}
+            onMoreInfo={handleMoreInfo}
             onRemove={handleRemove}
           />
         )}

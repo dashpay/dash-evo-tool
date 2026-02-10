@@ -1,8 +1,9 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
+  ArrowLeft,
   MoreVertical,
   Send,
   Coins,
@@ -66,6 +67,17 @@ export type TokenAction =
   | "moreInfo"
   | "remove";
 
+/** A summary of a unique token for the Level 1 list. */
+export interface TokenSummary {
+  tokenId: string;
+  contractId: string;
+  tokenPosition: number;
+  name: string | null;
+  decimals: number;
+  /** Number of identities holding this token. */
+  identityCount: number;
+}
+
 export interface MyTokensTableProps {
   /** Token entries to display (sorted by the store). */
   tokens: TokenEntry[];
@@ -75,8 +87,10 @@ export interface MyTokensTableProps {
   sortOrder: TokenSortOrder;
   /** Called when a sort column header is clicked. */
   onSortChange: (column: TokenSortColumn) => void;
-  /** Called when an action is triggered on a token. */
-  onAction: (tokenId: string, action: TokenAction) => void;
+  /** Called when an action is triggered on a token entry (includes identityId context). */
+  onAction: (entry: TokenEntry, action: TokenAction) => void;
+  /** Called when "More Info" is triggered (token-level, not identity-specific). */
+  onMoreInfo: (tokenId: string) => void;
   /** Called to remove a token (after confirmation). */
   onRemove: (tokenId: string) => void;
 }
@@ -103,6 +117,25 @@ function formatTokenBalance(balance: string, decimals: number): string {
 function truncateId(id: string, chars = 8): string {
   if (id.length <= chars * 2 + 3) return id;
   return `${id.slice(0, chars)}...${id.slice(-chars)}`;
+}
+
+/** Group token entries by tokenId into summaries. */
+function groupTokens(tokens: TokenEntry[]): TokenSummary[] {
+  const map = new Map<string, TokenSummary>();
+  for (const t of tokens) {
+    if (!map.has(t.tokenId)) {
+      map.set(t.tokenId, {
+        tokenId: t.tokenId,
+        contractId: t.contractId,
+        tokenPosition: t.tokenPosition,
+        name: t.name,
+        decimals: t.decimals,
+        identityCount: 0,
+      });
+    }
+    map.get(t.tokenId)!.identityCount++;
+  }
+  return Array.from(map.values());
 }
 
 // ─── Sort indicator ─────────────────────────────────────────────────
@@ -162,22 +195,76 @@ export function MyTokensTable({
   sortOrder,
   onSortChange,
   onAction,
+  onMoreInfo,
   onRemove,
 }: MyTokensTableProps) {
+  const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
-  const [tokenToRemove, setTokenToRemove] = useState<TokenEntry | null>(null);
+  const [tokenToRemove, setTokenToRemove] = useState<TokenSummary | null>(null);
 
-  const handleAction = (token: TokenEntry, action: TokenAction) => {
-    if (action === "remove") {
-      setTokenToRemove(token);
-      setRemoveDialogOpen(true);
-      return;
-    }
-    onAction(token.tokenId, action);
-  };
+  // Group tokens by tokenId for Level 1
+  const tokenSummaries = useMemo(() => groupTokens(tokens), [tokens]);
+
+  // Get entries for the selected token (Level 2)
+  const selectedTokenEntries = useMemo(() => {
+    if (!selectedTokenId) return [];
+    return tokens.filter((t) => t.tokenId === selectedTokenId);
+  }, [tokens, selectedTokenId]);
+
+  const selectedTokenName = useMemo(() => {
+    if (!selectedTokenId) return null;
+    const summary = tokenSummaries.find((s) => s.tokenId === selectedTokenId);
+    return summary?.name ?? "Unnamed Token";
+  }, [selectedTokenId, tokenSummaries]);
+
+  const handleDrillDown = useCallback((tokenId: string) => {
+    setSelectedTokenId(tokenId);
+  }, []);
+
+  const handleBack = useCallback(() => {
+    setSelectedTokenId(null);
+  }, []);
+
+  const handleEntryAction = useCallback(
+    (entry: TokenEntry, action: TokenAction) => {
+      if (action === "moreInfo") {
+        onMoreInfo(entry.tokenId);
+        return;
+      }
+      if (action === "remove") {
+        // Remove at token level — find summary for dialog
+        const summary = tokenSummaries.find((s) => s.tokenId === entry.tokenId);
+        if (summary) {
+          setTokenToRemove(summary);
+          setRemoveDialogOpen(true);
+        }
+        return;
+      }
+      onAction(entry, action);
+    },
+    [onAction, onMoreInfo, tokenSummaries],
+  );
+
+  const handleTokenLevelAction = useCallback(
+    (summary: TokenSummary, action: "moreInfo" | "remove") => {
+      if (action === "moreInfo") {
+        onMoreInfo(summary.tokenId);
+        return;
+      }
+      if (action === "remove") {
+        setTokenToRemove(summary);
+        setRemoveDialogOpen(true);
+      }
+    },
+    [onMoreInfo],
+  );
 
   const handleConfirmRemove = () => {
     if (tokenToRemove) {
+      // If we're viewing the removed token's detail, go back
+      if (selectedTokenId === tokenToRemove.tokenId) {
+        setSelectedTokenId(null);
+      }
       onRemove(tokenToRemove.tokenId);
     }
     setTokenToRemove(null);
@@ -197,71 +284,24 @@ export function MyTokensTable({
 
   return (
     <>
-      <div className="w-full">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-[200px]">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="-ml-3 h-8 font-semibold"
-                  onClick={() => onSortChange("ownerAlias")}
-                >
-                  Owner Identity
-                  <SortIndicator
-                    column="ownerAlias"
-                    activeColumn={sortColumn}
-                    sortOrder={sortOrder}
-                  />
-                </Button>
-              </TableHead>
-              <TableHead>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="-ml-3 h-8 font-semibold"
-                  onClick={() => onSortChange("name")}
-                >
-                  Token Name
-                  <SortIndicator
-                    column="name"
-                    activeColumn={sortColumn}
-                    sortOrder={sortOrder}
-                  />
-                </Button>
-              </TableHead>
-              <TableHead className="w-[160px] text-right">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="-mr-3 ml-auto h-8 font-semibold"
-                  onClick={() => onSortChange("balance")}
-                >
-                  Balance
-                  <SortIndicator
-                    column="balance"
-                    activeColumn={sortColumn}
-                    sortOrder={sortOrder}
-                  />
-                </Button>
-              </TableHead>
-              <TableHead className="w-[60px]">
-                <span className="sr-only">Actions</span>
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {tokens.map((token) => (
-              <TokenRow
-                key={`${token.tokenId}-${token.identityId}`}
-                token={token}
-                onAction={handleAction}
-              />
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+      {selectedTokenId ? (
+        <TokenDetailView
+          tokenName={selectedTokenName!}
+          tokenId={selectedTokenId}
+          entries={selectedTokenEntries}
+          sortColumn={sortColumn}
+          sortOrder={sortOrder}
+          onSortChange={onSortChange}
+          onBack={handleBack}
+          onAction={handleEntryAction}
+        />
+      ) : (
+        <TokenListView
+          summaries={tokenSummaries}
+          onDrillDown={handleDrillDown}
+          onAction={handleTokenLevelAction}
+        />
+      )}
 
       <ConfirmationDialog
         open={removeDialogOpen}
@@ -283,59 +323,271 @@ export function MyTokensTable({
   );
 }
 
-// ─── Token row ──────────────────────────────────────────────────────
+// ─── Level 1: Token List ─────────────────────────────────────────────
 
-function TokenRow({
-  token,
+function TokenListView({
+  summaries,
+  onDrillDown,
   onAction,
 }: {
-  token: TokenEntry;
-  onAction: (token: TokenEntry, action: TokenAction) => void;
+  summaries: TokenSummary[];
+  onDrillDown: (tokenId: string) => void;
+  onAction: (summary: TokenSummary, action: "moreInfo" | "remove") => void;
+}) {
+  return (
+    <div className="w-full">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Token Name</TableHead>
+            <TableHead className="w-[200px]">
+              <span className="text-sm font-semibold">Token ID</span>
+            </TableHead>
+            <TableHead className="w-[100px] text-right">
+              <span className="text-sm font-semibold">Identities</span>
+            </TableHead>
+            <TableHead className="w-[100px]">
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {summaries.map((summary) => (
+            <TokenSummaryRow
+              key={summary.tokenId}
+              summary={summary}
+              onDrillDown={onDrillDown}
+              onAction={onAction}
+            />
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function TokenSummaryRow({
+  summary,
+  onDrillDown,
+  onAction,
+}: {
+  summary: TokenSummary;
+  onDrillDown: (tokenId: string) => void;
+  onAction: (summary: TokenSummary, action: "moreInfo" | "remove") => void;
+}) {
+  const displayName = summary.name ?? "Unnamed Token";
+
+  return (
+    <TableRow>
+      {/* Token Name (clickable → drill down) */}
+      <TableCell>
+        <Button
+          variant="link"
+          className="h-auto p-0 text-sm font-medium text-foreground hover:text-dash-blue"
+          onClick={() => onDrillDown(summary.tokenId)}
+        >
+          {displayName}
+        </Button>
+      </TableCell>
+
+      {/* Token ID */}
+      <TableCell>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="text-sm font-mono text-muted-foreground cursor-default">
+              {truncateId(summary.tokenId)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p className="font-mono text-xs">{summary.tokenId}</p>
+          </TooltipContent>
+        </Tooltip>
+      </TableCell>
+
+      {/* Identity count */}
+      <TableCell className="text-right">
+        <span className="text-sm text-muted-foreground tabular-nums">
+          {summary.identityCount}
+        </span>
+      </TableCell>
+
+      {/* Actions: More Info + Remove */}
+      <TableCell className="text-right">
+        <div className="flex items-center justify-end gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                aria-label={`More info for ${displayName}`}
+                onClick={() => onAction(summary, "moreInfo")}
+              >
+                <Info className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>More Info</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                aria-label={`Remove ${displayName}`}
+                onClick={() => onAction(summary, "remove")}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Remove</TooltipContent>
+          </Tooltip>
+        </div>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+// ─── Level 2: Token Detail (Per-Identity Balances) ───────────────────
+
+function TokenDetailView({
+  tokenName,
+  tokenId,
+  entries,
+  sortColumn,
+  sortOrder,
+  onSortChange,
+  onBack,
+  onAction,
+}: {
+  tokenName: string;
+  tokenId: string;
+  entries: TokenEntry[];
+  sortColumn: TokenSortColumn;
+  sortOrder: TokenSortOrder;
+  onSortChange: (column: TokenSortColumn) => void;
+  onBack: () => void;
+  onAction: (entry: TokenEntry, action: TokenAction) => void;
+}) {
+  return (
+    <div className="w-full">
+      {/* Back button + token header */}
+      <div className="flex items-center gap-3 mb-3 px-1">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1.5"
+          onClick={onBack}
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back
+        </Button>
+        <div className="flex items-center gap-2">
+          <Coins className="h-4 w-4 text-dash-blue" />
+          <span className="text-sm font-semibold">{tokenName}</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="text-xs font-mono text-muted-foreground cursor-default">
+                {truncateId(tokenId)}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p className="font-mono text-xs">{tokenId}</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-[200px]">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="-ml-3 h-8 font-semibold"
+                onClick={() => onSortChange("ownerAlias")}
+              >
+                Identity
+                <SortIndicator
+                  column="ownerAlias"
+                  activeColumn={sortColumn}
+                  sortOrder={sortOrder}
+                />
+              </Button>
+            </TableHead>
+            <TableHead>
+              <span className="text-sm font-semibold">Identity ID</span>
+            </TableHead>
+            <TableHead className="w-[160px] text-right">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="-mr-3 ml-auto h-8 font-semibold"
+                onClick={() => onSortChange("balance")}
+              >
+                Balance
+                <SortIndicator
+                  column="balance"
+                  activeColumn={sortColumn}
+                  sortOrder={sortOrder}
+                />
+              </Button>
+            </TableHead>
+            <TableHead className="w-[60px]">
+              <span className="sr-only">Actions</span>
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {entries.map((entry) => (
+            <IdentityBalanceRow
+              key={entry.identityId}
+              entry={entry}
+              onAction={onAction}
+            />
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function IdentityBalanceRow({
+  entry,
+  onAction,
+}: {
+  entry: TokenEntry;
+  onAction: (entry: TokenEntry, action: TokenAction) => void;
 }) {
   const formattedBalance = useMemo(
-    () => formatTokenBalance(token.balance, token.decimals),
-    [token.balance, token.decimals],
+    () => formatTokenBalance(entry.balance, entry.decimals),
+    [entry.balance, entry.decimals],
   );
 
   return (
     <TableRow>
-      {/* Owner Identity / Alias */}
+      {/* Identity Alias */}
       <TableCell>
-        <div className="flex flex-col gap-0.5">
-          {token.ownerAlias ? (
-            <>
-              <span className="text-sm font-medium">{token.ownerAlias}</span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="text-xs text-muted-foreground font-mono cursor-default">
-                    {truncateId(token.identityId)}
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p className="font-mono text-xs">{token.identityId}</p>
-                </TooltipContent>
-              </Tooltip>
-            </>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="text-sm font-mono cursor-default">
-                  {truncateId(token.identityId)}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p className="font-mono text-xs">{token.identityId}</p>
-              </TooltipContent>
-            </Tooltip>
-          )}
-        </div>
+        {entry.ownerAlias ? (
+          <span className="text-sm font-medium">{entry.ownerAlias}</span>
+        ) : (
+          <span className="text-sm text-muted-foreground">—</span>
+        )}
       </TableCell>
 
-      {/* Token Name */}
+      {/* Identity ID */}
       <TableCell>
-        <span className="text-sm font-medium">
-          {token.name ?? "Unnamed Token"}
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="text-sm font-mono text-muted-foreground cursor-default">
+              {truncateId(entry.identityId)}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            <p className="font-mono text-xs">{entry.identityId}</p>
+          </TooltipContent>
+        </Tooltip>
       </TableCell>
 
       {/* Balance (right-aligned) */}
@@ -353,7 +605,7 @@ function TokenRow({
               variant="ghost"
               size="icon"
               className="h-8 w-8"
-              aria-label={`Actions for ${token.name ?? "token"}`}
+              aria-label={`Actions for ${entry.ownerAlias ?? "identity"} ${entry.name ?? "token"}`}
             >
               <MoreVertical className="h-4 w-4" />
             </Button>
@@ -363,7 +615,7 @@ function TokenRow({
               <ActionMenuEntry
                 key={item.action}
                 item={item}
-                onClick={() => onAction(token, item.action)}
+                onClick={() => onAction(entry, item.action)}
               />
             ))}
           </DropdownMenuContent>
@@ -399,4 +651,4 @@ function ActionMenuEntry({
 
 // ─── Exports ────────────────────────────────────────────────────────
 
-export { formatTokenBalance, truncateId };
+export { formatTokenBalance, truncateId, groupTokens };

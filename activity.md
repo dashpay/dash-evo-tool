@@ -951,3 +951,10 @@
 **Files changed:** ralph/docs/phase7-token-design.md (audit findings added), tasks.md (review checked, 8 sub-tasks added, progress updated), activity.md
 **Tests added:** 0 (review task)
 **Sub-tasks created:** 8 (7.5a–7.5h)
+
+## Run 137 — 2026-02-10
+**Task:** 7.5a Add two-level drill-down to My Tokens table
+**What was done:** Restructured MyTokensTable from a flat per-identity table into a two-level drill-down matching the egui `my_tokens.rs` pattern. **Level 1 (Token List):** Groups token entries by tokenId using a new `groupTokens()` helper, displays Token Name (clickable to drill down), Token ID (truncated with tooltip), identity count, and per-token More Info + Remove action buttons. **Level 2 (Per-Identity Balances):** When a token name is clicked, shows a Back button + token header, then a sortable table with Identity alias, Identity ID, Balance, and the full 15-action dropdown per identity row. Updated `onAction` callback signature from `(tokenId, action)` to `(entry, action)` to pass full `TokenEntry` with `identityId` context for correct navigation. Added `onMoreInfo` callback for token-level info actions. Updated `TokenMyTokensScreen` to handle the new API — drill-down actions now navigate with the correct `identityId` from the selected entry. Rewrote all tests: component tests cover Level 1 rendering, grouping, drill-down navigation, Level 2 rendering/sorting/actions, back navigation, and remove from both levels. Screen tests cover drill-down → action routing with identity context.
+**Files changed:** src/frontend/components/token/MyTokensTable.tsx (rewritten, ~420 lines), src/frontend/components/token/MyTokensTable.test.tsx (rewritten, ~370 lines), src/frontend/screens/TokenMyTokensScreen.tsx (updated, ~180 lines), src/frontend/screens/TokenMyTokensScreen.test.tsx (rewritten, ~340 lines)
+**Tests added:** 80 tests (53 component + 27 screen) — replacing previous 42+28=70 with expanded coverage for two-level drill-down
+**Sub-tasks created:** 0

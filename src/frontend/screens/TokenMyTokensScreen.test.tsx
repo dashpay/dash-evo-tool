@@ -140,19 +140,18 @@ describe("TokenMyTokensScreen — rendering", () => {
     expect(screen.getByText("Create Token")).toBeInTheDocument();
   });
 
-  it("renders token table with token entries", () => {
+  it("renders Level 1 token list with token names", () => {
     renderScreen();
-    expect(screen.getByText("TestToken")).toBeInTheDocument();
-    expect(screen.getByText("SecondToken")).toBeInTheDocument();
-    expect(screen.getByText("Alice")).toBeInTheDocument();
-    expect(screen.getByText("Bob")).toBeInTheDocument();
+    // Level 1 shows token names as clickable links
+    expect(screen.getByRole("button", { name: "TestToken" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "SecondToken" })).toBeInTheDocument();
   });
 
-  it("renders column headers", () => {
+  it("renders column headers for Level 1", () => {
     renderScreen();
-    expect(screen.getByText("Owner Identity")).toBeInTheDocument();
     expect(screen.getByText("Token Name")).toBeInTheDocument();
-    expect(screen.getByText("Balance")).toBeInTheDocument();
+    expect(screen.getByText("Token ID")).toBeInTheDocument();
+    expect(screen.getByText("Identities")).toBeInTheDocument();
   });
 });
 
@@ -173,7 +172,7 @@ describe("TokenMyTokensScreen — loading state", () => {
     useTokenStore.setState({ loading: true });
     renderScreen();
     expect(screen.queryByText("Loading tokens...")).not.toBeInTheDocument();
-    expect(screen.getByText("TestToken")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "TestToken" })).toBeInTheDocument();
   });
 });
 
@@ -185,11 +184,9 @@ describe("TokenMyTokensScreen — empty state", () => {
 
   it("shows empty state when no tokens and not loading", async () => {
     renderScreen();
-    // Wait for the initial load to fire, then simulate loading complete
     await waitFor(() => {
       expect(mockCommands.tokenQueryMyBalances).toHaveBeenCalled();
     });
-    // Simulate loading finished with no tokens (as if the event came back empty)
     useTokenStore.setState({ loading: false, tokens: [] });
     await waitFor(() => {
       expect(screen.getByText("No tokens yet")).toBeInTheDocument();
@@ -242,11 +239,9 @@ describe("TokenMyTokensScreen — refresh", () => {
   it("calls loadMyTokenBalances when refresh is clicked", async () => {
     const user = userEvent.setup();
     renderScreen();
-    // Wait for the initial load to complete
     await waitFor(() => {
       expect(mockCommands.tokenQueryMyBalances).toHaveBeenCalled();
     });
-    // Simulate loading complete so button is enabled
     useTokenStore.setState({ loading: false });
     mockCommands.tokenQueryMyBalances.mockClear();
     await user.click(screen.getByText("Refresh"));
@@ -298,79 +293,62 @@ describe("TokenMyTokensScreen — navigation buttons", () => {
   });
 });
 
-describe("TokenMyTokensScreen — sort interaction", () => {
+describe("TokenMyTokensScreen — drill-down and action routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStore(defaultTokens);
   });
 
-  it("calls setSortColumn when column header is clicked", async () => {
+  it("navigates to transfer route with token context after drill-down", async () => {
     const user = userEvent.setup();
     renderScreen();
-    await user.click(screen.getByText("Owner Identity"));
-    // Store sort should have changed
-    const { sortColumn } = useTokenStore.getState();
-    expect(sortColumn).toBe("ownerAlias");
-  });
-});
-
-describe("TokenMyTokensScreen — action routing", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetStore(defaultTokens);
-  });
-
-  it("navigates to transfer route with token context", async () => {
-    const user = userEvent.setup();
-    renderScreen();
-    // Open dropdown for first token
+    // Drill down into TestToken
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    // Open dropdown for the identity entry
     const actionButtons = screen.getAllByLabelText(/^Actions for/);
     await user.click(actionButtons[0]);
     // Click Transfer
-    const transferItem = screen.getByText("Transfer");
-    await user.click(transferItem);
+    await user.click(screen.getByText("Transfer"));
     expect(mockNavigate).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "/tokens/transfer",
         search: expect.objectContaining({
           tokenId: defaultTokens[0].tokenId,
           contractId: defaultTokens[0].contractId,
+          identityId: defaultTokens[0].identityId,
         }),
       }),
     );
   });
 
-  it("navigates to mint route with token context", async () => {
+  it("navigates to mint route after drill-down", async () => {
     const user = userEvent.setup();
     renderScreen();
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
     const actionButtons = screen.getAllByLabelText(/^Actions for/);
     await user.click(actionButtons[0]);
-    const mintItem = screen.getByText("Mint");
-    await user.click(mintItem);
+    await user.click(screen.getByText("Mint"));
     expect(mockNavigate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "/tokens/mint",
-      }),
+      expect.objectContaining({ to: "/tokens/mint" }),
     );
   });
 
-  it("navigates to burn route with token context", async () => {
+  it("navigates to burn route after drill-down", async () => {
     const user = userEvent.setup();
     renderScreen();
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
     const actionButtons = screen.getAllByLabelText(/^Actions for/);
     await user.click(actionButtons[0]);
-    const burnItem = screen.getByText("Burn");
-    await user.click(burnItem);
+    await user.click(screen.getByText("Burn"));
     expect(mockNavigate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: "/tokens/burn",
-      }),
+      expect.objectContaining({ to: "/tokens/burn" }),
     );
   });
 
-  it("navigates to freeze route", async () => {
+  it("navigates to freeze route after drill-down", async () => {
     const user = userEvent.setup();
     renderScreen();
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
     const actionButtons = screen.getAllByLabelText(/^Actions for/);
     await user.click(actionButtons[0]);
     await user.click(screen.getByText("Freeze"));
@@ -379,9 +357,10 @@ describe("TokenMyTokensScreen — action routing", () => {
     );
   });
 
-  it("navigates to purchase route", async () => {
+  it("navigates to purchase route after drill-down", async () => {
     const user = userEvent.setup();
     renderScreen();
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
     const actionButtons = screen.getAllByLabelText(/^Actions for/);
     await user.click(actionButtons[0]);
     await user.click(screen.getByText("Purchase"));
@@ -397,16 +376,13 @@ describe("TokenMyTokensScreen — More Info dialog", () => {
     resetStore(defaultTokens);
   });
 
-  it("opens TokenInfoDialog when More Info is clicked", async () => {
+  it("opens TokenInfoDialog when More Info is clicked in Level 1", async () => {
     const user = userEvent.setup();
     renderScreen();
-    const actionButtons = screen.getAllByLabelText(/^Actions for/);
-    await user.click(actionButtons[0]);
-    const infoItem = screen.getByText("More Info");
-    await user.click(infoItem);
-    // Dialog should be open with token name as title
+    await user.click(
+      screen.getByRole("button", { name: /more info for testtoken/i }),
+    );
     await waitFor(() => {
-      // Dialog renders with token name
       const dialogTitle = screen.getByRole("heading", { name: "TestToken" });
       expect(dialogTitle).toBeInTheDocument();
     });
@@ -415,9 +391,9 @@ describe("TokenMyTokensScreen — More Info dialog", () => {
   it("does not navigate when More Info is clicked", async () => {
     const user = userEvent.setup();
     renderScreen();
-    const actionButtons = screen.getAllByLabelText(/^Actions for/);
-    await user.click(actionButtons[0]);
-    await user.click(screen.getByText("More Info"));
+    await user.click(
+      screen.getByRole("button", { name: /more info for testtoken/i }),
+    );
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 });
@@ -428,12 +404,12 @@ describe("TokenMyTokensScreen — remove flow", () => {
     resetStore(defaultTokens);
   });
 
-  it("shows confirmation dialog when Remove is clicked", async () => {
+  it("shows confirmation dialog when Remove is clicked in Level 1", async () => {
     const user = userEvent.setup();
     renderScreen();
-    const actionButtons = screen.getAllByLabelText(/^Actions for/);
-    await user.click(actionButtons[0]);
-    await user.click(screen.getByText("Remove"));
+    await user.click(
+      screen.getByRole("button", { name: /remove testtoken/i }),
+    );
     await waitFor(() => {
       expect(screen.getByText("Confirm Remove Token")).toBeInTheDocument();
     });
@@ -442,10 +418,9 @@ describe("TokenMyTokensScreen — remove flow", () => {
   it("calls removeToken after confirming removal", async () => {
     const user = userEvent.setup();
     renderScreen();
-    const actionButtons = screen.getAllByLabelText(/^Actions for/);
-    await user.click(actionButtons[0]);
-    await user.click(screen.getByText("Remove"));
-    // Click confirm in the dialog
+    await user.click(
+      screen.getByRole("button", { name: /remove testtoken/i }),
+    );
     await waitFor(() => {
       expect(screen.getByText("Confirm")).toBeInTheDocument();
     });
@@ -453,6 +428,24 @@ describe("TokenMyTokensScreen — remove flow", () => {
     expect(mockCommands.tokenRemove).toHaveBeenCalledWith({
       tokenId: defaultTokens[0].tokenId,
     });
+  });
+});
+
+describe("TokenMyTokensScreen — sort interaction", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStore(defaultTokens);
+  });
+
+  it("supports sorting in Level 2 via column headers", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    // Drill down to Level 2
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    // Click Balance column header to sort
+    await user.click(screen.getByRole("button", { name: /balance/i }));
+    const { sortColumn } = useTokenStore.getState();
+    expect(sortColumn).toBe("balance");
   });
 });
 
@@ -467,12 +460,10 @@ describe("TokenMyTokensScreen — event subscription cleanup", () => {
     mockEvents.taskResultEvent.listen.mockResolvedValue(mockUnsubscribe);
 
     const { unmount } = renderScreen();
-    // Wait for subscription to be set up
     await waitFor(() => {
       expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
     });
     unmount();
-    // The unsubscribe might be called asynchronously
     await waitFor(() => {
       expect(mockUnsubscribe).toHaveBeenCalled();
     });

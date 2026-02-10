@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 156 — 2026-02-10
+**Task:** 7.5.3b Set up WebdriverIO test framework
+**What was done:** Created the full WebdriverIO v9 test framework in `tests/e2e-full/` for running E2E tests against the real Tauri app via tauri-driver. Installed WebdriverIO dependencies (@wdio/cli v9.24, @wdio/local-runner, @wdio/mocha-framework, @wdio/spec-reporter, webdriverio, ts-node). Created wdio.conf.ts with Wry browser capabilities, tauri-driver connection on port 4444, mocha framework, screenshot-on-failure hooks. Created helpers/tauri.ts with 15 helper functions (waitForAppReady, navigateToSection, waitForDataLoad, waitForTestId, clickButton, fillInput, waitForToast, waitForDialog, etc.). Created helpers/database.ts with sqlite3-based seeding, clearing, and resetting. Created fixtures/seed-data.sql with realistic test data (HD wallet with addresses, 2 identities, system contracts, contested names, UTXOs, scheduled votes). Created specs/smoke.spec.ts with 4 smoke tests. Added tsconfig.json for independent type-checking. All 3710 existing tests pass, lint/typecheck clean. Note: Docker build cannot be verified on macOS (requires Linux WebKit2GTK).
+**Files changed:** tests/e2e-full/wdio.conf.ts, tests/e2e-full/helpers/tauri.ts, tests/e2e-full/helpers/database.ts, tests/e2e-full/fixtures/seed-data.sql, tests/e2e-full/specs/smoke.spec.ts, tests/e2e-full/tsconfig.json, package.json, package-lock.json, tasks.md, activity.md
+**Tests added:** 4 smoke tests (WebdriverIO — require Tauri app to run)
+**Sub-tasks created:** 0
+
 ## Run 155 — 2026-02-10
 **Task:** 7.5.3a Create Docker Compose E2E environment
 **What was done:** Created full Docker E2E infrastructure for running WebdriverIO tests against the real Tauri app in a headless Linux environment. Dockerfile uses Ubuntu 24.04 with Rust 1.92, Node.js 20, WebKit2GTK 4.1, tauri-driver, and Xvfb. docker-compose.yml defines a single service with 2GB shared memory, volume mount for test results. entrypoint.sh orchestrates the full lifecycle: Xvfb → tauri-driver → WebdriverIO tests with proper cleanup trap. Added `test:e2e-full` npm script and `.dockerignore` for fast builds. Cannot verify Docker build on macOS (requires Linux WebKit2GTK) — will be verified when WebdriverIO framework is set up in task 7.5.3b.

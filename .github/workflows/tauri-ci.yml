@@ -74,6 +74,46 @@ jobs:
           path: playwright-report/
           retention-days: 14
 
+  # ── Playwright integration tests (mock IPC, no Tauri backend) ───────
+  test-integration:
+    name: Playwright Integration (mock IPC)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run integration tests
+        run: npm run test:e2e-integration
+
+      - name: Upload integration test report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: integration-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload integration screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: integration-screenshots
+          path: test-results/
+          retention-days: 7
+
   # ── Rust checks for src-tauri/ ──────────────────────────────────────
   rust:
     name: Rust (fmt, clippy, test)
@@ -197,3 +237,117 @@ jobs:
 
       - name: Build Tauri app (debug)
         run: npx tauri build --debug 2>&1 | tail -20
+
+  # ── Full E2E tests (real Tauri backend, WebdriverIO + tauri-driver) ─
+  test-e2e-full:
+    name: Full E2E (WebdriverIO)
+    runs-on: ubuntu-latest
+    needs: [frontend, rust]
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /opt/hostedtoolcache/go
+          sudo rm -rf /opt/hostedtoolcache/node
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/graalvm
+          sudo rm -rf /usr/local/.ghcup
+          sudo docker image prune --all --force || true
+          sudo docker system prune --all --force || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-tauri-e2e-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tauri-e2e-
+            ${{ runner.os }}-cargo-tauri-build-
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libgtk-3-dev libayatana-appindicator3-dev \
+            libxdo-dev libssl-dev \
+            webkit2gtk-driver xvfb dbus-x11
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app (debug)
+        working-directory: src-tauri
+        run: cargo build 2>&1 | tail -5
+
+      - name: Run WebdriverIO E2E tests
+        run: |
+          # Start Xvfb (virtual display)
+          Xvfb :99 -screen 0 1280x800x24 -ac &
+          XVFB_PID=$!
+          export DISPLAY=:99
+          sleep 1
+
+          # Start tauri-driver
+          tauri-driver --port 4444 &
+          DRIVER_PID=$!
+          sleep 2
+
+          # Run WebdriverIO tests
+          mkdir -p test-results/e2e-full
+          npx wdio tests/e2e-full/wdio.conf.ts 2>&1 | tee test-results/e2e-full/wdio-output.log || TEST_EXIT=$?
+
+          # Cleanup
+          kill $DRIVER_PID 2>/dev/null || true
+          kill $XVFB_PID 2>/dev/null || true
+
+          exit ${TEST_EXIT:-0}
+        env:
+          DISPLAY: ":99"
+          TAURI_DRIVER_PORT: "4444"
+
+      - name: Upload WebdriverIO report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-full-report
+          path: test-results/e2e-full/
+          retention-days: 14
+
+      - name: Upload failure screenshots
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-full-screenshots
+          path: tests/e2e-full/screenshots/
+          retention-days: 7

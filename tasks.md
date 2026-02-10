@@ -636,7 +636,7 @@
   - [x] **7.5e** Add "Add Key" and "View Key Info" navigation buttons to TokenOperationForm Advanced Options section, next to the key selector dropdown. Navigate to identity key management screens. (P3)
   - [x] **7.5f** Add "View Contract JSON" preview button to Token Creator Review step: generate full contract JSON and display in a dialog with copy button. Add separate "Calculate Fee" button. Port from egui `token_creator.rs`. (P3)
   - [x] **7.5g** Show current pricing schedule in Set Price screen: on mount, fetch existing pricing via `tokenQueryPricing` and display it above the new pricing form. (P3)
-  - [ ] **7.5h** Implement minting destination config in Mint screen: read token config for default destination identity and "allow choosing destination" flag. Auto-populate recipient field when config specifies a default. Make recipient read-only when choosing is not allowed. Port from egui `mint_tokens_screen.rs`. (P3)
+  - [x] **7.5h** Implement minting destination config in Mint screen: read token config for default destination identity and "allow choosing destination" flag. Auto-populate recipient field when config specifies a default. Make recipient read-only when choosing is not allowed. Port from egui `mint_tokens_screen.rs`. (P3)
 
 ---
 
@@ -1124,7 +1124,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 90 |
-| Completed | 110 |
-| Remaining | 17 |
+| Completed | 111 |
+| Remaining | 16 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

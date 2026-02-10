@@ -256,6 +256,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::token::token_remove,
             commands::token::token_load_order,
             commands::token::token_save_order,
+            commands::token::token_get_minting_config,
             // DashPay commands
             commands::dashpay::dashpay_load_profile,
             commands::dashpay::dashpay_update_profile,

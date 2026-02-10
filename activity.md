@@ -1000,3 +1000,10 @@
 **Files changed:** src/frontend/screens/TokenSetPriceScreen.tsx, src/frontend/screens/TokenSetPriceScreen.test.tsx
 **Tests added:** 7 new tests — fetches current pricing on mount, shows loading state, displays single price, displays tiered pricing, shows no-pricing message, shows error on fetch failure, does not fetch when group signing. Total tests: 3509 (up from 3501, net +8 due to test refactoring).
 **Sub-tasks created:** 0
+
+## Run 143 — 2026-02-10
+**Task:** 7.5h Implement minting destination config in Mint screen
+**What was done:** Added a new `token_get_minting_config` Tauri IPC command that reads the token's distribution rules from the contract and returns `{ allowChoosingDestination: bool, defaultDestinationIdentityId: string | null }`. Updated the `TokenMintScreen` to fetch this config on mount and use it to control recipient input behavior: hides recipient input when choosing is not allowed, auto-populates recipient with default destination identity when configured, shows an info banner when tokens are always minted to a fixed destination. Added `MintingConfigDto` and `GetMintingConfigInput` DTOs. Regenerated TypeScript bindings (181 commands). Updated bindings test counts.
+**Files changed:** src-tauri/src/commands/token.rs, src-tauri/src/main.rs, src/frontend/bindings.ts, src/frontend/screens/TokenMintScreen.tsx, src/frontend/screens/TokenMintScreen.test.tsx, src/frontend/bindings.test.ts
+**Tests added:** 7 new component tests (minting config fetch, hide recipient when not allowed, show fixed destination info, auto-populate default, optional badge, always-optional behavior, fallback on error) + 3 new Rust unit tests (GetMintingConfigInput serialization, MintingConfigDto serialization with/without default). Total tests: 3516 (up from 3509). Rust tests: 237 (up from 234).
+**Sub-tasks created:** 0

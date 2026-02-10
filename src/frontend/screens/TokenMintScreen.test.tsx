@@ -27,12 +27,21 @@ const mockTokenMint = vi.fn().mockResolvedValue({
   data: { taskId: "task-mint-1" },
 });
 
+const mockTokenGetMintingConfig = vi.fn().mockResolvedValue({
+  status: "ok",
+  data: {
+    allowChoosingDestination: true,
+    defaultDestinationIdentityId: null,
+  },
+});
+
 let mockTaskResultListener: ((event: { payload: unknown }) => void) | null = null;
 let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null = null;
 
 vi.mock("@/bindings", () => ({
   commands: {
     tokenMint: (...args: unknown[]) => mockTokenMint(...args),
+    tokenGetMintingConfig: (...args: unknown[]) => mockTokenGetMintingConfig(...args),
     walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
   },
   events: {
@@ -147,6 +156,14 @@ describe("TokenMintScreen", () => {
     vi.clearAllMocks();
     mockTaskResultListener = null;
     mockTaskErrorListener = null;
+    // Default: allow choosing destination, no default destination
+    mockTokenGetMintingConfig.mockResolvedValue({
+      status: "ok",
+      data: {
+        allowChoosingDestination: true,
+        defaultDestinationIdentityId: null,
+      },
+    });
     currentSearch = {
       tokenId: "token111122223333",
       contractId: "contract111122223333",
@@ -176,14 +193,15 @@ describe("TokenMintScreen", () => {
       expect(screen.getByText("Amount to Mint")).toBeInTheDocument();
     });
 
-    it("shows recipient input with optional badge", () => {
+    it("shows recipient input when allowChoosingDestination is true", async () => {
       setup();
-      expect(screen.getByText("Recipient Identity ID")).toBeInTheDocument();
+      // Wait for config to load (async)
+      expect(await screen.findByText("Recipient Identity ID")).toBeInTheDocument();
     });
 
-    it("shows recipient placeholder for self-mint", () => {
+    it("shows recipient placeholder for self-mint", async () => {
       setup();
-      expect(screen.getByPlaceholderText(/leave empty to mint to yourself/i)).toBeInTheDocument();
+      expect(await screen.findByPlaceholderText(/leave empty to mint to yourself/i)).toBeInTheDocument();
     });
   });
 
@@ -255,7 +273,7 @@ describe("TokenMintScreen", () => {
 
       const amountInput = screen.getByPlaceholderText("0");
       await user.type(amountInput, "500");
-      const recipientInput = screen.getByPlaceholderText(/leave empty/i);
+      const recipientInput = await screen.findByPlaceholderText(/leave empty to mint to yourself/i);
       await user.type(recipientInput, "recipient-abc");
 
       const button = screen.getByRole("button", { name: /mint/i });
@@ -454,6 +472,92 @@ describe("TokenMintScreen", () => {
       });
 
       expect(screen.getByRole("button", { name: /mint more/i })).toBeInTheDocument();
+    });
+  });
+
+  // ── Minting Destination Config ──────────────────────────────────────
+
+  describe("minting destination config", () => {
+    it("fetches minting config on mount", async () => {
+      setup();
+      // Wait for async config fetch
+      await screen.findByText("Amount to Mint");
+      expect(mockTokenGetMintingConfig).toHaveBeenCalledWith({
+        contractId: "contract111122223333",
+        tokenPosition: 0,
+      });
+    });
+
+    it("hides recipient input when allowChoosingDestination is false and no default", async () => {
+      mockTokenGetMintingConfig.mockResolvedValue({
+        status: "ok",
+        data: {
+          allowChoosingDestination: false,
+          defaultDestinationIdentityId: null,
+        },
+      });
+      setup();
+      // Wait for config to load
+      await screen.findByText("Amount to Mint");
+      // Recipient input should not be present
+      expect(screen.queryByTestId("recipient-section")).not.toBeInTheDocument();
+    });
+
+    it("shows fixed destination info when choosing is not allowed but default exists", async () => {
+      mockTokenGetMintingConfig.mockResolvedValue({
+        status: "ok",
+        data: {
+          allowChoosingDestination: false,
+          defaultDestinationIdentityId: "aabbccdd11223344556677889900aabb",
+        },
+      });
+      setup();
+      expect(await screen.findByText(/minted tokens will be sent to/i)).toBeInTheDocument();
+    });
+
+    it("auto-populates recipient with default destination identity", async () => {
+      mockTokenGetMintingConfig.mockResolvedValue({
+        status: "ok",
+        data: {
+          allowChoosingDestination: true,
+          defaultDestinationIdentityId: "aabbccdd11223344556677889900aabb",
+        },
+      });
+      setup();
+      const recipientInput = await screen.findByTestId("operation-recipient-input") as HTMLInputElement;
+      expect(recipientInput.value).toBe("aabbccdd11223344556677889900aabb");
+    });
+
+    it("marks recipient as optional when default destination exists", async () => {
+      mockTokenGetMintingConfig.mockResolvedValue({
+        status: "ok",
+        data: {
+          allowChoosingDestination: true,
+          defaultDestinationIdentityId: "aabbccdd11223344556677889900aabb",
+        },
+      });
+      setup();
+      expect(await screen.findByText("Optional")).toBeInTheDocument();
+    });
+
+    it("shows recipient as optional even when no default destination", async () => {
+      mockTokenGetMintingConfig.mockResolvedValue({
+        status: "ok",
+        data: {
+          allowChoosingDestination: true,
+          defaultDestinationIdentityId: null,
+        },
+      });
+      setup();
+      // Wait for config to load and recipient to render
+      expect(await screen.findByText("Optional")).toBeInTheDocument();
+    });
+
+    it("falls back to showing recipient input when config fetch fails", async () => {
+      mockTokenGetMintingConfig.mockRejectedValue(new Error("Network error"));
+      setup();
+      // Should still show recipient input as fallback
+      expect(await screen.findByText("Recipient Identity ID")).toBeInTheDocument();
     });
   });
 });

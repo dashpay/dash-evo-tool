@@ -295,6 +295,28 @@ pub struct QueryTokenClaimsInput {
     pub recipient_id: IdentifierDto,
 }
 
+/// Input for getting minting destination config for a token.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GetMintingConfigInput {
+    /// Contract ID (hex).
+    pub contract_id: IdentifierDto,
+    /// Token position within the contract.
+    pub token_position: u16,
+}
+
+/// Minting destination configuration for a token.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MintingConfigDto {
+    /// Whether the minter can choose a custom recipient identity.
+    pub allow_choosing_destination: bool,
+    /// Default destination identity ID (hex), if one is configured.
+    /// When set and allow_choosing_destination is true, this is the default recipient.
+    /// When set and allow_choosing_destination is false, tokens always go to this identity.
+    pub default_destination_identity_id: Option<IdentifierDto>,
+}
+
 /// Input for removing a token.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1269,6 +1291,49 @@ pub fn token_save_order(
         .map_err(|e| format!("Failed to save token order: {e}"))
 }
 
+/// Get the minting destination configuration for a token.
+///
+/// Returns whether the minter can choose a custom recipient and the default
+/// destination identity (if configured). This is used by the Mint screen to
+/// show/hide the recipient input and auto-populate it.
+#[tauri::command]
+#[specta::specta]
+pub fn token_get_minting_config(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: GetMintingConfigInput,
+) -> Result<MintingConfigDto, String> {
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
+
+    let contract_id = parse_identifier(&input.contract_id)?;
+    let token_position = TokenContractPosition::from(input.token_position);
+
+    let ctx = state.current_context();
+    let qc = ctx
+        .get_contract_by_id(&contract_id)
+        .map_err(|e| format!("Database error loading contract: {e}"))?
+        .ok_or_else(|| format!("Contract {} not found in local database", input.contract_id))?;
+
+    let token_config = qc.contract.tokens().get(&token_position).ok_or_else(|| {
+        format!(
+            "Token at position {} not found in contract {}",
+            input.token_position, input.contract_id
+        )
+    })?;
+
+    let dist_rules = token_config.distribution_rules();
+    let allow_choosing = dist_rules.minting_allow_choosing_destination();
+    let default_dest = dist_rules
+        .new_tokens_destination_identity()
+        .map(|id| hex::encode(id.to_buffer()));
+
+    Ok(MintingConfigDto {
+        allow_choosing_destination: allow_choosing,
+        default_destination_identity_id: default_dest,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1624,5 +1689,38 @@ mod tests {
         };
         let json = serde_json::to_string(&input).unwrap();
         assert!(json.contains("\"tokenId\":\"abc\""));
+    }
+
+    #[test]
+    fn get_minting_config_input_serializes() {
+        let input = GetMintingConfigInput {
+            contract_id: "abc".into(),
+            token_position: 0,
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"contractId\":\"abc\""));
+        assert!(json.contains("\"tokenPosition\":0"));
+    }
+
+    #[test]
+    fn minting_config_dto_serializes() {
+        let dto = MintingConfigDto {
+            allow_choosing_destination: true,
+            default_destination_identity_id: Some("deadbeef".into()),
+        };
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"allowChoosingDestination\":true"));
+        assert!(json.contains("\"defaultDestinationIdentityId\":\"deadbeef\""));
+    }
+
+    #[test]
+    fn minting_config_dto_serializes_no_default() {
+        let dto = MintingConfigDto {
+            allow_choosing_destination: false,
+            default_destination_identity_id: None,
+        };
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"allowChoosingDestination\":false"));
+        assert!(json.contains("\"defaultDestinationIdentityId\":null"));
     }
 }

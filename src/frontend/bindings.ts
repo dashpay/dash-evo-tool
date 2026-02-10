@@ -1393,6 +1393,21 @@ async tokenSaveOrder(input: SaveTokenOrderInput) : Promise<Result<null, string>>
 }
 },
 /**
+ * Get the minting destination configuration for a token.
+ *
+ * Returns whether the minter can choose a custom recipient and the default
+ * destination identity (if configured). This is used by the Mint screen to
+ * show/hide the recipient input and auto-populate it.
+ */
+async tokenGetMintingConfig(input: GetMintingConfigInput) : Promise<Result<MintingConfigDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_get_minting_config", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Load a DashPay profile for an identity.
  */
 async dashpayLoadProfile(input: LoadProfileInput) : Promise<Result<DispatchTaskResponse, string>> {
@@ -2684,6 +2699,18 @@ export type GenerateReceiveAddressInput = {
  */
 walletSeedHash: string }
 /**
+ * Input for getting minting destination config for a token.
+ */
+export type GetMintingConfigInput = {
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * Token position within the contract.
+ */
+tokenPosition: number }
+/**
  * Input for deriving and viewing a private key at a derivation path.
  */
 export type GetPrivateKeyInput = {
@@ -2922,6 +2949,20 @@ recipientId: string | null;
  * Optional group info as JSON.
  */
 groupInfo: JsonValue | null }
+/**
+ * Minting destination configuration for a token.
+ */
+export type MintingConfigDto = {
+/**
+ * Whether the minter can choose a custom recipient identity.
+ */
+allowChoosingDestination: boolean;
+/**
+ * Default destination identity ID (hex), if one is configured.
+ * When set and allow_choosing_destination is true, this is the default recipient.
+ * When set and allow_choosing_destination is false, tokens always go to this identity.
+ */
+defaultDestinationIdentityId: string | null }
 /**
  * Network identifier matching Dash SDK's Network enum.
  */

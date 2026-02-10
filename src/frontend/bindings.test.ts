@@ -232,7 +232,7 @@ describe("Bindings: commands object", () => {
     expect(docCmds.length).toBe(8);
   });
 
-  it("contains all 26 token commands", () => {
+  it("contains all 27 token commands", () => {
     const cmds = commands as unknown as Record<string, unknown>;
     const tokenCmds = [
       "tokenQueryMyBalances",
@@ -261,11 +261,12 @@ describe("Bindings: commands object", () => {
       "tokenLoadOrder",
       "tokenSaveOrder",
       "tokenQueryClaims",
+      "tokenGetMintingConfig",
     ];
     for (const cmd of tokenCmds) {
       assertIsFunction(cmds, cmd);
     }
-    expect(tokenCmds.length).toBe(26);
+    expect(tokenCmds.length).toBe(27);
   });
 
   it("contains all 23 dashpay commands", () => {
@@ -384,9 +385,9 @@ describe("Bindings: commands object", () => {
     expect(settingsCmds.length).toBe(17);
   });
 
-  it("total command count is 180", () => {
+  it("total command count is 181", () => {
     const allKeys = Object.keys(commands);
-    expect(allKeys.length).toBe(180);
+    expect(allKeys.length).toBe(181);
   });
 });
 

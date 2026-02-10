@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouterState } from "@tanstack/react-router";
 import { commands } from "@/bindings";
+import type { MintingConfigDto } from "@/bindings";
 import { TokenOperationForm } from "@/components/token/TokenOperationForm";
 import type {
   ConfirmationConfig,
@@ -15,6 +16,11 @@ import type {
  *
  * Optional group action params (from Group Actions screen):
  *   groupActionId, groupPosition, details
+ *
+ * Fetches the token's minting destination config on mount to determine:
+ * - Whether the recipient input should be shown (allowChoosingDestination)
+ * - Whether there's a default destination identity (auto-populated)
+ * - Whether the recipient is required or optional
  */
 export function TokenMintScreen() {
   const search = useRouterState({
@@ -67,13 +73,80 @@ export function TokenMintScreen() {
       }
     : undefined;
 
-  // Form state
+  // Minting destination config from backend
+  const [mintingConfig, setMintingConfig] = useState<MintingConfigDto | null>(
+    null,
+  );
+  const [configLoading, setConfigLoading] = useState(true);
+
+  // Fetch minting config on mount
+  useEffect(() => {
+    if (!tokenContext.contractId) {
+      setConfigLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const result = await commands.tokenGetMintingConfig({
+          contractId: tokenContext.contractId,
+          tokenPosition: tokenContext.tokenPosition,
+        });
+        if (!cancelled && result.status === "ok") {
+          setMintingConfig(result.data);
+        }
+      } catch {
+        // If the config can't be fetched, fall back to showing the recipient input
+      } finally {
+        if (!cancelled) setConfigLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenContext.contractId, tokenContext.tokenPosition]);
+
+  // Determine recipient input behavior from minting config
+  const allowChoosingDestination =
+    mintingConfig?.allowChoosingDestination ?? true;
+  const defaultDestinationId =
+    mintingConfig?.defaultDestinationIdentityId ?? null;
+
+  // Show recipient input only if choosing is allowed (or still loading/fallback)
+  const showRecipientInput =
+    !isGroupSigning && (configLoading || allowChoosingDestination);
+
+  // Recipient is always optional: when empty, tokens mint to the sender identity.
+  // When there's a configured default destination, the placeholder indicates it.
+  const recipientOptional = true;
+
+  // Form state — auto-populate recipient with default destination if configured
   const [amount, setAmount] = useState(groupAmount);
   const [recipientId, setRecipientId] = useState(groupRecipient);
+  const [recipientInitialized, setRecipientInitialized] = useState(false);
+
+  // Auto-populate recipient when minting config loads and there's a default
+  useEffect(() => {
+    if (
+      !recipientInitialized &&
+      !isGroupSigning &&
+      defaultDestinationId &&
+      !recipientId
+    ) {
+      setRecipientId(defaultDestinationId);
+      setRecipientInitialized(true);
+    }
+  }, [
+    defaultDestinationId,
+    recipientId,
+    isGroupSigning,
+    recipientInitialized,
+  ]);
 
   // Validation — amount must be > 0
   const amountNum = Number(amount);
   const isAmountValid = amount !== "" && amountNum > 0;
+
   const isValid = isAmountValid;
 
   // Validation message
@@ -81,6 +154,11 @@ export function TokenMintScreen() {
   if (amount !== "" && !isAmountValid) {
     validationMessage = "Amount must be greater than 0.";
   }
+
+  // Recipient placeholder text
+  const recipientPlaceholder = defaultDestinationId
+    ? `Default: ${defaultDestinationId.slice(0, 12)}...`
+    : "Leave empty to mint to yourself";
 
   // Confirmation dialog
   const confirmation: ConfirmationConfig | undefined = isValid
@@ -140,8 +218,8 @@ export function TokenMintScreen() {
   // Reset form for "do another"
   const handleDoAnother = useCallback(() => {
     setAmount("");
-    setRecipientId("");
-  }, []);
+    setRecipientId(defaultDestinationId ?? "");
+  }, [defaultDestinationId]);
 
   return (
     <TokenOperationForm
@@ -151,12 +229,14 @@ export function TokenMintScreen() {
       amount={amount}
       onAmountChange={setAmount}
       amountLabel="Amount to Mint"
-      showRecipientInput={!isGroupSigning}
+      showRecipientInput={showRecipientInput}
       recipientId={recipientId}
-      onRecipientChange={setRecipientId}
+      onRecipientChange={
+        allowChoosingDestination ? setRecipientId : undefined
+      }
       recipientLabel="Recipient Identity ID"
-      recipientOptional
-      recipientPlaceholder="Leave empty to mint to yourself"
+      recipientOptional={recipientOptional}
+      recipientPlaceholder={recipientPlaceholder}
       groupAction={groupAction}
       isValid={isValid}
       validationMessage={validationMessage}
@@ -167,6 +247,21 @@ export function TokenMintScreen() {
       doAnotherLabel="Mint More"
       onDoAnother={handleDoAnother}
     >
+      {/* Show minting config info when recipient is not allowed to be chosen */}
+      {!configLoading &&
+        !allowChoosingDestination &&
+        defaultDestinationId &&
+        !isGroupSigning && (
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
+            <span className="text-muted-foreground">
+              Minted tokens will be sent to:{" "}
+            </span>
+            <span className="font-mono font-medium">
+              {defaultDestinationId.slice(0, 12)}...
+              {defaultDestinationId.slice(-8)}
+            </span>
+          </div>
+        )}
       {isGroupSigning && groupAmount && (
         <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
           <span className="text-muted-foreground">Amount: </span>

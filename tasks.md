@@ -606,7 +606,7 @@
 
   **Sub-tasks produced:**
   - [x] **7.2a** Create `tokenStore.ts` Zustand store: token list CRUD (load balances, search by keyword with pagination cursor, fetch by contract/token ID, save locally, remove), token ordering (load/save), pricing queries, frozen identity queries, sort state (column, order), loading/error/refreshing states, TaskResultEvent subscription filtering by "Token" result type. Follow walletStore/identityStore pattern. Write 20+ store tests.
-  - [ ] **7.2b** Create `MyTokensTable` component: sortable table with 3 columns (Owner Identity/Alias, Token Name, Balance). Per-row action dropdown menu with all 15 actions (Transfer, Mint, Burn, Freeze, Unfreeze, Pause, Resume, Claim, View Claims, Set Price, Purchase, Update Config, Destroy Frozen Funds, More Info, Remove). Sort by clicking column headers. "More Info" opens `TokenInfoDialog`. "Remove" shows confirmation. Empty state message. Write 20+ component tests.
+  - [x] **7.2b** Create `MyTokensTable` component: sortable table with 3 columns (Owner Identity/Alias, Token Name, Balance). Per-row action dropdown menu with all 15 actions (Transfer, Mint, Burn, Freeze, Unfreeze, Pause, Resume, Claim, View Claims, Set Price, Purchase, Update Config, Destroy Frozen Funds, More Info, Remove). Sort by clicking column headers. "More Info" opens `TokenInfoDialog`. "Remove" shows confirmation. Empty state message. Write 20+ component tests.
   - [ ] **7.2c** Create `TokenInfoDialog` modal: displays full token metadata (name, description, contract ID, token ID, base supply, max supply, paused status, owner identity, pricing info, distribution rules). "View Schema" button opens a nested JSON viewer dialog showing the token contract configuration. Close button. Write 10+ component tests.
   - [ ] **7.2d** Wire `TokenMyTokensScreen`: compose MyTokensTable + TokenInfoDialog, connect to tokenStore, add top-right action buttons (Refresh, Add Token by ID, Create Token), handle action menu routing (navigate to `/tokens/transfer`, `/tokens/mint`, etc. with token context). Replace placeholder route. Write 15+ screen tests. Write 1 Playwright E2E test.
   - [ ] **7.2e** Create `TokenSearchPanel` component and wire `TokenSearchScreen`: keyword input with Search/Clear buttons, results table with Contract ID + Description columns, "More Info" button per row, Previous/Next pagination, elapsed time counter during search, contract detail expansion view with token list and "Add to My Tokens" button per token. Replace placeholder route. Write 15+ component tests. Write 1 Playwright E2E test.
@@ -918,7 +918,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 70 |
-| Completed | 85 |
-| Remaining | 21 |
+| Completed | 86 |
+| Remaining | 20 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

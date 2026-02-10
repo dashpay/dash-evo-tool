@@ -538,6 +538,40 @@ describe("TokenOperationForm — advanced options", () => {
     const noteInput = screen.getByTestId("operation-public-note");
     expect(noteInput).toBeDisabled();
   });
+
+  it("shows 'View Key Info' button in advanced options when a key is selected", async () => {
+    const { user } = setup();
+    await user.click(screen.getByTestId("operation-advanced-toggle"));
+    expect(screen.getByTestId("operation-view-key-info")).toBeInTheDocument();
+    expect(screen.getByTestId("operation-view-key-info")).toHaveTextContent("View Key Info");
+  });
+
+  it("shows 'Add Key' button in advanced options", async () => {
+    const { user } = setup();
+    await user.click(screen.getByTestId("operation-advanced-toggle"));
+    expect(screen.getByTestId("operation-add-key")).toBeInTheDocument();
+    expect(screen.getByTestId("operation-add-key")).toHaveTextContent("Add Key");
+  });
+
+  it("'View Key Info' navigates to /identities", async () => {
+    const { user } = setup();
+    await user.click(screen.getByTestId("operation-advanced-toggle"));
+    await user.click(screen.getByTestId("operation-view-key-info"));
+    expect(mockNavigate).toHaveBeenCalledWith({ to: "/identities" });
+  });
+
+  it("'Add Key' navigates to /identities", async () => {
+    const { user } = setup();
+    await user.click(screen.getByTestId("operation-advanced-toggle"));
+    await user.click(screen.getByTestId("operation-add-key"));
+    expect(mockNavigate).toHaveBeenCalledWith({ to: "/identities" });
+  });
+
+  it("shows key management helper text in advanced options", async () => {
+    const { user } = setup();
+    await user.click(screen.getByTestId("operation-advanced-toggle"));
+    expect(screen.getByText(/Navigate to Identities to manage keys/)).toBeInTheDocument();
+  });
 });
 
 // ─── Group action info ──────────────────────────────────────────────────────

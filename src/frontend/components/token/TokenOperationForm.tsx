@@ -13,8 +13,10 @@ import {
   ChevronDown,
   ChevronUp,
   Clipboard,
+  Eye,
   Loader2,
   Lock,
+  Plus,
   Unlock,
   Users,
 } from "lucide-react";
@@ -872,6 +874,38 @@ export function TokenOperationForm({
                 </p>
               )}
             </div>
+
+            {/* ── Key management shortcuts ──────────────────────────── */}
+            {selectedIdentity && (
+              <div className="space-y-1">
+                <label className="text-sm font-medium">Key Management</label>
+                <div className="flex gap-2">
+                  {selectedKeyId !== null && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => navigate({ to: "/identities" })}
+                      data-testid="operation-view-key-info"
+                    >
+                      <Eye className="h-3.5 w-3.5 mr-1" />
+                      View Key Info
+                    </Button>
+                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => navigate({ to: "/identities" })}
+                    data-testid="operation-add-key"
+                  >
+                    <Plus className="h-3.5 w-3.5 mr-1" />
+                    Add Key
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Navigate to Identities to manage keys for this identity.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>

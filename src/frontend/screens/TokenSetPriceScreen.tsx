@@ -1,7 +1,8 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouterState } from "@tanstack/react-router";
-import { AlertTriangle, Plus, Trash2 } from "lucide-react";
-import { commands } from "@/bindings";
+import { AlertTriangle, Loader2, Plus, Trash2 } from "lucide-react";
+import { commands, events } from "@/bindings";
+import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { TokenOperationForm } from "@/components/token/TokenOperationForm";
 import type {
   ConfirmationConfig,
@@ -19,6 +20,11 @@ import { cn } from "@/lib/utils";
  * - remove: Remove pricing (make token unavailable for direct purchase)
  */
 type PricingType = "single" | "tiered" | "remove";
+
+/** Pricing schedule as returned by the backend. */
+type PricingSchedule =
+  | { SinglePrice: number }
+  | { SetPrices: Record<string, number> };
 
 interface TierRow {
   amount: string;
@@ -76,6 +82,13 @@ export function TokenSetPriceScreen() {
     ? { groupActionId, hasGroup: true, isUnilateral: false }
     : undefined;
 
+  // ── Current pricing state (fetched from backend on mount) ──────────
+  const [currentPricing, setCurrentPricing] = useState<PricingSchedule | null>(null);
+  const [currentPricingLoading, setCurrentPricingLoading] = useState(false);
+  const [currentPricingFetched, setCurrentPricingFetched] = useState(false);
+  const [currentPricingError, setCurrentPricingError] = useState<string | null>(null);
+  const pricingTaskIdRef = useRef<string | null>(null);
+
   // ── Pricing form state ──────────────────────────────────────────────
   const [pricingType, setPricingType] = useState<PricingType>("remove");
   const [singlePrice, setSinglePrice] = useState("");
@@ -85,6 +98,8 @@ export function TokenSetPriceScreen() {
 
   // ── Helpers ─────────────────────────────────────────────────────────
 
+  const decimalMultiplier = Math.pow(10, tokenDecimals);
+
   /** Minimum price in DASH (based on token decimals). */
   const minimumPriceDash = useMemo(() => {
     if (tokenDecimals === 0) return "0.00000001";
@@ -92,6 +107,111 @@ export function TokenSetPriceScreen() {
     // minimum 1 credit times the decimal divisor = minimum price per token
     return (divisor / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
   }, [tokenDecimals]);
+
+  // ── Fetch current pricing on mount ──────────────────────────────────
+  useEffect(() => {
+    if (!tokenContext.tokenId || isGroupSigning) return;
+
+    let cleanupResult: (() => void) | undefined;
+    let cleanupError: (() => void) | undefined;
+
+    const subscribe = async () => {
+      cleanupResult = await events.taskResultEvent.listen(
+        (event: { payload: TaskResultEvent }) => {
+          const { taskId, resultType, payload } = event.payload;
+          if (pricingTaskIdRef.current !== taskId) return;
+          if (resultType !== "Token") return;
+
+          pricingTaskIdRef.current = null;
+          setCurrentPricingLoading(false);
+          setCurrentPricingFetched(true);
+
+          if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+            const obj = payload as Record<string, unknown>;
+            const prices = obj.prices;
+            if (prices && typeof prices === "object") {
+              setCurrentPricing(prices as PricingSchedule);
+            } else {
+              setCurrentPricing(null);
+            }
+          }
+        },
+      );
+
+      cleanupError = await events.taskErrorEvent.listen(
+        (event: { payload: TaskErrorEvent }) => {
+          const { taskId, message } = event.payload;
+          if (pricingTaskIdRef.current !== taskId) return;
+
+          pricingTaskIdRef.current = null;
+          setCurrentPricingLoading(false);
+          setCurrentPricingFetched(true);
+          setCurrentPricingError(message || "Failed to fetch current pricing.");
+        },
+      );
+
+      // Dispatch the query
+      setCurrentPricingLoading(true);
+      setCurrentPricingError(null);
+      try {
+        const result = await commands.tokenQueryPricing({
+          tokenId: tokenContext.tokenId,
+        });
+        if (result.status === "ok") {
+          pricingTaskIdRef.current = result.data.taskId;
+        } else {
+          setCurrentPricingLoading(false);
+          setCurrentPricingError("Failed to dispatch pricing query.");
+        }
+      } catch {
+        setCurrentPricingLoading(false);
+        setCurrentPricingError("Failed to fetch current pricing.");
+      }
+    };
+
+    subscribe().catch(() => {});
+
+    return () => {
+      cleanupResult?.();
+      cleanupError?.();
+    };
+  }, [tokenContext.tokenId, isGroupSigning]);
+
+  /** Format a pricing schedule for display. */
+  const formatCurrentPricing = useCallback(
+    (schedule: PricingSchedule): string[] => {
+      if ("SinglePrice" in schedule) {
+        const pricePerUnit = schedule.SinglePrice;
+        if (pricePerUnit === 0) return ["Fixed price: FREE"];
+        const pricePerToken = pricePerUnit * decimalMultiplier;
+        const dashPrice = (pricePerToken / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+        return [`Fixed price: ${dashPrice} DASH per token (${pricePerToken} credits)`];
+      }
+
+      const lines: string[] = [];
+      const sortedTiers = Object.entries(schedule.SetPrices)
+        .map(([k, v]) => [Number(k), v] as [number, number])
+        .sort((a, b) => a[0] - b[0]);
+
+      for (const [amountSmallest, pricePerUnit] of sortedTiers) {
+        const tokenAmount =
+          tokenDecimals > 0
+            ? amountSmallest / Math.pow(10, tokenDecimals)
+            : amountSmallest;
+
+        if (pricePerUnit === 0) {
+          lines.push(`${tokenAmount}+ tokens: FREE`);
+        } else {
+          const pricePerToken = pricePerUnit * decimalMultiplier;
+          const dashPrice = (pricePerToken / 1e8).toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+          lines.push(`${tokenAmount}+ tokens: ${dashPrice} DASH each (${pricePerToken} credits)`);
+        }
+      }
+
+      return lines;
+    },
+    [tokenDecimals, decimalMultiplier],
+  );
 
   /** Validate a price string for this token's precision. */
   const validatePrice = useCallback(
@@ -378,9 +498,60 @@ export function TokenSetPriceScreen() {
       ) : (
         /* ── Normal pricing input ────────────────────────────────── */
         <div className="space-y-4" data-testid="pricing-section">
+          {/* ── Current pricing display ────────────────────────── */}
+          <div data-testid="current-pricing-section">
+            <Label className="mb-2 block">Current Pricing</Label>
+            {currentPricingLoading && (
+              <div
+                className="flex items-center gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground"
+                data-testid="current-pricing-loading"
+              >
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Fetching current pricing...
+              </div>
+            )}
+            {currentPricingError && (
+              <div
+                className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+                data-testid="current-pricing-error"
+              >
+                {currentPricingError}
+              </div>
+            )}
+            {!currentPricingLoading && !currentPricingError && currentPricing === null && currentPricingFetched && (
+              <div
+                className="rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground"
+                data-testid="current-pricing-none"
+              >
+                No pricing schedule is currently set. This token is not available for direct purchase.
+              </div>
+            )}
+            {!currentPricingLoading && currentPricing !== null && (
+              <div
+                className="rounded-md border border-border bg-muted/30 p-3 text-sm space-y-1"
+                data-testid="current-pricing-display"
+              >
+                {"SinglePrice" in currentPricing ? (
+                  <p className="font-medium text-foreground">
+                    {formatCurrentPricing(currentPricing)[0]}
+                  </p>
+                ) : (
+                  <>
+                    <p className="font-medium text-foreground">Tiered pricing:</p>
+                    {formatCurrentPricing(currentPricing).map((line, i) => (
+                      <p key={i} className="text-muted-foreground ml-2">
+                        {line}
+                      </p>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* ── Pricing type selector ──────────────────────────── */}
           <div className="space-y-2">
-            <Label>Pricing Type</Label>
+            <Label>New Pricing</Label>
             <div
               className="flex flex-wrap gap-2"
               data-testid="pricing-type-buttons"

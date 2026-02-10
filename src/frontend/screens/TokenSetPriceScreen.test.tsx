@@ -1,4 +1,4 @@
-import { render, screen, within, act } from "@testing-library/react";
+import { render, screen, within, act, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TokenSetPriceScreen } from "./TokenSetPriceScreen";
@@ -27,31 +27,50 @@ const mockTokenSetDirectPurchasePrice = vi.fn().mockResolvedValue({
   data: { taskId: "task-setprice-1" },
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null =
-  null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null =
-  null;
+const mockTokenQueryPricing = vi.fn().mockResolvedValue({
+  status: "ok",
+  data: { taskId: "pricing-query-1" },
+});
+
+let mockTaskResultListeners: Array<(event: { payload: unknown }) => void> = [];
+let mockTaskErrorListeners: Array<(event: { payload: unknown }) => void> = [];
+
+/** Emit a task result event to all registered listeners. */
+function emitTaskResult(payload: unknown) {
+  for (const listener of mockTaskResultListeners) {
+    listener({ payload });
+  }
+}
+
+/** Emit a task error event to all registered listeners. */
+function emitTaskError(payload: unknown) {
+  for (const listener of mockTaskErrorListeners) {
+    listener({ payload });
+  }
+}
 
 vi.mock("@/bindings", () => ({
   commands: {
     tokenSetDirectPurchasePrice: (...args: unknown[]) =>
       mockTokenSetDirectPurchasePrice(...args),
+    tokenQueryPricing: (...args: unknown[]) =>
+      mockTokenQueryPricing(...args),
     walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
   },
   events: {
     taskResultEvent: {
       listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
+        mockTaskResultListeners.push(cb);
         return Promise.resolve(() => {
-          mockTaskResultListener = null;
+          mockTaskResultListeners = mockTaskResultListeners.filter((l) => l !== cb);
         });
       }),
     },
     taskErrorEvent: {
       listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
+        mockTaskErrorListeners.push(cb);
         return Promise.resolve(() => {
-          mockTaskErrorListener = null;
+          mockTaskErrorListeners = mockTaskErrorListeners.filter((l) => l !== cb);
         });
       }),
     },
@@ -138,8 +157,8 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
 describe("TokenSetPriceScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
+    mockTaskResultListeners = [];
+    mockTaskErrorListeners = [];
     currentSearch = {
       tokenId: "token-setprice-111",
       contractId: "contract-setprice-111",
@@ -189,6 +208,157 @@ describe("TokenSetPriceScreen", () => {
       expect(
         screen.getByText(/will remove the pricing schedule/i),
       ).toBeInTheDocument();
+    });
+  });
+
+  // ── Current pricing display ────────────────────────────────────────────
+
+  describe("current pricing display", () => {
+    it("fetches current pricing on mount", async () => {
+      setup();
+      await waitFor(() => {
+        expect(mockTokenQueryPricing).toHaveBeenCalledWith({
+          tokenId: "token-setprice-111",
+        });
+      });
+    });
+
+    it("shows loading state while fetching pricing", async () => {
+      // Use a never-resolving promise to keep loading state visible
+      mockTokenQueryPricing.mockReturnValueOnce(new Promise(() => {}));
+      setup();
+
+      await waitFor(() => {
+        expect(screen.getByTestId("current-pricing-loading")).toBeInTheDocument();
+      });
+      expect(screen.getByText(/fetching current pricing/i)).toBeInTheDocument();
+    });
+
+    it("displays single price when fetched", async () => {
+      setup();
+
+      await waitFor(() => {
+        expect(mockTokenQueryPricing).toHaveBeenCalled();
+        expect(mockTaskResultListeners.length).toBeGreaterThan(0);
+      });
+
+      await act(async () => {
+        emitTaskResult({
+            taskId: "pricing-query-1",
+            resultType: "Token",
+            payload: {
+              token_id: "token-setprice-111",
+              prices: { SinglePrice: 1 },
+            },
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("current-pricing-display")).toBeInTheDocument();
+      });
+      // SinglePrice: 1 (per smallest unit), with 8 decimals → 1 * 10^8 = 100000000 credits = 1 DASH
+      expect(screen.getByText(/fixed price: 1 DASH per token/i)).toBeInTheDocument();
+    });
+
+    it("displays tiered pricing when fetched", async () => {
+      setup();
+
+      await waitFor(() => {
+        expect(mockTokenQueryPricing).toHaveBeenCalled();
+        expect(mockTaskResultListeners.length).toBeGreaterThan(0);
+      });
+
+      await act(async () => {
+        emitTaskResult({
+          taskId: "pricing-query-1",
+          resultType: "Token",
+          payload: {
+            token_id: "token-setprice-111",
+            prices: {
+              SetPrices: {
+                "100000000": 1,
+                "1000000000": 0,
+              },
+            },
+          },
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("current-pricing-display")).toBeInTheDocument();
+      });
+      const pricingDisplay = screen.getByTestId("current-pricing-display");
+      expect(within(pricingDisplay).getByText(/tiered pricing/i)).toBeInTheDocument();
+      // 100000000 smallest units / 10^8 = 1 token, price 1 per smallest = 1 * 10^8 = 100000000 credits = 1 DASH
+      expect(within(pricingDisplay).getByText(/1\+ tokens: 1 DASH each/i)).toBeInTheDocument();
+      // 1000000000 smallest units / 10^8 = 10 tokens, price 0 = FREE
+      expect(within(pricingDisplay).getByText(/10\+ tokens: FREE/i)).toBeInTheDocument();
+    });
+
+    it("shows 'no pricing' message when token has no pricing set", async () => {
+      setup();
+
+      await waitFor(() => {
+        expect(mockTokenQueryPricing).toHaveBeenCalled();
+        expect(mockTaskResultListeners.length).toBeGreaterThan(0);
+      });
+
+      await act(async () => {
+        emitTaskResult({
+          taskId: "pricing-query-1",
+          resultType: "Token",
+          payload: {
+            token_id: "token-setprice-111",
+            prices: null,
+          },
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("current-pricing-none")).toBeInTheDocument();
+      });
+      expect(
+        screen.getByText(/no pricing schedule is currently set/i),
+      ).toBeInTheDocument();
+    });
+
+    it("shows error when pricing fetch fails", async () => {
+      setup();
+
+      await waitFor(() => {
+        expect(mockTokenQueryPricing).toHaveBeenCalled();
+        expect(mockTaskErrorListeners.length).toBeGreaterThan(0);
+      });
+
+      await act(async () => {
+        emitTaskError({
+          taskId: "pricing-query-1",
+          message: "Network error",
+          details: null,
+          recoverable: false,
+        });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("current-pricing-error")).toBeInTheDocument();
+      });
+      expect(screen.getByText("Network error")).toBeInTheDocument();
+    });
+
+    it("does not fetch pricing when group signing", () => {
+      setup({
+        groupActionId: "group-action-456",
+        details: JSON.stringify({
+          pricingSchedule: { SinglePrice: 100 },
+        }),
+      });
+
+      expect(mockTokenQueryPricing).not.toHaveBeenCalled();
+    });
+
+    it("shows current pricing section", () => {
+      setup();
+      expect(screen.getByTestId("current-pricing-section")).toBeInTheDocument();
     });
   });
 
@@ -402,12 +572,10 @@ describe("TokenSetPriceScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskResultListener?.({
-          payload: {
-            taskId: "task-setprice-1",
-            resultType: "Token",
-            payload: null,
-          },
+        emitTaskResult({
+          taskId: "task-setprice-1",
+          resultType: "Token",
+          payload: null,
         });
       });
 
@@ -429,13 +597,11 @@ describe("TokenSetPriceScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskErrorListener?.({
-          payload: {
-            taskId: "task-setprice-1",
-            message: "Set price failed: permission denied",
-            details: null,
-            recoverable: false,
-          },
+        emitTaskError({
+          taskId: "task-setprice-1",
+          message: "Set price failed: permission denied",
+          details: null,
+          recoverable: false,
         });
       });
 
@@ -457,12 +623,10 @@ describe("TokenSetPriceScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskResultListener?.({
-          payload: {
-            taskId: "task-setprice-1",
-            resultType: "Token",
-            payload: null,
-          },
+        emitTaskResult({
+          taskId: "task-setprice-1",
+          resultType: "Token",
+          payload: null,
         });
       });
 

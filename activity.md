@@ -993,3 +993,10 @@
 **Files changed:** src/frontend/components/token/TokenOperationForm.tsx, src/frontend/components/token/TokenOperationForm.test.tsx
 **Tests added:** 6 tests — View Key Info button rendering, Add Key button rendering, View Key Info navigation, Add Key navigation, key management helper text, conditional display. Total tests: 3489 (up from 3484 — note: 1 pre-existing discrepancy, actual delta is +5 new assertions in 6 test cases).
 **Sub-tasks created:** 0
+
+## Run 142 — 2026-02-10
+**Task:** 7.5g Show current pricing schedule in Set Price screen
+**What was done:** Added current pricing display to the TokenSetPriceScreen. On mount (non-group mode), the screen dispatches `tokenQueryPricing` IPC to fetch the token's existing pricing schedule from Platform. Shows loading spinner while fetching, then displays the current pricing (single price with DASH + credits, tiered pricing with per-tier breakdown, "no pricing set" message, or error). The current pricing section appears above the new pricing form, with the pricing type label changed from "Pricing Type" to "New Pricing" for clarity. Updated test mocks to use array-based event listeners (supporting multiple simultaneous listeners from pricing fetch + TokenOperationForm) and added 7 new tests. Also fixed event emission pattern in existing tests.
+**Files changed:** src/frontend/screens/TokenSetPriceScreen.tsx, src/frontend/screens/TokenSetPriceScreen.test.tsx
+**Tests added:** 7 new tests — fetches current pricing on mount, shows loading state, displays single price, displays tiered pricing, shows no-pricing message, shows error on fetch failure, does not fetch when group signing. Total tests: 3509 (up from 3501, net +8 due to test refactoring).
+**Sub-tasks created:** 0

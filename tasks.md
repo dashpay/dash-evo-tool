@@ -852,7 +852,7 @@
   > - QR code display with react-qr-code library
 
   **Sub-tasks produced:**
-  - [ ] **8.2a Create dashpayStore with profile, contacts, and requests slices** (P2)
+  - [x] **8.2a Create dashpayStore with profile, contacts, and requests slices** (P2)
     Create `src/frontend/stores/dashpayStore.ts` with Zustand:
     - Profile slice: selectedIdentityId, profile (displayName, bio, avatarUrl), loading, saving, editing state
     - Contacts slice: contacts map, searchQuery, filter, sortOrder, showHidden, loading
@@ -1124,7 +1124,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 90 |
-| Completed | 114 |
-| Remaining | 13 |
+| Completed | 115 |
+| Remaining | 12 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

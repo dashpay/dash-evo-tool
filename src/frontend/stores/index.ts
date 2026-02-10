@@ -25,3 +25,11 @@ export type {
   TokenSortColumn,
   TokenSortOrder,
 } from "./tokenStore";
+
+export { useDashPayStore } from "./dashpayStore";
+export type {
+  DashPayStore,
+  ContactFilter,
+  ContactSortField,
+  ContactSortOrder,
+} from "./dashpayStore";

@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 153 — 2026-02-10
+**Task:** 8.2a Create dashpayStore with profile, contacts, and requests slices
+**What was done:** Created `src/frontend/stores/dashpayStore.ts` with Zustand, implementing 5 slices: profile (load from DB, update via Platform task), contacts (load/refresh, search/filter/sort state, hide/unhide), contact requests (load incoming+outgoing, refresh, send/accept/reject with per-request tracking), payments (load/refresh, send), and profile search (search dispatch, clear). Includes identity selection with data clearing on switch, `subscribeToUpdates()` for DashPay task result/error events with automatic local data reload, and utility actions (clearErrors, reset). Exported from stores/index.ts. Wrote 66 unit tests covering all actions, state transitions, error handling, event subscriptions, and edge cases. All 3710 tests pass (66 new + 3644 existing), lint and typecheck clean.
+**Files changed:** src/frontend/stores/dashpayStore.ts, src/frontend/stores/dashpayStore.test.ts, src/frontend/stores/index.ts, tasks.md, activity.md
+**Tests added:** 66 unit tests for dashpayStore
+**Sub-tasks created:** 0
+
 ## Run 152 — 2026-02-10
 **Task:** 7.5.2e Write multi-screen user journey tests
 **What was done:** Created `tests/e2e-integration/journeys.spec.ts` with 18 tests across 5 journey test suites exercising multi-screen user flows. Journey 1 (New User Onboarding): Welcome → Create Wallet → wallet in list, wallet list → Create Identity form, identity list → DPNS Register Name. Journey 2 (Token Creation & Transfer): My Tokens → Create Token wizard, token data → Transfer screen, Token Search. Journey 3 (Contract & Document Workflow): Contracts → Add Contract → tree, tree expansion → doc types, Create/Delete Document navigation. Journey 4 (Wallet Operations): Receive dialog → Send screen, Asset Locks tab, Send → back → Import. Journey 5 (Identity Management): select identity → detail, View Keys, Top Up, Withdraw → Transfer, cross-section sidebar navigation. All 18 journey tests pass, all 297 E2E integration tests pass (15 pre-existing failures in phase7-tokens "Back to Tokens" button tests), all 3644 component tests pass, lint and typecheck clean.

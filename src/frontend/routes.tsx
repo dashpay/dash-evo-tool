@@ -50,6 +50,7 @@ import { TokenClaimScreen } from "@/screens/TokenClaimScreen";
 import { TokenViewClaimsScreen } from "@/screens/TokenViewClaimsScreen";
 import { TokenSetPriceScreen } from "@/screens/TokenSetPriceScreen";
 import { TokenPurchaseScreen } from "@/screens/TokenPurchaseScreen";
+import { TokenUpdateConfigScreen } from "@/screens/TokenUpdateConfigScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -363,7 +364,7 @@ const tokensPurchaseRoute = createRoute({
 const tokensUpdateConfigRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/update-config",
-  component: () => <PlaceholderScreen title="Update Token Config" />,
+  component: TokenUpdateConfigScreen,
 });
 
 const walletsRoute = createRoute({

@@ -226,8 +226,16 @@ pub struct EstimatePerpetualRewardsInput {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateTokenConfigInput {
-    /// Identity-token info as JSON (serialized IdentityTokenInfo).
-    pub identity_token_info_json: serde_json::Value,
+    /// Identity ID (hex) performing the update.
+    pub identity_id: IdentifierDto,
+    /// Contract ID (hex) containing the token.
+    pub contract_id: IdentifierDto,
+    /// Token ID (hex).
+    pub token_id: IdentifierDto,
+    /// Token alias / display name.
+    pub token_alias: String,
+    /// Token position within the contract.
+    pub token_position: u16,
     /// The configuration change item as JSON.
     pub change_item_json: serde_json::Value,
     /// Key ID to use for signing.
@@ -871,11 +879,64 @@ pub fn token_query_claims(
 #[tauri::command]
 #[specta::specta]
 pub fn token_update_config(
-    _app_handle: AppHandle,
-    _state: tauri::State<'_, Arc<AppState>>,
-    _input: UpdateTokenConfigInput,
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    input: UpdateTokenConfigInput,
 ) -> Result<DispatchTaskResponse, String> {
-    Err("token_update_config: Complex type deserialization not yet implemented. Use the task event system instead.".to_string())
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
+
+    let token_id = parse_identifier(&input.token_id)?;
+    let contract_id = parse_identifier(&input.contract_id)?;
+    let token_position = TokenContractPosition::from(input.token_position);
+
+    // Look up identity and contract from app state
+    let qi = lookup_identity(&state, &input.identity_id)?;
+    let signing_key = find_signing_key(&qi, input.key_id)?;
+    let ctx = state.current_context();
+    let qc = ctx
+        .get_contract_by_id(&contract_id)
+        .map_err(|e| format!("Database error loading contract: {e}"))?
+        .ok_or_else(|| format!("Contract {} not found in local database", contract_id))?;
+
+    // Get the token configuration from the contract
+    let token_config = qc
+        .contract
+        .tokens()
+        .get(&token_position)
+        .ok_or_else(|| {
+            format!(
+                "Token at position {} not found in contract {}",
+                input.token_position, contract_id
+            )
+        })?
+        .clone();
+
+    // Build IdentityTokenInfo
+    let identity_token_info = dash_evo_tool::model::tokens::IdentityTokenInfo {
+        token_id,
+        token_alias: input.token_alias,
+        identity: qi,
+        data_contract: qc,
+        token_config,
+        token_position,
+    };
+
+    // Deserialize the change item from JSON
+    let change_item: TokenConfigurationChangeItem = serde_json::from_value(input.change_item_json)
+        .map_err(|e| format!("Invalid change_item_json: {e}"))?;
+
+    let group_info = parse_group_info(input.group_info.as_ref())?;
+
+    let task = BackendTask::TokenTask(Box::new(TokenTask::UpdateTokenConfig {
+        identity_token_info: Box::new(identity_token_info),
+        change_item,
+        signing_key,
+        public_note: input.public_note,
+        group_info,
+    }));
+    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
+    Ok(DispatchTaskResponse { task_id })
 }
 
 /// Purchase tokens via direct purchase.

@@ -4166,9 +4166,25 @@ export type UpdateProfileInput = { identityId: string; displayName: string | nul
  */
 export type UpdateTokenConfigInput = {
 /**
- * Identity-token info as JSON (serialized IdentityTokenInfo).
+ * Identity ID (hex) performing the update.
  */
-identityTokenInfoJson: JsonValue;
+identityId: string;
+/**
+ * Contract ID (hex) containing the token.
+ */
+contractId: string;
+/**
+ * Token ID (hex).
+ */
+tokenId: string;
+/**
+ * Token alias / display name.
+ */
+tokenAlias: string;
+/**
+ * Token position within the contract.
+ */
+tokenPosition: number;
 /**
  * The configuration change item as JSON.
  */

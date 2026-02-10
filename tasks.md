@@ -622,7 +622,7 @@
   - [x] **7.4d** Implement **Pause** and **Resume** token screens: Pause — no amount input needed, just key selection + group action support + confirmation. Resume — similar to pause, emergency action rules info display. Add routes. Write 10+ component tests.
   - [x] **7.4e** Implement **Claim Tokens** and **View Token Claims** screens: Claim — distribution type detection (perpetual/pre-programmed), estimated rewards display via `tokenEstimatePerpetualRewards`, claim button with fee estimation. View Claims — "Fetch Claims" button, claims history table (Amount, Timestamp, Block Height, Note), fetch status with elapsed time. Add routes. Write 15+ component tests.
   - [x] **7.4f** Implement **Set Token Price** and **Purchase Tokens** screens: Set Price — pricing type selector (Single Price / Tiered Pricing / Remove Pricing), single price amount input, tiered pricing grid (quantity threshold + price rows) with Add/Delete, group action support. Purchase — amount input, auto-fetch pricing schedule, calculated total price display, balance check. Add routes. Write 15+ component tests. Write 1 Playwright E2E test for purchase flow.
-  - [ ] **7.4g** Implement **Update Token Config** screen: change item selector dropdown (various config aspects), dynamic input fields based on selected change type (identity inputs, group selectors, text/numeric fields), group action support, fee estimation, broadcast. Add route. Write 10+ component tests.
+  - [x] **7.4g** Implement **Update Token Config** screen: change item selector dropdown (various config aspects), dynamic input fields based on selected change type (identity inputs, group selectors, text/numeric fields), group action support, fee estimation, broadcast. Add route. Write 10+ component tests.
   - [ ] **7.5 [REVIEW] Token screens functionality parity** (P2)
     Exhaustive comparison of all token screens against egui originals. Verify: all 13 action types work, token creator wizard has all 7 steps with every option, My Tokens table has all 15 action menu items, Search Tokens has pagination + contract details, Add by ID works for both contract and token IDs, pricing (single + tiered) is fully functional, distribution formula visualization renders, control rules cover all 10 types, group actions work. Create fix tasks for any gaps.
 
@@ -1112,7 +1112,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 82 |
-| Completed | 101 |
-| Remaining | 18 |
+| Completed | 102 |
+| Remaining | 17 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

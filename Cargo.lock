@@ -850,24 +850,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bindgen"
-version = "0.72.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
-dependencies = [
- "bitflags 2.10.0",
- "cexpr",
- "clang-sys",
- "itertools 0.13.0",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash 2.1.1",
- "shlex",
- "syn 2.0.114",
-]
-
-[[package]]
 name = "bip37-bloom-filter"
 version = "0.1.0"
 source = "git+https://github.com/dashpay/rs-bip37-bloom-filter?branch=develop#352fa2312fd6e0f47bf4cba3a67bfd78c3ba763b"
@@ -1160,16 +1142,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bzip2-sys"
-version = "0.1.13+1.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "225bff33b2141874fe80d71e07d6eec4f85c5c216453dd96388240f96e1acc14"
-dependencies = [
- "cc",
- "pkg-config",
-]
-
-[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1451,15 +1423,6 @@ name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
-
-[[package]]
-name = "colored"
-version = "3.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
-dependencies = [
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "combine"
@@ -2355,7 +2318,7 @@ dependencies = [
  "serde_json",
  "serde_repr",
  "sha2",
- "strum 0.26.3",
+ "strum",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -3490,18 +3453,13 @@ dependencies = [
  "grovedb-element",
  "grovedb-merk",
  "grovedb-path",
- "grovedb-storage",
  "grovedb-version",
- "grovedb-visualize",
  "hex",
  "hex-literal",
  "indexmap 2.13.0",
  "integer-encoding",
- "intmap",
- "itertools 0.14.0",
  "reqwest",
  "sha2",
- "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -3524,7 +3482,6 @@ dependencies = [
  "bincode_derive",
  "grovedb-path",
  "grovedb-version",
- "grovedb-visualize",
  "hex",
  "integer-encoding",
  "thiserror 2.0.18",
@@ -3551,19 +3508,15 @@ dependencies = [
  "bincode_derive",
  "blake3",
  "byteorder",
- "colored",
  "ed",
  "grovedb-costs",
  "grovedb-element",
  "grovedb-path",
- "grovedb-storage",
  "grovedb-version",
  "grovedb-visualize",
  "hex",
  "indexmap 2.13.0",
  "integer-encoding",
- "num_cpus",
- "rand 0.8.5",
  "thiserror 2.0.18",
 ]
 
@@ -3573,25 +3526,6 @@ version = "4.0.0"
 source = "git+https://github.com/dashpay/grovedb?rev=33dfd48a1718160cb333fa95424be491785f1897#33dfd48a1718160cb333fa95424be491785f1897"
 dependencies = [
  "hex",
-]
-
-[[package]]
-name = "grovedb-storage"
-version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=33dfd48a1718160cb333fa95424be491785f1897#33dfd48a1718160cb333fa95424be491785f1897"
-dependencies = [
- "blake3",
- "grovedb-costs",
- "grovedb-path",
- "grovedb-visualize",
- "hex",
- "integer-encoding",
- "lazy_static",
- "num_cpus",
- "rocksdb",
- "strum 0.27.2",
- "tempfile",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3615,7 +3549,7 @@ dependencies = [
 [[package]]
 name = "grovestark"
 version = "0.1.0"
-source = "git+https://www.github.com/dashpay/grovestark?rev=a70bdb1adac080d4f1dc10f2f4480d9dacd0f0da#a70bdb1adac080d4f1dc10f2f4480d9dacd0f0da"
+source = "git+https://www.github.com/dashpay/grovestark?rev=5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3#5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3"
 dependencies = [
  "ark-ff",
  "base64 0.22.1",
@@ -4542,35 +4476,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "librocksdb-sys"
-version = "0.18.0+10.7.5"
-source = "git+https://github.com/QuantumExplorer/rust-rocksdb.git?rev=52772eea7bcd214d1d07d80aa538b1d24e5015b7#52772eea7bcd214d1d07d80aa538b1d24e5015b7"
-dependencies = [
- "bindgen 0.72.1",
- "bzip2-sys",
- "cc",
- "libc",
- "libz-sys",
- "lz4-sys",
- "zstd-sys",
-]
-
-[[package]]
 name = "libsqlite3-sys"
 version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f"
-dependencies = [
- "cc",
- "pkg-config",
- "vcpkg",
-]
-
-[[package]]
-name = "libz-sys"
-version = "1.1.23"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15d118bbf3771060e7311cc7bb0545b01d08a8b4a7de949198dec1fa0ca1c0f7"
 dependencies = [
  "cc",
  "pkg-config",
@@ -4626,16 +4535,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
 dependencies = [
  "hashbrown 0.16.1",
-]
-
-[[package]]
-name = "lz4-sys"
-version = "1.11.1+lz4-1.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bd8c0d6c6ed0cd30b3652886bb8711dc4bb01d637a68105a3d5158039b418e6"
-dependencies = [
- "cc",
- "libc",
 ]
 
 [[package]]
@@ -4836,7 +4735,7 @@ dependencies = [
  "once_cell",
  "rustc-hash 1.1.0",
  "spirv",
- "strum 0.26.3",
+ "strum",
  "thiserror 2.0.18",
  "unicode-ident",
 ]
@@ -6353,15 +6252,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rocksdb"
-version = "0.24.0"
-source = "git+https://github.com/QuantumExplorer/rust-rocksdb.git?rev=52772eea7bcd214d1d07d80aa538b1d24e5015b7#52772eea7bcd214d1d07d80aa538b1d24e5015b7"
-dependencies = [
- "libc",
- "librocksdb-sys",
-]
-
-[[package]]
 name = "ron"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6412,7 +6302,7 @@ version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94ea852806513d6f5fd7750423300375bc8481a18ed033756c1a836257893a30"
 dependencies = [
- "bindgen 0.65.1",
+ "bindgen",
  "cc",
  "libc",
 ]
@@ -7122,16 +7012,7 @@ version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
 dependencies = [
- "strum_macros 0.26.4",
-]
-
-[[package]]
-name = "strum"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af23d6f6c1a224baef9d3f61e287d2761385a5b88fdab4eb4c6f11aeb54c4bcf"
-dependencies = [
- "strum_macros 0.27.2",
+ "strum_macros",
 ]
 
 [[package]]
@@ -7144,18 +7025,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn 2.0.114",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.27.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7695ce3845ea4b33927c055a39dc438a45b059f7c1b3d91d38d10355fb8cbca7"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
  "syn 2.0.114",
 ]
 
@@ -9918,16 +9787,6 @@ dependencies = [
  "crc32fast",
  "log",
  "simd-adler32",
-]
-
-[[package]]
-name = "zstd-sys"
-version = "2.0.16+zstd.1.5.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
-dependencies = [
- "cc",
- "pkg-config",
 ]
 
 [[package]]

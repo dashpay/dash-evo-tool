@@ -14,6 +14,7 @@ The tool supports both Mainnet and Testnet networks. Check out the [documentatio
 - [Prerequisites](#prerequisites)
   - [Rust Installation](#rust-installation)
   - [Dependencies](#dependencies)
+  - [Windows Runtime Dependencies](#windows-runtime-dependencies)
   - [Dash Core Wallet Setup](#dash-core-wallet-setup)
 - [Installation](#installation)
 - [Getting Started](#getting-started)
@@ -66,6 +67,14 @@ system, unzip, and install:
    wget https://github.com/protocolbuffers/protobuf/releases/download/v26.1/protoc-26.1-linux-x86_64.zip
    sudo unzip protoc-*-linux-x86_64.zip -d /usr/local
    ```
+
+### Windows Runtime Dependencies
+
+If you use the prebuilt Windows binary, make sure the target machine has:
+
+- Microsoft Visual C++ Redistributable (vc_redist x64): https://aka.ms/vc14/vc_redist.x64.exe
+- OpenGL 2.0 support. If OpenGL 2.0 is not available (or the app fails to start with OpenGL-related errors), install the OpenCL, OpenGL, and Vulkan Compatibility Pack:
+  https://apps.microsoft.com/detail/9nqpsl29bfff?ocid=webpdpshare
 
 ### Dash Core Wallet Setup
 

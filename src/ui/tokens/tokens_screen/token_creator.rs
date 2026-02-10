@@ -202,40 +202,14 @@ impl TokensScreen {
                             }
 
                             // Set wallet reference for the auto-selected key
-                            if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                                    qid,
-                                    None,
-                                    Some(key),
-                                    &mut self.token_creator_error_message,
-                                );
-                            }
+                            self.update_selected_wallet();
 
                             ui.add_space(10.0);
                             ui.separator();
 
                             // Wallet unlock check for simple mode
-                            if let Some(wallet) = &self.selected_wallet {
-                                use crate::ui::components::wallet_unlock_popup::{
-                                    wallet_needs_unlock, try_open_wallet_no_password,
-                                };
-
-                                if let Err(e) = try_open_wallet_no_password(wallet) {
-                                    self.token_creator_error_message = Some(e);
-                                }
-
-                                if wallet_needs_unlock(wallet) {
-                                    ui.add_space(10.0);
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(200, 150, 50),
-                                        "Wallet is locked. Please unlock to continue.",
-                                    );
-                                    ui.add_space(8.0);
-                                    if ui.button("Unlock Wallet").clicked() {
-                                        self.wallet_unlock_popup.open();
-                                    }
-                                    return;
-                                }
+                            if !self.ensure_wallet_unlocked(ui) {
+                                return;
                             }
                         } else {
                             // =====================================================
@@ -257,14 +231,7 @@ impl TokensScreen {
                             ui.add_space(5.0);
 
                             // If a key was selected, set the wallet reference
-                            if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-                                self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                                    qid,
-                                    None,
-                                    Some(key),
-                                    &mut self.token_creator_error_message,
-                                );
-                            }
+                            self.update_selected_wallet();
 
                             if self.selected_key.is_none() {
                                 return;
@@ -274,27 +241,8 @@ impl TokensScreen {
                             ui.separator();
 
                             // Wallet unlock check for advanced mode
-                            if let Some(wallet) = &self.selected_wallet {
-                                use crate::ui::components::wallet_unlock_popup::{
-                                    wallet_needs_unlock, try_open_wallet_no_password,
-                                };
-
-                                if let Err(e) = try_open_wallet_no_password(wallet) {
-                                    self.token_creator_error_message = Some(e);
-                                }
-
-                                if wallet_needs_unlock(wallet) {
-                                    ui.add_space(10.0);
-                                    ui.colored_label(
-                                        egui::Color32::from_rgb(200, 150, 50),
-                                        "Wallet is locked. Please unlock to continue.",
-                                    );
-                                    ui.add_space(8.0);
-                                    if ui.button("Unlock Wallet").clicked() {
-                                        self.wallet_unlock_popup.open();
-                                    }
-                                    return;
-                                }
+                            if !self.ensure_wallet_unlocked(ui) {
+                                return;
                             }
                         }
 
@@ -524,92 +472,16 @@ impl TokensScreen {
                                     ui.label("Token Name (singular)*:");
                                     ui.text_edit_singleline(&mut self.token_names_input[i].0);
                                     ui.horizontal(|ui| {
-                                        if i == 0 {
-                                            ui.push_id(format!("combo_{}", i), |ui| {
-                                                ui.style_mut().spacing.combo_height = 10.0;
-                                                ui.style_mut().spacing.button_padding = egui::vec2(3.0, 0.0);
-                                                ui.style_mut().visuals.widgets.inactive.fg_stroke.width = 1.0;
-                                                ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
-                                                let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
-                                                    .selected_text(format!(
-                                                        "{}",
-                                                        self.token_names_input[i].2
-                                                    ))
-                                                    .width(100.0);
-                                                combo_resp.show_ui(ui, |ui| {
-                                                    ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
-                                                });
-                                            });
-                                        } else {
-                                            ui.push_id(format!("combo_{}", i), |ui| {
-                                                    ui.style_mut().spacing.combo_height = 10.0;
-                                                    ui.style_mut().spacing.button_padding = egui::vec2(3.0, 0.0);
-                                                    ui.style_mut().visuals.widgets.inactive.fg_stroke.width = 1.0;
-                                                    ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
-                                                let combo_resp = ComboBox::from_id_salt(format!("token_name_language_selector_{}", i))
-                                                    .selected_text(format!(
-                                                        "{}",
-                                                        self.token_names_input[i].2
-                                                    ))
-                                                    .width(100.0);
-                                                combo_resp.show_ui(ui, |ui| {
-                                                    ui.style_mut().text_styles.get_mut(&egui::TextStyle::Body).unwrap().size = 12.0;
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::English, "English");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Arabic, "Arabic");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Bengali, "Bengali");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Burmese, "Burmese");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Chinese, "Chinese");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Czech, "Czech");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Dutch, "Dutch");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Farsi, "Farsi (Persian)");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Filipino, "Filipino (Tagalog)");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::French, "French");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::German, "German");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Greek, "Greek");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Gujarati, "Gujarati");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hausa, "Hausa");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hebrew, "Hebrew");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hindi, "Hindi");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Hungarian, "Hungarian");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Igbo, "Igbo");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Indonesian, "Indonesian");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Italian, "Italian");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Japanese, "Japanese");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Javanese, "Javanese");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Kannada, "Kannada");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Khmer, "Khmer");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Korean, "Korean");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Malay, "Malay");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Malayalam, "Malayalam");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Mandarin, "Mandarin Chinese");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Marathi, "Marathi");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Nepali, "Nepali");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Oriya, "Oriya");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Pashto, "Pashto");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Polish, "Polish");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Portuguese, "Portuguese");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Punjabi, "Punjabi");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Romanian, "Romanian");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Russian, "Russian");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Serbian, "Serbian");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Sindhi, "Sindhi");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Sinhala, "Sinhala");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Somali, "Somali");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Spanish, "Spanish");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Swahili, "Swahili");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Swedish, "Swedish");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Tamil, "Tamil");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Telugu, "Telugu");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Thai, "Thai");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Turkish, "Turkish");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Ukrainian, "Ukrainian");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Urdu, "Urdu");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Vietnamese, "Vietnamese");
-                                                    ui.selectable_value(&mut self.token_names_input[i].2, TokenNameLanguage::Yoruba, "Yoruba");
-                                                });
-                                            });
-                                        }
+                                        let allow_all_languages = i != 0;
+                                        ui.push_id(format!("combo_{}", i), |ui| {
+                                            let combo_id = format!("token_name_language_selector_{}", i);
+                                            Self::render_token_name_language_selector(
+                                                ui,
+                                                &mut self.token_names_input[i].2,
+                                                allow_all_languages,
+                                                &combo_id,
+                                            );
+                                        });
 
                                         if ui.add(egui::Button::new("➕ Add Language").small()).clicked() {
                                             let used_languages: HashSet<_> = self.token_names_input.iter().map(|(_, _, lang, _)| *lang).collect();
@@ -1068,28 +940,7 @@ impl TokensScreen {
 
         // Reset the expanded states after processing
         if self.should_reset_collapsing_states {
-            self.token_creator_advanced_expanded = false;
-            self.token_creator_action_rules_expanded = false;
-            self.token_creator_main_control_expanded = false;
-            self.token_creator_distribution_expanded = false;
-            self.token_creator_groups_expanded = false;
-            self.token_creator_document_schemas_expanded = false;
-            // Individual action rules
-            self.token_creator_manual_mint_expanded = false;
-            self.token_creator_manual_burn_expanded = false;
-            self.token_creator_freeze_expanded = false;
-            self.token_creator_unfreeze_expanded = false;
-            self.token_creator_destroy_frozen_expanded = false;
-            self.token_creator_emergency_action_expanded = false;
-            self.token_creator_max_supply_change_expanded = false;
-            self.token_creator_conventions_change_expanded = false;
-            self.token_creator_marketplace_expanded = false;
-            self.token_creator_direct_purchase_pricing_expanded = false;
-            // Nested rules
-            self.token_creator_new_tokens_destination_expanded = false;
-            self.token_creator_minting_allow_choosing_expanded = false;
-            self.token_creator_perpetual_distribution_rules_expanded = false;
-            self.should_reset_collapsing_states = false;
+            self.reset_token_creator_collapsing_states();
         }
 
                         } // Close advanced mode else block
@@ -1150,6 +1001,102 @@ impl TokensScreen {
         action
     }
 
+    fn update_selected_wallet(&mut self) {
+        if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
+            self.selected_wallet = crate::ui::identities::get_selected_wallet(
+                qid,
+                None,
+                Some(key),
+                &mut self.token_creator_error_message,
+            );
+        }
+    }
+
+    fn ensure_wallet_unlocked(&mut self, ui: &mut Ui) -> bool {
+        if let Some(wallet) = &self.selected_wallet {
+            use crate::ui::components::wallet_unlock_popup::{
+                try_open_wallet_no_password, wallet_needs_unlock,
+            };
+
+            if let Err(e) = try_open_wallet_no_password(wallet) {
+                self.token_creator_error_message = Some(e);
+            }
+
+            if wallet_needs_unlock(wallet) {
+                ui.add_space(10.0);
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 150, 50),
+                    "Wallet is locked. Please unlock to continue.",
+                );
+                ui.add_space(8.0);
+                if ui.button("Unlock Wallet").clicked() {
+                    self.wallet_unlock_popup.open();
+                }
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn render_token_name_language_selector(
+        ui: &mut Ui,
+        current_language: &mut TokenNameLanguage,
+        allow_all_languages: bool,
+        id_salt: &str,
+    ) {
+        ui.style_mut().spacing.combo_height = 10.0;
+        ui.style_mut().spacing.button_padding = egui::vec2(3.0, 0.0);
+        ui.style_mut().visuals.widgets.inactive.fg_stroke.width = 1.0;
+        ui.style_mut()
+            .text_styles
+            .get_mut(&egui::TextStyle::Body)
+            .unwrap()
+            .size = 12.0;
+
+        ComboBox::from_id_salt(id_salt)
+            .selected_text(format!("{}", current_language))
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                ui.style_mut()
+                    .text_styles
+                    .get_mut(&egui::TextStyle::Body)
+                    .unwrap()
+                    .size = 12.0;
+                for &language in TokenNameLanguage::selection_order() {
+                    if !allow_all_languages && language != TokenNameLanguage::English {
+                        continue;
+                    }
+                    ui.selectable_value(current_language, language, language.ui_label());
+                }
+            });
+    }
+
+    fn reset_token_creator_collapsing_states(&mut self) {
+        self.token_creator_advanced_expanded = false;
+        self.token_creator_action_rules_expanded = false;
+        self.token_creator_main_control_expanded = false;
+        self.token_creator_distribution_expanded = false;
+        self.token_creator_groups_expanded = false;
+        self.token_creator_document_schemas_expanded = false;
+        // Individual action rules
+        self.token_creator_manual_mint_expanded = false;
+        self.token_creator_manual_burn_expanded = false;
+        self.token_creator_freeze_expanded = false;
+        self.token_creator_unfreeze_expanded = false;
+        self.token_creator_destroy_frozen_expanded = false;
+        self.token_creator_emergency_action_expanded = false;
+        self.token_creator_max_supply_change_expanded = false;
+        self.token_creator_conventions_change_expanded = false;
+        self.token_creator_marketplace_expanded = false;
+        self.token_creator_direct_purchase_pricing_expanded = false;
+        // Nested rules
+        self.token_creator_new_tokens_destination_expanded = false;
+        self.token_creator_minting_allow_choosing_expanded = false;
+        self.token_creator_perpetual_distribution_rules_expanded = false;
+        self.should_reset_collapsing_states = false;
+    }
+
     /// Gathers user input and produces the arguments needed by
     /// `build_data_contract_v1_with_one_token`.
     /// Returns Err(error_msg) on invalid input.
@@ -1162,156 +1109,25 @@ impl TokensScreen {
         let identity_id = identity.identity.id();
 
         // Remove whitespace and parse the comma separated string into a vec
-        let mut contract_keywords = if self.contract_keywords_input.trim().is_empty() {
-            Vec::new()
-        } else {
-            self.contract_keywords_input
-                .split(',')
-                .map(|s| {
-                    let trimmed = s.trim().to_string();
-                    if trimmed.len() < 3 || trimmed.len() > 50 {
-                        Err(format!("Invalid contract keyword {}, keyword must be between 3 and 50 characters", trimmed))
-                    } else {
-                        Ok(trimmed)
-                    }
-                })
-                .collect::<Result<Vec<String>, String>>()?
-        };
+        let mut contract_keywords = self.parse_contract_keywords()?;
 
         // 2) Basic fields
-        if self.token_names_input.is_empty() {
-            return Err("Please enter a token name".to_string());
-        }
-        // If any name languages are duplicated, return an error
-        let mut seen_languages = HashSet::new();
-        for name_with_language in self.token_names_input.iter() {
-            if seen_languages.contains(&name_with_language.2) {
-                return Err(format!(
-                    "Duplicate token name language: {:?}",
-                    name_with_language.1
-                ));
-            }
-            seen_languages.insert(name_with_language.2);
-        }
-        let mut token_names: Vec<(String, String, String)> = Vec::new();
-        for name_with_language in self.token_names_input.iter() {
-            let language = match name_with_language.2 {
-                TokenNameLanguage::English => "en",
-                TokenNameLanguage::Arabic => "ar",
-                TokenNameLanguage::Bengali => "bn",
-                TokenNameLanguage::Burmese => "my",
-                TokenNameLanguage::Chinese => "zh",
-                TokenNameLanguage::Czech => "cs",
-                TokenNameLanguage::Dutch => "nl",
-                TokenNameLanguage::Farsi => "fa",
-                TokenNameLanguage::Filipino => "fil",
-                TokenNameLanguage::French => "fr",
-                TokenNameLanguage::German => "de",
-                TokenNameLanguage::Greek => "el",
-                TokenNameLanguage::Gujarati => "gu",
-                TokenNameLanguage::Hausa => "ha",
-                TokenNameLanguage::Hebrew => "he",
-                TokenNameLanguage::Hindi => "hi",
-                TokenNameLanguage::Hungarian => "hu",
-                TokenNameLanguage::Igbo => "ig",
-                TokenNameLanguage::Indonesian => "id",
-                TokenNameLanguage::Italian => "it",
-                TokenNameLanguage::Japanese => "ja",
-                TokenNameLanguage::Javanese => "jv",
-                TokenNameLanguage::Kannada => "kn",
-                TokenNameLanguage::Khmer => "km",
-                TokenNameLanguage::Korean => "ko",
-                TokenNameLanguage::Malay => "ms",
-                TokenNameLanguage::Malayalam => "ml",
-                TokenNameLanguage::Mandarin => "zh", // synonym for Chinese
-                TokenNameLanguage::Marathi => "mr",
-                TokenNameLanguage::Nepali => "ne",
-                TokenNameLanguage::Oriya => "or",
-                TokenNameLanguage::Pashto => "ps",
-                TokenNameLanguage::Polish => "pl",
-                TokenNameLanguage::Portuguese => "pt",
-                TokenNameLanguage::Punjabi => "pa",
-                TokenNameLanguage::Romanian => "ro",
-                TokenNameLanguage::Russian => "ru",
-                TokenNameLanguage::Serbian => "sr",
-                TokenNameLanguage::Sindhi => "sd",
-                TokenNameLanguage::Sinhala => "si",
-                TokenNameLanguage::Somali => "so",
-                TokenNameLanguage::Spanish => "es",
-                TokenNameLanguage::Swahili => "sw",
-                TokenNameLanguage::Swedish => "sv",
-                TokenNameLanguage::Tamil => "ta",
-                TokenNameLanguage::Telugu => "te",
-                TokenNameLanguage::Thai => "th",
-                TokenNameLanguage::Turkish => "tr",
-                TokenNameLanguage::Ukrainian => "uk",
-                TokenNameLanguage::Urdu => "ur",
-                TokenNameLanguage::Vietnamese => "vi",
-                TokenNameLanguage::Yoruba => "yo",
-            };
-
-            if name_with_language.0.len() < 3 || name_with_language.0.len() > 50 {
-                return Err(format!(
-                    "The name in {:?} must be between 3 and 50 characters",
-                    name_with_language.2
-                ));
-            }
-
-            if name_with_language.1.len() < 3 || name_with_language.1.len() > 50 {
-                return Err(format!(
-                    "The plural form in {:?} must be between 3 and 50 characters",
-                    name_with_language.2
-                ));
-            }
-
-            token_names.push((
-                name_with_language.0.clone(),
-                name_with_language.1.clone(),
-                language.to_owned(),
-            ));
-
-            // are we searchable?
-            if name_with_language.3 {
-                contract_keywords.push(name_with_language.0.clone());
-            }
-        }
+        let token_names = self.parse_token_names(&mut contract_keywords)?;
 
         let token_description = if !self.token_description_input.is_empty() {
             Some(self.token_description_input.clone())
         } else {
             None
         };
-        let decimals = self
-            .decimals_input
-            .parse::<u8>()
-            .map_err(|_| "Invalid decimal places amount".to_string())?;
-        let base_supply = self
-            .base_supply_amount
-            .as_ref()
-            .map(|amount| amount.value())
-            .ok_or_else(|| "Please enter a valid base supply amount".to_string())?;
-        let max_supply = self
-            .max_supply_amount
-            .as_ref()
-            .map(|amount| {
-                let value = amount.value();
-                if value > 0 { Some(value) } else { None }
-            })
-            .unwrap_or(None);
+        let decimals = self.parse_decimals()?;
+        let base_supply = self.parse_base_supply()?;
+        let max_supply = self.parse_max_supply();
 
         let start_paused = self.start_as_paused_input;
         let allow_transfers_to_frozen_identities = self.allow_transfers_to_frozen_identities;
         let keeps_history = self.token_advanced_keeps_history.into();
 
-        let main_control_group = if self.main_control_group_input.is_empty() {
-            None
-        } else {
-            Some(
-                self.main_control_group_input
-                    .parse::<u16>()
-                    .map_err(|_| "Invalid main control group".to_string())?,
-            )
-        };
+        let main_control_group = self.parse_main_control_group()?;
 
         // 3) Convert your ActionChangeControlUI fields to real rules
         // (or do the manual parse for each if needed)
@@ -1391,6 +1207,108 @@ impl TokensScreen {
             marketplace_rules,
             change_direct_purchase_pricing_rules,
         })
+    }
+
+    fn parse_contract_keywords(&self) -> Result<Vec<String>, String> {
+        if self.contract_keywords_input.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.contract_keywords_input
+            .split(',')
+            .map(|s| {
+                let trimmed = s.trim().to_string();
+                if trimmed.len() < 3 || trimmed.len() > 50 {
+                    Err(format!(
+                        "Invalid contract keyword {}, keyword must be between 3 and 50 characters",
+                        trimmed
+                    ))
+                } else {
+                    Ok(trimmed)
+                }
+            })
+            .collect::<Result<Vec<String>, String>>()
+    }
+
+    fn parse_token_names(
+        &self,
+        contract_keywords: &mut Vec<String>,
+    ) -> Result<Vec<(String, String, String)>, String> {
+        if self.token_names_input.is_empty() {
+            return Err("Please enter a token name".to_string());
+        }
+
+        let mut seen_languages = HashSet::new();
+        for name_with_language in &self.token_names_input {
+            if seen_languages.contains(&name_with_language.2) {
+                return Err(format!(
+                    "Duplicate token name language: {:?}",
+                    name_with_language.1
+                ));
+            }
+            seen_languages.insert(name_with_language.2);
+        }
+
+        let mut token_names = Vec::with_capacity(self.token_names_input.len());
+        for name_with_language in &self.token_names_input {
+            if name_with_language.0.len() < 3 || name_with_language.0.len() > 50 {
+                return Err(format!(
+                    "The name in {:?} must be between 3 and 50 characters",
+                    name_with_language.2
+                ));
+            }
+
+            if name_with_language.1.len() < 3 || name_with_language.1.len() > 50 {
+                return Err(format!(
+                    "The plural form in {:?} must be between 3 and 50 characters",
+                    name_with_language.2
+                ));
+            }
+
+            token_names.push((
+                name_with_language.0.clone(),
+                name_with_language.1.clone(),
+                name_with_language.2.iso_code().to_owned(),
+            ));
+
+            // are we searchable?
+            if name_with_language.3 {
+                contract_keywords.push(name_with_language.0.clone());
+            }
+        }
+
+        Ok(token_names)
+    }
+
+    fn parse_decimals(&self) -> Result<u8, String> {
+        self.decimals_input
+            .parse::<u8>()
+            .map_err(|_| "Invalid decimal places amount".to_string())
+    }
+
+    fn parse_base_supply(&self) -> Result<u64, String> {
+        self.base_supply_amount
+            .as_ref()
+            .map(|amount| amount.value())
+            .ok_or_else(|| "Please enter a valid base supply amount".to_string())
+    }
+
+    fn parse_max_supply(&self) -> Option<u64> {
+        self.max_supply_amount.as_ref().and_then(|amount| {
+            let value = amount.value();
+            if value > 0 { Some(value) } else { None }
+        })
+    }
+
+    fn parse_main_control_group(&self) -> Result<Option<u16>, String> {
+        if self.main_control_group_input.is_empty() {
+            return Ok(None);
+        }
+
+        self.main_control_group_input
+            .parse::<u16>()
+            .map(Some)
+            .map_err(|_| "Invalid main control group".to_string())
     }
 
     /// Example of pulling out the logic to parse main_control_group_change_authorized
@@ -1483,6 +1401,11 @@ impl TokensScreen {
         self.selected_token_preset = Some(preset.features);
     }
 
+    fn close_token_creator_confirmation_popup(&mut self) {
+        self.show_token_creator_confirmation_popup = false;
+        self.token_creator_confirmation_dialog = None;
+    }
+
     /// Shows a popup "Are you sure?" for creating the token contract
     fn render_token_creator_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
@@ -1554,8 +1477,7 @@ impl TokensScreen {
                                 Ok(a) => a,
                                 Err(err) => {
                                     self.token_creator_error_message = Some(err);
-                                    self.show_token_creator_confirmation_popup = false;
-                                    self.token_creator_confirmation_dialog = None;
+                                    self.close_token_creator_confirmation_popup();
                                     return AppAction::None;
                                 }
                             }
@@ -1601,15 +1523,12 @@ impl TokensScreen {
                     ];
 
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
-                    self.show_token_creator_confirmation_popup = false;
                     let now = Utc::now().timestamp() as u64;
                     self.token_creator_status = TokenCreatorStatus::WaitingForResult(now);
-                    self.show_token_creator_confirmation_popup = false;
-                    self.token_creator_confirmation_dialog = None;
+                    self.close_token_creator_confirmation_popup();
                 }
                 ConfirmationStatus::Canceled => {
-                    self.show_token_creator_confirmation_popup = false;
-                    self.token_creator_confirmation_dialog = None;
+                    self.close_token_creator_confirmation_popup();
                     action = AppAction::None;
                 }
             }

@@ -1,7 +1,7 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
@@ -467,13 +467,12 @@ impl NetworkChooserScreen {
             let ctx = self.current_app_context();
             let status = ctx.connection_status();
             let disable_zmq = status.disable_zmq();
-            let rpc_online = self.check_network_status(self.current_network);
+            let rpc_online = status.rpc_online();
             let zmq_connected = status.zmq_connected();
-            let spv_snapshot = ctx.spv_manager().status();
             let spv_status = status.spv_status();
             let spv_connected = ConnectionStatus::spv_connected(spv_status);
             let snapshot = if current_backend_mode == CoreBackendMode::Spv {
-                Some(spv_snapshot.clone())
+                Some(ctx.spv_manager().status().clone())
             } else {
                 None
             };
@@ -678,7 +677,7 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        ui.colored_label(color, format!("{:?}", spv_status));
+                        ui.colored_label(color, spv_status.to_string());
                     });
 
                     ui.horizontal(|ui| {
@@ -1815,29 +1814,6 @@ impl NetworkChooserScreen {
         }
     }
 
-    /// Check if the network is working
-    fn check_network_status(&self, network: Network) -> bool {
-        match network {
-            Network::Dash => self.mainnet_app_context.connection_status().rpc_online(),
-            Network::Testnet => self
-                .testnet_app_context
-                .as_ref()
-                .map(|ctx| ctx.connection_status().rpc_online())
-                .unwrap_or(false),
-            Network::Devnet => self
-                .devnet_app_context
-                .as_ref()
-                .map(|ctx| ctx.connection_status().rpc_online())
-                .unwrap_or(false),
-            Network::Regtest => self
-                .local_app_context
-                .as_ref()
-                .map(|ctx| ctx.connection_status().rpc_online())
-                .unwrap_or(false),
-            _ => false,
-        }
-    }
-
     fn any_rpc_backend(&self) -> bool {
         self.backend_modes
             .iter()
@@ -1938,14 +1914,6 @@ impl ScreenLike for NetworkChooserScreen {
             self.backend_modes
                 .insert(Network::Regtest, ctx.core_backend_mode());
         }
-    }
-
-    fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
-        let _ = message;
-    }
-
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        let _ = backend_task_success_result;
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {

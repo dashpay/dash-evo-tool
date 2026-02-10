@@ -941,6 +941,179 @@ impl std::fmt::Display for TokenNameLanguage {
     }
 }
 
+impl TokenNameLanguage {
+    pub fn iso_code(self) -> &'static str {
+        match self {
+            TokenNameLanguage::English => "en",
+            TokenNameLanguage::Arabic => "ar",
+            TokenNameLanguage::Bengali => "bn",
+            TokenNameLanguage::Burmese => "my",
+            TokenNameLanguage::Chinese => "zh",
+            TokenNameLanguage::Czech => "cs",
+            TokenNameLanguage::Dutch => "nl",
+            TokenNameLanguage::Farsi => "fa",
+            TokenNameLanguage::Filipino => "fil",
+            TokenNameLanguage::French => "fr",
+            TokenNameLanguage::German => "de",
+            TokenNameLanguage::Greek => "el",
+            TokenNameLanguage::Gujarati => "gu",
+            TokenNameLanguage::Hausa => "ha",
+            TokenNameLanguage::Hebrew => "he",
+            TokenNameLanguage::Hindi => "hi",
+            TokenNameLanguage::Hungarian => "hu",
+            TokenNameLanguage::Igbo => "ig",
+            TokenNameLanguage::Indonesian => "id",
+            TokenNameLanguage::Italian => "it",
+            TokenNameLanguage::Japanese => "ja",
+            TokenNameLanguage::Javanese => "jv",
+            TokenNameLanguage::Kannada => "kn",
+            TokenNameLanguage::Khmer => "km",
+            TokenNameLanguage::Korean => "ko",
+            TokenNameLanguage::Malay => "ms",
+            TokenNameLanguage::Malayalam => "ml",
+            TokenNameLanguage::Mandarin => "zh",
+            TokenNameLanguage::Marathi => "mr",
+            TokenNameLanguage::Nepali => "ne",
+            TokenNameLanguage::Oriya => "or",
+            TokenNameLanguage::Pashto => "ps",
+            TokenNameLanguage::Polish => "pl",
+            TokenNameLanguage::Portuguese => "pt",
+            TokenNameLanguage::Punjabi => "pa",
+            TokenNameLanguage::Romanian => "ro",
+            TokenNameLanguage::Russian => "ru",
+            TokenNameLanguage::Serbian => "sr",
+            TokenNameLanguage::Sindhi => "sd",
+            TokenNameLanguage::Sinhala => "si",
+            TokenNameLanguage::Somali => "so",
+            TokenNameLanguage::Spanish => "es",
+            TokenNameLanguage::Swahili => "sw",
+            TokenNameLanguage::Swedish => "sv",
+            TokenNameLanguage::Tamil => "ta",
+            TokenNameLanguage::Telugu => "te",
+            TokenNameLanguage::Thai => "th",
+            TokenNameLanguage::Turkish => "tr",
+            TokenNameLanguage::Ukrainian => "uk",
+            TokenNameLanguage::Urdu => "ur",
+            TokenNameLanguage::Vietnamese => "vi",
+            TokenNameLanguage::Yoruba => "yo",
+        }
+    }
+
+    pub fn ui_label(self) -> &'static str {
+        match self {
+            TokenNameLanguage::English => "English",
+            TokenNameLanguage::Arabic => "Arabic",
+            TokenNameLanguage::Bengali => "Bengali",
+            TokenNameLanguage::Burmese => "Burmese",
+            TokenNameLanguage::Chinese => "Chinese",
+            TokenNameLanguage::Czech => "Czech",
+            TokenNameLanguage::Dutch => "Dutch",
+            TokenNameLanguage::Farsi => "Farsi (Persian)",
+            TokenNameLanguage::Filipino => "Filipino (Tagalog)",
+            TokenNameLanguage::French => "French",
+            TokenNameLanguage::German => "German",
+            TokenNameLanguage::Greek => "Greek",
+            TokenNameLanguage::Gujarati => "Gujarati",
+            TokenNameLanguage::Hausa => "Hausa",
+            TokenNameLanguage::Hebrew => "Hebrew",
+            TokenNameLanguage::Hindi => "Hindi",
+            TokenNameLanguage::Hungarian => "Hungarian",
+            TokenNameLanguage::Igbo => "Igbo",
+            TokenNameLanguage::Indonesian => "Indonesian",
+            TokenNameLanguage::Italian => "Italian",
+            TokenNameLanguage::Japanese => "Japanese",
+            TokenNameLanguage::Javanese => "Javanese",
+            TokenNameLanguage::Kannada => "Kannada",
+            TokenNameLanguage::Khmer => "Khmer",
+            TokenNameLanguage::Korean => "Korean",
+            TokenNameLanguage::Malay => "Malay",
+            TokenNameLanguage::Malayalam => "Malayalam",
+            TokenNameLanguage::Mandarin => "Mandarin Chinese",
+            TokenNameLanguage::Marathi => "Marathi",
+            TokenNameLanguage::Nepali => "Nepali",
+            TokenNameLanguage::Oriya => "Oriya",
+            TokenNameLanguage::Pashto => "Pashto",
+            TokenNameLanguage::Polish => "Polish",
+            TokenNameLanguage::Portuguese => "Portuguese",
+            TokenNameLanguage::Punjabi => "Punjabi",
+            TokenNameLanguage::Romanian => "Romanian",
+            TokenNameLanguage::Russian => "Russian",
+            TokenNameLanguage::Serbian => "Serbian",
+            TokenNameLanguage::Sindhi => "Sindhi",
+            TokenNameLanguage::Sinhala => "Sinhala",
+            TokenNameLanguage::Somali => "Somali",
+            TokenNameLanguage::Spanish => "Spanish",
+            TokenNameLanguage::Swahili => "Swahili",
+            TokenNameLanguage::Swedish => "Swedish",
+            TokenNameLanguage::Tamil => "Tamil",
+            TokenNameLanguage::Telugu => "Telugu",
+            TokenNameLanguage::Thai => "Thai",
+            TokenNameLanguage::Turkish => "Turkish",
+            TokenNameLanguage::Ukrainian => "Ukrainian",
+            TokenNameLanguage::Urdu => "Urdu",
+            TokenNameLanguage::Vietnamese => "Vietnamese",
+            TokenNameLanguage::Yoruba => "Yoruba",
+        }
+    }
+
+    pub fn selection_order() -> &'static [TokenNameLanguage] {
+        &[
+            TokenNameLanguage::English,
+            TokenNameLanguage::Arabic,
+            TokenNameLanguage::Bengali,
+            TokenNameLanguage::Burmese,
+            TokenNameLanguage::Chinese,
+            TokenNameLanguage::Czech,
+            TokenNameLanguage::Dutch,
+            TokenNameLanguage::Farsi,
+            TokenNameLanguage::Filipino,
+            TokenNameLanguage::French,
+            TokenNameLanguage::German,
+            TokenNameLanguage::Greek,
+            TokenNameLanguage::Gujarati,
+            TokenNameLanguage::Hausa,
+            TokenNameLanguage::Hebrew,
+            TokenNameLanguage::Hindi,
+            TokenNameLanguage::Hungarian,
+            TokenNameLanguage::Igbo,
+            TokenNameLanguage::Indonesian,
+            TokenNameLanguage::Italian,
+            TokenNameLanguage::Japanese,
+            TokenNameLanguage::Javanese,
+            TokenNameLanguage::Kannada,
+            TokenNameLanguage::Khmer,
+            TokenNameLanguage::Korean,
+            TokenNameLanguage::Malay,
+            TokenNameLanguage::Malayalam,
+            TokenNameLanguage::Mandarin,
+            TokenNameLanguage::Marathi,
+            TokenNameLanguage::Nepali,
+            TokenNameLanguage::Oriya,
+            TokenNameLanguage::Pashto,
+            TokenNameLanguage::Polish,
+            TokenNameLanguage::Portuguese,
+            TokenNameLanguage::Punjabi,
+            TokenNameLanguage::Romanian,
+            TokenNameLanguage::Russian,
+            TokenNameLanguage::Serbian,
+            TokenNameLanguage::Sindhi,
+            TokenNameLanguage::Sinhala,
+            TokenNameLanguage::Somali,
+            TokenNameLanguage::Spanish,
+            TokenNameLanguage::Swahili,
+            TokenNameLanguage::Swedish,
+            TokenNameLanguage::Tamil,
+            TokenNameLanguage::Telugu,
+            TokenNameLanguage::Thai,
+            TokenNameLanguage::Turkish,
+            TokenNameLanguage::Ukrainian,
+            TokenNameLanguage::Urdu,
+            TokenNameLanguage::Vietnamese,
+            TokenNameLanguage::Yoruba,
+        ]
+    }
+}
+
 #[derive(Clone, Debug)]
 /// All arguments needed by `build_data_contract_v1_with_one_token`.
 pub struct TokenBuildArgs {
@@ -2977,6 +3150,9 @@ impl ScreenLike for TokensScreen {
                 );
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
+            BackendTaskSuccessResult::RegisteredTokenContract => {
+                self.token_creator_status = TokenCreatorStatus::Complete;
+            }
             _ => {}
         }
     }
@@ -2985,13 +3161,15 @@ impl ScreenLike for TokensScreen {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Once;
 
     use crate::app_dir::copy_env_file_if_not_exists;
     use crate::database::Database;
     use crate::model::qualified_identity::IdentityStatus;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 
-    use super::*; use dash_sdk::dpp::dashcore::Network;
+    use super::*;
+    use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
     use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
@@ -2999,6 +3177,34 @@ mod tests {
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
+
+    fn ensure_test_env() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            copy_env_file_if_not_exists(); // required by AppContext::new()
+
+            // Ensure minimum required configs exist even if .env isn't loaded.
+            // Safety: tests set env vars once to ensure deterministic config.
+            // No other test mutates these values.
+            unsafe {
+                std::env::set_var("MAINNET_dapi_addresses", "http://127.0.0.1:1443");
+                std::env::set_var("MAINNET_core_host", "127.0.0.1");
+                std::env::set_var("MAINNET_core_rpc_port", "9998");
+                std::env::set_var("MAINNET_core_rpc_user", "dashrpc");
+                std::env::set_var("MAINNET_core_rpc_password", "password");
+                std::env::set_var("MAINNET_insight_api_url", "http://127.0.0.1:3001");
+                std::env::set_var("MAINNET_show_in_ui", "true");
+
+                std::env::set_var("LOCAL_dapi_addresses", "http://127.0.0.1:2443");
+                std::env::set_var("LOCAL_core_host", "127.0.0.1");
+                std::env::set_var("LOCAL_core_rpc_port", "20302");
+                std::env::set_var("LOCAL_core_rpc_user", "dashmate");
+                std::env::set_var("LOCAL_core_rpc_password", "password");
+                std::env::set_var("LOCAL_insight_api_url", "http://127.0.0.1:3001");
+                std::env::set_var("LOCAL_show_in_ui", "true");
+            }
+        });
+    }
 
     impl ChangeControlRulesUI {
         /// Sets every field to some dummy/test value to ensure coverage in tests.
@@ -3026,9 +3232,15 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        copy_env_file_if_not_exists(); // Required by AppContext::new()
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        ensure_test_env();
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3332,9 +3544,15 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        copy_env_file_if_not_exists(); // required by AppContext::new()
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        ensure_test_env();
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3452,9 +3670,15 @@ mod tests {
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        copy_env_file_if_not_exists(); // required by AppContext::new()
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        ensure_test_env();
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection

@@ -573,7 +573,7 @@
   - [x] **6.3c** Create `UpdateContractScreen`: identity selector (CRITICAL keys only), contract dropdown (exclude system contracts), auto-load selected contract JSON, JSON editor, fee estimation, "Update Contract" broadcast. Progress states and success screen. Write 15+ component tests.
   - [x] **6.3d** Create `DocumentActionScreen` with shared layout for all 6 action types: contract/doc-type selector, identity/key selector, wallet unlock gate, fee estimation, broadcast button, progress/success states. Implement **Create Document** action: dynamic form fields based on document type schema (integers, floats, strings, byte arrays, identifiers, booleans, dates, objects, arrays), required field validation, token cost info. Write 20+ component tests.
   - [x] **6.3e** Implement remaining document actions in `DocumentActionScreen`: **Delete** (document ID input, "Fetch Owned Documents" with list + View popup + Select), **Replace** (fetch original, populate form, edit, broadcast), **Purchase** (fetch price, display, broadcast), **Set Price** (ID + price inputs), **Transfer** (ID + recipient inputs). Write 20+ component tests. Write 1 Playwright E2E test covering Create + Delete flow.
-  - [ ] **6.3f** Create `GroupActionsScreen`: contract selector (filtered to contracts with group-action-enabled tokens), identity selector, "Fetch Group Actions" button, results table (Action ID, Type, Info, Note, Take Action), "Take Action" navigates to corresponding token action screen pre-populated. Write 15+ component tests.
+  - [x] **6.3f** Create `GroupActionsScreen`: contract selector (filtered to contracts with group-action-enabled tokens), identity selector, "Fetch Group Actions" button, results table (Action ID, Type, Info, Note, Take Action), "Take Action" navigates to corresponding token action screen pre-populated. Write 15+ component tests.
   - [ ] **6.4 [REVIEW] Contract/document screens functionality parity** (P2)
     Verify all contract and document operations match egui version. Check:
     - All 9 top-bar action buttons present and functional
@@ -916,7 +916,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 11 |
 | Implementation tasks | 70 |
-| Completed | 82 |
-| Remaining | 24 |
+| Completed | 83 |
+| Remaining | 23 |
 
 *Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*

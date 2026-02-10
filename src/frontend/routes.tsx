@@ -33,6 +33,7 @@ import { AddContractsScreen } from "@/screens/AddContractsScreen";
 import { RegisterContractScreen } from "@/screens/RegisterContractScreen";
 import { UpdateContractScreen } from "@/screens/UpdateContractScreen";
 import { DocumentActionScreen } from "@/screens/DocumentActionScreen";
+import { GroupActionsScreen } from "@/screens/GroupActionsScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -203,6 +204,12 @@ const contractsSetDocumentPriceRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/set-document-price",
   component: () => <DocumentActionScreen actionType="setPrice" />,
+});
+
+const contractsGroupActionsRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/group-actions",
+  component: GroupActionsScreen,
 });
 
 const contractsDpnsActiveRoute = createRoute({
@@ -403,6 +410,7 @@ const routeTree = rootRoute.addChildren([
       contractsTransferDocumentRoute,
       contractsPurchaseDocumentRoute,
       contractsSetDocumentPriceRoute,
+      contractsGroupActionsRoute,
       contractsDpnsActiveRoute,
       contractsDpnsPastRoute,
       contractsDpnsOwnedRoute,

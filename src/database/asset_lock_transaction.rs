@@ -121,7 +121,7 @@ impl Database {
             params![identity_id, tx_id],
         )?;
         if rows_updated == 0 {
-            tracing::error!(
+            tracing::warn!(
                 "No rows updated. Check if tx_id {} exists and identity_id {} is correct.",
                 hex::encode(tx_id),
                 hex::encode(identity_id)

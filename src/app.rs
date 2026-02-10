@@ -194,8 +194,8 @@ impl AppState {
         ) {
             Some(context) => context,
             None => {
-                eprintln!(
-                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                tracing::error!(
+                    "Failed to create the AppContext. Expected Dash config for mainnet."
                 );
                 std::process::exit(1);
             }

@@ -110,7 +110,7 @@ impl AppContext {
         let config = match Config::load() {
             Ok(config) => config,
             Err(e) => {
-                println!("Failed to load config: {e}");
+                tracing::error!("Failed to load config: {e}");
                 return None;
             }
         };

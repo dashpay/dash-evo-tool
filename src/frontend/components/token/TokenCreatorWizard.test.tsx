@@ -22,6 +22,81 @@ vi.mock("@/components/theme/ThemeProvider", () => ({
   }),
 }));
 
+vi.mock("@/bindings", () => ({
+  commands: {
+    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
+    tokenRegisterContract: vi
+      .fn()
+      .mockResolvedValue({ status: "ok", data: { taskId: "task-1" } }),
+  },
+  events: {
+    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
+    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
+  },
+}));
+
+vi.mock("@/stores/identityStore", () => ({
+  useIdentityStore: () => ({
+    identities: [
+      {
+        id: "id-abc123",
+        alias: "TestIdentity",
+        balance: 1000000000,
+        keys: [
+          {
+            keyId: 1,
+            purpose: "AUTHENTICATION",
+            securityLevel: "HIGH",
+            keyType: "ECDSA_SECP256K1",
+            isDisabled: false,
+          },
+        ],
+        associatedWalletHashes: ["seed-hash-1"],
+        dpnsNames: [],
+        identityType: "User",
+        walletIndex: 0,
+        topUps: [],
+        status: "NotInPlatform",
+      },
+    ],
+    loadIdentities: vi.fn(),
+  }),
+}));
+
+vi.mock("@/stores/walletStore", () => ({
+  useWalletStore: () => ({
+    hdWallets: [
+      {
+        seedHash: "seed-hash-1",
+        alias: "TestWallet",
+        usesPassword: false,
+        passwordHint: null,
+      },
+    ],
+    singleKeyWallets: [],
+    loadWallets: vi.fn(),
+  }),
+}));
+
+vi.mock("@/stores/tokenStore", () => ({
+  useTokenStore: () => ({
+    loadMyTokenBalances: vi.fn().mockResolvedValue(null),
+  }),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
+  Toaster: () => null,
+}));
+
+vi.mock("@/lib/toastError", () => ({
+  toastError: vi.fn(),
+}));
+
+vi.mock("@/components/shared/WalletUnlockDialog", () => ({
+  WalletUnlockDialog: () => null,
+}));
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
 function validBasicInfo(overrides: Partial<BasicInfoState> = {}): BasicInfoState {
@@ -524,7 +599,7 @@ describe("TokenCreatorWizard", () => {
     expect(screen.getByText("Step 1 of 7")).toBeInTheDocument();
   });
 
-  it("shows Create Token button on the last step", async () => {
+  it("shows Review step on the last step (no Next button)", async () => {
     const user = userEvent.setup();
     render(<TokenCreatorWizard onCancel={onCancel} />);
 
@@ -538,7 +613,7 @@ describe("TokenCreatorWizard", () => {
     }
 
     expect(screen.getByText(`Step 7 of 7`)).toBeInTheDocument();
-    expect(screen.getByTestId("wizard-create")).toBeInTheDocument();
+    expect(screen.getByTestId("review-step")).toBeInTheDocument();
     expect(screen.queryByTestId("wizard-next")).not.toBeInTheDocument();
   });
 

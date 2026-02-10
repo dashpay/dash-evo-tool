@@ -34,6 +34,7 @@ import {
   createDefaultKeywordsState,
 } from "./KeywordsStep";
 import type { KeywordsState } from "./KeywordsStep";
+import { ReviewStep } from "./ReviewStep";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -394,6 +395,16 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
     onCancel();
   }, [onCancel]);
 
+  const handleReset = useCallback(() => {
+    setCurrentStep(0);
+    setBasicInfo(createDefaultBasicInfo());
+    setDistribution(createDefaultDistributionState());
+    setControlRules(createDefaultControlRulesState());
+    setGroups(createDefaultGroupsState());
+    setHistory(createDefaultHistoryState());
+    setKeywords(createDefaultKeywordsState());
+  }, []);
+
   return (
     <div className="flex flex-col h-full" data-testid="token-creator-wizard">
       {/* Step indicator */}
@@ -457,7 +468,15 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
           <KeywordsStep state={keywords} onChange={setKeywords} />
         )}
         {currentStep === 6 && (
-          <PlaceholderStep label="Review & Create" />
+          <ReviewStep
+            basicInfo={basicInfo}
+            distribution={distribution}
+            controlRules={controlRules}
+            groups={groups}
+            history={history}
+            keywords={keywords}
+            onReset={handleReset}
+          />
         )}
       </div>
 
@@ -486,21 +505,9 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
             <ArrowRight className="h-4 w-4 ml-1" />
           </Button>
         ) : (
-          <Button data-testid="wizard-create" disabled>
-            Create Token
-          </Button>
+          <span />
         )}
       </div>
-    </div>
-  );
-}
-
-// ─── PlaceholderStep ────────────────────────────────────────────────────────
-
-function PlaceholderStep({ label }: { label: string }) {
-  return (
-    <div className="flex items-center justify-center h-48 text-muted-foreground" data-testid={`placeholder-step-${label.toLowerCase().replace(/[^a-z0-9]/g, "-")}`}>
-      {label} — coming soon
     </div>
   );
 }

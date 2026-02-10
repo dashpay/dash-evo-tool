@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  Calculator,
   Check,
   ChevronDown,
   ChevronUp,
+  Copy,
+  FileJson2,
   Loader2,
   Lock,
   ShieldAlert,
@@ -298,6 +301,39 @@ export function ReviewStep({
       !walletUnlockedHashes.has(associatedWallet.seedHash),
     [associatedWallet, walletUnlockedHashes],
   );
+
+  // ── Contract JSON preview dialog ────────────────────────────────────
+  const [jsonPreviewOpen, setJsonPreviewOpen] = useState(false);
+  const [jsonPreviewText, setJsonPreviewText] = useState("");
+  const [jsonCopied, setJsonCopied] = useState(false);
+
+  const handleViewContractJson = useCallback(() => {
+    const configJson = buildConfigJson(
+      basicInfo,
+      distribution,
+      controlRules,
+      groups,
+      history,
+      keywords,
+    );
+    setJsonPreviewText(JSON.stringify(configJson, null, 2));
+    setJsonCopied(false);
+    setJsonPreviewOpen(true);
+  }, [basicInfo, distribution, controlRules, groups, history, keywords]);
+
+  const handleCopyJson = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(jsonPreviewText);
+      setJsonCopied(true);
+      toast.success("JSON copied to clipboard");
+      setTimeout(() => setJsonCopied(false), 2000);
+    } catch {
+      toast.error("Failed to copy to clipboard");
+    }
+  }, [jsonPreviewText]);
+
+  // ── Calculate fee dialog ──────────────────────────────────────────
+  const [feeDialogOpen, setFeeDialogOpen] = useState(false);
 
   // ── Confirmation dialog ──────────────────────────────────────────────
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -917,8 +953,26 @@ export function ReviewStep({
         </p>
       </div>
 
-      {/* Create button */}
-      <div className="flex justify-end gap-3">
+      {/* Action buttons */}
+      <div className="flex flex-wrap justify-between gap-3">
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={handleViewContractJson}
+            data-testid="review-view-json-button"
+          >
+            <FileJson2 className="h-4 w-4 mr-2" />
+            View Contract JSON
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setFeeDialogOpen(true)}
+            data-testid="review-calculate-fee-button"
+          >
+            <Calculator className="h-4 w-4 mr-2" />
+            Calculate Fee
+          </Button>
+        </div>
         <Button
           size="lg"
           disabled={!canCreate}
@@ -993,6 +1047,68 @@ export function ReviewStep({
             >
               Confirm
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Contract JSON preview dialog */}
+      <Dialog open={jsonPreviewOpen} onOpenChange={setJsonPreviewOpen}>
+        <DialogContent
+          className="max-w-2xl max-h-[80vh] flex flex-col"
+          data-testid="json-preview-dialog"
+        >
+          <DialogHeader>
+            <DialogTitle>Data Contract JSON</DialogTitle>
+            <DialogDescription>
+              Preview of the token contract configuration that will be submitted
+              to the Dash Platform.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto rounded-md border bg-muted/30 p-4 min-h-0">
+            <pre className="text-xs font-mono whitespace-pre-wrap break-all">
+              {jsonPreviewText}
+            </pre>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={handleCopyJson}
+              data-testid="json-preview-copy"
+            >
+              {jsonCopied ? (
+                <>
+                  <Check className="h-4 w-4 mr-2" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="h-4 w-4 mr-2" />
+                  Copy JSON
+                </>
+              )}
+            </Button>
+            <Button onClick={() => setJsonPreviewOpen(false)} data-testid="json-preview-close">Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Fee calculation dialog */}
+      <Dialog open={feeDialogOpen} onOpenChange={setFeeDialogOpen}>
+        <DialogContent data-testid="fee-dialog">
+          <DialogHeader>
+            <DialogTitle>Fee Estimation Breakdown</DialogTitle>
+            <DialogDescription>
+              Detailed breakdown of the estimated registration cost for this
+              token contract.
+            </DialogDescription>
+          </DialogHeader>
+          <FeeBreakdown
+            basicInfo={basicInfo}
+            distribution={distribution}
+            keywords={keywords}
+          />
+          <DialogFooter>
+            <Button onClick={() => setFeeDialogOpen(false)} data-testid="fee-dialog-close">Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1079,6 +1195,91 @@ function ControlRuleSummary({
       label={label}
       value={getActionTakerLabel(taker)}
     />
+  );
+}
+
+// ─── FeeBreakdown ───────────────────────────────────────────────────────────
+
+function FeeBreakdown({
+  basicInfo,
+  distribution,
+  keywords,
+}: {
+  basicInfo: BasicInfoState;
+  distribution: DistributionState;
+  keywords: KeywordsState;
+}) {
+  const rows: Array<{ label: string; credits: number }> = [];
+
+  // Base contract registration fee
+  rows.push({ label: "Base contract registration", credits: 50_000_000 });
+
+  // Token registration fee
+  rows.push({ label: "Token registration", credits: 100_000_000 });
+
+  // Distribution fees
+  if (distribution.perpetual.enabled) {
+    rows.push({ label: "Perpetual distribution", credits: 50_000_000 });
+  }
+  if (distribution.preProgrammed.enabled) {
+    rows.push({ label: "Pre-programmed distribution", credits: 50_000_000 });
+  }
+
+  // Contract keywords
+  const contractKeywords = basicInfo.contractKeywords
+    .split(",")
+    .map((k) => k.trim())
+    .filter((k) => k.length >= 3 && k.length <= 50);
+  if (contractKeywords.length > 0) {
+    rows.push({
+      label: `Contract keywords (${contractKeywords.length})`,
+      credits: contractKeywords.length * 10_000_000,
+    });
+  }
+
+  // Searchable token names
+  const searchableNames = basicInfo.names.filter(
+    (n) => n.singular.trim().length >= 3,
+  );
+  if (searchableNames.length > 0) {
+    rows.push({
+      label: `Searchable token names (${searchableNames.length})`,
+      credits: searchableNames.length * 10_000_000,
+    });
+  }
+
+  // Token keywords
+  if (keywords.keywords.length > 0) {
+    rows.push({
+      label: `Token keywords (${keywords.keywords.length})`,
+      credits: keywords.keywords.length * 10_000_000,
+    });
+  }
+
+  // Buffer
+  rows.push({ label: "Estimation buffer", credits: 200_000_000 });
+
+  const total = rows.reduce((sum, r) => sum + r.credits, 0);
+
+  return (
+    <div className="space-y-3" data-testid="fee-breakdown">
+      <div className="space-y-1">
+        {rows.map((row, i) => (
+          <div key={i} className="flex justify-between text-sm">
+            <span className="text-muted-foreground">{row.label}</span>
+            <span className="font-mono tabular-nums">
+              {formatCreditsAsDash(row.credits)}
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="border-t pt-2 flex justify-between text-sm font-semibold">
+        <span>Total estimated cost</span>
+        <span className="font-mono tabular-nums" data-testid="fee-breakdown-total">
+          {formatCreditsAsDash(total)}
+        </span>
+      </div>
+    </div>
   );
 }
 

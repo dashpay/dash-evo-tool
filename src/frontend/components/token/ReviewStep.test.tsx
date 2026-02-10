@@ -872,4 +872,161 @@ describe("ReviewStep", () => {
     );
     expect(screen.getByText("5000000")).toBeInTheDocument();
   });
+
+  // ── View Contract JSON ────────────────────────────────────────────
+
+  it("renders View Contract JSON button", () => {
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    expect(
+      screen.getByTestId("review-view-json-button"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("View Contract JSON"),
+    ).toBeInTheDocument();
+  });
+
+  it("opens JSON preview dialog with pretty-printed JSON on click", async () => {
+    const user = userEvent.setup();
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    await user.click(screen.getByTestId("review-view-json-button"));
+
+    expect(screen.getByTestId("json-preview-dialog")).toBeInTheDocument();
+    expect(screen.getByText("Data Contract JSON")).toBeInTheDocument();
+    // The JSON should contain the token name inside the pre block
+    const dialog = screen.getByTestId("json-preview-dialog");
+    const pre = dialog.querySelector("pre");
+    expect(pre?.textContent).toContain("TestToken");
+    expect(pre?.textContent).toContain("1000000");
+  });
+
+  it("shows copy button in JSON preview dialog", async () => {
+    const user = userEvent.setup();
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    await user.click(screen.getByTestId("review-view-json-button"));
+
+    expect(screen.getByTestId("json-preview-copy")).toBeInTheDocument();
+    expect(screen.getByText("Copy JSON")).toBeInTheDocument();
+  });
+
+  it("shows Copied state after clicking copy button", async () => {
+    const user = userEvent.setup();
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    await user.click(screen.getByTestId("review-view-json-button"));
+
+    // Initially shows "Copy JSON"
+    expect(screen.getByText("Copy JSON")).toBeInTheDocument();
+    await user.click(screen.getByTestId("json-preview-copy"));
+
+    // After successful copy, button text changes to "Copied"
+    expect(screen.getByText("Copied")).toBeInTheDocument();
+  });
+
+  it("closes JSON preview dialog via Close button", async () => {
+    const user = userEvent.setup();
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    await user.click(screen.getByTestId("review-view-json-button"));
+    expect(screen.getByTestId("json-preview-dialog")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("json-preview-close"));
+    expect(
+      screen.queryByTestId("json-preview-dialog"),
+    ).not.toBeInTheDocument();
+  });
+
+  // ── Calculate Fee ─────────────────────────────────────────────────
+
+  it("renders Calculate Fee button", () => {
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    expect(
+      screen.getByTestId("review-calculate-fee-button"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Calculate Fee")).toBeInTheDocument();
+  });
+
+  it("opens fee breakdown dialog on click", async () => {
+    const user = userEvent.setup();
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    await user.click(screen.getByTestId("review-calculate-fee-button"));
+
+    expect(screen.getByTestId("fee-dialog")).toBeInTheDocument();
+    expect(
+      screen.getByText("Fee Estimation Breakdown"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows fee breakdown line items", async () => {
+    const user = userEvent.setup();
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    await user.click(screen.getByTestId("review-calculate-fee-button"));
+
+    const breakdown = screen.getByTestId("fee-breakdown");
+    expect(
+      within(breakdown).getByText("Base contract registration"),
+    ).toBeInTheDocument();
+    expect(
+      within(breakdown).getByText("Token registration"),
+    ).toBeInTheDocument();
+    expect(
+      within(breakdown).getByText("Estimation buffer"),
+    ).toBeInTheDocument();
+    expect(
+      within(breakdown).getByText(/Searchable token names/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows correct total in fee breakdown", async () => {
+    const user = userEvent.setup();
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    await user.click(screen.getByTestId("review-calculate-fee-button"));
+
+    const total = screen.getByTestId("fee-breakdown-total");
+    // 50M base + 100M token + 10M name + 200M buffer = 360M credits = ~0.003600 DASH
+    expect(total.textContent).toBe("~0.003600 DASH");
+  });
+
+  it("shows distribution fees in breakdown when distributions are enabled", async () => {
+    const user = userEvent.setup();
+    const dist = createDefaultDistributionState();
+    dist.perpetual.enabled = true;
+    dist.preProgrammed.enabled = true;
+    render(
+      <ReviewStep
+        {...defaultProps({ onReset, distribution: dist })}
+      />,
+    );
+    await user.click(screen.getByTestId("review-calculate-fee-button"));
+
+    const breakdown = screen.getByTestId("fee-breakdown");
+    expect(
+      within(breakdown).getByText("Perpetual distribution"),
+    ).toBeInTheDocument();
+    expect(
+      within(breakdown).getByText("Pre-programmed distribution"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows keyword fees in breakdown when keywords are set", async () => {
+    const user = userEvent.setup();
+    const kw = createDefaultKeywordsState();
+    kw.keywords = ["gaming", "reward"];
+    render(
+      <ReviewStep {...defaultProps({ onReset, keywords: kw })} />,
+    );
+    await user.click(screen.getByTestId("review-calculate-fee-button"));
+
+    const breakdown = screen.getByTestId("fee-breakdown");
+    expect(
+      within(breakdown).getByText("Token keywords (2)"),
+    ).toBeInTheDocument();
+  });
+
+  it("closes fee dialog via Close button", async () => {
+    const user = userEvent.setup();
+    render(<ReviewStep {...defaultProps({ onReset })} />);
+    await user.click(screen.getByTestId("review-calculate-fee-button"));
+    expect(screen.getByTestId("fee-dialog")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("fee-dialog-close"));
+    expect(screen.queryByTestId("fee-dialog")).not.toBeInTheDocument();
+  });
 });

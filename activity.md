@@ -980,6 +980,13 @@
 **Tests added:** 31 new tests — validateSimpleMode (3), applyPresetToControlRules (6), SimpleInfoForm (12), TokenCreatorWizard Simple Mode (8), TokenCreatorWizard Advanced Mode mode-toggle (2). Total tests: 3484 (up from 3453).
 **Sub-tasks created:** 0
 
+## Run 142 — 2026-02-10
+**Task:** 7.5f Add "View Contract JSON" preview button and "Calculate Fee" button to Token Creator Review step
+**What was done:** Added two new buttons to the Token Creator Review step: "View Contract JSON" opens a dialog showing the full contract configuration as pretty-printed JSON with a Copy button, and "Calculate Fee" opens a detailed fee breakdown dialog showing each cost component (base registration, token registration, distribution fees, keyword fees, searchable name fees, estimation buffer) with individual amounts and a total. Both use the existing `buildConfigJson()` and `estimateRegistrationCost()` functions. Added a `FeeBreakdown` component that calculates and displays line-item costs. Added 12 new component tests covering dialog opening/closing, JSON content display, clipboard copy state, fee breakdown line items, total calculation, distribution fees, and keyword fees.
+**Files changed:** src/frontend/components/token/ReviewStep.tsx, src/frontend/components/token/ReviewStep.test.tsx
+**Tests added:** 12 tests — View Contract JSON button rendering, dialog opens with JSON content, copy button display, Copied state after click, dialog close, Calculate Fee button rendering, fee dialog opens, fee breakdown line items, correct total, distribution fees display, keyword fees display, fee dialog close. Total tests: 3501 (up from 3489).
+**Sub-tasks created:** 0
+
 ## Run 141 — 2026-02-10
 **Task:** 7.5e Add "Add Key" and "View Key Info" navigation buttons to TokenOperationForm
 **What was done:** Added "View Key Info" and "Add Key" navigation buttons to the TokenOperationForm Advanced Options section. When the user expands Advanced Options, a "Key Management" subsection appears below the Public Note input. "View Key Info" is shown when a signing key is selected; "Add Key" is always shown when an identity is selected. Both navigate to `/identities` where the user can manage keys. Added 6 new component tests covering button rendering, navigation, and helper text.

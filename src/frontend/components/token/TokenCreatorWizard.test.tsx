@@ -4,7 +4,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   TokenCreatorWizard,
   BasicInfoStep,
+  SimpleInfoForm,
   validateBasicInfo,
+  validateSimpleMode,
+  applyPresetToControlRules,
   createDefaultBasicInfo,
   TOKEN_LANGUAGES,
   TOKEN_PRESETS,
@@ -494,9 +497,186 @@ describe("BasicInfoStep", () => {
   });
 });
 
-// ─── TokenCreatorWizard component tests ─────────────────────────────
+// ─── validateSimpleMode ──────────────────────────────────────────────
 
-describe("TokenCreatorWizard", () => {
+describe("validateSimpleMode", () => {
+  it("requires a preset to be selected", () => {
+    const result = validateSimpleMode(validBasicInfo({ preset: null }));
+    expect(result.valid).toBe(false);
+    expect(result.errors.preset).toBe("A token preset is required");
+  });
+
+  it("passes when preset is selected", () => {
+    const result = validateSimpleMode(
+      validBasicInfo({ preset: "mostRestrictive" }),
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it("still validates base info fields", () => {
+    const result = validateSimpleMode(
+      validBasicInfo({ baseSupply: "", preset: "allAllowed" }),
+    );
+    expect(result.valid).toBe(false);
+    expect(result.errors.baseSupply).toBeTruthy();
+  });
+});
+
+// ─── applyPresetToControlRules ──────────────────────────────────────
+
+describe("applyPresetToControlRules", () => {
+  it("mostRestrictive sets all action takers to noOne", () => {
+    const rules = applyPresetToControlRules("mostRestrictive");
+    expect(rules.manualMinting.authorizedActionTaker).toBe("noOne");
+    expect(rules.manualBurning.authorizedActionTaker).toBe("noOne");
+    expect(rules.freeze.authorizedActionTaker).toBe("noOne");
+    expect(rules.unfreeze.authorizedActionTaker).toBe("noOne");
+    expect(rules.destroyFrozenFunds.authorizedActionTaker).toBe("noOne");
+    expect(rules.emergencyAction.authorizedActionTaker).toBe("noOne");
+    expect(rules.maxSupplyChange.authorizedActionTaker).toBe("noOne");
+    expect(rules.conventionsChange.authorizedActionTaker).toBe("noOne");
+    expect(rules.mainControlGroupChange).toBe("noOne");
+  });
+
+  it("onlyEmergency enables emergency action only", () => {
+    const rules = applyPresetToControlRules("onlyEmergency");
+    expect(rules.emergencyAction.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.manualMinting.authorizedActionTaker).toBe("noOne");
+    expect(rules.freeze.authorizedActionTaker).toBe("noOne");
+  });
+
+  it("mintingAndBurning enables minting, burning, and emergency", () => {
+    const rules = applyPresetToControlRules("mintingAndBurning");
+    expect(rules.manualMinting.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.manualBurning.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.emergencyAction.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.freeze.authorizedActionTaker).toBe("noOne");
+    expect(rules.unfreeze.authorizedActionTaker).toBe("noOne");
+  });
+
+  it("advancedActions enables mint, burn, freeze, unfreeze, emergency", () => {
+    const rules = applyPresetToControlRules("advancedActions");
+    expect(rules.manualMinting.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.manualBurning.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.freeze.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.unfreeze.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.emergencyAction.authorizedActionTaker).toBe("contractOwner");
+    // Advanced does NOT allow destroy frozen funds
+    expect(rules.destroyFrozenFunds.authorizedActionTaker).toBe("noOne");
+  });
+
+  it("allAllowed enables all actions including destroy frozen funds", () => {
+    const rules = applyPresetToControlRules("allAllowed");
+    expect(rules.manualMinting.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.manualBurning.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.freeze.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.unfreeze.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.destroyFrozenFunds.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.emergencyAction.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.maxSupplyChange.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.conventionsChange.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.marketplace.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.directPurchasePricing.authorizedActionTaker).toBe("contractOwner");
+    expect(rules.mainControlGroupChange).toBe("contractOwner");
+  });
+
+  it("mostRestrictive sets restrictive marketplace rules", () => {
+    const rules = applyPresetToControlRules("mostRestrictive");
+    expect(rules.marketplace.changingAuthorizedToNoOneAllowed).toBe(false);
+    expect(rules.marketplace.changingAdminToNoOneAllowed).toBe(false);
+    expect(rules.marketplace.selfChangingAdminAllowed).toBe(false);
+  });
+});
+
+// ─── SimpleInfoForm component tests ─────────────────────────────────
+
+describe("SimpleInfoForm", () => {
+  let onChange: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    onChange = vi.fn();
+  });
+
+  it("renders the simple info form", () => {
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    expect(screen.getByTestId("simple-info-form")).toBeInTheDocument();
+  });
+
+  it("renders token name input", () => {
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    expect(screen.getByTestId("simple-token-name")).toBeInTheDocument();
+  });
+
+  it("renders description input with character counter", () => {
+    render(
+      <SimpleInfoForm
+        state={{ ...createDefaultBasicInfo(), description: "Hello" }}
+        onChange={onChange}
+      />,
+    );
+    expect(screen.getByTestId("simple-description")).toBeInTheDocument();
+    expect(screen.getByText("5/100")).toBeInTheDocument();
+  });
+
+  it("renders base supply input", () => {
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    expect(screen.getByTestId("simple-base-supply")).toBeInTheDocument();
+  });
+
+  it("renders max supply input", () => {
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    expect(screen.getByTestId("simple-max-supply")).toBeInTheDocument();
+  });
+
+  it("renders preset selector", () => {
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    expect(screen.getByTestId("simple-preset-select")).toBeInTheDocument();
+  });
+
+  it("shows validation error when no preset is selected", () => {
+    const state = validBasicInfo({ preset: null });
+    render(<SimpleInfoForm state={state} onChange={onChange} />);
+    expect(screen.getByText("A token preset is required")).toBeInTheDocument();
+  });
+
+  it("does not show preset error when preset is selected", () => {
+    const state = validBasicInfo({ preset: "allAllowed" });
+    render(<SimpleInfoForm state={state} onChange={onChange} />);
+    expect(screen.queryByText("A token preset is required")).not.toBeInTheDocument();
+  });
+
+  it("calls onChange when typing in token name", async () => {
+    const user = userEvent.setup();
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    await user.type(screen.getByTestId("simple-token-name"), "A");
+    expect(onChange).toHaveBeenCalled();
+    const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1][0];
+    expect(lastCall.names[0].singular).toBe("A");
+  });
+
+  it("calls onChange when typing in base supply (strips non-numeric)", async () => {
+    const user = userEvent.setup();
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    await user.type(screen.getByTestId("simple-base-supply"), "abc123");
+    const calls = onChange.mock.calls.map((c: BasicInfoState[]) => c[0].baseSupply);
+    expect(calls.every((v: string) => /^[\d.]*$/.test(v))).toBe(true);
+  });
+
+  it("does not show multi-language controls", () => {
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    expect(screen.queryByTestId("add-language")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("language-select-0")).not.toBeInTheDocument();
+  });
+
+  it("does not show advanced options toggle", () => {
+    render(<SimpleInfoForm state={createDefaultBasicInfo()} onChange={onChange} />);
+    expect(screen.queryByTestId("advanced-toggle")).not.toBeInTheDocument();
+  });
+});
+
+// ─── TokenCreatorWizard component tests — Simple Mode ───────────────
+
+describe("TokenCreatorWizard — Simple Mode", () => {
   let onCancel: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -508,44 +688,102 @@ describe("TokenCreatorWizard", () => {
     expect(screen.getByTestId("token-creator-wizard")).toBeInTheDocument();
   });
 
-  it("renders all 7 step labels in the step indicator", () => {
+  it("starts in Simple Mode by default", () => {
     render(<TokenCreatorWizard onCancel={onCancel} />);
-    for (const step of WIZARD_STEPS) {
-      expect(screen.getByText(step.label)).toBeInTheDocument();
-    }
+    expect(screen.getByTestId("simple-info-form")).toBeInTheDocument();
+    expect(screen.getByText("Simple Mode")).toBeInTheDocument();
   });
 
-  it("starts at step 1 (Basic Info)", () => {
+  it("shows 'Advanced Mode' toggle button", () => {
     render(<TokenCreatorWizard onCancel={onCancel} />);
-    expect(screen.getByText("Step 1 of 7")).toBeInTheDocument();
-    expect(screen.getByTestId("basic-info-step")).toBeInTheDocument();
+    expect(screen.getByTestId("mode-toggle")).toHaveTextContent("Advanced Mode");
   });
 
-  it("shows Cancel button on step 1", () => {
+  it("shows Cancel button", () => {
     render(<TokenCreatorWizard onCancel={onCancel} />);
     expect(screen.getByTestId("wizard-back")).toHaveTextContent("Cancel");
   });
 
-  it("calls onCancel when Cancel is clicked on step 1", async () => {
+  it("calls onCancel when Cancel is clicked", async () => {
     const user = userEvent.setup();
     render(<TokenCreatorWizard onCancel={onCancel} />);
     await user.click(screen.getByTestId("wizard-back"));
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it("disables Next button when basic info is not valid", () => {
+  it("does not show step indicators in Simple Mode", () => {
     render(<TokenCreatorWizard onCancel={onCancel} />);
+    expect(screen.queryByText("Step 1 of 7")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("wizard-next")).not.toBeInTheDocument();
+  });
+
+  it("shows review step inline", () => {
+    render(<TokenCreatorWizard onCancel={onCancel} />);
+    expect(screen.getByTestId("review-step")).toBeInTheDocument();
+  });
+
+  it("switches to Advanced Mode when toggle is clicked", async () => {
+    const user = userEvent.setup();
+    render(<TokenCreatorWizard onCancel={onCancel} />);
+    await user.click(screen.getByTestId("mode-toggle"));
+    expect(screen.getByTestId("basic-info-step")).toBeInTheDocument();
+    expect(screen.getByText("Step 1 of 7")).toBeInTheDocument();
+    expect(screen.getByTestId("mode-toggle")).toHaveTextContent("Simple Mode");
+  });
+});
+
+// ─── TokenCreatorWizard component tests — Advanced Mode ─────────────
+
+describe("TokenCreatorWizard — Advanced Mode", () => {
+  let onCancel: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    onCancel = vi.fn();
+  });
+
+  async function switchToAdvanced() {
+    const user = userEvent.setup();
+    render(<TokenCreatorWizard onCancel={onCancel} />);
+    await user.click(screen.getByTestId("mode-toggle"));
+    return user;
+  }
+
+  it("renders all 7 step labels in the step indicator", async () => {
+    await switchToAdvanced();
+    for (const step of WIZARD_STEPS) {
+      expect(screen.getByText(step.label)).toBeInTheDocument();
+    }
+  });
+
+  it("starts at step 1 (Basic Info)", async () => {
+    await switchToAdvanced();
+    expect(screen.getByText("Step 1 of 7")).toBeInTheDocument();
+    expect(screen.getByTestId("basic-info-step")).toBeInTheDocument();
+  });
+
+  it("shows Cancel button on step 1", async () => {
+    await switchToAdvanced();
+    expect(screen.getByTestId("wizard-back")).toHaveTextContent("Cancel");
+  });
+
+  it("calls onCancel when Cancel is clicked on step 1", async () => {
+    const user = await switchToAdvanced();
+    await user.click(screen.getByTestId("wizard-back"));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables Next button when basic info is not valid", async () => {
+    await switchToAdvanced();
     expect(screen.getByTestId("wizard-next")).toBeDisabled();
   });
 
-  it("does not show Create Token button on step 1", () => {
-    render(<TokenCreatorWizard onCancel={onCancel} />);
+  it("does not show Create Token button on step 1", async () => {
+    await switchToAdvanced();
     expect(screen.queryByTestId("wizard-create")).not.toBeInTheDocument();
   });
 
   it("shows Previous button on step 2+", async () => {
-    const user = userEvent.setup();
-    render(<TokenCreatorWizard onCancel={onCancel} />);
+    const user = await switchToAdvanced();
 
     // Fill in valid basic info to enable Next
     await user.type(screen.getByTestId("token-name-singular-0"), "TestToken");
@@ -557,8 +795,7 @@ describe("TokenCreatorWizard", () => {
   });
 
   it("navigates back when Previous is clicked", async () => {
-    const user = userEvent.setup();
-    render(<TokenCreatorWizard onCancel={onCancel} />);
+    const user = await switchToAdvanced();
 
     await user.type(screen.getByTestId("token-name-singular-0"), "TestToken");
     await user.type(screen.getByTestId("base-supply"), "1000");
@@ -571,9 +808,8 @@ describe("TokenCreatorWizard", () => {
     expect(screen.getByTestId("basic-info-step")).toBeInTheDocument();
   });
 
-  it("shows placeholder for unimplemented steps (step 2)", async () => {
-    const user = userEvent.setup();
-    render(<TokenCreatorWizard onCancel={onCancel} />);
+  it("shows distribution step on step 2", async () => {
+    const user = await switchToAdvanced();
 
     await user.type(screen.getByTestId("token-name-singular-0"), "TestToken");
     await user.type(screen.getByTestId("base-supply"), "1000");
@@ -585,8 +821,7 @@ describe("TokenCreatorWizard", () => {
   });
 
   it("allows clicking on completed step indicators to navigate back", async () => {
-    const user = userEvent.setup();
-    render(<TokenCreatorWizard onCancel={onCancel} />);
+    const user = await switchToAdvanced();
 
     await user.type(screen.getByTestId("token-name-singular-0"), "TestToken");
     await user.type(screen.getByTestId("base-supply"), "1000");
@@ -600,8 +835,7 @@ describe("TokenCreatorWizard", () => {
   });
 
   it("shows Review step on the last step (no Next button)", async () => {
-    const user = userEvent.setup();
-    render(<TokenCreatorWizard onCancel={onCancel} />);
+    const user = await switchToAdvanced();
 
     // Fill valid basic info
     await user.type(screen.getByTestId("token-name-singular-0"), "TestToken");
@@ -618,8 +852,7 @@ describe("TokenCreatorWizard", () => {
   });
 
   it("preserves basic info state when navigating away and back", async () => {
-    const user = userEvent.setup();
-    render(<TokenCreatorWizard onCancel={onCancel} />);
+    const user = await switchToAdvanced();
 
     await user.type(screen.getByTestId("token-name-singular-0"), "MyToken");
     await user.type(screen.getByTestId("base-supply"), "5000");
@@ -634,5 +867,28 @@ describe("TokenCreatorWizard", () => {
     // State should be preserved
     expect(screen.getByTestId("token-name-singular-0")).toHaveValue("MyToken");
     expect(screen.getByTestId("base-supply")).toHaveValue("5000");
+  });
+
+  it("shows Simple Mode toggle button", async () => {
+    await switchToAdvanced();
+    expect(screen.getByTestId("mode-toggle")).toHaveTextContent("Simple Mode");
+  });
+
+  it("switches back to Simple Mode when toggle is clicked", async () => {
+    const user = await switchToAdvanced();
+    await user.click(screen.getByTestId("mode-toggle"));
+    expect(screen.getByTestId("simple-info-form")).toBeInTheDocument();
+    expect(screen.getByTestId("mode-toggle")).toHaveTextContent("Advanced Mode");
+  });
+
+  it("preserves token name when switching between modes", async () => {
+    const user = await switchToAdvanced();
+
+    // Type in Advanced Mode
+    await user.type(screen.getByTestId("token-name-singular-0"), "MyToken");
+
+    // Switch to Simple Mode
+    await user.click(screen.getByTestId("mode-toggle"));
+    expect(screen.getByTestId("simple-token-name")).toHaveValue("MyToken");
   });
 });

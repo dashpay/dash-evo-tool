@@ -632,7 +632,7 @@
   - [x] **7.5a** Add two-level drill-down to My Tokens table: Level 1 shows token list (Token Name, Token ID, Description); clicking a token drills into Level 2 showing per-identity balances with per-row action buttons and a Back button. Port from egui `my_tokens.rs` `render_token_list()` + `render_token_details()`. (P2)
   - [x] **7.5b** Add Rewards column and estimation to My Tokens detail view: show "Rewards" column for tokens with perpetual distribution (always in dev mode), "Estimate" button per row calling `tokenEstimatePerpetualRewards`, and info popup with Total Estimated Rewards + Basic/Detailed/Step-by-Step explanations. Port from egui `my_tokens.rs` lines 360-593. (P2)
   - [x] **7.5c** Add frozen identity fetching to Unfreeze and Destroy Frozen Funds screens: on mount, call `tokenQueryFrozenIdentities` IPC to fetch frozen identities for the token, replace free-text input with a select dropdown populated from the results. Show loading state during fetch. Port from egui `unfreeze_tokens_screen.rs` lines 85-87, 221-228, 379-395. (P2)
-  - [ ] **7.5d** Add Simple Mode toggle to Token Creator: add "Simple Mode" / "Advanced Mode" toggle at top. Simple mode shows a single-page form with token name, description, initial supply, max supply, and token preset selector (Most Restrictive, Only Emergency Action, Minting and Burning, Advanced Actions, All Allowed). Port from egui `token_creator.rs` lines 144-147, 468-520. (P3)
+  - [x] **7.5d** Add Simple Mode toggle to Token Creator: add "Simple Mode" / "Advanced Mode" toggle at top. Simple mode shows a single-page form with token name, description, initial supply, max supply, and token preset selector (Most Restrictive, Only Emergency Action, Minting and Burning, Advanced Actions, All Allowed). Port from egui `token_creator.rs` lines 144-147, 468-520. (P3)
   - [ ] **7.5e** Add "Add Key" and "View Key Info" navigation buttons to TokenOperationForm Advanced Options section, next to the key selector dropdown. Navigate to identity key management screens. (P3)
   - [ ] **7.5f** Add "View Contract JSON" preview button to Token Creator Review step: generate full contract JSON and display in a dialog with copy button. Add separate "Calculate Fee" button. Port from egui `token_creator.rs`. (P3)
   - [ ] **7.5g** Show current pricing schedule in Set Price screen: on mount, fetch existing pricing via `tokenQueryPricing` and display it above the new pricing form. (P3)
@@ -1124,7 +1124,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 90 |
-| Completed | 106 |
-| Remaining | 21 |
+| Completed | 107 |
+| Remaining | 20 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

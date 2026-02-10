@@ -68,6 +68,8 @@ export interface ReviewStepProps {
   history: HistoryState;
   keywords: KeywordsState;
   onReset: () => void;
+  /** When true, hides the configuration summary sections that aren't relevant in simple mode */
+  simpleMode?: boolean;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -239,6 +241,7 @@ export function ReviewStep({
   history,
   keywords,
   onReset,
+  simpleMode = false,
 }: ReviewStepProps) {
   // ── Store state ──────────────────────────────────────────────────────
   const { identities, loadIdentities } = useIdentityStore();
@@ -452,8 +455,11 @@ export function ReviewStep({
   ]);
 
   // ── Derived state ────────────────────────────────────────────────────
+  const basicInfoValid = simpleMode
+    ? (basicInfo.names[0]?.singular?.trim().length >= 3 && !!basicInfo.baseSupply.trim() && !!basicInfo.preset)
+    : true; // In advanced mode, basicInfo was already validated at step 0
   const canCreate =
-    !!selectedIdentityId && selectedKeyId !== null && !walletLocked;
+    !!selectedIdentityId && selectedKeyId !== null && !walletLocked && basicInfoValid;
 
   const tokenName =
     basicInfo.names[0]?.singular?.trim() || "Unnamed Token";
@@ -700,192 +706,196 @@ export function ReviewStep({
           )}
         </SummarySection>
 
-        {/* Distribution section */}
-        <SummarySection
-          title="Distribution"
-          sectionKey="distribution"
-          expanded={expandedSections.has("distribution")}
-          onToggle={toggleSection}
-        >
-          {!distribution.perpetual.enabled &&
-          !distribution.preProgrammed.enabled ? (
-            <p className="text-sm text-muted-foreground italic">
-              No distribution configured
-            </p>
-          ) : (
-            <>
-              {distribution.perpetual.enabled && (
+        {!simpleMode && (
+          <>
+            {/* Distribution section */}
+            <SummarySection
+              title="Distribution"
+              sectionKey="distribution"
+              expanded={expandedSections.has("distribution")}
+              onToggle={toggleSection}
+            >
+              {!distribution.perpetual.enabled &&
+              !distribution.preProgrammed.enabled ? (
+                <p className="text-sm text-muted-foreground italic">
+                  No distribution configured
+                </p>
+              ) : (
                 <>
-                  <SummaryRow label="Perpetual Distribution" value="Enabled" />
-                  <SummaryRow
-                    label="Interval Type"
-                    value={getIntervalTypeLabel(
-                      distribution.perpetual.intervalType,
-                    )}
-                  />
-                  <SummaryRow
-                    label="Distribution Function"
-                    value={getDistributionFunctionLabel(
-                      distribution.perpetual.distributionFunction,
-                    )}
-                  />
-                  <SummaryRow
-                    label="Recipient"
-                    value={
-                      distribution.perpetual.recipient === "contractOwner"
-                        ? "Contract Owner"
-                        : distribution.perpetual.recipient === "identity"
-                          ? `Identity: ${distribution.perpetual.recipientIdentityId || "(not set)"}`
-                          : "Evonodes (by participation)"
-                    }
-                  />
+                  {distribution.perpetual.enabled && (
+                    <>
+                      <SummaryRow label="Perpetual Distribution" value="Enabled" />
+                      <SummaryRow
+                        label="Interval Type"
+                        value={getIntervalTypeLabel(
+                          distribution.perpetual.intervalType,
+                        )}
+                      />
+                      <SummaryRow
+                        label="Distribution Function"
+                        value={getDistributionFunctionLabel(
+                          distribution.perpetual.distributionFunction,
+                        )}
+                      />
+                      <SummaryRow
+                        label="Recipient"
+                        value={
+                          distribution.perpetual.recipient === "contractOwner"
+                            ? "Contract Owner"
+                            : distribution.perpetual.recipient === "identity"
+                              ? `Identity: ${distribution.perpetual.recipientIdentityId || "(not set)"}`
+                              : "Evonodes (by participation)"
+                        }
+                      />
+                    </>
+                  )}
+                  {distribution.preProgrammed.enabled && (
+                    <>
+                      <SummaryRow
+                        label="Pre-programmed Distribution"
+                        value="Enabled"
+                      />
+                      <SummaryRow
+                        label="Entries"
+                        value={`${distribution.preProgrammed.entries.length} entry/entries`}
+                      />
+                    </>
+                  )}
                 </>
               )}
-              {distribution.preProgrammed.enabled && (
-                <>
-                  <SummaryRow
-                    label="Pre-programmed Distribution"
-                    value="Enabled"
-                  />
-                  <SummaryRow
-                    label="Entries"
-                    value={`${distribution.preProgrammed.entries.length} entry/entries`}
-                  />
-                </>
-              )}
-            </>
-          )}
-        </SummarySection>
+            </SummarySection>
 
-        {/* Control Rules section */}
-        <SummarySection
-          title="Control Rules"
-          sectionKey="controlRules"
-          expanded={expandedSections.has("controlRules")}
-          onToggle={toggleSection}
-        >
-          <ControlRuleSummary
-            label="Manual Minting"
-            taker={controlRules.manualMinting.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Manual Burning"
-            taker={controlRules.manualBurning.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Freeze"
-            taker={controlRules.freeze.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Unfreeze"
-            taker={controlRules.unfreeze.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Destroy Frozen Funds"
-            taker={controlRules.destroyFrozenFunds.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Emergency Action"
-            taker={controlRules.emergencyAction.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Max Supply Change"
-            taker={controlRules.maxSupplyChange.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Conventions Change"
-            taker={controlRules.conventionsChange.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Marketplace"
-            taker={controlRules.marketplace.authorizedActionTaker}
-          />
-          <ControlRuleSummary
-            label="Direct Purchase Pricing"
-            taker={controlRules.directPurchasePricing.authorizedActionTaker}
-          />
-          <SummaryRow
-            label="Main Control Group Change"
-            value={getActionTakerLabel(controlRules.mainControlGroupChange)}
-          />
-        </SummarySection>
-
-        {/* Groups section */}
-        <SummarySection
-          title="Groups"
-          sectionKey="groups"
-          expanded={expandedSections.has("groups")}
-          onToggle={toggleSection}
-        >
-          {groups.groups.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">
-              No groups configured
-            </p>
-          ) : (
-            groups.groups.map((g, i) => (
-              <SummaryRow
-                key={i}
-                label={`Group ${i + 1}`}
-                value={`Required Power: ${g.requiredPower || "0"}, Members: ${g.members.length}`}
+            {/* Control Rules section */}
+            <SummarySection
+              title="Control Rules"
+              sectionKey="controlRules"
+              expanded={expandedSections.has("controlRules")}
+              onToggle={toggleSection}
+            >
+              <ControlRuleSummary
+                label="Manual Minting"
+                taker={controlRules.manualMinting.authorizedActionTaker}
               />
-            ))
-          )}
-        </SummarySection>
+              <ControlRuleSummary
+                label="Manual Burning"
+                taker={controlRules.manualBurning.authorizedActionTaker}
+              />
+              <ControlRuleSummary
+                label="Freeze"
+                taker={controlRules.freeze.authorizedActionTaker}
+              />
+              <ControlRuleSummary
+                label="Unfreeze"
+                taker={controlRules.unfreeze.authorizedActionTaker}
+              />
+              <ControlRuleSummary
+                label="Destroy Frozen Funds"
+                taker={controlRules.destroyFrozenFunds.authorizedActionTaker}
+              />
+              <ControlRuleSummary
+                label="Emergency Action"
+                taker={controlRules.emergencyAction.authorizedActionTaker}
+              />
+              <ControlRuleSummary
+                label="Max Supply Change"
+                taker={controlRules.maxSupplyChange.authorizedActionTaker}
+              />
+              <ControlRuleSummary
+                label="Conventions Change"
+                taker={controlRules.conventionsChange.authorizedActionTaker}
+              />
+              <ControlRuleSummary
+                label="Marketplace"
+                taker={controlRules.marketplace.authorizedActionTaker}
+              />
+              <ControlRuleSummary
+                label="Direct Purchase Pricing"
+                taker={controlRules.directPurchasePricing.authorizedActionTaker}
+              />
+              <SummaryRow
+                label="Main Control Group Change"
+                value={getActionTakerLabel(controlRules.mainControlGroupChange)}
+              />
+            </SummarySection>
 
-        {/* History section */}
-        <SummarySection
-          title="History"
-          sectionKey="history"
-          expanded={expandedSections.has("history")}
-          onToggle={toggleSection}
-        >
-          <SummaryRow
-            label="Transfers"
-            value={history.keepTransferHistory ? "Keep" : "Skip"}
-          />
-          <SummaryRow
-            label="Freezes/Unfreezes"
-            value={history.keepFreezingHistory ? "Keep" : "Skip"}
-          />
-          <SummaryRow
-            label="Mints"
-            value={history.keepMintingHistory ? "Keep" : "Skip"}
-          />
-          <SummaryRow
-            label="Burns"
-            value={history.keepBurningHistory ? "Keep" : "Skip"}
-          />
-          <SummaryRow
-            label="Direct Pricing"
-            value={history.keepDirectPricingHistory ? "Keep" : "Skip"}
-          />
-          <SummaryRow
-            label="Direct Purchases"
-            value={history.keepDirectPurchaseHistory ? "Keep" : "Skip"}
-          />
-        </SummarySection>
+            {/* Groups section */}
+            <SummarySection
+              title="Groups"
+              sectionKey="groups"
+              expanded={expandedSections.has("groups")}
+              onToggle={toggleSection}
+            >
+              {groups.groups.length === 0 ? (
+                <p className="text-sm text-muted-foreground italic">
+                  No groups configured
+                </p>
+              ) : (
+                groups.groups.map((g, i) => (
+                  <SummaryRow
+                    key={i}
+                    label={`Group ${i + 1}`}
+                    value={`Required Power: ${g.requiredPower || "0"}, Members: ${g.members.length}`}
+                  />
+                ))
+              )}
+            </SummarySection>
 
-        {/* Keywords section */}
-        <SummarySection
-          title="Keywords"
-          sectionKey="keywords"
-          expanded={expandedSections.has("keywords")}
-          onToggle={toggleSection}
-        >
-          {keywords.keywords.length === 0 ? (
-            <p className="text-sm text-muted-foreground italic">
-              No keywords added
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-1.5">
-              {keywords.keywords.map((kw) => (
-                <Badge key={kw} variant="secondary">
-                  {kw}
-                </Badge>
-              ))}
-            </div>
-          )}
-        </SummarySection>
+            {/* History section */}
+            <SummarySection
+              title="History"
+              sectionKey="history"
+              expanded={expandedSections.has("history")}
+              onToggle={toggleSection}
+            >
+              <SummaryRow
+                label="Transfers"
+                value={history.keepTransferHistory ? "Keep" : "Skip"}
+              />
+              <SummaryRow
+                label="Freezes/Unfreezes"
+                value={history.keepFreezingHistory ? "Keep" : "Skip"}
+              />
+              <SummaryRow
+                label="Mints"
+                value={history.keepMintingHistory ? "Keep" : "Skip"}
+              />
+              <SummaryRow
+                label="Burns"
+                value={history.keepBurningHistory ? "Keep" : "Skip"}
+              />
+              <SummaryRow
+                label="Direct Pricing"
+                value={history.keepDirectPricingHistory ? "Keep" : "Skip"}
+              />
+              <SummaryRow
+                label="Direct Purchases"
+                value={history.keepDirectPurchaseHistory ? "Keep" : "Skip"}
+              />
+            </SummarySection>
+
+            {/* Keywords section */}
+            <SummarySection
+              title="Keywords"
+              sectionKey="keywords"
+              expanded={expandedSections.has("keywords")}
+              onToggle={toggleSection}
+            >
+              {keywords.keywords.length === 0 ? (
+                <p className="text-sm text-muted-foreground italic">
+                  No keywords added
+                </p>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {keywords.keywords.map((kw) => (
+                    <Badge key={kw} variant="secondary">
+                      {kw}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </SummarySection>
+          </>
+        )}
       </div>
 
       {/* Fee estimation */}

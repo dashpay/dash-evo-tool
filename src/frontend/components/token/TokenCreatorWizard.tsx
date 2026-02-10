@@ -17,8 +17,9 @@ import type { DistributionState } from "./DistributionStep";
 import {
   ControlRulesStep,
   createDefaultControlRulesState,
+  createDefaultControlRules,
 } from "./ControlRulesStep";
-import type { ControlRulesState } from "./ControlRulesStep";
+import type { ControlRulesState, ChangeControlRulesState } from "./ControlRulesStep";
 import {
   GroupsStep,
   createDefaultGroupsState,
@@ -350,7 +351,131 @@ function InfoTooltip({ text }: { text: string }) {
   );
 }
 
+// ─── Preset-to-ControlRules mapping ─────────────────────────────────────────
+
+/**
+ * Maps a TokenPreset to a fully-configured ControlRulesState.
+ * Mirrors the egui `change_to_preset()` function logic.
+ */
+export function applyPresetToControlRules(preset: TokenPreset): ControlRulesState {
+  const state = createDefaultControlRulesState();
+
+  // "basic" rules: used for minting, burning, conventions, distribution destinations
+  function basicRules(): ChangeControlRulesState {
+    switch (preset) {
+      case "mostRestrictive":
+        return {
+          ...createDefaultControlRules(),
+          authorizedActionTaker: "noOne",
+          adminActionTaker: "noOne",
+        };
+      case "onlyEmergency":
+        return {
+          ...createDefaultControlRules(),
+          authorizedActionTaker: "noOne",
+          adminActionTaker: "noOne",
+        };
+      case "mintingAndBurning":
+      case "advancedActions":
+      case "allAllowed":
+        return {
+          ...createDefaultControlRules(),
+          authorizedActionTaker: "contractOwner",
+          adminActionTaker: "contractOwner",
+        };
+    }
+  }
+
+  // "advanced" rules: used for freeze, unfreeze, destroy frozen, max supply, marketplace
+  function advancedRules(): ChangeControlRulesState {
+    switch (preset) {
+      case "mostRestrictive":
+      case "onlyEmergency":
+      case "mintingAndBurning":
+        return {
+          ...createDefaultControlRules(),
+          authorizedActionTaker: "noOne",
+          adminActionTaker: "noOne",
+        };
+      case "advancedActions":
+      case "allAllowed":
+        return {
+          ...createDefaultControlRules(),
+          authorizedActionTaker: "contractOwner",
+          adminActionTaker: "contractOwner",
+        };
+    }
+  }
+
+  // "emergency" rules: used for pause/resume
+  function emergencyRules(): ChangeControlRulesState {
+    switch (preset) {
+      case "mostRestrictive":
+        return {
+          ...createDefaultControlRules(),
+          authorizedActionTaker: "noOne",
+          adminActionTaker: "noOne",
+        };
+      case "onlyEmergency":
+      case "mintingAndBurning":
+      case "advancedActions":
+      case "allAllowed":
+        return {
+          ...createDefaultControlRules(),
+          authorizedActionTaker: "contractOwner",
+          adminActionTaker: "contractOwner",
+        };
+    }
+  }
+
+  // "restrictive" rules: marketplace and direct purchase pricing for Most Restrictive
+  function restrictiveRules(): ChangeControlRulesState {
+    return {
+      ...createDefaultControlRules(),
+      authorizedActionTaker: "noOne",
+      adminActionTaker: "noOne",
+      changingAuthorizedToNoOneAllowed: false,
+      changingAdminToNoOneAllowed: false,
+      selfChangingAdminAllowed: false,
+    };
+  }
+
+  state.manualMinting = basicRules();
+  state.manualBurning = basicRules();
+  state.freeze = advancedRules();
+  state.unfreeze = advancedRules();
+  state.destroyFrozenFunds =
+    preset === "allAllowed" ? advancedRules() : { ...createDefaultControlRules(), authorizedActionTaker: "noOne", adminActionTaker: "noOne" };
+  state.emergencyAction = emergencyRules();
+  state.maxSupplyChange = advancedRules();
+  state.conventionsChange = basicRules();
+  state.marketplace =
+    preset === "mostRestrictive" ? restrictiveRules() : advancedRules();
+  state.directPurchasePricing =
+    preset === "mostRestrictive" ? restrictiveRules() : advancedRules();
+  state.mainControlGroupChange =
+    preset === "mostRestrictive" ? "noOne" : "contractOwner";
+
+  return state;
+}
+
+// ─── Simple mode validation ─────────────────────────────────────────────────
+
+export function validateSimpleMode(state: BasicInfoState): BasicInfoValidation {
+  const base = validateBasicInfo(state);
+
+  // Simple mode requires a preset
+  if (!state.preset) {
+    base.errors.preset = "A token preset is required";
+    base.valid = false;
+  }
+
+  return base;
+}
+
 // ─── TokenCreatorWizard ─────────────────────────────────────────────────────
+
+export type CreatorMode = "simple" | "advanced";
 
 export interface TokenCreatorWizardProps {
   /** Called when the user clicks Cancel or back-arrow at step 0 */
@@ -358,6 +483,7 @@ export interface TokenCreatorWizardProps {
 }
 
 export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
+  const [mode, setMode] = useState<CreatorMode>("simple");
   const [currentStep, setCurrentStep] = useState(0);
   const [basicInfo, setBasicInfo] = useState<BasicInfoState>(
     createDefaultBasicInfo,
@@ -371,6 +497,19 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
   const [groups, setGroups] = useState<GroupsState>(createDefaultGroupsState);
   const [history, setHistory] = useState<HistoryState>(createDefaultHistoryState);
   const [keywords, setKeywords] = useState<KeywordsState>(createDefaultKeywordsState);
+
+  const handleModeToggle = useCallback((newMode: CreatorMode) => {
+    if (newMode === mode) return;
+    setMode(newMode);
+    // Reset step to 0 when switching to advanced
+    if (newMode === "advanced") {
+      setCurrentStep(0);
+      // Apply preset to control rules if one is selected
+      if (basicInfo.preset) {
+        setControlRules(applyPresetToControlRules(basicInfo.preset));
+      }
+    }
+  }, [mode, basicInfo.preset]);
 
   const canGoNext = useCallback(() => {
     if (currentStep === 0) {
@@ -405,8 +544,82 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
     setKeywords(createDefaultKeywordsState());
   }, []);
 
+  // In simple mode, derive control rules from preset
+  const effectiveControlRules = mode === "simple" && basicInfo.preset
+    ? applyPresetToControlRules(basicInfo.preset)
+    : controlRules;
+
+  if (mode === "simple") {
+    return (
+      <div className="flex flex-col h-full" data-testid="token-creator-wizard">
+        {/* Mode toggle */}
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-sm text-muted-foreground">
+            Create a simple token on Dash Platform. Switch to Advanced Mode for more control.
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleModeToggle("advanced")}
+            data-testid="mode-toggle"
+          >
+            Advanced Mode
+          </Button>
+        </div>
+
+        {/* Simple mode form + review in a single scrollable area */}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          <SimpleInfoForm state={basicInfo} onChange={setBasicInfo} />
+
+          {/* Review section appears below the form when valid */}
+          <div className="mt-6 pt-6 border-t">
+            <ReviewStep
+              basicInfo={basicInfo}
+              distribution={distribution}
+              controlRules={effectiveControlRules}
+              groups={groups}
+              history={history}
+              keywords={keywords}
+              onReset={handleReset}
+              simpleMode
+            />
+          </div>
+        </div>
+
+        {/* Cancel button */}
+        <div className="flex items-center justify-between border-t pt-4 mt-4">
+          <Button
+            variant="outline"
+            onClick={handleCancel}
+            data-testid="wizard-back"
+          >
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            Cancel
+          </Button>
+          <span className="text-sm text-muted-foreground">Simple Mode</span>
+          <span />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full" data-testid="token-creator-wizard">
+      {/* Mode toggle + step indicator */}
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-sm text-muted-foreground">
+          Create custom tokens with advanced features and distribution rules.
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => handleModeToggle("simple")}
+          data-testid="mode-toggle"
+        >
+          Simple Mode
+        </Button>
+      </div>
+
       {/* Step indicator */}
       <div className="flex items-center gap-1 px-1 py-3 mb-4 overflow-x-auto">
         {WIZARD_STEPS.map((step, index) => (
@@ -943,6 +1156,178 @@ export function BasicInfoStep({ state, onChange }: BasicInfoStepProps) {
               )}
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── SimpleInfoForm ─────────────────────────────────────────────────────────
+
+interface SimpleInfoFormProps {
+  state: BasicInfoState;
+  onChange: (state: BasicInfoState) => void;
+}
+
+/**
+ * Simplified single-page form for Simple Mode.
+ * Shows: Token Name, Description, Initial Supply, Max Supply, Preset (required).
+ * No multi-language, no advanced options.
+ */
+export function SimpleInfoForm({ state, onChange }: SimpleInfoFormProps) {
+  const validation = validateSimpleMode(state);
+
+  const updateField = useCallback(
+    <K extends keyof BasicInfoState>(key: K, value: BasicInfoState[K]) => {
+      onChange({ ...state, [key]: value });
+    },
+    [state, onChange],
+  );
+
+  const updateName = useCallback(
+    (field: keyof TokenNameEntry, value: string) => {
+      const newNames = [...state.names];
+      newNames[0] = { ...newNames[0], [field]: value };
+      onChange({ ...state, names: newNames });
+    },
+    [state, onChange],
+  );
+
+  return (
+    <div className="space-y-6" data-testid="simple-info-form">
+      {/* Token Name */}
+      <div className="space-y-1">
+        <div className="flex items-center gap-1">
+          <Label htmlFor="simple-token-name">Token Name*</Label>
+          <InfoTooltip text="The name of your token (e.g., 'MyCoin', 'GameToken'). Must be between 3 and 50 characters." />
+        </div>
+        <Input
+          id="simple-token-name"
+          data-testid="simple-token-name"
+          value={state.names[0]?.singular ?? ""}
+          onChange={(e) => updateName("singular", e.target.value)}
+          placeholder="Token name"
+          maxLength={50}
+        />
+        {validation.errors.tokenName && (
+          <p className="text-xs text-destructive">
+            {validation.errors.tokenName}
+          </p>
+        )}
+      </div>
+
+      {/* Description */}
+      <div className="space-y-1">
+        <div className="flex items-center gap-1">
+          <Label htmlFor="simple-description">Description</Label>
+          <InfoTooltip text="An optional description explaining what your token is for. Maximum 100 characters." />
+        </div>
+        <Input
+          id="simple-description"
+          data-testid="simple-description"
+          value={state.description}
+          onChange={(e) => updateField("description", e.target.value)}
+          placeholder="What is this token for?"
+          maxLength={100}
+        />
+        <div className="flex justify-between">
+          {validation.errors.description ? (
+            <p className="text-xs text-destructive">
+              {validation.errors.description}
+            </p>
+          ) : (
+            <span />
+          )}
+          <span className="text-xs text-muted-foreground">
+            {state.description.length}/100
+          </span>
+        </div>
+      </div>
+
+      {/* Initial Supply */}
+      <div className="space-y-1">
+        <div className="flex items-center gap-1">
+          <Label htmlFor="simple-base-supply">Initial Supply*</Label>
+          <InfoTooltip text="The number of tokens to create when the token is registered. These tokens will be owned by you (the token creator). You can mint more tokens later if minting is enabled by your chosen preset." />
+        </div>
+        <Input
+          id="simple-base-supply"
+          data-testid="simple-base-supply"
+          value={state.baseSupply}
+          onChange={(e) => {
+            const val = e.target.value.replace(/[^0-9.]/g, "");
+            updateField("baseSupply", val);
+          }}
+          placeholder="e.g. 1000000"
+          inputMode="decimal"
+        />
+        {validation.errors.baseSupply && (
+          <p className="text-xs text-destructive">
+            {validation.errors.baseSupply}
+          </p>
+        )}
+      </div>
+
+      {/* Max Supply */}
+      <div className="space-y-1">
+        <div className="flex items-center gap-1">
+          <Label htmlFor="simple-max-supply">Max Supply</Label>
+          <InfoTooltip text="The maximum number of tokens that can ever exist. Leave empty for unlimited supply." />
+        </div>
+        <Input
+          id="simple-max-supply"
+          data-testid="simple-max-supply"
+          value={state.maxSupply}
+          onChange={(e) => {
+            const val = e.target.value.replace(/[^0-9.]/g, "");
+            updateField("maxSupply", val);
+          }}
+          placeholder="Unlimited (leave empty)"
+          inputMode="decimal"
+        />
+        {validation.errors.maxSupply && (
+          <p className="text-xs text-destructive">
+            {validation.errors.maxSupply}
+          </p>
+        )}
+      </div>
+
+      {/* Token Preset (required in simple mode) */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-1">
+          <Label htmlFor="simple-preset">Token Preset*</Label>
+          <InfoTooltip
+            text={
+              "Choose a preset that determines what actions are allowed on your token.\n\n" +
+              "- Most Restrictive: No actions allowed after creation. Best for simple, immutable tokens.\n" +
+              "- Only Emergency Action: Allows pausing/unpausing the token in emergencies.\n" +
+              "- Minting and Burning: Allows creating new tokens and destroying tokens.\n" +
+              "- Advanced Actions: Allows minting, burning, freezing accounts, and more.\n" +
+              "- All Allowed: All actions enabled including destroying frozen funds."
+            }
+          />
+        </div>
+        <Select
+          value={state.preset ?? ""}
+          onValueChange={(val) =>
+            updateField("preset", (val || null) as TokenPreset | null)
+          }
+        >
+          <SelectTrigger data-testid="simple-preset-select">
+            <SelectValue placeholder="Select a preset..." />
+          </SelectTrigger>
+          <SelectContent>
+            {TOKEN_PRESETS.map((p) => (
+              <SelectItem key={p.value} value={p.value}>
+                {p.label} — {p.description}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {validation.errors.preset && (
+          <p className="text-xs text-destructive">
+            {validation.errors.preset}
+          </p>
         )}
       </div>
     </div>

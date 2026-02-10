@@ -218,7 +218,7 @@ impl Database {
 
         // Use a LEFT JOIN to load identities and their top-ups in a single query.
         let mut stmt = conn.prepare(
-            "SELECT i.data, i.alias, i.wallet_index, i.id, t.top_up_index, t.amount
+            "SELECT i.data, i.alias, i.wallet_index, i.status, i.id, t.top_up_index, t.amount
              FROM identity i
              LEFT JOIN top_up t ON i.id = t.identity_id
              WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL AND i.wallet_index IS NOT NULL
@@ -231,17 +231,19 @@ impl Database {
         let mut current_id: Option<Vec<u8>> = None;
 
         while let Some(row) = rows.next()? {
-            let id: Vec<u8> = row.get(3)?;
+            let id: Vec<u8> = row.get(4)?;
 
             if current_id.as_ref() != Some(&id) {
                 // New identity row
                 let data: Vec<u8> = row.get(0)?;
                 let alias: Option<String> = row.get(1)?;
                 let wallet_index: Option<u32> = row.get(2)?;
+                let status: Option<u8> = row.get(3)?;
 
                 let mut identity = QualifiedIdentity::from_bytes(&data);
                 identity.alias = alias;
                 identity.wallet_index = wallet_index;
+                identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
                 identity.network = app_context.network;
                 identity.associated_wallets = wallets.clone();
                 identity.top_ups = BTreeMap::new();
@@ -251,8 +253,8 @@ impl Database {
             }
 
             // Add top-up entry if present
-            let top_up_index: Option<u32> = row.get(4)?;
-            let amount: Option<u64> = row.get(5)?;
+            let top_up_index: Option<u32> = row.get(5)?;
+            let amount: Option<u64> = row.get(6)?;
             if let (Some(idx), Some(amt)) = (top_up_index, amount)
                 && let Some(identity) = identities.last_mut()
             {
@@ -275,7 +277,7 @@ impl Database {
 
         // Use a LEFT JOIN to load identity and its top-ups in a single query.
         let mut stmt = conn.prepare(
-            "SELECT i.data, i.alias, i.wallet_index, t.top_up_index, t.amount
+            "SELECT i.data, i.alias, i.wallet_index, i.status, t.top_up_index, t.amount
              FROM identity i
              LEFT JOIN top_up t ON i.id = t.identity_id
              WHERE i.id = ? AND i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL",
@@ -290,10 +292,12 @@ impl Database {
                 let data: Vec<u8> = row.get(0)?;
                 let alias: Option<String> = row.get(1)?;
                 let wallet_index: Option<u32> = row.get(2)?;
+                let status: Option<u8> = row.get(3)?;
 
                 let mut qi = QualifiedIdentity::from_bytes(&data);
                 qi.alias = alias;
                 qi.wallet_index = wallet_index;
+                qi.status = IdentityStatus::from_u8(status.unwrap_or(2));
                 qi.network = app_context.network;
                 qi.associated_wallets = wallets.clone();
                 qi.top_ups = BTreeMap::new();
@@ -302,8 +306,8 @@ impl Database {
             }
 
             // Add top-up entry if present
-            let top_up_index: Option<u32> = row.get(3)?;
-            let amount: Option<u64> = row.get(4)?;
+            let top_up_index: Option<u32> = row.get(4)?;
+            let amount: Option<u64> = row.get(5)?;
             if let (Some(idx), Some(amt)) = (top_up_index, amount)
                 && let Some(ref mut qi) = identity
             {

@@ -868,9 +868,7 @@ test.describe("Token Purchase Screen", () => {
     ).toBeVisible({ timeout: 10000 });
 
     await expect(
-      page.getByTestId("purchase-amount-section").or(
-        page.getByTestId("purchase-amount-input"),
-      ),
+      page.getByTestId("purchase-amount-section"),
     ).toBeVisible({ timeout: 5000 });
   });
 

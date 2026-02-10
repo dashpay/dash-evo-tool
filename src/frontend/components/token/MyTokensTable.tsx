@@ -123,12 +123,13 @@ export interface MyTokensTableProps {
 // ─── Helpers ────────────────────────────────────────────────────────
 
 /** Format a BigInt-style balance string with the given decimal places. */
-function formatTokenBalance(balance: string, decimals: number): string {
-  if (!balance || balance === "0") return "0";
-  if (decimals === 0) return balance;
+function formatTokenBalance(balance: string | number, decimals: number): string {
+  const balanceStr = String(balance);
+  if (!balanceStr || balanceStr === "0") return "0";
+  if (decimals === 0) return balanceStr;
 
   // Pad with leading zeros if needed
-  const padded = balance.padStart(decimals + 1, "0");
+  const padded = balanceStr.padStart(decimals + 1, "0");
   const intPart = padded.slice(0, padded.length - decimals);
   const fracPart = padded.slice(padded.length - decimals);
 

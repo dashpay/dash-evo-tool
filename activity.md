@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 160 — 2026-02-10
+**Task:** 7.5.4a Fix 15 failing token E2E integration tests + 7.5.4b Fix 2 failing tools tests
+**What was done:** Diagnosed and fixed 15 failing token E2E integration tests plus 2 tools landing page tests. Root causes: (1) `TokenOperationForm` cancel button text said "Cancel" instead of "Back to Tokens" — changed to match success/error screens, (2) `TokenCreatorScreen` passed children to `PageHeader` which only accepts `actions` prop — fixed to use `actions`, (3) `formatTokenBalance` crashed with `padStart is not a function` when balance was a number from URL params — made defensive with `String()` conversion, (4) Purchase amount test `.or()` matched 2 elements in strict mode — simplified to use single testid. Tools tests passed after ensuring `VITE_E2E_MOCK=true` environment variable is set. All 365 E2E integration tests pass, all 3710 component tests pass.
+**Files changed:** src/frontend/components/token/TokenOperationForm.tsx, src/frontend/components/token/MyTokensTable.tsx, src/frontend/screens/TokenCreatorScreen.tsx, tests/e2e-integration/phase7-tokens.spec.ts
+**Tests added:** 0 (fixed 17 existing failing tests)
+**Sub-tasks created:** 0
+
 ## Run 159 — 2026-02-10
 **Task:** 7.5.4 [REVIEW] E2E coverage completeness audit
 **What was done:** Audited all E2E test coverage across 3 layers: 68/68 routes have integration tests, 127/165 IPC commands have functional tests (38 gaps expected from unimplemented screens), 113/113 Zustand store actions fully tested, 5/5 journey workflows covered. Found 17 failing E2E tests (15 in token screens "Back to Tokens" button, 2 in tools landing page mock init timeout). Created 3 fix sub-tasks.

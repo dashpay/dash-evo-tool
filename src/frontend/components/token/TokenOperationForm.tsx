@@ -928,7 +928,7 @@ export function TokenOperationForm({
           data-testid="operation-cancel"
         >
           <ArrowLeft className="h-4 w-4 mr-1" />
-          Cancel
+          Back to Tokens
         </Button>
         <Button
           onClick={handleActionClick}

@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowLeft, Coins } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Island, PageHeader } from "@/components/layout";
 import { TokenCreatorWizard } from "@/components/token/TokenCreatorWizard";
@@ -17,17 +17,20 @@ export function TokenCreatorScreen() {
 
   return (
     <div className="flex flex-col gap-4 h-full">
-      <PageHeader title="Token Creator" icon={Coins}>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => navigate({ to: "/tokens" })}
-          data-testid="back-to-tokens"
-        >
-          <ArrowLeft className="h-4 w-4 mr-1" />
-          Back to Tokens
-        </Button>
-      </PageHeader>
+      <PageHeader
+        title="Token Creator"
+        actions={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate({ to: "/tokens" })}
+            data-testid="back-to-tokens"
+          >
+            <ArrowLeft className="h-4 w-4 mr-1" />
+            Back to Tokens
+          </Button>
+        }
+      />
 
       <Island className="flex-1 min-h-0 p-6">
         <TokenCreatorWizard

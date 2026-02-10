@@ -317,7 +317,12 @@ impl ConnectionStatus {
         if let Ok(sdk) = app_context.sdk.read() {
             let address_list = sdk.address_list();
             let total = address_list.len() as u16;
-            let available = address_list.get_live_addresses().len() as u16;
+            // get_live_address() returns Option<&Uri>, so count it as 1 if available, 0 if not
+            let available = if address_list.get_live_address().is_some() {
+                1
+            } else {
+                0
+            };
             self.set_dapi_status(total, available);
         }
 

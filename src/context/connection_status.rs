@@ -318,6 +318,9 @@ impl ConnectionStatus {
             let address_list = sdk.address_list();
             let total = address_list.len() as u16;
             // get_live_address() returns Option<&Uri>, so count it as 1 if available, 0 if not
+            // TODO: once Dash Platform SDK supports rust-dashcore v0.42, 
+            // update platform and use get_live_addresses() which returns all available addresses
+            //for more accurate status
             let available = if address_list.get_live_address().is_some() {
                 1
             } else {

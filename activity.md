@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 159 — 2026-02-10
+**Task:** 7.5.4 [REVIEW] E2E coverage completeness audit
+**What was done:** Audited all E2E test coverage across 3 layers: 68/68 routes have integration tests, 127/165 IPC commands have functional tests (38 gaps expected from unimplemented screens), 113/113 Zustand store actions fully tested, 5/5 journey workflows covered. Found 17 failing E2E tests (15 in token screens "Back to Tokens" button, 2 in tools landing page mock init timeout). Created 3 fix sub-tasks.
+**Files changed:** tasks.md, activity.md, ralph/docs/phase7.5-e2e-audit.md
+**Tests added:** 0 (audit/review task)
+**Sub-tasks created:** 3 (7.5.4a — fix token E2E failures, 7.5.4b — fix tools E2E failures, 7.5.4c — add IPC assertion tests for 14 untested commands)
+
 ## Run 158 — 2026-02-10
 **Task:** 7.5.3d CI pipeline integration
 **What was done:** Added 2 new CI jobs to `.github/workflows/tauri-ci.yml`: (1) `test-integration` — runs Playwright integration tests with `VITE_E2E_MOCK=true` against Vite dev server, installs Chromium, uploads HTML report + screenshots on failure, 14-day retention; (2) `test-e2e-full` — builds Tauri app natively on ubuntu-latest (not Docker), installs system deps + tauri-driver + Xvfb + webkit2gtk-driver, builds frontend + Rust binary, runs WebdriverIO E2E tests against real app in headless virtual display, uploads WebdriverIO output log + screenshots on failure. Both jobs trigger on push/PR to `react-native` and `master`. Full E2E job depends on `frontend` + `rust` passing first. Chose native runner over Docker-in-Docker for CI to avoid complexity and leverage cargo caching. YAML validated with Python yaml parser. Lint and typecheck clean.

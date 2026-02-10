@@ -833,7 +833,7 @@
 
   > **Completed (Run 158):** Added 2 new CI jobs to `.github/workflows/tauri-ci.yml`: (1) `test-integration` — runs Playwright integration tests with `VITE_E2E_MOCK=true`, installs Chromium, uploads report + screenshots on failure; (2) `test-e2e-full` — builds Tauri app natively on ubuntu-latest, installs tauri-driver + xvfb + webkit2gtk-driver, runs WebdriverIO E2E tests against real app with Xvfb virtual display, uploads WebdriverIO report + screenshots. Both jobs run on every PR and push to `react-native`. Full E2E job depends on `frontend` + `rust` passing first. Note: Push verification deferred to user (agent does not push per operating rules).
 
-- [ ] **7.5.4 [REVIEW] E2E coverage completeness audit** (P1)
+- [x] **7.5.4 [REVIEW] E2E coverage completeness audit** (P1)
   After Layers 1-2 are implemented, audit the coverage:
   - Every route in `routes.tsx` (57+ routes) has at least one integration test that verifies it renders with mock data
   - Every IPC command used by the frontend has at least one test that verifies it's called with correct args
@@ -841,6 +841,13 @@
   - Multi-screen journeys cover the 5 most common user workflows
   - All tests pass in CI
   Catalog any gaps and create fix sub-tasks.
+
+  > **Audit Findings (Run 159):** B+, 4155 tests (4077 pass, 17 fail). 68/68 routes covered, 127/165 IPC commands tested (38 expected gaps from unimplemented screens), 113/113 store actions tested, 5/5 journey workflows covered. 17 E2E failures in token + tools screens. Details: [ralph/docs/phase7.5-e2e-audit.md](ralph/docs/phase7.5-e2e-audit.md)
+
+  **Fix sub-tasks:**
+  - [ ] **7.5.4a** Fix 15 failing token E2E integration tests: all token action screen tests checking "Back to Tokens" button are failing. Investigate navigation button rendering in token operation screens (TokenOperationForm or shared layout). Fix the UI regression and verify all 15 tests pass. (P1)
+  - [ ] **7.5.4b** Fix 2 failing tools landing page E2E integration tests: "renders all 9 tool cards" and "renders tool descriptions" fail with `waitForInit` timeout in `fixtures.ts:44`. Fix mock IPC initialization race condition for tools routes. (P1)
+  - [ ] **7.5.4c** Add IPC assertion tests for 14 commonly-used but untested commands: identity search ops (`identitySearchFromWallet`, `identitySearchUpToIndex`, `identitySearchByDpnsName`), identity sign (`identitySignMessage`), wallet platform ops (`walletFetchPlatformAddressBalances`, `walletBootstrapAddresses`, `walletStartSpv`), core chain ops (`coreGetBestChainLock`, `coreGetBestChainLocks`, `coreRecoverAssetLocks`), settings mutations (`settingsUpdatePassword`, `settingsUpdateAutoStartSpv`), context ops (`contextGetFeeMultiplier`, `contextSetFeeMultiplier`). Add targeted component or E2E tests that invoke and assert these commands. (P2)
 
 ---
 
@@ -1130,11 +1137,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tasks (top-level) | 121 |
+| Total tasks (top-level) | 124 |
 | META tasks | 13 |
 | REVIEW tasks | 12 |
-| Implementation tasks | 90 |
-| Completed | 118 |
-| Remaining | 9 |
+| Implementation tasks | 93 |
+| Completed | 119 |
+| Remaining | 11 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

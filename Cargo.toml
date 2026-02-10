@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "806322247caf1037c6d73d3620804e27a2170a3d", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "060515987a", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",

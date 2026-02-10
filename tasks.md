@@ -621,10 +621,204 @@
   - [x] **7.4c** Implement **Freeze**, **Unfreeze**, and **Destroy Frozen Funds** screens: Freeze — target identity selector + confirmation. Unfreeze — loads frozen identities list via `tokenQueryFrozenIdentities`, select from list + confirmation. Destroy Frozen Funds — select frozen identity + confirmation of destruction. Each with fee estimation, wallet unlock, broadcast. Add routes. Write 15+ component tests.
   - [x] **7.4d** Implement **Pause** and **Resume** token screens: Pause — no amount input needed, just key selection + group action support + confirmation. Resume — similar to pause, emergency action rules info display. Add routes. Write 10+ component tests.
   - [x] **7.4e** Implement **Claim Tokens** and **View Token Claims** screens: Claim — distribution type detection (perpetual/pre-programmed), estimated rewards display via `tokenEstimatePerpetualRewards`, claim button with fee estimation. View Claims — "Fetch Claims" button, claims history table (Amount, Timestamp, Block Height, Note), fetch status with elapsed time. Add routes. Write 15+ component tests.
-  - [ ] **7.4f** Implement **Set Token Price** and **Purchase Tokens** screens: Set Price — pricing type selector (Single Price / Tiered Pricing / Remove Pricing), single price amount input, tiered pricing grid (quantity threshold + price rows) with Add/Delete, group action support. Purchase — amount input, auto-fetch pricing schedule, calculated total price display, balance check. Add routes. Write 15+ component tests. Write 1 Playwright E2E test for purchase flow.
+  - [x] **7.4f** Implement **Set Token Price** and **Purchase Tokens** screens: Set Price — pricing type selector (Single Price / Tiered Pricing / Remove Pricing), single price amount input, tiered pricing grid (quantity threshold + price rows) with Add/Delete, group action support. Purchase — amount input, auto-fetch pricing schedule, calculated total price display, balance check. Add routes. Write 15+ component tests. Write 1 Playwright E2E test for purchase flow.
   - [ ] **7.4g** Implement **Update Token Config** screen: change item selector dropdown (various config aspects), dynamic input fields based on selected change type (identity inputs, group selectors, text/numeric fields), group action support, fee estimation, broadcast. Add route. Write 10+ component tests.
   - [ ] **7.5 [REVIEW] Token screens functionality parity** (P2)
     Exhaustive comparison of all token screens against egui originals. Verify: all 13 action types work, token creator wizard has all 7 steps with every option, My Tokens table has all 15 action menu items, Search Tokens has pagination + contract details, Add by ID works for both contract and token IDs, pricing (single + tiered) is fully functional, distribution formula visualization renders, control rules cover all 10 types, group actions work. Create fix tasks for any gaps.
+
+---
+
+## Phase 7.5: E2E Testing Infrastructure & Integration Coverage
+
+> **Motivation:** 3,318 component tests pass but many screens are broken when actually used. Component tests mock everything in isolation — nothing verifies that screens are wired together correctly (IPC calls fire with correct args, responses flow through stores to UI, multi-screen flows work). Current Playwright tests run against Vite dev server without a Tauri backend and only check basic rendering.
+> **Strategy:** Three layers — (1) shared mock infrastructure to replace 44K lines of per-file boilerplate, (2) Playwright integration tests with realistic mock IPC covering every screen and critical flows, (3) full non-mocked E2E with real Tauri backend in Docker/Linux.
+
+### Layer 1: Centralized Mock IPC & Test Fixtures
+
+- [ ] **7.5.1a Create shared mock IPC infrastructure** (P0)
+  Create `src/frontend/test/mock-ipc.ts`:
+  - Central `mockIPC()` handler using `@tauri-apps/api/mocks` that routes all `invoke()` calls to configurable per-command handlers
+  - Default handlers for every IPC command (return realistic empty/default responses)
+  - `configureMock(commandName, handler)` to override specific commands per test
+  - `resetMocks()` to restore defaults between tests
+  - Type-safe: handler types match the auto-generated bindings signatures
+  - `getMockCallHistory(commandName)` to assert IPC calls were made with correct args
+  Create `src/frontend/test/mock-events.ts`:
+  - Event simulation helpers: `emitTaskResult(payload)`, `emitTaskError(payload)`, `emitZmqEvent(payload)`
+  - Support multiple simultaneous listeners (matching real Tauri behavior)
+  - `getEventListeners(eventName)` for assertions
+  Write tests for the mock infrastructure itself (15+ tests).
+
+- [ ] **7.5.1b Create test fixture factories** (P0)
+  Create `src/frontend/test/fixtures/`:
+  - `wallets.ts`: `createMockHdWallet(overrides?)`, `createMockSingleKeyWallet(overrides?)`, `createMockUtxo()`, `createMockAssetLock()`
+  - `identities.ts`: `createMockIdentity(overrides?)`, `createMockIdentityKey()`, `createMockQualifiedIdentity()`
+  - `tokens.ts`: `createMockToken(overrides?)`, `createMockTokenBalance()`, `createMockTokenConfig()`
+  - `contracts.ts`: `createMockContract(overrides?)`, `createMockDocumentType()`, `createMockDocument()`
+  - `dpns.ts`: `createMockContestedName()`, `createMockScheduledVote()`, `createMockDpnsName()`
+  - `platform.ts`: `createMockEpochInfo()`, `createMockValidatorSet()`, `createMockPlatformInfo()`
+  All fixtures return data matching the real DTO shapes from `bindings.ts`. Each factory uses sensible defaults with optional override params.
+  Write tests verifying fixture shapes match binding types (10+ tests).
+
+- [ ] **7.5.1c Create Vitest setup integration and migration guide** (P1)
+  Update `src/frontend/test/setup.ts` to auto-initialize the mock IPC layer.
+  Create `src/frontend/test/render-helpers.ts`:
+  - `renderWithMocks(component, { mocks?, storeState?, route? })` — wraps component with ThemeProvider, TooltipProvider, router context, and pre-configured mock IPC
+  - `renderScreen(ScreenComponent, { route, mocks?, storeState? })` — full screen render with routing context
+  Update `vitest.config.ts` if needed.
+  Migrate 3 representative test files (one store test, one component test, one screen test) to the new infrastructure as proof-of-concept. Document the pattern in a brief comment header.
+  Write tests (5+).
+
+- [ ] **7.5.1d Migrate existing component tests to shared mock infrastructure** (P2)
+  Systematically migrate all 96 test files from per-file mock boilerplate to the centralized mock IPC + fixtures. This eliminates ~44K lines of repetitive setup code. Prioritize by phase:
+  1. Store tests (walletStore, identityStore, tokenStore, contractStore, contestStore, documentStore)
+  2. Screen tests for Phases 2-3 (wallet screens, app shell)
+  3. Screen tests for Phases 4-5 (identity, DPNS)
+  4. Screen tests for Phases 6-7 (contracts, tokens)
+  Verify all 3,318 tests still pass after migration. This is a large task — can be broken into sub-tasks per phase if needed.
+
+### Layer 2: Playwright Integration Tests with Mock IPC
+
+- [ ] **7.5.2a Configure Playwright mock IPC integration** (P0)
+  Set up Playwright to run against Vite dev server with mock IPC enabled:
+  - Add `VITE_E2E_MOCK=true` environment flag
+  - In app entry point, conditionally load `@tauri-apps/api/mocks` `mockIPC()` when flag is set
+  - Create `tests/e2e-integration/fixtures/ipc-mock-setup.ts` with Playwright fixture that configures mock responses via `page.evaluate()` or page route interception
+  - Create `tests/e2e-integration/helpers.ts` with common test helpers: `navigateTo(page, section)`, `waitForDataLoad(page)`, `triggerTaskResult(page, payload)`
+  - Update `playwright.config.ts` to add a new project `integration` alongside existing `e2e` project, with the mock env var
+  **Verify:** A trivial test navigates to `/app/wallets`, mock IPC returns wallet data, wallet list renders. The implementing agent must run `npm run test:e2e-integration` and confirm it passes.
+  Write setup verification tests (5+).
+
+- [ ] **7.5.2b Write screen smoke tests for Phases 2-3 (Shell, Wallets)** (P0)
+  Create `tests/e2e-integration/phase2-shell.spec.ts`:
+  - App shell renders with sidebar, top bar, and content area
+  - Navigation between all 7 sections works and updates breadcrumbs
+  - Theme toggle switches between light/dark and persists (mock settings IPC)
+  - Network badge displays current network from mock
+  - Welcome screen renders action cards and "don't show again" works
+  - Network chooser displays all 4 networks with connection status
+  Create `tests/e2e-integration/phase3-wallets.spec.ts`:
+  - Wallet list renders HD and single-key wallets from mock data
+  - Selecting a wallet shows detail panel with correct balances
+  - HD wallet detail shows address table, account selector, tabs work
+  - Single-key wallet detail shows UTXO list with pagination
+  - Create wallet flow: generates mnemonic, sets password, completes (mock IPC returns success)
+  - Import wallet flow: enters words, sets password, completes
+  - Send flow: enters recipient, amount, confirms, broadcasts (mock IPC)
+  - Receive dialog shows QR code and address
+  - Wallet context menu actions (rename, delete with confirmation)
+  - Asset lock screens render and basic interactions work
+  Target: 30+ test cases across both files. **The implementing agent must run these and confirm all pass.**
+
+- [ ] **7.5.2c Write screen smoke tests for Phases 4-5 (Identities, DPNS)** (P0)
+  Create `tests/e2e-integration/phase4-identities.spec.ts`:
+  - Identity list renders with correct columns from mock data
+  - Selecting an identity shows detail panel with balance, DPNS names, keys
+  - Create identity flow: all 4 funding methods render, form completes
+  - Top up, withdraw, transfer screens render and submit correctly
+  - Key management: list keys, view key info, add key dialog
+  - Load existing identity: enter ID, fetch from mock, displays result
+  - Inline alias editing works
+  Create `tests/e2e-integration/phase5-dpns.spec.ts`:
+  - Active contests table renders with mock contested names
+  - Vote casting dialog opens, allows vote selection, submits
+  - Past contests table renders historical data
+  - Owned names panel renders user's names
+  - Scheduled votes table renders with action buttons
+  - Register DPNS name: validates input, submits, shows result
+  Target: 30+ test cases across both files. **The implementing agent must run these and confirm all pass.**
+
+- [ ] **7.5.2d Write screen smoke tests for Phases 6-7 (Contracts, Tokens)** (P0)
+  Create `tests/e2e-integration/phase6-contracts.spec.ts`:
+  - Contract tree panel renders contracts, expands doc types and indexes
+  - Document query: select contract → doc type → fetch → results display
+  - JSON/YAML toggle works on results
+  - Add contracts screen: enter IDs, fetch, alias editing
+  - Register contract: identity selector, JSON editor, submit
+  - All 6 document actions: create, delete, replace, transfer, purchase, set price
+  - Group actions screen renders and fetches
+  Create `tests/e2e-integration/phase7-tokens.spec.ts`:
+  - My Tokens table renders with action dropdown menus
+  - Token search: enter keyword, results render, pagination works
+  - Add by ID: enter contract/token ID, search, add to list
+  - Token creator wizard: navigate all 7 steps, submit
+  - All token action screens render and submit: transfer, mint, burn, freeze, unfreeze, destroy frozen, pause, resume
+  Target: 30+ test cases across both files. **The implementing agent must run these and confirm all pass.**
+
+- [ ] **7.5.2e Write multi-screen user journey tests** (P1)
+  Create `tests/e2e-integration/journeys.spec.ts` testing complete user flows that span multiple screens:
+  - **New user journey:** Welcome → Create Wallet → wallet appears in list → Create Identity (fund with wallet) → identity appears in list → Register DPNS Name → name appears in Owned Names
+  - **Token creator journey:** Navigate to Tokens → Create Token → complete all 7 wizard steps → token appears in My Tokens → Transfer tokens to another identity
+  - **Contract journey:** Navigate to Contracts → Add Contract by ID → contract appears in tree → Query Documents → Create Document → Delete Document
+  - **Wallet operations journey:** Create Wallet → Receive (copy address) → Send (enter recipient, amount) → view updated balance
+  - **Identity management journey:** Load Identity → View Keys → Add Key → Top Up → Withdraw → Transfer Credits
+  Target: 5 journey tests, each exercising 3-6 screens in sequence.
+
+- [ ] **7.5.2f Write screen smoke tests for Phases 8-9 as they're completed** (P1)
+  Placeholder — as DashPay (Phase 8) and Tools (Phase 9) screens are implemented, add corresponding Playwright integration tests:
+  - `tests/e2e-integration/phase8-dashpay.spec.ts`
+  - `tests/e2e-integration/phase9-tools.spec.ts`
+  Follow the same pattern: mock IPC returns realistic data, verify every screen renders and basic interactions work.
+  Target: 20+ test cases per phase.
+
+### Layer 3: Full E2E with Real Tauri Backend (Docker/Linux)
+
+- [ ] **7.5.3a Create Docker Compose E2E environment** (P1)
+  Create `docker/e2e/Dockerfile`:
+  - Base: Ubuntu 22.04+ (needs WebKit2GTK 4.1)
+  - Install Rust toolchain (stable), Node.js 20+, npm
+  - Install system deps: `libwebkit2gtk-4.1-dev`, `webkit2gtk-driver`, `xvfb`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `libxdo-dev`, `protobuf-compiler`
+  - Install `tauri-driver` via cargo
+  - Install WebdriverIO globally or as project dev dependency
+  - Pre-cache cargo dependencies to speed up builds
+  Create `docker/e2e/docker-compose.yml` as the primary interface:
+  - Single `docker compose up --build` runs the full E2E suite
+  - Service builds the Tauri app in debug mode, starts Xvfb on :99, starts `tauri-driver` on port 4444, launches the app, runs WebdriverIO tests, collects results
+  - Exit code reflects test pass/fail
+  - Volume mounts for test results and screenshots
+  Create `docker/e2e/entrypoint.sh` orchestrating the above steps.
+  Add npm script: `"test:e2e-full": "docker compose -f docker/e2e/docker-compose.yml up --build --abort-on-container-exit --exit-code-from tests"`
+  **Verify:** `docker compose up --build` completes successfully — the implementing agent must run this and confirm it passes.
+
+- [ ] **7.5.3b Set up WebdriverIO test framework** (P1)
+  Create `tests/e2e-full/`:
+  - `wdio.conf.ts`: WebdriverIO config targeting `tauri-driver` on port 4444, Tauri-specific capabilities, timeouts for app startup
+  - `helpers/tauri.ts`: helpers for waiting for app ready state, navigating via sidebar, waiting for IPC responses
+  - `helpers/database.ts`: helpers for seeding test database with known state before tests, cleanup after
+  - `fixtures/seed-data.sql`: SQL fixtures for wallets, identities, contracts, tokens to pre-populate the database
+  **Verify:** `docker compose up --build` runs WebdriverIO, connects to `tauri-driver`, opens the app, queries a DOM element — the implementing agent must run this and confirm it passes.
+
+- [ ] **7.5.3c Write critical flow E2E tests (real backend)** (P1)
+  Create full E2E tests in `tests/e2e-full/specs/` that run against the real Tauri app:
+  - `wallet-lifecycle.spec.ts`: Create HD wallet → verify in list → generate receive address → view address → delete wallet
+  - `identity-lifecycle.spec.ts`: Load identity by ID → verify in list → view keys → set alias → refresh balance
+  - `contract-query.spec.ts`: Add system contract → expand in tree → select doc type → fetch documents → verify results
+  - `token-operations.spec.ts`: Add token by ID → verify in My Tokens → view token info
+  - `navigation.spec.ts`: Navigate all 7 sections → verify each renders without errors → theme toggle persists
+  - `settings.spec.ts`: Change network → verify network badge updates → toggle developer mode
+  These tests require a running Dash testnet/devnet or mock backend state. Define which tests need network access vs. which can run with just a local database.
+  Target: 15+ critical flow tests.
+  **Verify:** `docker compose up --build` runs all specs and exits with code 0 — the implementing agent must run this and confirm all tests pass.
+
+- [ ] **7.5.3d CI pipeline integration** (P2)
+  Add E2E testing to the CI pipeline:
+  - **Integration tests (Layer 2):** Add to existing CI workflow as a new job. Runs Playwright with mock IPC. Fast, no Docker needed. Run on every PR.
+  - **Full E2E (Layer 3):** Separate CI job using the Docker image. Runs WebdriverIO against real app. Run on every PR.
+  - GitHub Actions workflow updates:
+    - `test-integration` job: `npm run test:e2e-integration`
+    - `test-e2e-full` job: builds Docker image (cached), runs `docker/e2e/run-e2e.sh`
+  - Artifact collection: screenshots on failure, WebdriverIO reports, Playwright HTML report
+  - Failure notifications: fail the PR check for integration tests, post comment for full E2E failures
+  **Verify:** The implementing agent must push a test branch, confirm both CI jobs trigger, and both pass green.
+
+- [ ] **7.5.4 [REVIEW] E2E coverage completeness audit** (P1)
+  After Layers 1-2 are implemented, audit the coverage:
+  - Every route in `routes.tsx` (57+ routes) has at least one integration test that verifies it renders with mock data
+  - Every IPC command used by the frontend has at least one test that verifies it's called with correct args
+  - Every Zustand store action has at least one test that verifies the data flow from IPC response to store state to UI
+  - Multi-screen journeys cover the 5 most common user workflows
+  - All tests pass in CI
+  Catalog any gaps and create fix sub-tasks.
 
 ---
 
@@ -914,11 +1108,11 @@
 
 | Metric | Count |
 |---|---|
-| Total tasks (top-level) | 100 |
+| Total tasks (top-level) | 113 |
 | META tasks | 13 |
-| REVIEW tasks | 11 |
-| Implementation tasks | 70 |
-| Completed | 100 |
-| Remaining | 6 |
+| REVIEW tasks | 12 |
+| Implementation tasks | 82 |
+| Completed | 101 |
+| Remaining | 18 |
 
-*Note: META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 150-250.*
+*Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

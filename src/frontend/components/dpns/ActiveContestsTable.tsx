@@ -93,7 +93,8 @@ function formatLastUpdated(timestamp: number | null): string {
 }
 
 /** Truncate a string identifier to first N chars. */
-function truncateId(id: string, chars = 6): string {
+function truncateId(id: string | undefined | null, chars = 6): string {
+  if (!id) return "???";
   return id.length > chars ? `${id.slice(0, chars)}...` : id;
 }
 

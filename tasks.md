@@ -722,7 +722,7 @@
   - Asset lock screens render and basic interactions work
   Target: 30+ test cases across both files. **The implementing agent must run these and confirm all pass.**
 
-- [ ] **7.5.2c Write screen smoke tests for Phases 4-5 (Identities, DPNS)** (P0)
+- [x] **7.5.2c Write screen smoke tests for Phases 4-5 (Identities, DPNS)** (P0)
   Create `tests/e2e-integration/phase4-identities.spec.ts`:
   - Identity list renders with correct columns from mock data
   - Selecting an identity shows detail panel with balance, DPNS names, keys

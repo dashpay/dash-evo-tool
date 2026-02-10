@@ -3,7 +3,7 @@ name: Tests
 on:
   push:
     branches:
-      - main
+      - master
       - "v*-dev"
   pull_request:
 
@@ -54,10 +54,7 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install system dependencies
         run: |
@@ -74,13 +71,7 @@ jobs:
           PROTOC: /usr/local/bin/protoc
 
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --doc --all-features --workspace
+        run: cargo test --doc --all-features --workspace

@@ -1,10 +1,10 @@
 use super::AppContext;
+use super::get_transaction_info;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
     DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
-use super::get_transaction_info;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;

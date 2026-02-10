@@ -32,6 +32,7 @@ import { DocumentQueryScreen } from "@/screens/DocumentQueryScreen";
 import { AddContractsScreen } from "@/screens/AddContractsScreen";
 import { RegisterContractScreen } from "@/screens/RegisterContractScreen";
 import { UpdateContractScreen } from "@/screens/UpdateContractScreen";
+import { DocumentActionScreen } from "@/screens/DocumentActionScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -166,6 +167,42 @@ const contractsUpdateRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/update-contract",
   component: UpdateContractScreen,
+});
+
+const contractsCreateDocumentRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/create-document",
+  component: () => <DocumentActionScreen actionType="create" />,
+});
+
+const contractsDeleteDocumentRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/delete-document",
+  component: () => <DocumentActionScreen actionType="delete" />,
+});
+
+const contractsReplaceDocumentRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/replace-document",
+  component: () => <DocumentActionScreen actionType="replace" />,
+});
+
+const contractsTransferDocumentRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/transfer-document",
+  component: () => <DocumentActionScreen actionType="transfer" />,
+});
+
+const contractsPurchaseDocumentRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/purchase-document",
+  component: () => <DocumentActionScreen actionType="purchase" />,
+});
+
+const contractsSetDocumentPriceRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/set-document-price",
+  component: () => <DocumentActionScreen actionType="setPrice" />,
 });
 
 const contractsDpnsActiveRoute = createRoute({
@@ -360,6 +397,12 @@ const routeTree = rootRoute.addChildren([
       contractsAddRoute,
       contractsRegisterRoute,
       contractsUpdateRoute,
+      contractsCreateDocumentRoute,
+      contractsDeleteDocumentRoute,
+      contractsReplaceDocumentRoute,
+      contractsTransferDocumentRoute,
+      contractsPurchaseDocumentRoute,
+      contractsSetDocumentPriceRoute,
       contractsDpnsActiveRoute,
       contractsDpnsPastRoute,
       contractsDpnsOwnedRoute,

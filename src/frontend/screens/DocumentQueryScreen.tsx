@@ -35,6 +35,7 @@ import type { TreeSelection, IndexInfo } from "@/components/contract/ContractTre
 import { useContractStore } from "@/stores/contractStore";
 import { useDocumentStore, DOCUMENT_PRIVATE_FIELDS } from "@/stores/documentStore";
 import type { DocumentPageEntry, DocumentDisplayMode } from "@/stores/documentStore";
+import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -302,6 +303,7 @@ function FieldSelectionDialog({
 // ─── Main Screen ─────────────────────────────────────────────────────
 
 export function DocumentQueryScreen() {
+  const navigate = useNavigate();
   // Contract store
   const {
     contracts,
@@ -472,15 +474,14 @@ export function DocumentQueryScreen() {
     return results;
   }, [documents, fieldSelection, displayMode, searchFilter]);
 
-  // Navigate to action route (placeholder — future routes)
+  // Navigate to action route
   const handleActionClick = useCallback(
     (route?: string) => {
       if (route) {
-        // For now, these routes are placeholders for future tasks
-        toast.info("This feature will be available soon");
+        navigate({ to: route });
       }
     },
-    [],
+    [navigate],
   );
 
   return (

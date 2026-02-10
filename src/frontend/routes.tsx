@@ -34,6 +34,7 @@ import { RegisterContractScreen } from "@/screens/RegisterContractScreen";
 import { UpdateContractScreen } from "@/screens/UpdateContractScreen";
 import { DocumentActionScreen } from "@/screens/DocumentActionScreen";
 import { GroupActionsScreen } from "@/screens/GroupActionsScreen";
+import { TokenMyTokensScreen } from "@/screens/TokenMyTokensScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -251,7 +252,7 @@ const tokensRoute = createRoute({
 const tokensIndexRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/",
-  component: () => <PlaceholderScreen title="My Tokens" />,
+  component: TokenMyTokensScreen,
 });
 
 const tokensSearchRoute = createRoute({
@@ -264,6 +265,90 @@ const tokensCreatorRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/creator",
   component: () => <PlaceholderScreen title="Token Creator" />,
+});
+
+const tokensAddByIdRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/add-by-id",
+  component: () => <PlaceholderScreen title="Add Token by ID" />,
+});
+
+const tokensTransferRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/transfer",
+  component: () => <PlaceholderScreen title="Transfer Tokens" />,
+});
+
+const tokensMintRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/mint",
+  component: () => <PlaceholderScreen title="Mint Tokens" />,
+});
+
+const tokensBurnRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/burn",
+  component: () => <PlaceholderScreen title="Burn Tokens" />,
+});
+
+const tokensFreezeRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/freeze",
+  component: () => <PlaceholderScreen title="Freeze Tokens" />,
+});
+
+const tokensUnfreezeRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/unfreeze",
+  component: () => <PlaceholderScreen title="Unfreeze Tokens" />,
+});
+
+const tokensDestroyFrozenRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/destroy-frozen",
+  component: () => <PlaceholderScreen title="Destroy Frozen Funds" />,
+});
+
+const tokensPauseRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/pause",
+  component: () => <PlaceholderScreen title="Pause Token" />,
+});
+
+const tokensResumeRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/resume",
+  component: () => <PlaceholderScreen title="Resume Token" />,
+});
+
+const tokensClaimRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/claim",
+  component: () => <PlaceholderScreen title="Claim Tokens" />,
+});
+
+const tokensViewClaimsRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/view-claims",
+  component: () => <PlaceholderScreen title="View Token Claims" />,
+});
+
+const tokensSetPriceRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/set-price",
+  component: () => <PlaceholderScreen title="Set Token Price" />,
+});
+
+const tokensPurchaseRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/purchase",
+  component: () => <PlaceholderScreen title="Purchase Tokens" />,
+});
+
+const tokensUpdateConfigRoute = createRoute({
+  getParentRoute: () => tokensRoute,
+  path: "/update-config",
+  component: () => <PlaceholderScreen title="Update Token Config" />,
 });
 
 const walletsRoute = createRoute({
@@ -421,6 +506,20 @@ const routeTree = rootRoute.addChildren([
       tokensIndexRoute,
       tokensSearchRoute,
       tokensCreatorRoute,
+      tokensAddByIdRoute,
+      tokensTransferRoute,
+      tokensMintRoute,
+      tokensBurnRoute,
+      tokensFreezeRoute,
+      tokensUnfreezeRoute,
+      tokensDestroyFrozenRoute,
+      tokensPauseRoute,
+      tokensResumeRoute,
+      tokensClaimRoute,
+      tokensViewClaimsRoute,
+      tokensSetPriceRoute,
+      tokensPurchaseRoute,
+      tokensUpdateConfigRoute,
     ]),
     walletsRoute.addChildren([
       walletsIndexRoute,

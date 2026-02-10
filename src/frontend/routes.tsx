@@ -37,6 +37,7 @@ import { GroupActionsScreen } from "@/screens/GroupActionsScreen";
 import { TokenMyTokensScreen } from "@/screens/TokenMyTokensScreen";
 import { TokenSearchScreen } from "@/screens/TokenSearchScreen";
 import { TokenAddByIdScreen } from "@/screens/TokenAddByIdScreen";
+import { TokenCreatorScreen } from "@/screens/TokenCreatorScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -266,7 +267,7 @@ const tokensSearchRoute = createRoute({
 const tokensCreatorRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/creator",
-  component: () => <PlaceholderScreen title="Token Creator" />,
+  component: TokenCreatorScreen,
 });
 
 const tokensAddByIdRoute = createRoute({

@@ -13,6 +13,8 @@ const { mockCommands, mockEvents } = vi.hoisted(() => {
     tokenRemove: vi.fn().mockResolvedValue({ status: "ok", data: null }),
     tokenLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
     tokenSaveOrder: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+    contextIsDeveloperMode: vi.fn().mockResolvedValue(false),
+    tokenEstimatePerpetualRewards: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "estimate-task-1" } }),
   };
   const mockEvents = {
     taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
@@ -466,6 +468,74 @@ describe("TokenMyTokensScreen — event subscription cleanup", () => {
     unmount();
     await waitFor(() => {
       expect(mockUnsubscribe).toHaveBeenCalled();
+    });
+  });
+});
+
+// ─── Rewards estimation ─────────────────────────────────────────────
+
+describe("TokenMyTokensScreen — rewards estimation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetStore(defaultTokens);
+  });
+
+  it("checks developer mode on mount", async () => {
+    renderScreen();
+    await waitFor(() => {
+      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+    });
+  });
+
+  it("shows rewards column when developer mode is enabled", async () => {
+    mockCommands.contextIsDeveloperMode.mockResolvedValue(true);
+    const user = userEvent.setup();
+    renderScreen();
+    // Wait for dev mode check to complete
+    await waitFor(() => {
+      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+    });
+    // Drill down to Level 2 where rewards column appears
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    await waitFor(() => {
+      expect(screen.getByText("Rewards")).toBeInTheDocument();
+    });
+  });
+
+  it("does not show rewards column when developer mode is disabled", async () => {
+    mockCommands.contextIsDeveloperMode.mockResolvedValue(false);
+    const user = userEvent.setup();
+    renderScreen();
+    await waitFor(() => {
+      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+    });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    expect(screen.queryByText("Rewards")).not.toBeInTheDocument();
+  });
+
+  it("calls tokenEstimatePerpetualRewards when Estimate is clicked", async () => {
+    mockCommands.contextIsDeveloperMode.mockResolvedValue(true);
+    const user = userEvent.setup();
+    renderScreen();
+    await waitFor(() => {
+      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+    });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("estimate-rewards-button")).toBeInTheDocument();
+    });
+    await user.click(screen.getByTestId("estimate-rewards-button"));
+    expect(mockCommands.tokenEstimatePerpetualRewards).toHaveBeenCalledWith({
+      identityId: defaultTokens[0].identityId,
+      tokenId: defaultTokens[0].tokenId,
+    });
+  });
+
+  it("subscribes to result events for estimate responses", async () => {
+    renderScreen();
+    await waitFor(() => {
+      // The screen subscribes to events (both for store updates and estimate results)
+      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
     });
   });
 });

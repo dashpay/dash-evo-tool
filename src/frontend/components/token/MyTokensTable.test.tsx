@@ -2,7 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MyTokensTable, formatTokenBalance, truncateId, groupTokens } from "./MyTokensTable";
-import type { MyTokensTableProps } from "./MyTokensTable";
+import type { MyTokensTableProps, RewardEstimate } from "./MyTokensTable";
 import type { TokenEntry } from "@/stores/tokenStore";
 import type { TokenSortColumn, TokenSortOrder } from "@/stores/tokenStore";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -513,5 +513,141 @@ describe("MyTokensTable — accessibility", () => {
     expect(screen.getByRole("table")).toBeInTheDocument();
     const rowGroups = screen.getAllByRole("rowgroup");
     expect(rowGroups.length).toBe(2);
+  });
+});
+
+// ─── Rewards column (Level 2) ────────────────────────────────────────
+
+describe("MyTokensTable — Rewards column", () => {
+  const onEstimateRewards = vi.fn();
+
+  function setupWithRewards(overrides: Partial<MyTokensTableProps> = {}) {
+    return setup({
+      showRewardsColumn: true,
+      onEstimateRewards,
+      ...overrides,
+    });
+  }
+
+  it("does not show Rewards header when showRewardsColumn is false", async () => {
+    const { user } = setup();
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    expect(screen.queryByText("Rewards")).not.toBeInTheDocument();
+  });
+
+  it("shows Rewards header when showRewardsColumn is true", async () => {
+    const { user } = setupWithRewards();
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    expect(screen.getByText("Rewards")).toBeInTheDocument();
+  });
+
+  it("shows Estimate button for entries without rewards estimate", async () => {
+    const { user } = setupWithRewards();
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    expect(screen.getByTestId("estimate-rewards-button")).toBeInTheDocument();
+    expect(screen.getByTestId("estimate-rewards-button")).toHaveTextContent("Estimate");
+  });
+
+  it("calls onEstimateRewards when Estimate button is clicked", async () => {
+    const { user } = setupWithRewards();
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    await user.click(screen.getByTestId("estimate-rewards-button"));
+    expect(onEstimateRewards).toHaveBeenCalledWith(
+      "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+      "token1111222233334444555566667777888899990000aaaabbbbccccddddeeee",
+    );
+  });
+
+  it("shows spinner when estimating", async () => {
+    const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
+    const { user } = setupWithRewards({
+      estimatingRewards: new Set([key]),
+    });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    const estimateBtn = screen.getByTestId("estimate-rewards-button");
+    expect(estimateBtn).toBeDisabled();
+  });
+
+  it("shows reward amount when estimate is available", async () => {
+    const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
+    const estimates = new Map<string, RewardEstimate>([
+      [key, { amount: "42.5 TestTokens", explanation: "Estimated 42.5 tokens over 3 epochs" }],
+    ]);
+    const { user } = setupWithRewards({ rewardEstimates: estimates });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    expect(screen.getByTestId("reward-amount")).toHaveTextContent("42.5 TestTokens");
+  });
+
+  it("shows info button when estimate is available", async () => {
+    const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
+    const estimates = new Map<string, RewardEstimate>([
+      [key, { amount: "42.5", explanation: "Full explanation text here" }],
+    ]);
+    const { user } = setupWithRewards({ rewardEstimates: estimates });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    expect(screen.getByRole("button", { name: "Show reward details" })).toBeInTheDocument();
+  });
+
+  it("opens explanation dialog when info button is clicked", async () => {
+    const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
+    const estimates = new Map<string, RewardEstimate>([
+      [key, { amount: "42.5", explanation: "Full explanation text here" }],
+    ]);
+    const { user } = setupWithRewards({ rewardEstimates: estimates });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    await user.click(screen.getByRole("button", { name: "Show reward details" }));
+    expect(screen.getByText("Reward Estimation Details")).toBeInTheDocument();
+    expect(screen.getByTestId("reward-total")).toHaveTextContent("42.5");
+  });
+
+  it("shows re-estimate button alongside reward amount", async () => {
+    const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
+    const estimates = new Map<string, RewardEstimate>([
+      [key, { amount: "42.5", explanation: "Explanation" }],
+    ]);
+    const { user } = setupWithRewards({ rewardEstimates: estimates });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    // Should have an "Estimate" button to re-estimate
+    const estimateButtons = screen.getAllByRole("button", { name: /estimate/i });
+    expect(estimateButtons.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("explanation dialog has collapsible explanation section", async () => {
+    const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
+    const estimates = new Map<string, RewardEstimate>([
+      [key, { amount: "42.5", explanation: "Detailed explanation of reward calculation" }],
+    ]);
+    const { user } = setupWithRewards({ rewardEstimates: estimates });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    await user.click(screen.getByRole("button", { name: "Show reward details" }));
+    // Explanation section should be collapsible - click to expand
+    const explanationToggle = screen.getByText(/explanation/i);
+    await user.click(explanationToggle);
+    expect(screen.getByTestId("reward-explanation-text")).toHaveTextContent(
+      "Detailed explanation of reward calculation",
+    );
+  });
+
+  it("does not show Rewards column in Level 1", () => {
+    setup({ showRewardsColumn: true });
+    // Level 1 should not have Rewards header
+    expect(screen.queryByText("Rewards")).not.toBeInTheDocument();
+  });
+
+  it("shows Estimate for multiple identity entries", async () => {
+    const multiTokens = [
+      makeToken({
+        identityId: "id1aaaaabbbbccccddddeeeeffffffff1111222233334444555566667777",
+        ownerAlias: "Alice",
+      }),
+      makeToken({
+        identityId: "id2aaaaabbbbccccddddeeeeffffffff1111222233334444555566667777",
+        ownerAlias: "Bob",
+      }),
+    ];
+    const { user } = setupWithRewards({ tokens: multiTokens });
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+    const estimateButtons = screen.getAllByTestId("estimate-rewards-button");
+    expect(estimateButtons).toHaveLength(2);
   });
 });

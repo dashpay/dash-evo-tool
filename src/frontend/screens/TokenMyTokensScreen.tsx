@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { RefreshCw, PlusCircle, Search, Coins } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Island } from "@/components/layout";
 import { LoadingSpinner } from "@/components/feedback";
 import { MyTokensTable } from "@/components/token/MyTokensTable";
-import type { TokenAction } from "@/components/token/MyTokensTable";
+import type { TokenAction, RewardEstimate } from "@/components/token/MyTokensTable";
 import { TokenInfoDialog } from "@/components/token/TokenInfoDialog";
 import type { TokenInfoData } from "@/components/token/TokenInfoDialog";
 import { useTokenStore } from "@/stores/tokenStore";
 import type { TokenEntry } from "@/stores/tokenStore";
+import { commands, events } from "@/bindings";
+import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { toastError } from "@/lib/toastError";
 
 /**
@@ -89,6 +91,121 @@ export function TokenMyTokensScreen() {
   const [infoDialogOpen, setInfoDialogOpen] = useState(false);
   const [selectedTokenInfo, setSelectedTokenInfo] =
     useState<TokenInfoData | null>(null);
+
+  // ── Rewards estimation state ──────────────────────────────────────
+  const [showRewardsColumn, setShowRewardsColumn] = useState(false);
+  const [rewardEstimates, setRewardEstimates] = useState<Map<string, RewardEstimate>>(new Map());
+  const [estimatingRewards, setEstimatingRewards] = useState<Set<string>>(new Set());
+  // Map taskId → "identityId:tokenId" for correlating async results
+  const estimateTaskMapRef = useRef<Map<string, string>>(new Map());
+
+  // Check if developer mode is enabled (always show rewards column in dev mode)
+  useEffect(() => {
+    commands.contextIsDeveloperMode().then((isDev) => {
+      if (isDev) {
+        setShowRewardsColumn(true);
+      }
+    }).catch(() => {});
+  }, []);
+
+  // Subscribe to estimate result/error events
+  useEffect(() => {
+    let cleanupResult: (() => void) | undefined;
+    let cleanupError: (() => void) | undefined;
+
+    const subscribe = async () => {
+      cleanupResult = await events.taskResultEvent.listen(
+        (event: { payload: TaskResultEvent }) => {
+          const { taskId, resultType, payload } = event.payload;
+          const key = estimateTaskMapRef.current.get(taskId);
+          if (!key) return;
+          if (resultType !== "Token") return;
+
+          estimateTaskMapRef.current.delete(taskId);
+          setEstimatingRewards((prev) => {
+            const next = new Set(prev);
+            next.delete(key);
+            return next;
+          });
+
+          // Extract reward info from payload
+          let amount = "—";
+          let explanation = "";
+          if (payload && typeof payload === "string") {
+            explanation = payload;
+            // Try to extract amount from first line
+            const firstLine = payload.split("\n")[0];
+            amount = firstLine || payload;
+          } else if (payload && typeof payload === "object") {
+            explanation = JSON.stringify(payload, null, 2);
+            const p = payload as Record<string, unknown>;
+            if (typeof p.total_amount === "number" || typeof p.total_amount === "string") {
+              amount = String(p.total_amount);
+            } else {
+              amount = "See details";
+            }
+          }
+
+          setRewardEstimates((prev) => {
+            const next = new Map(prev);
+            next.set(key, { amount, explanation });
+            return next;
+          });
+        },
+      );
+
+      cleanupError = await events.taskErrorEvent.listen(
+        (event: { payload: TaskErrorEvent }) => {
+          const { taskId, message } = event.payload;
+          const key = estimateTaskMapRef.current.get(taskId);
+          if (!key) return;
+
+          estimateTaskMapRef.current.delete(taskId);
+          setEstimatingRewards((prev) => {
+            const next = new Set(prev);
+            next.delete(key);
+            return next;
+          });
+          toastError(message);
+        },
+      );
+    };
+
+    subscribe().catch(() => {});
+
+    return () => {
+      cleanupResult?.();
+      cleanupError?.();
+    };
+  }, []);
+
+  // Handle estimate rewards request
+  const handleEstimateRewards = useCallback(async (identityId: string, tokenId: string) => {
+    const key = `${identityId}:${tokenId}`;
+    setEstimatingRewards((prev) => new Set(prev).add(key));
+
+    try {
+      const result = await commands.tokenEstimatePerpetualRewards({
+        identityId,
+        tokenId,
+      });
+      if (result.status === "ok") {
+        estimateTaskMapRef.current.set(result.data.taskId, key);
+      } else {
+        setEstimatingRewards((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      }
+    } catch {
+      setEstimatingRewards((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }, []);
 
   // Load tokens on mount
   useEffect(() => {
@@ -228,6 +345,10 @@ export function TokenMyTokensScreen() {
             onAction={handleAction}
             onMoreInfo={handleMoreInfo}
             onRemove={handleRemove}
+            showRewardsColumn={showRewardsColumn}
+            rewardEstimates={rewardEstimates}
+            estimatingRewards={estimatingRewards}
+            onEstimateRewards={handleEstimateRewards}
           />
         )}
       </Island>

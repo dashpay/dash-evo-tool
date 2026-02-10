@@ -20,9 +20,17 @@ import {
   Trash2,
   Info,
   X,
+  Calculator,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,6 +52,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/feedback/EmptyState";
+import { LoadingSpinner } from "@/components/feedback";
 import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import type { TokenEntry } from "@/stores/tokenStore";
 import type { TokenSortColumn, TokenSortOrder } from "@/stores/tokenStore";
@@ -78,6 +87,14 @@ export interface TokenSummary {
   identityCount: number;
 }
 
+/** Reward estimation data for a specific identity+token combination. */
+export interface RewardEstimate {
+  /** The estimated reward amount (formatted string). */
+  amount: string;
+  /** Full explanation text from the backend. */
+  explanation: string;
+}
+
 export interface MyTokensTableProps {
   /** Token entries to display (sorted by the store). */
   tokens: TokenEntry[];
@@ -93,6 +110,14 @@ export interface MyTokensTableProps {
   onMoreInfo: (tokenId: string) => void;
   /** Called to remove a token (after confirmation). */
   onRemove: (tokenId: string) => void;
+  /** Whether to show the Rewards column in the Level 2 detail view. */
+  showRewardsColumn?: boolean;
+  /** Map of "identityId:tokenId" → reward estimate data. */
+  rewardEstimates?: Map<string, RewardEstimate>;
+  /** Set of "identityId:tokenId" keys currently being estimated. */
+  estimatingRewards?: Set<string>;
+  /** Called to estimate rewards for a specific identity+token. */
+  onEstimateRewards?: (identityId: string, tokenId: string) => void;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -197,10 +222,16 @@ export function MyTokensTable({
   onAction,
   onMoreInfo,
   onRemove,
+  showRewardsColumn = false,
+  rewardEstimates,
+  estimatingRewards,
+  onEstimateRewards,
 }: MyTokensTableProps) {
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
   const [tokenToRemove, setTokenToRemove] = useState<TokenSummary | null>(null);
+  const [explanationDialogOpen, setExplanationDialogOpen] = useState(false);
+  const [explanationKey, setExplanationKey] = useState<string | null>(null);
 
   // Group tokens by tokenId for Level 1
   const tokenSummaries = useMemo(() => groupTokens(tokens), [tokens]);
@@ -271,6 +302,13 @@ export function MyTokensTable({
     setRemoveDialogOpen(false);
   };
 
+  const handleShowExplanation = useCallback((identityId: string, tokenId: string) => {
+    setExplanationKey(`${identityId}:${tokenId}`);
+    setExplanationDialogOpen(true);
+  }, []);
+
+  const currentExplanation = explanationKey ? rewardEstimates?.get(explanationKey) : undefined;
+
   // Empty state
   if (tokens.length === 0) {
     return (
@@ -294,6 +332,11 @@ export function MyTokensTable({
           onSortChange={onSortChange}
           onBack={handleBack}
           onAction={handleEntryAction}
+          showRewardsColumn={showRewardsColumn}
+          rewardEstimates={rewardEstimates}
+          estimatingRewards={estimatingRewards}
+          onEstimateRewards={onEstimateRewards}
+          onShowExplanation={handleShowExplanation}
         />
       ) : (
         <TokenListView
@@ -318,6 +361,12 @@ export function MyTokensTable({
             setTokenToRemove(null);
           }
         }}
+      />
+
+      <RewardExplanationDialog
+        open={explanationDialogOpen}
+        onOpenChange={setExplanationDialogOpen}
+        estimate={currentExplanation ?? null}
       />
     </>
   );
@@ -459,6 +508,11 @@ function TokenDetailView({
   onSortChange,
   onBack,
   onAction,
+  showRewardsColumn = false,
+  rewardEstimates,
+  estimatingRewards,
+  onEstimateRewards,
+  onShowExplanation,
 }: {
   tokenName: string;
   tokenId: string;
@@ -468,6 +522,11 @@ function TokenDetailView({
   onSortChange: (column: TokenSortColumn) => void;
   onBack: () => void;
   onAction: (entry: TokenEntry, action: TokenAction) => void;
+  showRewardsColumn?: boolean;
+  rewardEstimates?: Map<string, RewardEstimate>;
+  estimatingRewards?: Set<string>;
+  onEstimateRewards?: (identityId: string, tokenId: string) => void;
+  onShowExplanation?: (identityId: string, tokenId: string) => void;
 }) {
   return (
     <div className="w-full">
@@ -534,6 +593,11 @@ function TokenDetailView({
                 />
               </Button>
             </TableHead>
+            {showRewardsColumn && (
+              <TableHead className="w-[200px]">
+                <span className="text-sm font-semibold">Rewards</span>
+              </TableHead>
+            )}
             <TableHead className="w-[60px]">
               <span className="sr-only">Actions</span>
             </TableHead>
@@ -545,6 +609,11 @@ function TokenDetailView({
               key={entry.identityId}
               entry={entry}
               onAction={onAction}
+              showRewardsColumn={showRewardsColumn}
+              rewardEstimate={rewardEstimates?.get(`${entry.identityId}:${entry.tokenId}`)}
+              isEstimating={estimatingRewards?.has(`${entry.identityId}:${entry.tokenId}`) ?? false}
+              onEstimateRewards={onEstimateRewards}
+              onShowExplanation={onShowExplanation}
             />
           ))}
         </TableBody>
@@ -556,9 +625,19 @@ function TokenDetailView({
 function IdentityBalanceRow({
   entry,
   onAction,
+  showRewardsColumn = false,
+  rewardEstimate,
+  isEstimating = false,
+  onEstimateRewards,
+  onShowExplanation,
 }: {
   entry: TokenEntry;
   onAction: (entry: TokenEntry, action: TokenAction) => void;
+  showRewardsColumn?: boolean;
+  rewardEstimate?: RewardEstimate;
+  isEstimating?: boolean;
+  onEstimateRewards?: (identityId: string, tokenId: string) => void;
+  onShowExplanation?: (identityId: string, tokenId: string) => void;
 }) {
   const formattedBalance = useMemo(
     () => formatTokenBalance(entry.balance, entry.decimals),
@@ -596,6 +675,64 @@ function IdentityBalanceRow({
           {formattedBalance}
         </span>
       </TableCell>
+
+      {/* Rewards column */}
+      {showRewardsColumn && (
+        <TableCell>
+          <div className="flex items-center gap-1.5">
+            {rewardEstimate ? (
+              <>
+                <span className="text-sm font-mono tabular-nums" data-testid="reward-amount">
+                  {rewardEstimate.amount}
+                </span>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      aria-label="Show reward details"
+                      onClick={() => onShowExplanation?.(entry.identityId, entry.tokenId)}
+                    >
+                      <Info className="h-3.5 w-3.5" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Show reward details</TooltipContent>
+                </Tooltip>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs"
+                  disabled={isEstimating}
+                  onClick={() => onEstimateRewards?.(entry.identityId, entry.tokenId)}
+                >
+                  {isEstimating ? (
+                    <LoadingSpinner className="h-3 w-3" />
+                  ) : (
+                    "Estimate"
+                  )}
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2.5 text-xs gap-1.5"
+                disabled={isEstimating}
+                onClick={() => onEstimateRewards?.(entry.identityId, entry.tokenId)}
+                data-testid="estimate-rewards-button"
+              >
+                {isEstimating ? (
+                  <LoadingSpinner className="h-3 w-3" />
+                ) : (
+                  <Calculator className="h-3 w-3" />
+                )}
+                Estimate
+              </Button>
+            )}
+          </div>
+        </TableCell>
+      )}
 
       {/* Actions dropdown */}
       <TableCell className="text-center">
@@ -646,6 +783,75 @@ function ActionMenuEntry({
         {item.label}
       </DropdownMenuItem>
     </>
+  );
+}
+
+// ─── Reward Explanation Dialog ───────────────────────────────────────
+
+function RewardExplanationDialog({
+  open,
+  onOpenChange,
+  estimate,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  estimate: RewardEstimate | null;
+}) {
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
+
+  const toggleSection = useCallback((section: string) => {
+    setExpandedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(section)) {
+        next.delete(section);
+      } else {
+        next.add(section);
+      }
+      return next;
+    });
+  }, []);
+
+  if (!estimate) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[600px] max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Reward Estimation Details</DialogTitle>
+          <DialogDescription>
+            Estimated perpetual distribution rewards for this identity.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          {/* Total */}
+          <div className="rounded-md border bg-muted/30 p-3">
+            <span className="text-sm text-muted-foreground">Total Estimated Rewards</span>
+            <p className="text-lg font-semibold font-mono mt-0.5" data-testid="reward-total">
+              {estimate.amount}
+            </p>
+          </div>
+
+          {/* Full explanation */}
+          <div>
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-sm font-medium hover:underline"
+              onClick={() => toggleSection("explanation")}
+            >
+              {expandedSections.has("explanation") ? "▾" : "▸"} Explanation
+            </button>
+            {expandedSections.has("explanation") && (
+              <div
+                className="mt-2 rounded-md border bg-muted/20 p-3 text-sm whitespace-pre-wrap font-mono"
+                data-testid="reward-explanation-text"
+              >
+                {estimate.explanation}
+              </div>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

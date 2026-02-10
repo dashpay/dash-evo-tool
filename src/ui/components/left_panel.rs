@@ -5,7 +5,7 @@ use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
-use egui::{Color32, Context, Frame, ImageButton, RichText, SidePanel, TextureHandle};
+use egui::{Color32, Context, Frame, Image, RichText, SidePanel, TextureHandle};
 use egui_extras::{Size, StripBuilder};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -249,9 +249,10 @@ pub fn add_left_panel(
                                                 };
 
                                                 if let Some(ref texture) = texture {
-                                                    let button = ImageButton::new(texture)
-                                                        .frame(false)
-                                                        .tint(button_color);
+                                                    let button = egui::Button::image(
+                                                        Image::new(texture).tint(button_color),
+                                                    )
+                                                    .frame(false);
 
                                                     let added = ui.add(button);
                                                     if added.clicked() {

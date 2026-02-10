@@ -262,7 +262,7 @@ pub async fn update_profile(
         // Create new profile using DocumentCreateTransitionBuilder
         // Generate random entropy for document ID (security: prevents predictable IDs)
         let mut entropy = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut entropy);
+        rand::rng().fill_bytes(&mut entropy);
 
         let profile_doc_id = Document::generate_document_id_v0(
             &dashpay_contract.id(),

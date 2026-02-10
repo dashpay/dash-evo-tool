@@ -75,7 +75,7 @@ impl WalletUnlockPopup {
         }
 
         // Draw dark overlay behind the popup
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let painter = ctx.layer_painter(egui::LayerId::new(
             egui::Order::Background,
             egui::Id::new("wallet_unlock_popup_overlay"),

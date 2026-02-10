@@ -101,11 +101,18 @@ CARGO_CONFIG_FILE="${CARGO_CONFIG_DIR}/config.toml"
 mkdir -p "${CARGO_CONFIG_DIR}"
 
 if ! grep -q "TENDERDASH_DIR" "${CARGO_CONFIG_FILE}" 2>/dev/null; then
-  cat >> "${CARGO_CONFIG_FILE}" <<EOF
+  # If the file already has an [env] section, append keys under it.
+  # Otherwise, add a new [env] section. Avoids duplicate TOML table headers.
+  if grep -q '^\[env\]' "${CARGO_CONFIG_FILE}" 2>/dev/null; then
+    # Insert the keys right after the existing [env] line
+    sed -i '/^\[env\]/a TENDERDASH_DIR = "'"${TENDERDASH_DIR}"'"\nCARGO_TARGET_DIR = "'"${TENDERDASH_CACHE_DIR}"'"' "${CARGO_CONFIG_FILE}"
+  else
+    cat >> "${CARGO_CONFIG_FILE}" <<EOF
 
 [env]
 TENDERDASH_DIR = "${TENDERDASH_DIR}"
 CARGO_TARGET_DIR = "${TENDERDASH_CACHE_DIR}"
 EOF
+  fi
   echo "[session-start] Set TENDERDASH_DIR and CARGO_TARGET_DIR in ${CARGO_CONFIG_FILE}"
 fi

@@ -1021,3 +1021,10 @@
 **Files changed:** src/frontend/test/fixtures/wallets.ts, src/frontend/test/fixtures/identities.ts, src/frontend/test/fixtures/tokens.ts, src/frontend/test/fixtures/contracts.ts, src/frontend/test/fixtures/dpns.ts, src/frontend/test/fixtures/platform.ts, src/frontend/test/fixtures/index.ts, src/frontend/test/fixtures/__tests__/fixtures.test.ts, tasks.md, activity.md
 **Tests added:** 69 new tests across 8 describe blocks (Wallet: 12, Identity: 8, Token: 6, Contract: 9, DPNS: 9, Platform: 12, DashPay: 5, Event: 3, Cross-fixture: 5). Total tests: 3627 (up from 3558).
 **Sub-tasks created:** 0
+
+## Run 146 — 2026-02-10
+**Task:** 7.5.1c Create Vitest setup integration and migration guide
+**What was done:** Created centralized render helpers and updated global test setup to reduce per-file boilerplate. (1) Updated `setup.ts` with Radix UI pointer capture polyfills (hasPointerCapture, setPointerCapture, releasePointerCapture, scrollIntoView) — previously duplicated across 14 test files. (2) Created `render-helpers.tsx` with `renderWithProviders()` (wraps in ThemeProvider + TooltipProvider), `createRouterMock()` (pre-configured router mock with navigate, params, search), and `createThemeMock()` (mock ThemeProvider module). (3) Migrated 3 representative test files: contractStore.test.ts (store — uses createMockBindings + fixture factories), ReceiveDialog.test.tsx (component — removed pointer polyfills), WelcomeScreen.test.tsx (screen — uses async vi.mock factory with dynamic import for centralized IPC). Documented 3 usage patterns (A: screen with IPC + router, B: component with providers, C: store with fixtures).
+**Files changed:** src/frontend/test/setup.ts, src/frontend/test/render-helpers.tsx, src/frontend/test/render-helpers.test.tsx, src/frontend/stores/contractStore.test.ts, src/frontend/components/wallet/ReceiveDialog.test.tsx, src/frontend/screens/WelcomeScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 17 new tests for render-helpers (renderWithProviders: 5, createRouterMock: 7, createThemeMock: 5). Total tests: 3644 (up from 3627).
+**Sub-tasks created:** 0

@@ -672,7 +672,7 @@
   All fixtures return data matching the real DTO shapes from `bindings.ts`. Each factory uses sensible defaults with optional override params.
   Write tests verifying fixture shapes match binding types (10+ tests).
 
-- [ ] **7.5.1c Create Vitest setup integration and migration guide** (P1)
+- [x] **7.5.1c Create Vitest setup integration and migration guide** (P1)
   Update `src/frontend/test/setup.ts` to auto-initialize the mock IPC layer.
   Create `src/frontend/test/render-helpers.ts`:
   - `renderWithMocks(component, { mocks?, storeState?, route? })` — wraps component with ThemeProvider, TooltipProvider, router context, and pre-configured mock IPC

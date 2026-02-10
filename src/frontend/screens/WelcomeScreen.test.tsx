@@ -1,19 +1,30 @@
+/**
+ * WelcomeScreen tests — migrated to centralized test infrastructure.
+ *
+ * Pattern: vi.hoisted() creates mock objects before vi.mock() factories execute.
+ * The router mock uses the same shape as createRouterMock(), and bindings use
+ * createMockBindings() (which only depends on vitest's `vi` — safe to hoist).
+ */
+
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import { WelcomeScreen } from "./WelcomeScreen";
 
-// Mock @tanstack/react-router
-const mockNavigate = vi.fn();
+// vi.hoisted() runs before vi.mock factories, making returned values available
+const { mockNavigate } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
+}));
+
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
 }));
 
-// Mock Tauri bindings
-vi.mock("@/bindings", () => ({
-  commands: {
-    settingsUpdateOnboardingCompleted: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-  },
-}));
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
 import { commands } from "@/bindings";
 
@@ -29,31 +40,49 @@ describe("WelcomeScreen", () => {
 
   it("renders the welcome title", () => {
     render(<WelcomeScreen />);
-    expect(screen.getByRole("heading", { name: /welcome to dash evo tool/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /welcome to dash evo tool/i }),
+    ).toBeInTheDocument();
   });
 
   it("renders the subtitle", () => {
     render(<WelcomeScreen />);
-    expect(screen.getByText(/your gateway to decentralized data/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/your gateway to decentralized data/i),
+    ).toBeInTheDocument();
   });
 
   it("renders the instructional text", () => {
     render(<WelcomeScreen />);
-    expect(screen.getByText(/select an option to get started/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/select an option to get started/i),
+    ).toBeInTheDocument();
   });
 
   it("renders three action cards", () => {
     render(<WelcomeScreen />);
-    expect(screen.getByRole("button", { name: /create wallet/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /import wallet/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /just explore/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /create wallet/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /import wallet/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /just explore/i }),
+    ).toBeInTheDocument();
   });
 
   it("renders card descriptions", () => {
     render(<WelcomeScreen />);
-    expect(screen.getByText("Start fresh with a new HD wallet")).toBeInTheDocument();
-    expect(screen.getByText("Load a wallet you already have")).toBeInTheDocument();
-    expect(screen.getByText("Explore without setting up")).toBeInTheDocument();
+    expect(
+      screen.getByText("Start fresh with a new HD wallet"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Load a wallet you already have"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Explore without setting up"),
+    ).toBeInTheDocument();
   });
 
   it("clicking Create Wallet marks onboarding complete and navigates to /wallets", async () => {
@@ -62,7 +91,9 @@ describe("WelcomeScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: /create wallet/i }));
 
     await waitFor(() => {
-      expect(commands.settingsUpdateOnboardingCompleted).toHaveBeenCalledWith(true);
+      expect(
+        commands.settingsUpdateOnboardingCompleted,
+      ).toHaveBeenCalledWith(true);
     });
     expect(mockNavigate).toHaveBeenCalledWith({ to: "/wallets" });
   });
@@ -73,7 +104,9 @@ describe("WelcomeScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: /import wallet/i }));
 
     await waitFor(() => {
-      expect(commands.settingsUpdateOnboardingCompleted).toHaveBeenCalledWith(true);
+      expect(
+        commands.settingsUpdateOnboardingCompleted,
+      ).toHaveBeenCalledWith(true);
     });
     expect(mockNavigate).toHaveBeenCalledWith({ to: "/wallets" });
   });
@@ -84,13 +117,17 @@ describe("WelcomeScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: /just explore/i }));
 
     await waitFor(() => {
-      expect(commands.settingsUpdateOnboardingCompleted).toHaveBeenCalledWith(true);
+      expect(
+        commands.settingsUpdateOnboardingCompleted,
+      ).toHaveBeenCalledWith(true);
     });
     expect(mockNavigate).toHaveBeenCalledWith({ to: "/identities" });
   });
 
   it("handles backend error gracefully (still navigates)", async () => {
-    vi.mocked(commands.settingsUpdateOnboardingCompleted).mockRejectedValueOnce(new Error("no backend"));
+    vi.mocked(
+      commands.settingsUpdateOnboardingCompleted,
+    ).mockRejectedValueOnce(new Error("no backend"));
 
     render(<WelcomeScreen />);
 

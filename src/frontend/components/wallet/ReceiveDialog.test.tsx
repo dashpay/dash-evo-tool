@@ -1,9 +1,18 @@
+/**
+ * ReceiveDialog component tests — migrated to centralized test infrastructure.
+ *
+ * Changes from original:
+ * - Removed Radix pointer polyfills (now in test/setup.ts)
+ * - No other changes needed — this component doesn't use IPC or router
+ */
+
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ReceiveDialog, type ReceiveAddress } from "./ReceiveDialog";
 
 // ── Helpers ──────────────────────────────────────────────────────────
+// Pointer capture polyfills are now in test/setup.ts (centralized)
 
 const coreAddresses: ReceiveAddress[] = [
   { address: "yXbR1pQ7vE8kSfPnA3mWoJ4gH2cT6dL9u", balance: 150000000 },
@@ -28,22 +37,6 @@ function renderDialog(props: Partial<React.ComponentProps<typeof ReceiveDialog>>
   };
   return render(<ReceiveDialog {...defaultProps} />);
 }
-
-// Polyfill for Radix Select in jsdom
-beforeAll(() => {
-  if (!Element.prototype.hasPointerCapture) {
-    Element.prototype.hasPointerCapture = () => false;
-  }
-  if (!Element.prototype.setPointerCapture) {
-    Element.prototype.setPointerCapture = () => {};
-  }
-  if (!Element.prototype.releasePointerCapture) {
-    Element.prototype.releasePointerCapture = () => {};
-  }
-  if (!Element.prototype.scrollIntoView) {
-    Element.prototype.scrollIntoView = () => {};
-  }
-});
 
 // ── Tests ────────────────────────────────────────────────────────────
 

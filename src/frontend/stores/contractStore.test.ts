@@ -1,61 +1,34 @@
+/**
+ * contractStore tests — using centralized mock IPC + fixture factories.
+ *
+ * Pattern:
+ * 1. createMockBindings() provides defaults for all 181 commands + 8 events
+ * 2. Override specific commands needed by the store under test
+ * 3. Use fixture factories (createMockContract, createMockContractSummary) instead of inline makers
+ */
+
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
-import { useContractStore } from "./contractStore";
-import type {
-  ContractSummaryDto,
-  DataContractDto,
-  TaskResultEvent,
-} from "../bindings";
+import {
+  createMockBindings,
+  mockBindingsModule,
+} from "@/test/mock-ipc";
+import {
+  createMockContract,
+  createMockContractSummary,
+} from "@/test/fixtures";
 
-// ─── Mock bindings ──────────────────────────────────────────────────
+// ─── Mock bindings (centralized) ────────────────────────────────────
 
-vi.mock("../bindings", () => ({
-  commands: {
-    contractListLocal: vi.fn(),
-    contractGetById: vi.fn(),
-    contractSetAlias: vi.fn(),
-    contractRemove: vi.fn(),
-    contractFetch: vi.fn(),
-    contractFetchWithDescriptions: vi.fn(),
-    contractSave: vi.fn(),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-  },
-}));
+// vi.mock is hoisted — the factory runs once before imports.
+// createMockBindings() provides defaults for all 181 commands + 8 events.
+vi.mock("../bindings", () => {
+  const initial = createMockBindings();
+  return mockBindingsModule(initial);
+});
 
 import { commands, events } from "../bindings";
-
-// ─── Test fixtures ──────────────────────────────────────────────────
-
-function makeSummary(
-  overrides?: Partial<ContractSummaryDto>,
-): ContractSummaryDto {
-  return {
-    id: "contract001",
-    alias: "DPNS Contract",
-    documentTypeCount: 3,
-    tokenCount: 0,
-    ...overrides,
-  };
-}
-
-function makeDetail(overrides?: Partial<DataContractDto>): DataContractDto {
-  return {
-    id: "contract001",
-    ownerId: "owner001",
-    alias: "DPNS Contract",
-    version: 1,
-    documentTypeNames: ["domain", "preorder"],
-    tokenCount: 0,
-    schemaJson: { type: "object" },
-    ...overrides,
-  };
-}
+import { useContractStore } from "./contractStore";
+import type { TaskResultEvent } from "../bindings";
 
 // ─── Reset store between tests ──────────────────────────────────────
 
@@ -90,17 +63,20 @@ describe("contractStore", () => {
 
   describe("loadContracts", () => {
     it("loads contracts from backend", async () => {
-      const contracts = [makeSummary(), makeSummary({ id: "contract002", alias: "DashPay" })];
+      const contractList = [
+        createMockContractSummary(),
+        createMockContractSummary({ id: "contract002", alias: "DashPay" }),
+      ];
       (commands.contractListLocal as Mock).mockResolvedValue({
         status: "ok",
-        data: contracts,
+        data: contractList,
       });
 
       await useContractStore.getState().loadContracts();
 
       expect(commands.contractListLocal).toHaveBeenCalled();
       const state = useContractStore.getState();
-      expect(state.contracts).toEqual(contracts);
+      expect(state.contracts).toEqual(contractList);
       expect(state.loading).toBe(false);
       expect(state.error).toBeNull();
     });
@@ -151,7 +127,7 @@ describe("contractStore", () => {
 
   describe("getContractById", () => {
     it("returns contract detail on success", async () => {
-      const detail = makeDetail();
+      const detail = createMockContract();
       (commands.contractGetById as Mock).mockResolvedValue({
         status: "ok",
         data: detail,
@@ -193,7 +169,7 @@ describe("contractStore", () => {
 
   describe("selectContract", () => {
     it("selects a contract and loads its detail", async () => {
-      const detail = makeDetail();
+      const detail = createMockContract();
       (commands.contractGetById as Mock).mockResolvedValue({
         status: "ok",
         data: detail,
@@ -209,7 +185,7 @@ describe("contractStore", () => {
     it("clears selection when null passed", async () => {
       useContractStore.setState({
         selectedContractId: "contract001",
-        selectedContractDetail: makeDetail(),
+        selectedContractDetail: createMockContract(),
       });
 
       await useContractStore.getState().selectContract(null);
@@ -222,7 +198,7 @@ describe("contractStore", () => {
     it("clears old detail immediately when selecting new contract", async () => {
       useContractStore.setState({
         selectedContractId: "old",
-        selectedContractDetail: makeDetail({ id: "old" }),
+        selectedContractDetail: createMockContract({ id: "old" }),
       });
 
       let resolvePromise: (value: unknown) => void;
@@ -241,7 +217,7 @@ describe("contractStore", () => {
         "contract001",
       );
 
-      resolvePromise!({ status: "ok", data: makeDetail() });
+      resolvePromise!({ status: "ok", data: createMockContract() });
       await selectPromise;
     });
   });
@@ -250,30 +226,36 @@ describe("contractStore", () => {
 
   describe("setAlias", () => {
     it("updates alias in contract list", async () => {
-      useContractStore.setState({ contracts: [makeSummary()] });
+      useContractStore.setState({
+        contracts: [createMockContractSummary()],
+      });
       (commands.contractSetAlias as Mock).mockResolvedValue({
         status: "ok",
         data: null,
       });
 
-      await useContractStore.getState().setAlias("contract001", "New Name");
+      await useContractStore
+        .getState()
+        .setAlias(createMockContractSummary().id, "New Name");
 
       const contract = useContractStore.getState().contracts[0];
       expect(contract.alias).toBe("New Name");
     });
 
     it("updates alias in selected contract detail", async () => {
+      const summary = createMockContractSummary();
+      const detail = createMockContract({ id: summary.id });
       useContractStore.setState({
-        contracts: [makeSummary()],
-        selectedContractId: "contract001",
-        selectedContractDetail: makeDetail(),
+        contracts: [summary],
+        selectedContractId: summary.id,
+        selectedContractDetail: detail,
       });
       (commands.contractSetAlias as Mock).mockResolvedValue({
         status: "ok",
         data: null,
       });
 
-      await useContractStore.getState().setAlias("contract001", "Renamed");
+      await useContractStore.getState().setAlias(summary.id, "Renamed");
 
       expect(useContractStore.getState().selectedContractDetail?.alias).toBe(
         "Renamed",
@@ -281,32 +263,32 @@ describe("contractStore", () => {
     });
 
     it("clears alias when null passed", async () => {
-      useContractStore.setState({
-        contracts: [makeSummary({ alias: "Old Name" })],
-      });
+      const summary = createMockContractSummary({ alias: "Old Name" });
+      useContractStore.setState({ contracts: [summary] });
       (commands.contractSetAlias as Mock).mockResolvedValue({
         status: "ok",
         data: null,
       });
 
-      await useContractStore.getState().setAlias("contract001", null);
+      await useContractStore.getState().setAlias(summary.id, null);
 
       expect(useContractStore.getState().contracts[0].alias).toBeNull();
     });
 
     it("sets error on failure", async () => {
-      useContractStore.setState({ contracts: [makeSummary()] });
+      const summary = createMockContractSummary();
+      useContractStore.setState({ contracts: [summary] });
       (commands.contractSetAlias as Mock).mockResolvedValue({
         status: "error",
         error: "Permission denied",
       });
 
-      await useContractStore.getState().setAlias("contract001", "New");
+      await useContractStore.getState().setAlias(summary.id, "New");
 
       expect(useContractStore.getState().error).toBe("Permission denied");
       // Original alias unchanged
       expect(useContractStore.getState().contracts[0].alias).toBe(
-        "DPNS Contract",
+        summary.alias,
       );
     });
   });
@@ -317,8 +299,8 @@ describe("contractStore", () => {
     it("removes contract from list", async () => {
       useContractStore.setState({
         contracts: [
-          makeSummary(),
-          makeSummary({ id: "contract002", alias: "Other" }),
+          createMockContractSummary(),
+          createMockContractSummary({ id: "contract002", alias: "Other" }),
         ],
       });
       (commands.contractRemove as Mock).mockResolvedValue({
@@ -326,7 +308,9 @@ describe("contractStore", () => {
         data: null,
       });
 
-      await useContractStore.getState().removeContract("contract001");
+      await useContractStore
+        .getState()
+        .removeContract(createMockContractSummary().id);
 
       const contracts = useContractStore.getState().contracts;
       expect(contracts).toHaveLength(1);
@@ -334,17 +318,18 @@ describe("contractStore", () => {
     });
 
     it("clears selection when removing selected contract", async () => {
+      const summary = createMockContractSummary();
       useContractStore.setState({
-        contracts: [makeSummary()],
-        selectedContractId: "contract001",
-        selectedContractDetail: makeDetail(),
+        contracts: [summary],
+        selectedContractId: summary.id,
+        selectedContractDetail: createMockContract({ id: summary.id }),
       });
       (commands.contractRemove as Mock).mockResolvedValue({
         status: "ok",
         data: null,
       });
 
-      await useContractStore.getState().removeContract("contract001");
+      await useContractStore.getState().removeContract(summary.id);
 
       const state = useContractStore.getState();
       expect(state.selectedContractId).toBeNull();
@@ -352,13 +337,14 @@ describe("contractStore", () => {
     });
 
     it("preserves selection when removing different contract", async () => {
+      const selected = createMockContractSummary();
       useContractStore.setState({
         contracts: [
-          makeSummary(),
-          makeSummary({ id: "contract002" }),
+          selected,
+          createMockContractSummary({ id: "contract002" }),
         ],
-        selectedContractId: "contract001",
-        selectedContractDetail: makeDetail(),
+        selectedContractId: selected.id,
+        selectedContractDetail: createMockContract({ id: selected.id }),
       });
       (commands.contractRemove as Mock).mockResolvedValue({
         status: "ok",
@@ -367,22 +353,24 @@ describe("contractStore", () => {
 
       await useContractStore.getState().removeContract("contract002");
 
-      expect(useContractStore.getState().selectedContractId).toBe(
-        "contract001",
-      );
+      expect(useContractStore.getState().selectedContractId).toBe(selected.id);
       expect(
         useContractStore.getState().selectedContractDetail,
       ).not.toBeNull();
     });
 
     it("sets error on failure", async () => {
-      useContractStore.setState({ contracts: [makeSummary()] });
+      useContractStore.setState({
+        contracts: [createMockContractSummary()],
+      });
       (commands.contractRemove as Mock).mockResolvedValue({
         status: "error",
         error: "Cannot remove system contract",
       });
 
-      await useContractStore.getState().removeContract("contract001");
+      await useContractStore
+        .getState()
+        .removeContract(createMockContractSummary().id);
 
       expect(useContractStore.getState().error).toBe(
         "Cannot remove system contract",
@@ -526,7 +514,7 @@ describe("contractStore", () => {
       // Set up loadContracts mock
       (commands.contractListLocal as Mock).mockResolvedValue({
         status: "ok",
-        data: [makeSummary()],
+        data: [createMockContractSummary()],
       });
 
       useContractStore.setState({ fetching: true });

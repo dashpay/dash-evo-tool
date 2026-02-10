@@ -757,7 +757,7 @@
   - All token action screens render and submit: transfer, mint, burn, freeze, unfreeze, destroy frozen, pause, resume
   Target: 30+ test cases across both files. **The implementing agent must run these and confirm all pass.**
 
-- [ ] **7.5.2e Write multi-screen user journey tests** (P1)
+- [x] **7.5.2e Write multi-screen user journey tests** (P1)
   Create `tests/e2e-integration/journeys.spec.ts` testing complete user flows that span multiple screens:
   - **New user journey:** Welcome → Create Wallet → wallet appears in list → Create Identity (fund with wallet) → identity appears in list → Register DPNS Name → name appears in Owned Names
   - **Token creator journey:** Navigate to Tokens → Create Token → complete all 7 wizard steps → token appears in My Tokens → Transfer tokens to another identity
@@ -1124,7 +1124,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 90 |
-| Completed | 113 |
-| Remaining | 14 |
+| Completed | 114 |
+| Remaining | 13 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

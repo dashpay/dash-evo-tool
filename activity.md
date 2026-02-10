@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 152 — 2026-02-10
+**Task:** 7.5.2e Write multi-screen user journey tests
+**What was done:** Created `tests/e2e-integration/journeys.spec.ts` with 18 tests across 5 journey test suites exercising multi-screen user flows. Journey 1 (New User Onboarding): Welcome → Create Wallet → wallet in list, wallet list → Create Identity form, identity list → DPNS Register Name. Journey 2 (Token Creation & Transfer): My Tokens → Create Token wizard, token data → Transfer screen, Token Search. Journey 3 (Contract & Document Workflow): Contracts → Add Contract → tree, tree expansion → doc types, Create/Delete Document navigation. Journey 4 (Wallet Operations): Receive dialog → Send screen, Asset Locks tab, Send → back → Import. Journey 5 (Identity Management): select identity → detail, View Keys, Top Up, Withdraw → Transfer, cross-section sidebar navigation. All 18 journey tests pass, all 297 E2E integration tests pass (15 pre-existing failures in phase7-tokens "Back to Tokens" button tests), all 3644 component tests pass, lint and typecheck clean.
+**Files changed:** tests/e2e-integration/journeys.spec.ts, tasks.md, activity.md
+**Tests added:** 18 new journey tests spanning 5 user workflows
+**Sub-tasks created:** 0
+
 ## Run 151 — 2026-02-10
 **Task:** 7.5.2d Write screen smoke tests for Phases 6-7 (Contracts, Tokens)
 **What was done:** Enhanced existing phase6-contracts.spec.ts from 54 to 75 tests and phase7-tokens.spec.ts from 24 to 45 tests (120 total, target was 30+). Added tests for: Update Contract screen (heading, identity selector, contract selector, JSON textarea, buttons), document query display controls (fetch button disabled state, query input placeholder/text entry, navigation to all document action routes), Register Contract advanced options and fee estimation, Add Contracts fetch flow (valid hex ID triggers fetch, successful fetch shows results, field removal), Purchase/Replace document-specific fields, token operation form shared elements (context header, identity selector, submit/cancel/advanced toggle), Token Set Price/Purchase/Claim/View Claims/Update Config screens, Token Freeze identity input, Token Creator step navigation and mode toggle, My Tokens drill-down and empty state. All 279 E2E integration tests pass, all 3644 component tests pass, lint and typecheck clean.

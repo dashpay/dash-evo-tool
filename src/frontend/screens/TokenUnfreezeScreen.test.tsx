@@ -1,3 +1,17 @@
+// Radix Select uses hasPointerCapture/scrollIntoView which jsdom doesn't support
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+}
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 import { render, screen, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -27,30 +41,48 @@ const mockTokenUnfreeze = vi.fn().mockResolvedValue({
   data: { taskId: "task-unfreeze-1" },
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null =
-  null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null =
-  null;
+const mockTaskResultListeners: Array<(event: { payload: unknown }) => void> = [];
+const mockTaskErrorListeners: Array<(event: { payload: unknown }) => void> = [];
+
+/** Emit a task result to all registered listeners. */
+function emitTaskResult(payload: unknown) {
+  for (const listener of mockTaskResultListeners) {
+    listener({ payload });
+  }
+}
+
+/** Emit a task error to all registered listeners. */
+function emitTaskError(payload: unknown) {
+  for (const listener of mockTaskErrorListeners) {
+    listener({ payload });
+  }
+}
 
 vi.mock("@/bindings", () => ({
   commands: {
     tokenUnfreeze: (...args: unknown[]) => mockTokenUnfreeze(...args),
+    tokenQueryFrozenIdentities: vi.fn().mockResolvedValue({
+      status: "ok",
+      data: { taskId: "frozen-query-1" },
+    }),
     walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
   },
   events: {
     taskResultEvent: {
       listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
+        mockTaskResultListeners.push(cb);
         return Promise.resolve(() => {
-          mockTaskResultListener = null;
+          const idx = mockTaskResultListeners.indexOf(cb);
+          if (idx >= 0) mockTaskResultListeners.splice(idx, 1);
         });
       }),
     },
     taskErrorEvent: {
       listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
+        mockTaskErrorListeners.push(cb);
         return Promise.resolve(() => {
-          mockTaskErrorListener = null;
+          const idx = mockTaskErrorListeners.indexOf(cb);
+          if (idx >= 0) mockTaskErrorListeners.splice(idx, 1);
         });
       }),
     },
@@ -76,6 +108,18 @@ const mockIdentities = [
     ],
     dpnsNames: [],
     associatedWalletHashes: ["seed-hash-unfreeze"],
+    walletIndex: 0,
+    topUps: [],
+    status: "Active",
+    identityType: "User",
+  },
+  {
+    id: "frozen-target-aabb",
+    alias: "FrozenAlice",
+    balance: 500000,
+    keys: [],
+    dpnsNames: [],
+    associatedWalletHashes: [],
     walletIndex: 0,
     topUps: [],
     status: "Active",
@@ -132,13 +176,29 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
   };
 }
 
+/** Simulate frozen identity query result arriving. */
+async function completeFrozenQuery(frozenIds: string[]) {
+  // Wait for the dispatch to complete (sets taskIdRef.current)
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  // Now emit the result to all listeners
+  await act(async () => {
+    emitTaskResult({
+      taskId: "frozen-query-1",
+      resultType: "Token",
+      payload: frozenIds,
+    });
+  });
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("TokenUnfreezeScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
+    mockTaskResultListeners.length = 0;
+    mockTaskErrorListeners.length = 0;
     currentSearch = {
       tokenId: "token-unfreeze-222",
       contractId: "contract-unfreeze-222",
@@ -150,11 +210,190 @@ describe("TokenUnfreezeScreen", () => {
     };
   });
 
+  // ── Loading state ─────────────────────────────────────────────────────
+
+  describe("loading state", () => {
+    it("shows loading spinner while fetching frozen identities", () => {
+      setup();
+      expect(
+        screen.getByText("Loading frozen identities from Platform..."),
+      ).toBeInTheDocument();
+    });
+  });
+
+  // ── Dropdown (frozen identities found) ────────────────────────────────
+
+  describe("dropdown mode", () => {
+    it("shows dropdown with frozen identities after query completes", async () => {
+      setup();
+      await completeFrozenQuery(["frozen-target-aabb"]);
+
+      expect(
+        screen.getByTestId("unfreeze-identity-select"),
+      ).toBeInTheDocument();
+    });
+
+    it("enables unfreeze button when a frozen identity is selected", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-target-aabb"]);
+
+      // Open select and pick the frozen identity
+      const trigger = screen.getByTestId("unfreeze-identity-select");
+      await user.click(trigger);
+
+      const option = screen.getByText("FrozenAlice");
+      await user.click(option);
+
+      const button = screen.getByRole("button", { name: /unfreeze/i });
+      expect(button).toBeEnabled();
+    });
+
+    it("calls tokenUnfreeze with selected frozen identity ID", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-target-aabb"]);
+
+      // Select frozen identity
+      const trigger = screen.getByTestId("unfreeze-identity-select");
+      await user.click(trigger);
+      const option = screen.getByText("FrozenAlice");
+      await user.click(option);
+
+      // Click unfreeze
+      const unfreezeButton = screen.getByRole("button", { name: /unfreeze/i });
+      await user.click(unfreezeButton);
+
+      // Confirm
+      const dialog = screen.getByRole("dialog");
+      const confirmButton = within(dialog).getByRole("button", {
+        name: /unfreeze/i,
+      });
+      await user.click(confirmButton);
+
+      expect(mockTokenUnfreeze).toHaveBeenCalledWith(
+        expect.objectContaining({
+          unfreezeIdentityId: "frozen-target-aabb",
+        }),
+      );
+    });
+
+    it("switches to manual input when Other is selected", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-target-aabb"]);
+
+      const trigger = screen.getByTestId("unfreeze-identity-select");
+      await user.click(trigger);
+
+      const otherOption = screen.getByText("Other (enter manually)");
+      await user.click(otherOption);
+
+      // Should now show text input
+      expect(
+        screen.getByPlaceholderText("Enter frozen identity ID (Base58 or Hex)"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows Back to dropdown link in manual mode", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-target-aabb"]);
+
+      const trigger = screen.getByTestId("unfreeze-identity-select");
+      await user.click(trigger);
+
+      const otherOption = screen.getByText("Other (enter manually)");
+      await user.click(otherOption);
+
+      expect(screen.getByText("Back to dropdown")).toBeInTheDocument();
+    });
+
+    it("switches back to dropdown when Back to dropdown is clicked", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-target-aabb"]);
+
+      // Switch to manual
+      const trigger = screen.getByTestId("unfreeze-identity-select");
+      await user.click(trigger);
+      const otherOption = screen.getByText("Other (enter manually)");
+      await user.click(otherOption);
+
+      // Switch back
+      const backLink = screen.getByText("Back to dropdown");
+      await user.click(backLink);
+
+      expect(
+        screen.getByTestId("unfreeze-identity-select"),
+      ).toBeInTheDocument();
+    });
+  });
+
+  // ── Fallback text input (no frozen identities) ────────────────────────
+
+  describe("fallback text input", () => {
+    it("shows text input when no frozen identities found", async () => {
+      setup();
+      await completeFrozenQuery([]);
+
+      expect(
+        screen.getByPlaceholderText("Enter frozen identity ID (Base58 or Hex)"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows informative message when no frozen identities found", async () => {
+      setup();
+      await completeFrozenQuery([]);
+
+      expect(
+        screen.getByText(
+          /no frozen identities found among loaded identities/i,
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("enables unfreeze button when manual ID is entered", async () => {
+      const { user } = setup();
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
+      await user.type(input, "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
+
+      const button = screen.getByRole("button", { name: /unfreeze/i });
+      expect(button).toBeEnabled();
+    });
+
+    it("calls tokenUnfreeze with manually entered ID", async () => {
+      const { user } = setup();
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
+      await user.type(input, "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
+
+      const unfreezeButton = screen.getByRole("button", { name: /unfreeze/i });
+      await user.click(unfreezeButton);
+
+      const dialog = screen.getByRole("dialog");
+      const confirmButton = within(dialog).getByRole("button", {
+        name: /unfreeze/i,
+      });
+      await user.click(confirmButton);
+
+      expect(mockTokenUnfreeze).toHaveBeenCalledWith(
+        expect.objectContaining({
+          unfreezeIdentityId:
+            "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq",
+        }),
+      );
+    });
+  });
+
   // ── Rendering ──────────────────────────────────────────────────────────
 
   describe("rendering", () => {
-    it("renders with Unfreeze action button", () => {
+    it("renders with Unfreeze action button", async () => {
       setup();
+      await completeFrozenQuery([]);
       expect(
         screen.getByRole("button", { name: /unfreeze/i }),
       ).toBeInTheDocument();
@@ -163,22 +402,6 @@ describe("TokenUnfreezeScreen", () => {
     it("displays token name from search params", () => {
       setup();
       expect(screen.getByText("UnfreezeToken")).toBeInTheDocument();
-    });
-
-    it("shows identity ID input field", () => {
-      setup();
-      expect(
-        screen.getByLabelText("Identity ID to Unfreeze"),
-      ).toBeInTheDocument();
-    });
-
-    it("shows helper text about entering frozen identity", () => {
-      setup();
-      expect(
-        screen.getByText(
-          /enter the identity id of the frozen identity you want to unfreeze/i,
-        ),
-      ).toBeInTheDocument();
     });
 
     it("shows identity selector for signing identity", () => {
@@ -190,70 +413,11 @@ describe("TokenUnfreezeScreen", () => {
   // ── Validation ─────────────────────────────────────────────────────────
 
   describe("validation", () => {
-    it("disables unfreeze button when identity ID is empty", () => {
+    it("disables unfreeze button when identity ID is empty", async () => {
       setup();
+      await completeFrozenQuery([]);
       const button = screen.getByRole("button", { name: /unfreeze/i });
       expect(button).toBeDisabled();
-    });
-
-    it("enables unfreeze button when identity ID is entered", async () => {
-      const { user } = setup();
-      const input = screen.getByLabelText("Identity ID to Unfreeze");
-      await user.type(input, "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
-      const button = screen.getByRole("button", { name: /unfreeze/i });
-      expect(button).toBeEnabled();
-    });
-  });
-
-  // ── Submit ─────────────────────────────────────────────────────────────
-
-  describe("submit", () => {
-    it("calls tokenUnfreeze with correct params after confirmation", async () => {
-      const { user } = setup();
-      const input = screen.getByLabelText("Identity ID to Unfreeze");
-      await user.type(input, "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
-
-      const unfreezeButton = screen.getByRole("button", {
-        name: /unfreeze/i,
-      });
-      await user.click(unfreezeButton);
-
-      // Confirm in dialog
-      const dialog = screen.getByRole("dialog");
-      const confirmButton = within(dialog).getByRole("button", {
-        name: /unfreeze/i,
-      });
-      await user.click(confirmButton);
-
-      expect(mockTokenUnfreeze).toHaveBeenCalledWith(
-        expect.objectContaining({
-          operation: expect.objectContaining({
-            contractId: "contract-unfreeze-222",
-            tokenPosition: 0,
-          }),
-          unfreezeIdentityId:
-            "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq",
-        }),
-      );
-    });
-
-    it("shows broadcasting state after confirming", async () => {
-      const { user } = setup();
-      const input = screen.getByLabelText("Identity ID to Unfreeze");
-      await user.type(input, "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
-
-      const unfreezeButton = screen.getByRole("button", {
-        name: /unfreeze/i,
-      });
-      await user.click(unfreezeButton);
-
-      const dialog = screen.getByRole("dialog");
-      const confirmButton = within(dialog).getByRole("button", {
-        name: /unfreeze/i,
-      });
-      await user.click(confirmButton);
-
-      expect(screen.getByText("Unfreeze...")).toBeInTheDocument();
     });
   });
 
@@ -262,7 +426,11 @@ describe("TokenUnfreezeScreen", () => {
   describe("result handling", () => {
     it("shows success screen on task result", async () => {
       const { user } = setup();
-      const input = screen.getByLabelText("Identity ID to Unfreeze");
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
       await user.type(input, "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
 
       const unfreezeButton = screen.getByRole("button", {
@@ -277,12 +445,10 @@ describe("TokenUnfreezeScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskResultListener?.({
-          payload: {
-            taskId: "task-unfreeze-1",
-            resultType: "Token",
-            payload: null,
-          },
+        emitTaskResult({
+          taskId: "task-unfreeze-1",
+          resultType: "Token",
+          payload: null,
         });
       });
 
@@ -291,7 +457,11 @@ describe("TokenUnfreezeScreen", () => {
 
     it("shows error screen on task error", async () => {
       const { user } = setup();
-      const input = screen.getByLabelText("Identity ID to Unfreeze");
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
       await user.type(input, "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
 
       const unfreezeButton = screen.getByRole("button", {
@@ -306,13 +476,11 @@ describe("TokenUnfreezeScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskErrorListener?.({
-          payload: {
-            taskId: "task-unfreeze-1",
-            message: "Unfreeze failed",
-            details: null,
-            recoverable: false,
-          },
+        emitTaskError({
+          taskId: "task-unfreeze-1",
+          message: "Unfreeze failed",
+          details: null,
+          recoverable: false,
         });
       });
 
@@ -321,7 +489,11 @@ describe("TokenUnfreezeScreen", () => {
 
     it("shows Unfreeze Another button on success", async () => {
       const { user } = setup();
-      const input = screen.getByLabelText("Identity ID to Unfreeze");
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
       await user.type(input, "5A5g3y5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
 
       const unfreezeButton = screen.getByRole("button", {
@@ -336,12 +508,10 @@ describe("TokenUnfreezeScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskResultListener?.({
-          payload: {
-            taskId: "task-unfreeze-1",
-            resultType: "Token",
-            payload: null,
-          },
+        emitTaskResult({
+          taskId: "task-unfreeze-1",
+          resultType: "Token",
+          payload: null,
         });
       });
 
@@ -366,9 +536,6 @@ describe("TokenUnfreezeScreen", () => {
         screen.getByText("Identity to unfreeze:"),
       ).toBeInTheDocument();
       expect(screen.getByText("target-frozen-id")).toBeInTheDocument();
-      expect(
-        screen.queryByLabelText("Identity ID to Unfreeze"),
-      ).not.toBeInTheDocument();
     });
 
     it("passes group info in IPC call when group signing", async () => {

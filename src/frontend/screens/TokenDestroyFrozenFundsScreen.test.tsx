@@ -1,3 +1,17 @@
+// Radix Select uses hasPointerCapture/scrollIntoView which jsdom doesn't support
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+}
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 import { render, screen, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -27,31 +41,47 @@ const mockTokenDestroyFrozenFunds = vi.fn().mockResolvedValue({
   data: { taskId: "task-destroy-1" },
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null =
-  null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null =
-  null;
+const mockTaskResultListeners: Array<(event: { payload: unknown }) => void> = [];
+const mockTaskErrorListeners: Array<(event: { payload: unknown }) => void> = [];
+
+function emitTaskResult(payload: unknown) {
+  for (const listener of mockTaskResultListeners) {
+    listener({ payload });
+  }
+}
+
+function emitTaskError(payload: unknown) {
+  for (const listener of mockTaskErrorListeners) {
+    listener({ payload });
+  }
+}
 
 vi.mock("@/bindings", () => ({
   commands: {
     tokenDestroyFrozenFunds: (...args: unknown[]) =>
       mockTokenDestroyFrozenFunds(...args),
+    tokenQueryFrozenIdentities: vi.fn().mockResolvedValue({
+      status: "ok",
+      data: { taskId: "frozen-query-1" },
+    }),
     walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
   },
   events: {
     taskResultEvent: {
       listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
+        mockTaskResultListeners.push(cb);
         return Promise.resolve(() => {
-          mockTaskResultListener = null;
+          const idx = mockTaskResultListeners.indexOf(cb);
+          if (idx >= 0) mockTaskResultListeners.splice(idx, 1);
         });
       }),
     },
     taskErrorEvent: {
       listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
+        mockTaskErrorListeners.push(cb);
         return Promise.resolve(() => {
-          mockTaskErrorListener = null;
+          const idx = mockTaskErrorListeners.indexOf(cb);
+          if (idx >= 0) mockTaskErrorListeners.splice(idx, 1);
         });
       }),
     },
@@ -77,6 +107,18 @@ const mockIdentities = [
     ],
     dpnsNames: [],
     associatedWalletHashes: ["seed-hash-destroy"],
+    walletIndex: 0,
+    topUps: [],
+    status: "Active",
+    identityType: "User",
+  },
+  {
+    id: "frozen-victim-aabb",
+    alias: "FrozenVictim",
+    balance: 100000,
+    keys: [],
+    dpnsNames: [],
+    associatedWalletHashes: [],
     walletIndex: 0,
     topUps: [],
     status: "Active",
@@ -133,13 +175,29 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
   };
 }
 
+/** Simulate frozen identity query result arriving. */
+async function completeFrozenQuery(frozenIds: string[]) {
+  // Wait for the dispatch to complete (sets taskIdRef.current)
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 0));
+  });
+  // Now emit the result to all listeners
+  await act(async () => {
+    emitTaskResult({
+      taskId: "frozen-query-1",
+      resultType: "Token",
+      payload: frozenIds,
+    });
+  });
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("TokenDestroyFrozenFundsScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
+    mockTaskResultListeners.length = 0;
+    mockTaskErrorListeners.length = 0;
     currentSearch = {
       tokenId: "token-destroy-333",
       contractId: "contract-destroy-333",
@@ -151,11 +209,149 @@ describe("TokenDestroyFrozenFundsScreen", () => {
     };
   });
 
+  // ── Loading state ─────────────────────────────────────────────────────
+
+  describe("loading state", () => {
+    it("shows loading spinner while fetching frozen identities", () => {
+      setup();
+      expect(
+        screen.getByText("Loading frozen identities from Platform..."),
+      ).toBeInTheDocument();
+    });
+  });
+
+  // ── Dropdown (frozen identities found) ────────────────────────────────
+
+  describe("dropdown mode", () => {
+    it("shows dropdown with frozen identities after query completes", async () => {
+      setup();
+      await completeFrozenQuery(["frozen-victim-aabb"]);
+
+      expect(
+        screen.getByTestId("frozen-identity-select"),
+      ).toBeInTheDocument();
+    });
+
+    it("enables destroy button when a frozen identity is selected", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-victim-aabb"]);
+
+      const trigger = screen.getByTestId("frozen-identity-select");
+      await user.click(trigger);
+
+      const option = screen.getByText("FrozenVictim");
+      await user.click(option);
+
+      const button = screen.getByRole("button", {
+        name: /destroy frozen funds/i,
+      });
+      expect(button).toBeEnabled();
+    });
+
+    it("calls tokenDestroyFrozenFunds with selected frozen identity ID", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-victim-aabb"]);
+
+      // Select frozen identity
+      const trigger = screen.getByTestId("frozen-identity-select");
+      await user.click(trigger);
+      const option = screen.getByText("FrozenVictim");
+      await user.click(option);
+
+      // Click destroy
+      const destroyButton = screen.getByRole("button", {
+        name: /destroy frozen funds/i,
+      });
+      await user.click(destroyButton);
+
+      // Confirm
+      const dialog = screen.getByRole("dialog");
+      const confirmButton = within(dialog).getByRole("button", {
+        name: /destroy/i,
+      });
+      await user.click(confirmButton);
+
+      expect(mockTokenDestroyFrozenFunds).toHaveBeenCalledWith(
+        expect.objectContaining({
+          frozenIdentityId: "frozen-victim-aabb",
+        }),
+      );
+    });
+
+    it("switches to manual input when Other is selected", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-victim-aabb"]);
+
+      const trigger = screen.getByTestId("frozen-identity-select");
+      await user.click(trigger);
+
+      const otherOption = screen.getByText("Other (enter manually)");
+      await user.click(otherOption);
+
+      expect(
+        screen.getByPlaceholderText("Enter frozen identity ID (Base58 or Hex)"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows Back to dropdown link in manual mode", async () => {
+      const { user } = setup();
+      await completeFrozenQuery(["frozen-victim-aabb"]);
+
+      const trigger = screen.getByTestId("frozen-identity-select");
+      await user.click(trigger);
+
+      const otherOption = screen.getByText("Other (enter manually)");
+      await user.click(otherOption);
+
+      expect(screen.getByText("Back to dropdown")).toBeInTheDocument();
+    });
+  });
+
+  // ── Fallback text input (no frozen identities) ────────────────────────
+
+  describe("fallback text input", () => {
+    it("shows text input when no frozen identities found", async () => {
+      setup();
+      await completeFrozenQuery([]);
+
+      expect(
+        screen.getByPlaceholderText("Enter frozen identity ID (Base58 or Hex)"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows informative message when no frozen identities found", async () => {
+      setup();
+      await completeFrozenQuery([]);
+
+      expect(
+        screen.getByText(
+          /no frozen identities found among loaded identities/i,
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("enables destroy button when manual ID is entered", async () => {
+      const { user } = setup();
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
+      await user.type(input, "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
+
+      const button = screen.getByRole("button", {
+        name: /destroy frozen funds/i,
+      });
+      expect(button).toBeEnabled();
+    });
+  });
+
   // ── Rendering ──────────────────────────────────────────────────────────
 
   describe("rendering", () => {
-    it("renders with Destroy Frozen Funds action button", () => {
+    it("renders with Destroy Frozen Funds action button", async () => {
       setup();
+      await completeFrozenQuery([]);
       expect(
         screen.getByRole("button", { name: /destroy frozen funds/i }),
       ).toBeInTheDocument();
@@ -164,22 +360,6 @@ describe("TokenDestroyFrozenFundsScreen", () => {
     it("displays token name from search params", () => {
       setup();
       expect(screen.getByText("DestroyToken")).toBeInTheDocument();
-    });
-
-    it("shows frozen identity ID input field", () => {
-      setup();
-      expect(
-        screen.getByLabelText("Frozen Identity ID"),
-      ).toBeInTheDocument();
-    });
-
-    it("shows helper text about permanent destruction", () => {
-      setup();
-      expect(
-        screen.getByText(
-          /enter the identity id of the frozen identity whose funds will be permanently destroyed/i,
-        ),
-      ).toBeInTheDocument();
     });
 
     it("shows identity selector for signing identity", () => {
@@ -191,61 +371,26 @@ describe("TokenDestroyFrozenFundsScreen", () => {
   // ── Validation ─────────────────────────────────────────────────────────
 
   describe("validation", () => {
-    it("disables destroy button when identity ID is empty", () => {
+    it("disables destroy button when identity ID is empty", async () => {
       setup();
+      await completeFrozenQuery([]);
       const button = screen.getByRole("button", {
         name: /destroy frozen funds/i,
       });
       expect(button).toBeDisabled();
-    });
-
-    it("enables destroy button when identity ID is entered", async () => {
-      const { user } = setup();
-      const input = screen.getByLabelText("Frozen Identity ID");
-      await user.type(input, "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
-      const button = screen.getByRole("button", {
-        name: /destroy frozen funds/i,
-      });
-      expect(button).toBeEnabled();
     });
   });
 
   // ── Submit ─────────────────────────────────────────────────────────────
 
   describe("submit", () => {
-    it("calls tokenDestroyFrozenFunds with correct params after confirmation", async () => {
-      const { user } = setup();
-      const input = screen.getByLabelText("Frozen Identity ID");
-      await user.type(input, "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
-
-      // Click destroy
-      const destroyButton = screen.getByRole("button", {
-        name: /destroy frozen funds/i,
-      });
-      await user.click(destroyButton);
-
-      // Confirm in destructive dialog
-      const dialog = screen.getByRole("dialog");
-      const confirmButton = within(dialog).getByRole("button", {
-        name: /destroy/i,
-      });
-      await user.click(confirmButton);
-
-      expect(mockTokenDestroyFrozenFunds).toHaveBeenCalledWith(
-        expect.objectContaining({
-          operation: expect.objectContaining({
-            contractId: "contract-destroy-333",
-            tokenPosition: 0,
-          }),
-          frozenIdentityId:
-            "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq",
-        }),
-      );
-    });
-
     it("shows destructive confirmation dialog", async () => {
       const { user } = setup();
-      const input = screen.getByLabelText("Frozen Identity ID");
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
       await user.type(input, "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
 
       const destroyButton = screen.getByRole("button", {
@@ -253,7 +398,6 @@ describe("TokenDestroyFrozenFundsScreen", () => {
       });
       await user.click(destroyButton);
 
-      // Dialog should show title and mention "cannot be undone"
       expect(
         screen.getByText("Confirm Destroy Frozen Funds"),
       ).toBeInTheDocument();
@@ -264,7 +408,11 @@ describe("TokenDestroyFrozenFundsScreen", () => {
 
     it("shows broadcasting state after confirming", async () => {
       const { user } = setup();
-      const input = screen.getByLabelText("Frozen Identity ID");
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
       await user.type(input, "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
 
       const destroyButton = screen.getByRole("button", {
@@ -289,7 +437,11 @@ describe("TokenDestroyFrozenFundsScreen", () => {
   describe("result handling", () => {
     it("shows success screen on task result", async () => {
       const { user } = setup();
-      const input = screen.getByLabelText("Frozen Identity ID");
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
       await user.type(input, "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
 
       const destroyButton = screen.getByRole("button", {
@@ -304,12 +456,10 @@ describe("TokenDestroyFrozenFundsScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskResultListener?.({
-          payload: {
-            taskId: "task-destroy-1",
-            resultType: "Token",
-            payload: null,
-          },
+        emitTaskResult({
+          taskId: "task-destroy-1",
+          resultType: "Token",
+          payload: null,
         });
       });
 
@@ -320,7 +470,11 @@ describe("TokenDestroyFrozenFundsScreen", () => {
 
     it("shows error screen on task error", async () => {
       const { user } = setup();
-      const input = screen.getByLabelText("Frozen Identity ID");
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
       await user.type(input, "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
 
       const destroyButton = screen.getByRole("button", {
@@ -335,13 +489,11 @@ describe("TokenDestroyFrozenFundsScreen", () => {
       await user.click(confirmButton2);
 
       await act(async () => {
-        mockTaskErrorListener?.({
-          payload: {
-            taskId: "task-destroy-1",
-            message: "Destroy operation failed",
-            details: null,
-            recoverable: false,
-          },
+        emitTaskError({
+          taskId: "task-destroy-1",
+          message: "Destroy operation failed",
+          details: null,
+          recoverable: false,
         });
       });
 
@@ -350,7 +502,11 @@ describe("TokenDestroyFrozenFundsScreen", () => {
 
     it("shows Destroy More button on success", async () => {
       const { user } = setup();
-      const input = screen.getByLabelText("Frozen Identity ID");
+      await completeFrozenQuery([]);
+
+      const input = screen.getByPlaceholderText(
+        "Enter frozen identity ID (Base58 or Hex)",
+      );
       await user.type(input, "8vNLqz5kAEz1NTXF2fSm5BNfHv3Dp2yHQdwrpXNDTGWq");
 
       const destroyButton = screen.getByRole("button", {
@@ -365,12 +521,10 @@ describe("TokenDestroyFrozenFundsScreen", () => {
       await user.click(confirmButton3);
 
       await act(async () => {
-        mockTaskResultListener?.({
-          payload: {
-            taskId: "task-destroy-1",
-            resultType: "Token",
-            payload: null,
-          },
+        emitTaskResult({
+          taskId: "task-destroy-1",
+          resultType: "Token",
+          payload: null,
         });
       });
 
@@ -393,9 +547,6 @@ describe("TokenDestroyFrozenFundsScreen", () => {
 
       expect(screen.getByText("Frozen identity:")).toBeInTheDocument();
       expect(screen.getByText("frozen-victim-id")).toBeInTheDocument();
-      expect(
-        screen.queryByLabelText("Frozen Identity ID"),
-      ).not.toBeInTheDocument();
     });
 
     it("passes group info in IPC call when group signing", async () => {

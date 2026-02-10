@@ -1,0 +1,13 @@
+# Docker build context exclusions — keeps E2E image builds fast
+target/
+node_modules/
+dist/
+test-results/
+playwright-report/
+.git/
+ralph_logs/
+ralph/
+*.snap
+.DS_Store
+.idea/
+.vscode/

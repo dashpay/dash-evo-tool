@@ -17,6 +17,7 @@
     "test:components": "vitest run --reporter=verbose",
     "test:e2e": "playwright test --project=chromium --project=webkit",
     "test:e2e-integration": "VITE_E2E_MOCK=true playwright test --project=integration",
+    "test:e2e-full": "docker compose -f docker/e2e/docker-compose.yml up --build --abort-on-container-exit --exit-code-from e2e",
     "tauri": "tauri"
   },
   "dependencies": {

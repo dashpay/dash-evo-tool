@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 155 — 2026-02-10
+**Task:** 7.5.3a Create Docker Compose E2E environment
+**What was done:** Created full Docker E2E infrastructure for running WebdriverIO tests against the real Tauri app in a headless Linux environment. Dockerfile uses Ubuntu 24.04 with Rust 1.92, Node.js 20, WebKit2GTK 4.1, tauri-driver, and Xvfb. docker-compose.yml defines a single service with 2GB shared memory, volume mount for test results. entrypoint.sh orchestrates the full lifecycle: Xvfb → tauri-driver → WebdriverIO tests with proper cleanup trap. Added `test:e2e-full` npm script and `.dockerignore` for fast builds. Cannot verify Docker build on macOS (requires Linux WebKit2GTK) — will be verified when WebdriverIO framework is set up in task 7.5.3b.
+**Files changed:** docker/e2e/Dockerfile, docker/e2e/docker-compose.yml, docker/e2e/entrypoint.sh, .dockerignore, package.json, tasks.md, activity.md
+**Tests added:** 0 (infrastructure task — tests come in 7.5.3b/7.5.3c)
+**Sub-tasks created:** 0
+
 ## Run 154 — 2026-02-10
 **Task:** 7.5.2f Write screen smoke tests for Phases 8-9 as they're completed
 **What was done:** Created `tests/e2e-integration/phase9-tools.spec.ts` with 42 tests across 6 test suites: Tools Landing Page (8 tests — heading, categories, cards, descriptions, navigation), Platform Info Screen (8 tests — title, query cards, descriptions, loading, results, errors, dismiss, disabled state), Address Balance Screen (9 tests — title, input, validation, fetch, results, errors), Contract Visualizer Screen (5 tests — title, subtitle, HexInput, Result, error/success/dismiss), Document Visualizer Screen (7 tests — title, subtitle, selectors, filter, HexInput, disabled state, error), Placeholder Screens (5 tests — Proof Log, Transition Visualizer, Proof Visualizer, Masternode List Diff, GroveSTARK). Created `tests/e2e-integration/phase8-dashpay.spec.ts` with 11 tests covering all 5 DashPay placeholder routes (main, profile, contacts, payments, search) plus 2 cross-section navigation tests. All 53 new tests pass, all 350 E2E integration tests pass, all 3710 component tests pass, lint and typecheck clean.

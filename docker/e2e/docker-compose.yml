@@ -1,0 +1,28 @@
+# Dash Evo Tool — Full E2E Test Runner
+#
+# Builds the Tauri app inside a Linux container and runs WebdriverIO tests
+# against it via tauri-driver + Xvfb (headless virtual display).
+#
+# Usage:
+#   docker compose -f docker/e2e/docker-compose.yml up --build --abort-on-container-exit --exit-code-from e2e
+#
+# Or via npm:
+#   npm run test:e2e-full
+
+services:
+  e2e:
+    build:
+      context: ../..
+      dockerfile: docker/e2e/Dockerfile
+    environment:
+      - DISPLAY=:99
+      - TAURI_DRIVER_PORT=4444
+      # Disable GPU acceleration in headless environment
+      - WEBKIT_DISABLE_COMPOSITING_MODE=1
+    volumes:
+      # Persist test results and screenshots to host
+      - ../../test-results/e2e-full:/app/test-results
+    # Shared memory increase for WebKit rendering in container
+    shm_size: '2gb'
+    # The entrypoint handles: Xvfb start, tauri-driver start, app launch, test run
+    # Exit code reflects test pass/fail

@@ -125,7 +125,7 @@ export function IdentitySelector({
               <SelectItem value={OTHER_VALUE}>Other</SelectItem>
             )}
             {filteredIdentities.length === 0 && !showOther && (
-              <SelectItem value="" disabled>
+              <SelectItem value="__empty__" disabled>
                 No identities found
               </SelectItem>
             )}

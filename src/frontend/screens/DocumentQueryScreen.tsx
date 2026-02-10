@@ -139,7 +139,7 @@ function useActionButtons(): ActionButton[] {
     {
       label: "Register Contract",
       icon: <FileUp className="h-4 w-4" />,
-      route: "/contracts/register-contract",
+      route: "/contracts/register",
     },
     {
       label: "Update Contract",

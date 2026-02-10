@@ -35,6 +35,7 @@ import { UpdateContractScreen } from "@/screens/UpdateContractScreen";
 import { DocumentActionScreen } from "@/screens/DocumentActionScreen";
 import { GroupActionsScreen } from "@/screens/GroupActionsScreen";
 import { TokenMyTokensScreen } from "@/screens/TokenMyTokensScreen";
+import { TokenSearchScreen } from "@/screens/TokenSearchScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -258,7 +259,7 @@ const tokensIndexRoute = createRoute({
 const tokensSearchRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/search",
-  component: () => <PlaceholderScreen title="Search Tokens" />,
+  component: TokenSearchScreen,
 });
 
 const tokensCreatorRoute = createRoute({

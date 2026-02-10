@@ -647,7 +647,7 @@
 
 ### Layer 1: Centralized Mock IPC & Test Fixtures
 
-- [ ] **7.5.1a Create shared mock IPC infrastructure** (P0)
+- [x] **7.5.1a Create shared mock IPC infrastructure** (P0)
   Create `src/frontend/test/mock-ipc.ts`:
   - Central `mockIPC()` handler using `@tauri-apps/api/mocks` that routes all `invoke()` calls to configurable per-command handlers
   - Default handlers for every IPC command (return realistic empty/default responses)
@@ -1124,7 +1124,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 90 |
-| Completed | 111 |
-| Remaining | 16 |
+| Completed | 112 |
+| Remaining | 15 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

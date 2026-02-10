@@ -1007,3 +1007,10 @@
 **Files changed:** src-tauri/src/commands/token.rs, src-tauri/src/main.rs, src/frontend/bindings.ts, src/frontend/screens/TokenMintScreen.tsx, src/frontend/screens/TokenMintScreen.test.tsx, src/frontend/bindings.test.ts
 **Tests added:** 7 new component tests (minting config fetch, hide recipient when not allowed, show fixed destination info, auto-populate default, optional badge, always-optional behavior, fallback on error) + 3 new Rust unit tests (GetMintingConfigInput serialization, MintingConfigDto serialization with/without default). Total tests: 3516 (up from 3509). Rust tests: 237 (up from 234).
 **Sub-tasks created:** 0
+
+## Run 144 — 2026-02-10
+**Task:** 7.5.1a Create shared mock IPC infrastructure
+**What was done:** Created centralized mock IPC infrastructure to replace the per-file mock boilerplate used across 96+ test files. `mock-ipc.ts` provides `createMockBindings()` which returns a complete mock of all 181 IPC commands and 8 event types with sensible defaults, per-command override support via `configureMock()`, call history tracking via `callHistory`, and event listener management with `emitMockEvent()`. `mock-events.ts` provides typed helper functions for emitting each event type (`emitTaskResult`, `emitTaskError`, `emitWalletUpdated`, etc.) plus assertion helpers (`getListenerCount`, `getEventListeners`). All 42 new tests pass. Full suite: 3558 tests (up from 3516).
+**Files changed:** src/frontend/test/mock-ipc.ts, src/frontend/test/mock-events.ts, src/frontend/test/mock-ipc.test.ts, src/frontend/test/mock-events.test.ts
+**Tests added:** 42 new tests — mock-ipc: 28 (createMockBindings shape, default responses for 7 command types, override at creation, override at runtime, configureMock, call history tracking, event listen/unsubscribe/multiple listeners/once, emitMockEvent delivery, resetMocks, mockBindingsModule), mock-events: 14 (typed emitters for all 8 event types, generic emitMockEvent, getListenerCount, getEventListeners). Total tests: 3558 (up from 3516).
+**Sub-tasks created:** 0

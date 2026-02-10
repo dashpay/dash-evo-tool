@@ -124,7 +124,7 @@ impl AppContext {
                     .map_err(|e| e.to_string())?;
             }
 
-            let _ = wallet.recalculate_affected_address_balances(&used_utxos, self);
+            wallet.recalculate_affected_address_balances(&used_utxos, self)?;
         }
 
         // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout

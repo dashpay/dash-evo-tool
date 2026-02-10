@@ -178,7 +178,7 @@ impl AppContext {
                             .map_err(|e| e.to_string())?;
                     }
 
-                    let _ = wallet.recalculate_affected_address_balances(&used_utxos, self);
+                    wallet.recalculate_affected_address_balances(&used_utxos, self)?;
                 }
 
                 let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
@@ -283,7 +283,7 @@ impl AppContext {
                         .drop_utxo(&utxo, &self.network.to_string())
                         .map_err(|e| e.to_string())?;
 
-                    let _ = wallet.recalculate_address_balance(&input_address, self);
+                    wallet.recalculate_address_balance(&input_address, self)?;
                 }
 
                 let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;

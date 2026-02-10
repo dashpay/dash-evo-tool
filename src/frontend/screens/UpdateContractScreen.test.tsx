@@ -25,79 +25,21 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
-// ─── Hoisted mocks ─────────────────────────────────────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-type EventCallback = (event: { payload: unknown }) => void;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-const { mockCommands, mockEvents, eventListeners, mockNavigate } = vi.hoisted(
-  () => {
-    const eventListeners: Record<string, EventCallback[]> = {
-      taskResultEvent: [],
-      taskErrorEvent: [],
-    };
-
-    const mockEvents = {
-      taskResultEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskResultEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskResultEvent =
-              eventListeners.taskResultEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      taskErrorEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskErrorEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskErrorEvent =
-              eventListeners.taskErrorEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      walletUpdatedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    };
-
-    const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-      identityListLocal: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-      identityLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-      identityGetById: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-      contractUpdate: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-1" } }),
-      contractListLocal: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: [] }),
-      contractGetById: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: null }),
-      walletListAll: vi.fn().mockResolvedValue({
-        status: "ok",
-        data: { hdWallets: [], singleKeyWallets: [] },
-      }),
-      walletNotifyUnlocked: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: null }),
-    };
-
-    const mockNavigate = vi.fn();
-
-    return { mockCommands, mockEvents, eventListeners, mockNavigate };
-  },
-);
+const { mockNavigate } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
-}));
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) return mockCommands[prop];
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
 }));
 
 const { mockToast } = vi.hoisted(() => ({
@@ -116,6 +58,8 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/toastError", () => ({
   toastError: vi.fn(),
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ─────────────────────────────────────────────────
 
@@ -237,7 +181,7 @@ function resetStores() {
 }
 
 function setupWithIdentities(identities: QualifiedIdentityDto[]) {
-  mockCommands.identityListLocal.mockResolvedValue({
+  vi.mocked(commands.identityListLocal).mockResolvedValue({
     status: "ok",
     data: identities,
   });
@@ -245,7 +189,7 @@ function setupWithIdentities(identities: QualifiedIdentityDto[]) {
 }
 
 function setupWithContracts(contracts: ContractSummaryDto[]) {
-  mockCommands.contractListLocal.mockResolvedValue({
+  vi.mocked(commands.contractListLocal).mockResolvedValue({
     status: "ok",
     data: contracts,
   });
@@ -253,18 +197,18 @@ function setupWithContracts(contracts: ContractSummaryDto[]) {
 }
 
 function fireTaskResult(payload: unknown) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  const listener = calls[calls.length - 1]?.[0];
   act(() => {
-    for (const listener of eventListeners.taskResultEvent) {
-      listener({ payload });
-    }
+    listener?.({ payload });
   });
 }
 
 function fireTaskError(payload: unknown) {
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  const listener = calls[calls.length - 1]?.[0];
   act(() => {
-    for (const listener of eventListeners.taskErrorEvent) {
-      listener({ payload });
-    }
+    listener?.({ payload });
   });
 }
 
@@ -279,13 +223,11 @@ function setup() {
 beforeEach(() => {
   vi.clearAllMocks();
   resetStores();
-  eventListeners.taskResultEvent = [];
-  eventListeners.taskErrorEvent = [];
-  mockCommands.contractUpdate.mockResolvedValue({
+  vi.mocked(commands.contractUpdate).mockResolvedValue({
     status: "ok",
     data: { taskId: "task-1" },
   });
-  mockCommands.contractGetById.mockResolvedValue({
+  vi.mocked(commands.contractGetById).mockResolvedValue({
     status: "ok",
     data: null,
   });
@@ -493,7 +435,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -533,7 +475,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -576,7 +518,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -623,7 +565,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -655,7 +597,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -721,7 +663,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -754,7 +696,7 @@ describe("UpdateContractScreen", () => {
         screen.getByRole("button", { name: /Update Contract/i }),
       );
 
-      expect(mockCommands.contractUpdate).toHaveBeenCalledWith({
+      expect(commands.contractUpdate).toHaveBeenCalledWith({
         contractJson: expect.objectContaining({
           documentSchemas: expect.any(Object),
           ownerId: identity.id,
@@ -769,7 +711,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -811,7 +753,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -862,7 +804,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -904,7 +846,7 @@ describe("UpdateContractScreen", () => {
     });
 
     it("shows error on IPC dispatch error", async () => {
-      mockCommands.contractUpdate.mockResolvedValue({
+      vi.mocked(commands.contractUpdate).mockResolvedValue({
         status: "error",
         error: "IPC error occurred",
       });
@@ -912,7 +854,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -949,14 +891,14 @@ describe("UpdateContractScreen", () => {
     });
 
     it("shows error on IPC exception", async () => {
-      mockCommands.contractUpdate.mockRejectedValue(
+      vi.mocked(commands.contractUpdate).mockRejectedValue(
         new Error("Connection lost"),
       );
       const identity = makeIdentity();
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -997,7 +939,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -1045,7 +987,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -1090,7 +1032,7 @@ describe("UpdateContractScreen", () => {
 
   describe("error dismissal", () => {
     it("returns to input on error dismissal", async () => {
-      mockCommands.contractUpdate.mockResolvedValue({
+      vi.mocked(commands.contractUpdate).mockResolvedValue({
         status: "error",
         error: "Test error",
       });
@@ -1098,7 +1040,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -1144,7 +1086,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -1197,7 +1139,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -1248,7 +1190,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,
@@ -1395,8 +1337,8 @@ describe("UpdateContractScreen", () => {
       setup();
 
       await waitFor(() => {
-        expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
-        expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+        expect(events.taskResultEvent.listen).toHaveBeenCalled();
+        expect(events.taskErrorEvent.listen).toHaveBeenCalled();
       });
     });
   });
@@ -1412,7 +1354,7 @@ describe("UpdateContractScreen", () => {
       setupWithIdentities([identity]);
       const contract = makeContractSummary();
       setupWithContracts([contract]);
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: {
           id: contract.id,

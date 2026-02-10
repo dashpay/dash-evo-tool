@@ -4,47 +4,14 @@ import { WalletsScreen } from "./WalletsScreen";
 import { useWalletStore } from "@/stores/walletStore";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 
-// ─── Mock Tauri bindings (vi.hoisted for factory hoisting) ────────
+// ─── Centralized mock bindings ───────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    walletListAll: vi.fn().mockResolvedValue({ status: "ok", data: { hdWallets: [], singleKeyWallets: [], selected: null } }),
-    walletSelect: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    walletSetAlias: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    walletSetSingleKeyAlias: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    walletRemove: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    walletRemoveSingleKey: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue(null),
-    walletNotifyLocked: vi.fn().mockResolvedValue(null),
-    walletGenerateReceiveAddress: vi.fn().mockResolvedValue({ status: "ok", data: "XnewAddress123" }),
-    walletGetHd: vi.fn().mockResolvedValue({ status: "error", error: "not found" }),
-    walletGetSingleKey: vi.fn().mockResolvedValue({ status: "error", error: "not found" }),
-    walletGetPrivateKey: vi.fn().mockResolvedValue({ status: "ok", data: "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ" }),
-    coreRefreshWalletInfo: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    coreRefreshSingleKeyWalletInfo: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    coreRecoverAssetLocks: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contextIsDeveloperMode: vi.fn().mockResolvedValue({ status: "ok", data: false }),
-    settingsGet: vi.fn().mockResolvedValue({ status: "ok", data: { onboardingCompleted: true } }),
-  };
-  const mockEvents = {
-    walletUpdatedEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
 
 // Mock sonner toast
 vi.mock("sonner", () => ({
@@ -64,6 +31,8 @@ const { mockNavigate } = vi.hoisted(() => ({
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ────────────────────────────────────────────────
 
@@ -119,23 +88,22 @@ function setupMocksWithWallets(opts: {
   const sk = opts.singleKeyWallets ?? [];
   const selected = opts.selected ?? null;
 
-  mockCommands.walletListAll.mockResolvedValue({
+  vi.mocked(commands.walletListAll).mockResolvedValue({
     status: "ok",
     data: { hdWallets: hd, singleKeyWallets: sk, selected },
   });
-  mockCommands.contextIsDeveloperMode.mockResolvedValue({
-    status: "ok",
-    data: opts.devMode ?? false,
-  });
+  vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(
+    opts.devMode ?? false,
+  );
   // For refreshing an HD wallet, make walletGetHd return the same wallet
   if (hd.length > 0) {
-    mockCommands.walletGetHd.mockImplementation(async (hash: string) => {
+    vi.mocked(commands.walletGetHd).mockImplementation(async (hash: string) => {
       const found = hd.find((x) => x.seedHash === hash);
       return found ? { status: "ok", data: found } : { status: "error", error: "not found" };
     });
   }
   if (sk.length > 0) {
-    mockCommands.walletGetSingleKey.mockImplementation(async (hash: string) => {
+    vi.mocked(commands.walletGetSingleKey).mockImplementation(async (hash: string) => {
       const found = sk.find((x) => x.keyHash === hash);
       return found ? { status: "ok", data: found } : { status: "error", error: "not found" };
     });
@@ -158,14 +126,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   resetStore();
   // Reset to defaults
-  mockCommands.walletListAll.mockResolvedValue({
+  vi.mocked(commands.walletListAll).mockResolvedValue({
     status: "ok",
     data: { hdWallets: [], singleKeyWallets: [], selected: null },
   });
-  mockCommands.contextIsDeveloperMode.mockResolvedValue({
-    status: "ok",
-    data: false,
-  });
+  vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(false);
 });
 
 // ─── Tests ────────────────────────────────────────────────────────
@@ -174,7 +139,7 @@ describe("WalletsScreen", () => {
   describe("loading state", () => {
     it("shows a loading spinner while wallets are loading", () => {
       // Prevent the useEffect from completing by making loadWallets hang
-      mockCommands.walletListAll.mockReturnValue(new Promise(() => {})); // never resolves
+      vi.mocked(commands.walletListAll).mockReturnValue(new Promise(() => {})); // never resolves
       useWalletStore.setState({ loading: true });
       render(<WalletsScreen />);
       expect(screen.getByText("Loading wallets...")).toBeInTheDocument();
@@ -454,7 +419,7 @@ describe("WalletsScreen", () => {
       });
       await user.click(screen.getAllByRole("button", { name: /Refresh/ })[0]!);
       await waitFor(() => {
-        expect(mockCommands.coreRefreshWalletInfo).toHaveBeenCalled();
+        expect(commands.coreRefreshWalletInfo).toHaveBeenCalled();
       });
     });
   });
@@ -477,21 +442,21 @@ describe("WalletsScreen", () => {
     it("loads wallets on mount", async () => {
       render(<WalletsScreen />);
       await waitFor(() => {
-        expect(mockCommands.walletListAll).toHaveBeenCalled();
+        expect(commands.walletListAll).toHaveBeenCalled();
       });
     });
 
     it("subscribes to wallet update events", async () => {
       render(<WalletsScreen />);
       await waitFor(() => {
-        expect(mockEvents.walletUpdatedEvent.listen).toHaveBeenCalled();
+        expect(events.walletUpdatedEvent.listen).toHaveBeenCalled();
       });
     });
 
     it("checks developer mode on mount", async () => {
       render(<WalletsScreen />);
       await waitFor(() => {
-        expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+        expect(commands.contextIsDeveloperMode).toHaveBeenCalled();
       });
     });
   });

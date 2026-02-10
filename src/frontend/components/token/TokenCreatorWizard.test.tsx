@@ -25,18 +25,12 @@ vi.mock("@/components/theme/ThemeProvider", () => ({
   }),
 }));
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-    tokenRegisterContract: vi
-      .fn()
-      .mockResolvedValue({ status: "ok", data: { taskId: "task-1" } }),
-  },
-  events: {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  },
-}));
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
 vi.mock("@/stores/identityStore", () => ({
   useIdentityStore: () => ({

@@ -2,23 +2,27 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SingleKeyWalletDetail } from "./SingleKeyWalletDetail";
+import {
+  createMockUtxo,
+  createMockSingleKeyWallet,
+} from "@/test/fixtures";
 import type { SingleKeyWalletDto, UtxoDto } from "@/bindings";
 
-// ─── Test Fixtures ──────────────────────────────────────────────────
+// ─── Local wrappers over centralized fixtures (test-specific defaults) ──
 
 function makeUtxo(overrides: Partial<UtxoDto> = {}): UtxoDto {
-  return {
+  return createMockUtxo({
     txid: "abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
     vout: 0,
     amount: 100000000, // 1 DASH
     ...overrides,
-  };
+  });
 }
 
 function makeWallet(
   overrides: Partial<SingleKeyWalletDto> = {},
 ): SingleKeyWalletDto {
-  return {
+  return createMockSingleKeyWallet({
     keyHash:
       "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222",
     usesPassword: false,
@@ -34,7 +38,7 @@ function makeWallet(
       makeUtxo({ txid: "tx002", vout: 1, amount: 200000000 }),
     ],
     ...overrides,
-  };
+  });
 }
 
 // Generate many UTXOs for pagination tests

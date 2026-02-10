@@ -11,31 +11,14 @@ vi.mock("@tanstack/react-router", () => ({
   useParams: () => ({}),
 }));
 
-const mockIdentityListLocal = vi.fn().mockResolvedValue({ status: "ok", data: [] });
-const mockWalletGenerateReceiveAddress = vi.fn();
-const mockCoreCreateRegistrationAssetLock = vi.fn();
-const mockCoreCreateTopUpAssetLock = vi.fn();
-const mockWalletNotifyUnlocked = vi.fn();
-const mockSettingsGet = vi.fn().mockResolvedValue({ status: "ok", data: {} });
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    identityListLocal: () => mockIdentityListLocal(),
-    walletGenerateReceiveAddress: (...args: unknown[]) =>
-      mockWalletGenerateReceiveAddress(...args),
-    coreCreateRegistrationAssetLock: (...args: unknown[]) =>
-      mockCoreCreateRegistrationAssetLock(...args),
-    coreCreateTopUpAssetLock: (...args: unknown[]) =>
-      mockCoreCreateTopUpAssetLock(...args),
-    walletNotifyUnlocked: (...args: unknown[]) =>
-      mockWalletNotifyUnlocked(...args),
-    settingsGet: () => mockSettingsGet(),
-  },
-  events: {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  },
-}));
+import { commands } from "@/bindings";
 
 let walletStoreState: Record<string, unknown> = {};
 vi.mock("@/stores/walletStore", () => ({
@@ -239,7 +222,7 @@ describe("CreateAssetLockScreen", () => {
     it("generates funding address on button click", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "ok", data: "yGenerated123Address456",
       });
       render(<CreateAssetLockScreen />);
@@ -254,7 +237,7 @@ describe("CreateAssetLockScreen", () => {
     it("shows the generated address", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "ok", data: "yGenerated123Address456",
       });
       render(<CreateAssetLockScreen />);
@@ -269,7 +252,7 @@ describe("CreateAssetLockScreen", () => {
     it("shows waiting for funds indicator", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "ok", data: "yGenerated123Address456",
       });
       render(<CreateAssetLockScreen />);
@@ -284,7 +267,7 @@ describe("CreateAssetLockScreen", () => {
     it("shows manual create button", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "ok", data: "yGenerated123Address456",
       });
       render(<CreateAssetLockScreen />);
@@ -299,7 +282,7 @@ describe("CreateAssetLockScreen", () => {
     it("shows error when address generation fails", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "error", error: "Failed to generate address",
       });
       render(<CreateAssetLockScreen />);
@@ -316,10 +299,10 @@ describe("CreateAssetLockScreen", () => {
     it("dispatches registration asset lock", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "ok", data: "yGenerated123Address456",
       });
-      mockCoreCreateRegistrationAssetLock.mockResolvedValue({
+      vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
         status: "ok", data: { taskId: "task-lock-123" },
       });
       render(<CreateAssetLockScreen />);
@@ -329,7 +312,7 @@ describe("CreateAssetLockScreen", () => {
       await user.click(screen.getByText("Create Asset Lock Now"));
 
       await waitFor(() => {
-        expect(mockCoreCreateRegistrationAssetLock).toHaveBeenCalledWith({
+        expect(commands.coreCreateRegistrationAssetLock).toHaveBeenCalledWith({
           walletSeedHash: "seed123",
           amountCredits: 50000000000,
           identityIndex: 0,
@@ -340,10 +323,10 @@ describe("CreateAssetLockScreen", () => {
     it("shows creating state", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "ok", data: "yGenerated123Address456",
       });
-      mockCoreCreateRegistrationAssetLock.mockResolvedValue({
+      vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
         status: "ok", data: { taskId: "task-lock-123" },
       });
       render(<CreateAssetLockScreen />);
@@ -360,10 +343,10 @@ describe("CreateAssetLockScreen", () => {
     it("shows error when creation fails", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "ok", data: "yGenerated123Address456",
       });
-      mockCoreCreateRegistrationAssetLock.mockResolvedValue({
+      vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
         status: "error", error: "Creation failed",
       });
       render(<CreateAssetLockScreen />);
@@ -420,7 +403,7 @@ describe("CreateAssetLockScreen", () => {
     it("has error role on error banner", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGenerateReceiveAddress.mockResolvedValue({
+      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
         status: "error", error: "Some error",
       });
       render(<CreateAssetLockScreen />);

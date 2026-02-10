@@ -1,19 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createMockBindings, mockBindingsModule } from "@/test/mock-ipc";
 import { ThemeProvider } from "./ThemeProvider";
 import { ThemeToggle } from "./ThemeToggle";
 
-// Mock the bindings module
-vi.mock("@/bindings", () => ({
-  commands: {
-    settingsGet: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { themeMode: "system" },
-    }),
-    systemUpdateTheme: vi.fn().mockResolvedValue({ taskId: "1" }),
-  },
-}));
+// Mock the bindings module using centralized mock infrastructure
+vi.mock("@/bindings", () => {
+  const initial = createMockBindings();
+  return mockBindingsModule(initial);
+});
 
 beforeEach(() => {
   document.documentElement.classList.remove("light", "dark");

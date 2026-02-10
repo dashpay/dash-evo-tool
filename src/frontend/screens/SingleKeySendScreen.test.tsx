@@ -16,40 +16,33 @@ vi.mock("@tanstack/react-router", () => ({
   useParams: () => ({}),
 }));
 
-const mockCoreSendSingleKeyWalletPayment = vi.fn();
-const mockWalletNotifyUnlocked = vi.fn();
-
 // Capture event listeners so we can simulate backend events in tests
 type EventCallback = (event: { payload: Record<string, unknown> }) => void;
 let taskResultListeners: EventCallback[] = [];
 let taskErrorListeners: EventCallback[] = [];
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    coreSendSingleKeyWalletPayment: (...args: unknown[]) =>
-      mockCoreSendSingleKeyWalletPayment(...args),
-    walletNotifyUnlocked: (...args: unknown[]) =>
-      mockWalletNotifyUnlocked(...args),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb: EventCallback) => {
-        taskResultListeners.push(cb);
-        return Promise.resolve(() => {
-          taskResultListeners = taskResultListeners.filter((l) => l !== cb);
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb: EventCallback) => {
-        taskErrorListeners.push(cb);
-        return Promise.resolve(() => {
-          taskErrorListeners = taskErrorListeners.filter((l) => l !== cb);
-        });
-      }),
-    },
-  },
-}));
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  const mocks = createMockBindings();
+  // Override event listeners to capture callbacks for testing
+  mocks.events.taskResultEvent.listen = vi.fn().mockImplementation((cb: EventCallback) => {
+    taskResultListeners.push(cb);
+    return Promise.resolve(() => {
+      taskResultListeners = taskResultListeners.filter((l) => l !== cb);
+    });
+  });
+  mocks.events.taskErrorEvent.listen = vi.fn().mockImplementation((cb: EventCallback) => {
+    taskErrorListeners.push(cb);
+    return Promise.resolve(() => {
+      taskErrorListeners = taskErrorListeners.filter((l) => l !== cb);
+    });
+  });
+  return mockBindingsModule(mocks);
+});
+
+import { commands } from "@/bindings";
 
 let walletStoreState: Record<string, unknown> = {};
 vi.mock("@/stores/walletStore", () => ({
@@ -223,7 +216,7 @@ describe("SingleKeySendScreen", () => {
     it("dispatches coreSendSingleKeyWalletPayment", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockCoreSendSingleKeyWalletPayment.mockResolvedValue({
+      vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
         status: "ok", data: { taskId: "task123" },
       });
 
@@ -233,7 +226,7 @@ describe("SingleKeySendScreen", () => {
       await user.click(screen.getByText("Send").closest("button")!);
 
       await waitFor(() => {
-        expect(mockCoreSendSingleKeyWalletPayment).toHaveBeenCalledWith({
+        expect(commands.coreSendSingleKeyWalletPayment).toHaveBeenCalledWith({
           keyHash: "abc123",
           recipients: [{ address: "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L", amount: 100000000 }],
           subtractFeeFromAmount: false,
@@ -246,7 +239,7 @@ describe("SingleKeySendScreen", () => {
     it("shows sending state", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockCoreSendSingleKeyWalletPayment.mockResolvedValue({
+      vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
         status: "ok", data: { taskId: "task123" },
       });
 
@@ -263,7 +256,7 @@ describe("SingleKeySendScreen", () => {
     it("shows error when send fails", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockCoreSendSingleKeyWalletPayment.mockResolvedValue({
+      vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
         status: "error", error: "Insufficient funds",
       });
 
@@ -280,7 +273,7 @@ describe("SingleKeySendScreen", () => {
     it("passes subtract fee flag", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockCoreSendSingleKeyWalletPayment.mockResolvedValue({
+      vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
         status: "ok", data: { taskId: "task123" },
       });
 
@@ -291,7 +284,7 @@ describe("SingleKeySendScreen", () => {
       await user.click(screen.getByText("Send").closest("button")!);
 
       await waitFor(() => {
-        expect(mockCoreSendSingleKeyWalletPayment).toHaveBeenCalledWith(
+        expect(commands.coreSendSingleKeyWalletPayment).toHaveBeenCalledWith(
           expect.objectContaining({ subtractFeeFromAmount: true }),
         );
       });
@@ -398,7 +391,7 @@ describe("SingleKeySendScreen", () => {
 
   describe("fee confirmation dialog", () => {
     async function sendAndGetSending(user: ReturnType<typeof userEvent.setup>) {
-      mockCoreSendSingleKeyWalletPayment.mockResolvedValue({
+      vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
         status: "ok",
         data: { taskId: "task-fee-test" },
       });
@@ -455,7 +448,7 @@ describe("SingleKeySendScreen", () => {
       });
 
       // Reset mock for the retry call
-      mockCoreSendSingleKeyWalletPayment.mockResolvedValue({
+      vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
         status: "ok",
         data: { taskId: "task-fee-retry" },
       });
@@ -464,7 +457,7 @@ describe("SingleKeySendScreen", () => {
       await user.click(screen.getByText("Confirm & Send"));
 
       await waitFor(() => {
-        expect(mockCoreSendSingleKeyWalletPayment).toHaveBeenLastCalledWith(
+        expect(commands.coreSendSingleKeyWalletPayment).toHaveBeenLastCalledWith(
           expect.objectContaining({ overrideFee: 1000 }),
         );
       });

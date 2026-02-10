@@ -5,35 +5,14 @@ import { useContestStore } from "@/stores/contestStore";
 import { renderWithProviders } from "@/test/router-utils";
 import type { DpnsNameEntryDto } from "@/bindings";
 
-// ─── Mock Tauri bindings ──────────────────────────────────────────
+// ─── Centralized mock bindings ───────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    identityLocalDpnsNames: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    identityRefreshDpnsNames: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    identitySetAlias: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contestedGetScheduledVotes: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    contestedQueryDpnsContests: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    scheduledVoteExecutedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
 
 // Mock sonner toast
 const { mockToast } = vi.hoisted(() => ({
@@ -55,6 +34,8 @@ const { mockToastError } = vi.hoisted(() => ({
 vi.mock("@/lib/toastError", () => ({
   toastError: mockToastError,
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ────────────────────────────────────────────────
 
@@ -94,7 +75,7 @@ function resetStore() {
 
 /** Set up mock to return names and pre-populate the store. */
 function setupWithNames(names: DpnsNameEntryDto[] = defaultNames) {
-  mockCommands.identityLocalDpnsNames.mockResolvedValue({
+  vi.mocked(commands.identityLocalDpnsNames).mockResolvedValue({
     status: "ok",
     data: names,
   });
@@ -179,7 +160,7 @@ describe("DpnsOwnedNamesScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockCommands.identityLocalDpnsNames).toHaveBeenCalled();
+      expect(commands.identityLocalDpnsNames).toHaveBeenCalled();
     });
   });
 
@@ -187,9 +168,9 @@ describe("DpnsOwnedNamesScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.scheduledVoteExecutedEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(events.scheduledVoteExecutedEvent.listen).toHaveBeenCalled();
     });
   });
 });
@@ -210,7 +191,7 @@ describe("DpnsOwnedNamesScreen — action buttons", () => {
     );
 
     await waitFor(() => {
-      expect(mockCommands.identityRefreshDpnsNames).toHaveBeenCalled();
+      expect(commands.identityRefreshDpnsNames).toHaveBeenCalled();
     });
   });
 
@@ -242,7 +223,7 @@ describe("DpnsOwnedNamesScreen — set alias", () => {
     );
 
     await waitFor(() => {
-      expect(mockCommands.identitySetAlias).toHaveBeenCalledWith({
+      expect(commands.identitySetAlias).toHaveBeenCalledWith({
         identityId: "abcdef1234567890abcdef1234567890",
         alias: "alice.dash",
       });
@@ -263,7 +244,7 @@ describe("DpnsOwnedNamesScreen — set alias", () => {
     );
 
     await waitFor(() => {
-      expect(mockCommands.identitySetAlias).toHaveBeenCalledWith({
+      expect(commands.identitySetAlias).toHaveBeenCalledWith({
         identityId: "abcdef1234567890abcdef1234567890",
         alias: "alice.dash",
       });
@@ -271,7 +252,7 @@ describe("DpnsOwnedNamesScreen — set alias", () => {
   });
 
   it("shows success toast on successful alias set", async () => {
-    mockCommands.identitySetAlias.mockResolvedValue({ status: "ok", data: null });
+    vi.mocked(commands.identitySetAlias).mockResolvedValue({ status: "ok", data: null });
     setupWithNames();
     const { user } = setup();
 
@@ -291,7 +272,7 @@ describe("DpnsOwnedNamesScreen — set alias", () => {
   });
 
   it("shows error toast on failed alias set", async () => {
-    mockCommands.identitySetAlias.mockResolvedValue({
+    vi.mocked(commands.identitySetAlias).mockResolvedValue({
       status: "error",
       error: "Database error",
     });

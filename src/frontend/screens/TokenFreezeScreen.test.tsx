@@ -27,35 +27,14 @@ const mockTokenFreeze = vi.fn().mockResolvedValue({
   data: { taskId: "task-freeze-1" },
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null =
-  null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null =
-  null;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenFreeze: (...args: unknown[]) => mockTokenFreeze(...args),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
-        return Promise.resolve(() => {
-          mockTaskResultListener = null;
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
-        return Promise.resolve(() => {
-          mockTaskErrorListener = null;
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -137,8 +116,7 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
 describe("TokenFreezeScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
+    vi.mocked(commands.tokenFreeze).mockImplementation(mockTokenFreeze);
     currentSearch = {
       tokenId: "token-freeze-111",
       contractId: "contract-freeze-111",
@@ -269,7 +247,8 @@ describe("TokenFreezeScreen", () => {
 
       // Simulate success event
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-freeze-1",
             resultType: "Token",
@@ -296,7 +275,8 @@ describe("TokenFreezeScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskErrorListener?.({
+        const listener = vi.mocked(events.taskErrorEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-freeze-1",
             message: "Freeze failed",
@@ -324,7 +304,8 @@ describe("TokenFreezeScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-freeze-1",
             resultType: "Token",

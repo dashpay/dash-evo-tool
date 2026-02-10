@@ -21,105 +21,29 @@ import { useContractStore } from "@/stores/contractStore";
 import { useWalletStore } from "@/stores/walletStore";
 import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
-// ─── Hoisted mocks ─────────────────────────────────────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-type EventCallback = (event: { payload: unknown }) => void;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-const { mockCommands, mockEvents, eventListeners, mockNavigate } = vi.hoisted(
-  () => {
-    const eventListeners: Record<string, EventCallback[]> = {
-      taskResultEvent: [],
-      taskErrorEvent: [],
-    };
-
-    const mockEvents = {
-      taskResultEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskResultEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskResultEvent =
-              eventListeners.taskResultEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      taskErrorEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskErrorEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskErrorEvent =
-              eventListeners.taskErrorEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      walletUpdatedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    };
-
-    const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-      identityListLocal: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-      identityLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-      identityGetById: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-      contractListLocal: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: [] }),
-      contractGetById: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: null }),
-      walletListAll: vi.fn().mockResolvedValue({
-        status: "ok",
-        data: { hdWallets: [], singleKeyWallets: [] },
-      }),
-      walletNotifyUnlocked: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: null }),
-      documentBroadcast: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-doc-1" } }),
-      documentDelete: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-doc-2" } }),
-      documentReplace: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-doc-3" } }),
-      documentTransfer: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-doc-4" } }),
-      documentPurchase: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-doc-5" } }),
-      documentSetPrice: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-doc-6" } }),
-      documentFetch: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-fetch-1" } }),
-    };
-
-    const mockNavigate = vi.fn();
-
-    return { mockCommands, mockEvents, eventListeners, mockNavigate };
-  },
-);
+const { mockNavigate } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
-}));
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) return mockCommands[prop];
-      return vi
-        .fn()
-        .mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
 }));
 
 vi.mock("sonner", () => ({
   toast: { info: vi.fn(), error: vi.fn(), success: vi.fn() },
   Toaster: () => null,
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test fixtures ──────────────────────────────────────────────────
 
@@ -159,11 +83,11 @@ function setupStores(
   contracts = [TEST_CONTRACT_SUMMARY],
 ) {
   // Mock the IPC calls that the stores make on load
-  mockCommands.identityListLocal.mockResolvedValue({
+  vi.mocked(commands.identityListLocal).mockResolvedValue({
     status: "ok",
     data: identities,
   });
-  mockCommands.contractListLocal.mockResolvedValue({
+  vi.mocked(commands.contractListLocal).mockResolvedValue({
     status: "ok",
     data: contracts,
   });
@@ -189,12 +113,20 @@ function renderAction(actionType: DocumentActionType) {
   return render(<DocumentActionScreen actionType={actionType} />);
 }
 
+function getLastTaskResultListener() {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  return calls[calls.length - 1]?.[0];
+}
+
+function getLastTaskErrorListener() {
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  return calls[calls.length - 1]?.[0];
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 beforeEach(() => {
   vi.clearAllMocks();
-  eventListeners.taskResultEvent = [];
-  eventListeners.taskErrorEvent = [];
   useIdentityStore.setState({ identities: [], loading: false, error: null });
   useContractStore.setState({ contracts: [], loading: false, error: null });
   useWalletStore.setState({ hdWallets: [], singleKeyWallets: [], loading: false });
@@ -412,8 +344,8 @@ describe("DocumentActionScreen", () => {
     setupStores();
     renderAction("create");
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskErrorEvent.listen).toHaveBeenCalled();
     });
   });
 
@@ -423,8 +355,8 @@ describe("DocumentActionScreen", () => {
     setupStores();
     renderAction("create");
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
-      expect(mockCommands.identityListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
+      expect(commands.identityListLocal).toHaveBeenCalled();
     });
   });
 
@@ -519,7 +451,7 @@ describe("DocumentActionScreen", () => {
         },
       },
     };
-    mockCommands.contractGetById.mockResolvedValue({
+    vi.mocked(commands.contractGetById).mockResolvedValue({
       status: "ok",
       data: contractDetail,
     });
@@ -532,7 +464,7 @@ describe("DocumentActionScreen", () => {
     await user.click(screen.getByText("TestContract"));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalledWith(TEST_CONTRACT_SUMMARY.id);
+      expect(commands.contractGetById).toHaveBeenCalledWith(TEST_CONTRACT_SUMMARY.id);
     });
   });
 
@@ -563,7 +495,7 @@ describe("DocumentActionScreen", () => {
 
     async function setupDeleteWithContract() {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_WITH_OWNER_INDEX,
       });
@@ -575,7 +507,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByText("TestContract"));
 
       await waitFor(() => {
-        expect(mockCommands.contractGetById).toHaveBeenCalled();
+        expect(commands.contractGetById).toHaveBeenCalled();
       });
 
       return user;
@@ -597,7 +529,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("fetch-owned-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentFetch).toHaveBeenCalledWith(
+        expect(commands.documentFetch).toHaveBeenCalledWith(
           expect.objectContaining({
             contractId: TEST_CONTRACT_SUMMARY.id,
             documentTypeName: "domain",
@@ -617,12 +549,12 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("fetch-owned-button"));
 
-      // Simulate the task result event with documents
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      // Wait for task result listener to be registered, then fire event
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {
             documents: [
@@ -647,11 +579,11 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("fetch-owned-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: { documents: [] },
         },
@@ -670,11 +602,11 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("fetch-owned-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {
             documents: [{ $id: "doc-select-id", label: "test" }],
@@ -699,11 +631,11 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("fetch-owned-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {
             documents: [{ $id: "view-doc-id", label: "viewable" }],
@@ -745,7 +677,7 @@ describe("DocumentActionScreen", () => {
 
     async function setupDeleteReady() {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_DETAIL,
       });
@@ -754,7 +686,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       // Enter document ID
       await user.type(screen.getByTestId("document-id-input"), "doc-to-delete");
@@ -772,7 +704,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("broadcast-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentDelete).toHaveBeenCalledWith(
+        expect(commands.documentDelete).toHaveBeenCalledWith(
           expect.objectContaining({
             documentId: "doc-to-delete",
             documentTypeName: "note",
@@ -803,11 +735,11 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("broadcast-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-doc-2",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: { fee_result: { processing: 1000 } },
         },
@@ -826,11 +758,11 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("broadcast-button"));
 
-      await waitFor(() => expect(eventListeners.taskErrorEvent.length).toBeGreaterThan(0));
-      const errorListener = eventListeners.taskErrorEvent[eventListeners.taskErrorEvent.length - 1];
-      errorListener({
+      await waitFor(() => expect(vi.mocked(events.taskErrorEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const errorListener = getLastTaskErrorListener();
+      errorListener?.({
         payload: {
-          taskId: "task-doc-2",
+          taskId: "mock-task-id",
           message: "Document not found on platform",
         },
       });
@@ -867,7 +799,7 @@ describe("DocumentActionScreen", () => {
 
     async function setupReplaceWithContract() {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_DETAIL,
       });
@@ -876,7 +808,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
       return user;
     }
 
@@ -886,7 +818,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("fetch-document-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentFetch).toHaveBeenCalledWith(
+        expect(commands.documentFetch).toHaveBeenCalledWith(
           expect.objectContaining({
             contractId: TEST_CONTRACT_SUMMARY.id,
             documentTypeName: "note",
@@ -903,11 +835,11 @@ describe("DocumentActionScreen", () => {
       await user.type(screen.getByTestId("document-id-input"), "doc-replace-id");
       await user.click(screen.getByTestId("fetch-document-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {
             documents: [
@@ -934,11 +866,11 @@ describe("DocumentActionScreen", () => {
       await user.type(screen.getByTestId("document-id-input"), "nonexistent-id");
       await user.click(screen.getByTestId("fetch-document-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: { documents: [] },
         },
@@ -954,11 +886,11 @@ describe("DocumentActionScreen", () => {
       await user.type(screen.getByTestId("document-id-input"), "doc-replace-id");
       await user.click(screen.getByTestId("fetch-document-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {
             documents: [
@@ -985,7 +917,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("broadcast-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentReplace).toHaveBeenCalledWith(
+        expect(commands.documentReplace).toHaveBeenCalledWith(
           expect.objectContaining({
             documentTypeName: "note",
             contractId: TEST_CONTRACT_SUMMARY.id,
@@ -1019,7 +951,7 @@ describe("DocumentActionScreen", () => {
 
     async function setupPurchaseWithContract() {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_DETAIL,
       });
@@ -1028,7 +960,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
       return user;
     }
 
@@ -1038,7 +970,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("fetch-price-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentFetch).toHaveBeenCalledWith(
+        expect(commands.documentFetch).toHaveBeenCalledWith(
           expect.objectContaining({
             contractId: TEST_CONTRACT_SUMMARY.id,
             documentTypeName: "listing",
@@ -1052,11 +984,11 @@ describe("DocumentActionScreen", () => {
       await user.type(screen.getByTestId("document-id-input"), "purchasable-doc");
       await user.click(screen.getByTestId("fetch-price-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {
             documents: [{ $id: "purchasable-doc", $price: 50000, title: "item" }],
@@ -1075,11 +1007,11 @@ describe("DocumentActionScreen", () => {
       await user.type(screen.getByTestId("document-id-input"), "missing-doc");
       await user.click(screen.getByTestId("fetch-price-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: { documents: [] },
         },
@@ -1095,11 +1027,11 @@ describe("DocumentActionScreen", () => {
       await user.type(screen.getByTestId("document-id-input"), "purchasable-doc");
       await user.click(screen.getByTestId("fetch-price-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-fetch-1",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {
             documents: [{ $id: "purchasable-doc", $price: 50000, title: "item" }],
@@ -1114,7 +1046,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("broadcast-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentPurchase).toHaveBeenCalledWith(
+        expect(commands.documentPurchase).toHaveBeenCalledWith(
           expect.objectContaining({
             price: 50000,
             documentId: "purchasable-doc",
@@ -1148,7 +1080,7 @@ describe("DocumentActionScreen", () => {
 
     it("dispatches documentTransfer with correct params", async () => {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_DETAIL,
       });
@@ -1157,7 +1089,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await user.type(screen.getByTestId("document-id-input"), "transfer-doc-id");
       await user.type(screen.getByTestId("recipient-id-input"), "recipient-id-123");
@@ -1169,7 +1101,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("broadcast-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentTransfer).toHaveBeenCalledWith(
+        expect(commands.documentTransfer).toHaveBeenCalledWith(
           expect.objectContaining({
             documentId: "transfer-doc-id",
             newOwnerId: "recipient-id-123",
@@ -1203,7 +1135,7 @@ describe("DocumentActionScreen", () => {
 
     it("dispatches documentSetPrice with correct params", async () => {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_DETAIL,
       });
@@ -1212,7 +1144,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await user.type(screen.getByTestId("document-id-input"), "price-doc-id");
       await user.type(screen.getByTestId("price-input"), "75000");
@@ -1224,7 +1156,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("broadcast-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentSetPrice).toHaveBeenCalledWith(
+        expect(commands.documentSetPrice).toHaveBeenCalledWith(
           expect.objectContaining({
             price: 75000,
             documentId: "price-doc-id",
@@ -1237,7 +1169,7 @@ describe("DocumentActionScreen", () => {
 
     it("shows error for non-numeric price and returns to input", async () => {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_DETAIL,
       });
@@ -1246,7 +1178,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await user.type(screen.getByTestId("document-id-input"), "price-doc-id");
       await user.type(screen.getByTestId("price-input"), "not-a-number");
@@ -1290,7 +1222,7 @@ describe("DocumentActionScreen", () => {
 
     async function setupCreateWithFields() {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_WITH_FIELDS,
       });
@@ -1299,7 +1231,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
       return user;
     }
 
@@ -1344,7 +1276,7 @@ describe("DocumentActionScreen", () => {
       await user.click(screen.getByTestId("broadcast-button"));
 
       await waitFor(() => {
-        expect(mockCommands.documentBroadcast).toHaveBeenCalledWith(
+        expect(commands.documentBroadcast).toHaveBeenCalledWith(
           expect.objectContaining({
             documentTypeName: "profile",
             contractId: TEST_CONTRACT_SUMMARY.id,
@@ -1372,7 +1304,7 @@ describe("DocumentActionScreen", () => {
         },
       };
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: emptyContract,
       });
@@ -1410,7 +1342,7 @@ describe("DocumentActionScreen", () => {
 
     it("navigates back to contracts from success screen", async () => {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_DETAIL,
       });
@@ -1419,17 +1351,17 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await user.type(screen.getByTestId("document-id-input"), "del-doc");
       await waitFor(() => expect(screen.getByTestId("broadcast-button")).not.toBeDisabled());
       await user.click(screen.getByTestId("broadcast-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-doc-2",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {},
         },
@@ -1442,7 +1374,7 @@ describe("DocumentActionScreen", () => {
 
     it("resets form when clicking Do Another from success screen", async () => {
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: CONTRACT_DETAIL,
       });
@@ -1451,17 +1383,17 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await user.type(screen.getByTestId("document-id-input"), "del-doc");
       await waitFor(() => expect(screen.getByTestId("broadcast-button")).not.toBeDisabled());
       await user.click(screen.getByTestId("broadcast-button"));
 
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
-      listener({
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
+      listener?.({
         payload: {
-          taskId: "task-doc-2",
+          taskId: "mock-task-id",
           resultType: "Document",
           payload: {},
         },
@@ -1500,7 +1432,7 @@ describe("DocumentActionScreen", () => {
         },
       };
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: contractNoOwnerIndex,
       });
@@ -1509,7 +1441,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await waitFor(() => {
         expect(screen.getByText(/Cannot use Fetch Owned Documents/)).toBeInTheDocument();
@@ -1535,18 +1467,18 @@ describe("DocumentActionScreen", () => {
         },
       };
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: contractDetail,
       });
-      mockCommands.documentDelete.mockResolvedValue({ status: "error", error: "Backend error" });
+      vi.mocked(commands.documentDelete).mockResolvedValue({ status: "error", error: "Backend error" });
 
       const user = userEvent.setup();
       renderAction("delete");
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await user.type(screen.getByTestId("document-id-input"), "bad-doc");
 
@@ -1580,18 +1512,18 @@ describe("DocumentActionScreen", () => {
         },
       };
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: contractDetail,
       });
-      mockCommands.documentTransfer.mockRejectedValue(new Error("Connection refused"));
+      vi.mocked(commands.documentTransfer).mockRejectedValue(new Error("Connection refused"));
 
       const user = userEvent.setup();
       renderAction("transfer");
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await user.type(screen.getByTestId("document-id-input"), "doc-1");
       await user.type(screen.getByTestId("recipient-id-input"), "recip-1");
@@ -1619,32 +1551,32 @@ describe("DocumentActionScreen", () => {
         },
       };
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: contractDetail,
       });
-      // Ensure documentDelete returns ok with a taskId so we enter broadcasting state
-      mockCommands.documentDelete.mockResolvedValue({
+      // Ensure documentDelete returns dispatch-ok (previous test may have overridden it)
+      vi.mocked(commands.documentDelete).mockResolvedValue({
         status: "ok",
-        data: { taskId: "task-doc-2" },
+        data: { taskId: "mock-task-id" },
       });
       const user = userEvent.setup();
       renderAction("delete");
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await user.type(screen.getByTestId("document-id-input"), "doc-1");
       await waitFor(() => expect(screen.getByTestId("broadcast-button")).not.toBeDisabled());
       await user.click(screen.getByTestId("broadcast-button"));
 
       await waitFor(() => expect(screen.getByTestId("broadcasting-state")).toBeInTheDocument());
-      await waitFor(() => expect(eventListeners.taskResultEvent.length).toBeGreaterThan(0));
-      const listener = eventListeners.taskResultEvent[eventListeners.taskResultEvent.length - 1];
+      await waitFor(() => expect(vi.mocked(events.taskResultEvent.listen).mock.calls.length).toBeGreaterThan(0));
+      const listener = getLastTaskResultListener();
 
       // Fire event with wrong taskId — should be ignored
-      listener({
+      listener?.({
         payload: {
           taskId: "wrong-task-id",
           resultType: "Document",
@@ -1676,7 +1608,7 @@ describe("DocumentActionScreen", () => {
         },
       };
       setupStores();
-      mockCommands.contractGetById.mockResolvedValue({
+      vi.mocked(commands.contractGetById).mockResolvedValue({
         status: "ok",
         data: contractDetail,
       });
@@ -1685,7 +1617,7 @@ describe("DocumentActionScreen", () => {
 
       await user.click(screen.getByTestId("contract-select"));
       await user.click(screen.getByText("TestContract"));
-      await waitFor(() => expect(mockCommands.contractGetById).toHaveBeenCalled());
+      await waitFor(() => expect(commands.contractGetById).toHaveBeenCalled());
 
       await waitFor(() => {
         expect(screen.getByText(/Estimated fee/)).toBeInTheDocument();

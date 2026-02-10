@@ -1028,3 +1028,10 @@
 **Files changed:** src/frontend/test/setup.ts, src/frontend/test/render-helpers.tsx, src/frontend/test/render-helpers.test.tsx, src/frontend/stores/contractStore.test.ts, src/frontend/components/wallet/ReceiveDialog.test.tsx, src/frontend/screens/WelcomeScreen.test.tsx, tasks.md, activity.md
 **Tests added:** 17 new tests for render-helpers (renderWithProviders: 5, createRouterMock: 7, createThemeMock: 5). Total tests: 3644 (up from 3627).
 **Sub-tasks created:** 0
+
+## Run 147 — 2026-02-10
+**Task:** 7.5.1d Migrate existing component tests to shared mock infrastructure
+**What was done:** Migrated all 56 remaining test files from per-file mock boilerplate to the centralized mock IPC + fixture factories infrastructure. All store tests (walletStore, identityStore, tokenStore, documentStore, contestStore) now use `createMockBindings()` + `mockBindingsModule()` and fixture factories instead of inline mock object creation. All 47 screen tests use the centralized async `vi.mock("@/bindings")` factory pattern. Hook tests (useUtxoMonitor, useFrozenIdentities) and component tests (HdWalletDetail, SingleKeyWalletDetail, WalletListPanel, ThemeProvider, ThemeToggle, JsonViewer, TokenOperationForm, ReviewStep, TokenCreatorWizard) migrated to use centralized infrastructure. Fixed one test isolation bug in DocumentActionScreen.test.tsx where `vi.clearAllMocks()` preserved a previous test's `mockResolvedValue` override on `commands.documentDelete`, causing the "ignores task result events with non-matching taskId" test to fail in the full suite. Net reduction: ~1,166 lines of boilerplate code eliminated. All 3644 tests pass, lint clean, typecheck clean.
+**Files changed:** 56 test files across stores/, screens/, components/, hooks/, plus tasks.md, activity.md
+**Tests added:** 0 new tests (migration only — test count unchanged at 3644)
+**Sub-tasks created:** 0

@@ -1,92 +1,60 @@
+/**
+ * walletStore tests — using centralized mock IPC + fixture factories.
+ *
+ * Pattern:
+ * 1. createMockBindings() provides defaults for all 181 commands + 8 events
+ * 2. Override specific commands needed by the store under test
+ * 3. Use fixture factories instead of inline makers
+ */
+
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
-import { useWalletStore } from "./walletStore";
-import type {
-  WalletDto,
-  SingleKeyWalletDto,
-  WalletListDto,
-  WalletRefDto,
-} from "../bindings";
+import {
+  createMockBindings,
+  mockBindingsModule,
+} from "@/test/mock-ipc";
+import {
+  createMockHdWallet,
+  createMockSingleKeyWallet,
+  createMockWalletList,
+} from "@/test/fixtures";
 
-// ─── Mock bindings ──────────────────────────────────────────────────
+// ─── Mock bindings (centralized) ────────────────────────────────────
 
-vi.mock("../bindings", () => ({
-  commands: {
-    walletListAll: vi.fn(),
-    walletSelect: vi.fn(),
-    walletGetHd: vi.fn(),
-    walletGetSingleKey: vi.fn(),
-    walletSetAlias: vi.fn(),
-    walletSetSingleKeyAlias: vi.fn(),
-    walletRemove: vi.fn(),
-    walletRemoveSingleKey: vi.fn(),
-    walletNotifyUnlocked: vi.fn(),
-    walletNotifyLocked: vi.fn(),
-    coreRefreshWalletInfo: vi.fn(),
-    coreRefreshSingleKeyWalletInfo: vi.fn(),
-  },
-  events: {
-    walletUpdatedEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-  },
-}));
+vi.mock("../bindings", () => {
+  const initial = createMockBindings();
+  return mockBindingsModule(initial);
+});
 
 import { commands, events } from "../bindings";
+import { useWalletStore } from "./walletStore";
+import type { WalletRefDto } from "../bindings";
 
-// ─── Test fixtures ──────────────────────────────────────────────────
+// ─── Test-local defaults ────────────────────────────────────────────
+// The centralized fixtures use different default hashes. These helpers
+// provide the same defaults as the original inline test makers for
+// backward-compatible assertions.
+const HD_HASH = "abc123";
+const SK_HASH = "def456";
 
-function makeHdWallet(overrides?: Partial<WalletDto>): WalletDto {
-  return {
-    seedHash: "abc123",
-    usesPassword: false,
-    alias: "Test Wallet",
-    isMain: true,
-    confirmedBalance: 500000000,
-    unconfirmedBalance: 0,
-    totalBalance: 500000000,
-    addresses: [],
-    transactions: [],
-    unusedAssetLocks: [],
-    platformAddresses: [],
-    identityIndexes: [],
-    passwordHint: null,
-    ...overrides,
-  };
+function hw(o?: Partial<Parameters<typeof createMockHdWallet>[0]>) {
+  return createMockHdWallet({ seedHash: HD_HASH, ...o });
+}
+function skw(o?: Partial<Parameters<typeof createMockSingleKeyWallet>[0]>) {
+  return createMockSingleKeyWallet({ keyHash: SK_HASH, ...o });
+}
+function wl(o?: Partial<Parameters<typeof createMockWalletList>[0]>) {
+  return createMockWalletList({
+    hdWallets: [hw()],
+    singleKeyWallets: [skw()],
+    selected: { type: "hd", seedHash: HD_HASH },
+    ...o,
+  });
 }
 
-function makeSingleKeyWallet(
-  overrides?: Partial<SingleKeyWalletDto>,
-): SingleKeyWalletDto {
-  return {
-    keyHash: "def456",
-    usesPassword: false,
-    publicKey: "02abc",
-    address: "XpYv3N...",
-    alias: "Test Key",
-    confirmedBalance: 100000000,
-    unconfirmedBalance: 0,
-    totalBalance: 100000000,
-    utxoCount: 3,
-    utxos: [],
-    ...overrides,
-  };
-}
+// ─── Reset store between tests ──────────────────────────────────────
 
-function makeWalletList(
-  overrides?: Partial<WalletListDto>,
-): WalletListDto {
-  return {
-    hdWallets: [makeHdWallet()],
-    singleKeyWallets: [makeSingleKeyWallet()],
-    selected: { type: "hd", seedHash: "abc123" },
-    ...overrides,
-  };
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────
-
-/** Reset the Zustand store to initial state between tests. */
-function resetStore() {
+beforeEach(() => {
+  vi.clearAllMocks();
   useWalletStore.setState({
     hdWallets: [],
     singleKeyWallets: [],
@@ -96,16 +64,11 @@ function resetStore() {
     error: null,
     refreshMode: "coreAndPlatformAuto",
   });
-}
+});
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
 describe("walletStore", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetStore();
-  });
-
   describe("initial state", () => {
     it("starts with empty wallets and no selection", () => {
       const state = useWalletStore.getState();
@@ -121,7 +84,7 @@ describe("walletStore", () => {
 
   describe("loadWallets", () => {
     it("loads wallets from backend on success", async () => {
-      const walletList = makeWalletList();
+      const walletList = wl();
       (commands.walletListAll as Mock).mockResolvedValue({
         status: "ok",
         data: walletList,
@@ -148,7 +111,7 @@ describe("walletStore", () => {
       const promise = useWalletStore.getState().loadWallets();
       expect(useWalletStore.getState().loading).toBe(true);
 
-      resolveLoad!({ status: "ok", data: makeWalletList() });
+      resolveLoad!({ status: "ok", data: wl() });
       await promise;
       expect(useWalletStore.getState().loading).toBe(false);
     });
@@ -183,7 +146,7 @@ describe("walletStore", () => {
       useWalletStore.setState({ error: "old error" });
       (commands.walletListAll as Mock).mockResolvedValue({
         status: "ok",
-        data: makeWalletList(),
+        data: wl(),
       });
 
       await useWalletStore.getState().loadWallets();
@@ -195,7 +158,7 @@ describe("walletStore", () => {
     it("selects an HD wallet", async () => {
       (commands.walletSelect as Mock).mockResolvedValue({ status: "ok", data: null });
 
-      const ref: WalletRefDto = { type: "hd", seedHash: "abc123" };
+      const ref: WalletRefDto = { type: "hd", seedHash: HD_HASH };
       await useWalletStore.getState().selectWallet(ref);
 
       expect(commands.walletSelect).toHaveBeenCalledWith({ selected: ref });
@@ -205,7 +168,7 @@ describe("walletStore", () => {
     it("selects a single-key wallet", async () => {
       (commands.walletSelect as Mock).mockResolvedValue({ status: "ok", data: null });
 
-      const ref: WalletRefDto = { type: "singleKey", keyHash: "def456" };
+      const ref: WalletRefDto = { type: "singleKey", keyHash: SK_HASH };
       await useWalletStore.getState().selectWallet(ref);
 
       expect(useWalletStore.getState().selectedWallet).toEqual(ref);
@@ -213,7 +176,7 @@ describe("walletStore", () => {
 
     it("deselects wallet when passing null", async () => {
       useWalletStore.setState({
-        selectedWallet: { type: "hd", seedHash: "abc123" },
+        selectedWallet: { type: "hd", seedHash: HD_HASH },
       });
       (commands.walletSelect as Mock).mockResolvedValue({ status: "ok", data: null });
 
@@ -223,7 +186,7 @@ describe("walletStore", () => {
     });
 
     it("sets error on failure without changing selection", async () => {
-      const original: WalletRefDto = { type: "hd", seedHash: "abc123" };
+      const original: WalletRefDto = { type: "hd", seedHash: HD_HASH };
       useWalletStore.setState({ selectedWallet: original });
       (commands.walletSelect as Mock).mockResolvedValue({
         status: "error",
@@ -232,7 +195,7 @@ describe("walletStore", () => {
 
       await useWalletStore.getState().selectWallet({
         type: "singleKey",
-        keyHash: "def456",
+        keyHash: SK_HASH,
       });
 
       expect(useWalletStore.getState().selectedWallet).toEqual(original);
@@ -242,13 +205,10 @@ describe("walletStore", () => {
 
   describe("refreshHdWallet", () => {
     it("refreshes wallet and updates store with new data", async () => {
-      const wallet = makeHdWallet({ seedHash: "abc123", totalBalance: 500000000 });
+      const wallet = hw({ totalBalance: 500000000 });
       useWalletStore.setState({ hdWallets: [wallet] });
 
-      const refreshedWallet = makeHdWallet({
-        seedHash: "abc123",
-        totalBalance: 600000000,
-      });
+      const refreshedWallet = hw({ totalBalance: 600000000 });
       (commands.coreRefreshWalletInfo as Mock).mockResolvedValue({
         status: "ok",
         data: { taskId: "t1" },
@@ -258,7 +218,7 @@ describe("walletStore", () => {
         data: refreshedWallet,
       });
 
-      await useWalletStore.getState().refreshHdWallet("abc123");
+      await useWalletStore.getState().refreshHdWallet(HD_HASH);
 
       const state = useWalletStore.getState();
       expect(state.hdWallets[0].totalBalance).toBe(600000000);
@@ -267,7 +227,7 @@ describe("walletStore", () => {
 
     it("uses correct platform sync mode based on refreshMode", async () => {
       useWalletStore.setState({
-        hdWallets: [makeHdWallet()],
+        hdWallets: [hw()],
         refreshMode: "coreOnly",
       });
       (commands.coreRefreshWalletInfo as Mock).mockResolvedValue({
@@ -276,20 +236,20 @@ describe("walletStore", () => {
       });
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
-        data: makeHdWallet(),
+        data: hw(),
       });
 
-      await useWalletStore.getState().refreshHdWallet("abc123");
+      await useWalletStore.getState().refreshHdWallet(HD_HASH);
 
       expect(commands.coreRefreshWalletInfo).toHaveBeenCalledWith({
-        walletSeedHash: "abc123",
+        walletSeedHash: HD_HASH,
         platformSyncMode: null,
       });
     });
 
     it("passes forceFull for coreAndPlatformFull mode", async () => {
       useWalletStore.setState({
-        hdWallets: [makeHdWallet()],
+        hdWallets: [hw()],
         refreshMode: "coreAndPlatformFull",
       });
       (commands.coreRefreshWalletInfo as Mock).mockResolvedValue({
@@ -298,20 +258,20 @@ describe("walletStore", () => {
       });
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
-        data: makeHdWallet(),
+        data: hw(),
       });
 
-      await useWalletStore.getState().refreshHdWallet("abc123");
+      await useWalletStore.getState().refreshHdWallet(HD_HASH);
 
       expect(commands.coreRefreshWalletInfo).toHaveBeenCalledWith({
-        walletSeedHash: "abc123",
+        walletSeedHash: HD_HASH,
         platformSyncMode: "forceFull",
       });
     });
 
     it("passes terminalOnly for coreAndPlatformTerminal mode", async () => {
       useWalletStore.setState({
-        hdWallets: [makeHdWallet()],
+        hdWallets: [hw()],
         refreshMode: "coreAndPlatformTerminal",
       });
       (commands.coreRefreshWalletInfo as Mock).mockResolvedValue({
@@ -320,19 +280,19 @@ describe("walletStore", () => {
       });
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
-        data: makeHdWallet(),
+        data: hw(),
       });
 
-      await useWalletStore.getState().refreshHdWallet("abc123");
+      await useWalletStore.getState().refreshHdWallet(HD_HASH);
 
       expect(commands.coreRefreshWalletInfo).toHaveBeenCalledWith({
-        walletSeedHash: "abc123",
+        walletSeedHash: HD_HASH,
         platformSyncMode: "terminalOnly",
       });
     });
 
     it("sets refreshing=true during refresh", async () => {
-      useWalletStore.setState({ hdWallets: [makeHdWallet()] });
+      useWalletStore.setState({ hdWallets: [hw()] });
       let resolveRefresh: (value: unknown) => void;
       (commands.coreRefreshWalletInfo as Mock).mockReturnValue(
         new Promise((resolve) => {
@@ -340,26 +300,26 @@ describe("walletStore", () => {
         }),
       );
 
-      const promise = useWalletStore.getState().refreshHdWallet("abc123");
+      const promise = useWalletStore.getState().refreshHdWallet(HD_HASH);
       expect(useWalletStore.getState().refreshing).toBe(true);
 
       resolveRefresh!({ status: "ok", data: { taskId: "t1" } });
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
-        data: makeHdWallet(),
+        data: hw(),
       });
       await promise;
       expect(useWalletStore.getState().refreshing).toBe(false);
     });
 
     it("sets error on refresh failure", async () => {
-      useWalletStore.setState({ hdWallets: [makeHdWallet()] });
+      useWalletStore.setState({ hdWallets: [hw()] });
       (commands.coreRefreshWalletInfo as Mock).mockResolvedValue({
         status: "error",
         error: "Core not connected",
       });
 
-      await useWalletStore.getState().refreshHdWallet("abc123");
+      await useWalletStore.getState().refreshHdWallet(HD_HASH);
 
       expect(useWalletStore.getState().error).toBe("Core not connected");
       expect(useWalletStore.getState().refreshing).toBe(false);
@@ -368,13 +328,10 @@ describe("walletStore", () => {
 
   describe("refreshSingleKeyWallet", () => {
     it("refreshes and updates single-key wallet", async () => {
-      const wallet = makeSingleKeyWallet({ keyHash: "def456", totalBalance: 100 });
+      const wallet = skw({ totalBalance: 100 });
       useWalletStore.setState({ singleKeyWallets: [wallet] });
 
-      const refreshed = makeSingleKeyWallet({
-        keyHash: "def456",
-        totalBalance: 200,
-      });
+      const refreshed = skw({ totalBalance: 200 });
       (commands.coreRefreshSingleKeyWalletInfo as Mock).mockResolvedValue({
         status: "ok",
         data: { taskId: "t2" },
@@ -384,7 +341,7 @@ describe("walletStore", () => {
         data: refreshed,
       });
 
-      await useWalletStore.getState().refreshSingleKeyWallet("def456");
+      await useWalletStore.getState().refreshSingleKeyWallet(SK_HASH);
 
       expect(useWalletStore.getState().singleKeyWallets[0].totalBalance).toBe(200);
       expect(useWalletStore.getState().refreshing).toBe(false);
@@ -394,8 +351,8 @@ describe("walletStore", () => {
   describe("refreshSelectedWallet", () => {
     it("refreshes selected HD wallet", async () => {
       useWalletStore.setState({
-        hdWallets: [makeHdWallet()],
-        selectedWallet: { type: "hd", seedHash: "abc123" },
+        hdWallets: [hw()],
+        selectedWallet: { type: "hd", seedHash: HD_HASH },
       });
       (commands.coreRefreshWalletInfo as Mock).mockResolvedValue({
         status: "ok",
@@ -403,21 +360,21 @@ describe("walletStore", () => {
       });
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
-        data: makeHdWallet(),
+        data: hw(),
       });
 
       await useWalletStore.getState().refreshSelectedWallet();
 
       expect(commands.coreRefreshWalletInfo).toHaveBeenCalledWith({
-        walletSeedHash: "abc123",
+        walletSeedHash: HD_HASH,
         platformSyncMode: "auto",
       });
     });
 
     it("refreshes selected single-key wallet", async () => {
       useWalletStore.setState({
-        singleKeyWallets: [makeSingleKeyWallet()],
-        selectedWallet: { type: "singleKey", keyHash: "def456" },
+        singleKeyWallets: [skw()],
+        selectedWallet: { type: "singleKey", keyHash: SK_HASH },
       });
       (commands.coreRefreshSingleKeyWalletInfo as Mock).mockResolvedValue({
         status: "ok",
@@ -425,13 +382,13 @@ describe("walletStore", () => {
       });
       (commands.walletGetSingleKey as Mock).mockResolvedValue({
         status: "ok",
-        data: makeSingleKeyWallet(),
+        data: skw(),
       });
 
       await useWalletStore.getState().refreshSelectedWallet();
 
       expect(commands.coreRefreshSingleKeyWalletInfo).toHaveBeenCalledWith({
-        keyHash: "def456",
+        keyHash: SK_HASH,
       });
     });
 
@@ -467,13 +424,13 @@ describe("walletStore", () => {
 
   describe("setHdWalletAlias", () => {
     it("renames an HD wallet", async () => {
-      useWalletStore.setState({ hdWallets: [makeHdWallet()] });
+      useWalletStore.setState({ hdWallets: [hw()] });
       (commands.walletSetAlias as Mock).mockResolvedValue({ status: "ok", data: null });
 
-      await useWalletStore.getState().setHdWalletAlias("abc123", "New Name");
+      await useWalletStore.getState().setHdWalletAlias(HD_HASH, "New Name");
 
       expect(commands.walletSetAlias).toHaveBeenCalledWith({
-        walletSeedHash: "abc123",
+        walletSeedHash: HD_HASH,
         alias: "New Name",
       });
       expect(useWalletStore.getState().hdWallets[0].alias).toBe("New Name");
@@ -481,25 +438,25 @@ describe("walletStore", () => {
 
     it("clears alias when passing null", async () => {
       useWalletStore.setState({
-        hdWallets: [makeHdWallet({ alias: "Old Name" })],
+        hdWallets: [hw({ alias: "Old Name" })],
       });
       (commands.walletSetAlias as Mock).mockResolvedValue({ status: "ok", data: null });
 
-      await useWalletStore.getState().setHdWalletAlias("abc123", null);
+      await useWalletStore.getState().setHdWalletAlias(HD_HASH, null);
 
       expect(useWalletStore.getState().hdWallets[0].alias).toBeNull();
     });
 
     it("does not update on failure", async () => {
       useWalletStore.setState({
-        hdWallets: [makeHdWallet({ alias: "Original" })],
+        hdWallets: [hw({ alias: "Original" })],
       });
       (commands.walletSetAlias as Mock).mockResolvedValue({
         status: "error",
         error: "Not found",
       });
 
-      await useWalletStore.getState().setHdWalletAlias("abc123", "New Name");
+      await useWalletStore.getState().setHdWalletAlias(HD_HASH, "New Name");
 
       expect(useWalletStore.getState().hdWallets[0].alias).toBe("Original");
       expect(useWalletStore.getState().error).toBe("Not found");
@@ -509,7 +466,7 @@ describe("walletStore", () => {
   describe("setSingleKeyWalletAlias", () => {
     it("renames a single-key wallet", async () => {
       useWalletStore.setState({
-        singleKeyWallets: [makeSingleKeyWallet()],
+        singleKeyWallets: [skw()],
       });
       (commands.walletSetSingleKeyAlias as Mock).mockResolvedValue({
         status: "ok",
@@ -518,10 +475,10 @@ describe("walletStore", () => {
 
       await useWalletStore
         .getState()
-        .setSingleKeyWalletAlias("def456", "Key Wallet");
+        .setSingleKeyWalletAlias(SK_HASH, "Key Wallet");
 
       expect(commands.walletSetSingleKeyAlias).toHaveBeenCalledWith({
-        keyHash: "def456",
+        keyHash: SK_HASH,
         alias: "Key Wallet",
       });
       expect(useWalletStore.getState().singleKeyWallets[0].alias).toBe(
@@ -534,8 +491,8 @@ describe("walletStore", () => {
     it("removes an HD wallet from the store", async () => {
       useWalletStore.setState({
         hdWallets: [
-          makeHdWallet({ seedHash: "abc123" }),
-          makeHdWallet({ seedHash: "xyz789" }),
+          hw({ seedHash: "abc123" }),
+          hw({ seedHash: "xyz789" }),
         ],
       });
       (commands.walletRemove as Mock).mockResolvedValue({ status: "ok", data: null });
@@ -549,22 +506,22 @@ describe("walletStore", () => {
 
     it("deselects if the removed wallet was selected", async () => {
       useWalletStore.setState({
-        hdWallets: [makeHdWallet()],
-        selectedWallet: { type: "hd", seedHash: "abc123" },
+        hdWallets: [hw()],
+        selectedWallet: { type: "hd", seedHash: HD_HASH },
       });
       (commands.walletRemove as Mock).mockResolvedValue({ status: "ok", data: null });
 
-      await useWalletStore.getState().removeHdWallet("abc123");
+      await useWalletStore.getState().removeHdWallet(HD_HASH);
 
       expect(useWalletStore.getState().selectedWallet).toBeNull();
     });
 
     it("keeps selection if a different wallet was removed", async () => {
-      const selected: WalletRefDto = { type: "hd", seedHash: "abc123" };
+      const selected: WalletRefDto = { type: "hd", seedHash: HD_HASH };
       useWalletStore.setState({
         hdWallets: [
-          makeHdWallet({ seedHash: "abc123" }),
-          makeHdWallet({ seedHash: "xyz789" }),
+          hw({ seedHash: HD_HASH }),
+          hw({ seedHash: "xyz789" }),
         ],
         selectedWallet: selected,
       });
@@ -576,13 +533,13 @@ describe("walletStore", () => {
     });
 
     it("sets error on failure", async () => {
-      useWalletStore.setState({ hdWallets: [makeHdWallet()] });
+      useWalletStore.setState({ hdWallets: [hw()] });
       (commands.walletRemove as Mock).mockResolvedValue({
         status: "error",
         error: "Wallet in use",
       });
 
-      await useWalletStore.getState().removeHdWallet("abc123");
+      await useWalletStore.getState().removeHdWallet(HD_HASH);
 
       expect(useWalletStore.getState().hdWallets).toHaveLength(1);
       expect(useWalletStore.getState().error).toBe("Wallet in use");
@@ -592,15 +549,15 @@ describe("walletStore", () => {
   describe("removeSingleKeyWallet", () => {
     it("removes a single-key wallet from the store", async () => {
       useWalletStore.setState({
-        singleKeyWallets: [makeSingleKeyWallet()],
-        selectedWallet: { type: "singleKey", keyHash: "def456" },
+        singleKeyWallets: [skw()],
+        selectedWallet: { type: "singleKey", keyHash: SK_HASH },
       });
       (commands.walletRemoveSingleKey as Mock).mockResolvedValue({
         status: "ok",
         data: null,
       });
 
-      await useWalletStore.getState().removeSingleKeyWallet("def456");
+      await useWalletStore.getState().removeSingleKeyWallet(SK_HASH);
 
       expect(useWalletStore.getState().singleKeyWallets).toHaveLength(0);
       expect(useWalletStore.getState().selectedWallet).toBeNull();
@@ -609,21 +566,21 @@ describe("walletStore", () => {
 
   describe("reloadHdWallet", () => {
     it("updates an existing HD wallet in the store", async () => {
-      useWalletStore.setState({ hdWallets: [makeHdWallet()] });
-      const updated = makeHdWallet({ totalBalance: 999 });
+      useWalletStore.setState({ hdWallets: [hw()] });
+      const updated = hw({ totalBalance: 999 });
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
         data: updated,
       });
 
-      await useWalletStore.getState().reloadHdWallet("abc123");
+      await useWalletStore.getState().reloadHdWallet(HD_HASH);
 
       expect(useWalletStore.getState().hdWallets[0].totalBalance).toBe(999);
     });
 
     it("appends a new HD wallet if not found in store", async () => {
-      useWalletStore.setState({ hdWallets: [makeHdWallet()] });
-      const newWallet = makeHdWallet({ seedHash: "new999" });
+      useWalletStore.setState({ hdWallets: [hw()] });
+      const newWallet = hw({ seedHash: "new999" });
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
         data: newWallet,
@@ -648,15 +605,15 @@ describe("walletStore", () => {
   describe("reloadSingleKeyWallet", () => {
     it("updates an existing single-key wallet in the store", async () => {
       useWalletStore.setState({
-        singleKeyWallets: [makeSingleKeyWallet()],
+        singleKeyWallets: [skw()],
       });
-      const updated = makeSingleKeyWallet({ totalBalance: 555 });
+      const updated = skw({ totalBalance: 555 });
       (commands.walletGetSingleKey as Mock).mockResolvedValue({
         status: "ok",
         data: updated,
       });
 
-      await useWalletStore.getState().reloadSingleKeyWallet("def456");
+      await useWalletStore.getState().reloadSingleKeyWallet(SK_HASH);
 
       expect(useWalletStore.getState().singleKeyWallets[0].totalBalance).toBe(
         555,
@@ -665,7 +622,7 @@ describe("walletStore", () => {
 
     it("appends a new single-key wallet if not found", async () => {
       useWalletStore.setState({ singleKeyWallets: [] });
-      const newWallet = makeSingleKeyWallet({ keyHash: "new111" });
+      const newWallet = skw({ keyHash: "new111" });
       (commands.walletGetSingleKey as Mock).mockResolvedValue({
         status: "ok",
         data: newWallet,
@@ -684,9 +641,9 @@ describe("walletStore", () => {
         data: null,
       });
 
-      await useWalletStore.getState().notifyUnlocked("abc123");
+      await useWalletStore.getState().notifyUnlocked(HD_HASH);
 
-      expect(commands.walletNotifyUnlocked).toHaveBeenCalledWith("abc123");
+      expect(commands.walletNotifyUnlocked).toHaveBeenCalledWith(HD_HASH);
     });
 
     it("calls backend notifyLocked", async () => {
@@ -695,9 +652,9 @@ describe("walletStore", () => {
         data: null,
       });
 
-      await useWalletStore.getState().notifyLocked("abc123");
+      await useWalletStore.getState().notifyLocked(HD_HASH);
 
-      expect(commands.walletNotifyLocked).toHaveBeenCalledWith("abc123");
+      expect(commands.walletNotifyLocked).toHaveBeenCalledWith(HD_HASH);
     });
 
     it("does not set error on notify failure", async () => {
@@ -705,7 +662,7 @@ describe("walletStore", () => {
         new Error("IPC error"),
       );
 
-      await useWalletStore.getState().notifyUnlocked("abc123");
+      await useWalletStore.getState().notifyUnlocked(HD_HASH);
 
       expect(useWalletStore.getState().error).toBeNull();
     });
@@ -729,7 +686,7 @@ describe("walletStore", () => {
     });
 
     it("reloads HD wallet when update event received for known HD wallet", async () => {
-      const wallet = makeHdWallet({ seedHash: "abc123" });
+      const wallet = hw();
       useWalletStore.setState({ hdWallets: [wallet] });
 
       let eventCallback: (event: { payload: { walletSeedHash: string } }) => void;
@@ -741,15 +698,15 @@ describe("walletStore", () => {
       );
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
-        data: makeHdWallet({ seedHash: "abc123", totalBalance: 777 }),
+        data: hw({ totalBalance: 777 }),
       });
 
       await useWalletStore.getState().subscribeToUpdates();
-      eventCallback!({ payload: { walletSeedHash: "abc123" } });
+      eventCallback!({ payload: { walletSeedHash: HD_HASH } });
 
       // Wait for async reload
       await vi.waitFor(() => {
-        expect(commands.walletGetHd).toHaveBeenCalledWith("abc123");
+        expect(commands.walletGetHd).toHaveBeenCalledWith(HD_HASH);
       });
     });
 
@@ -765,7 +722,7 @@ describe("walletStore", () => {
       );
       (commands.walletListAll as Mock).mockResolvedValue({
         status: "ok",
-        data: makeWalletList(),
+        data: wl(),
       });
 
       await useWalletStore.getState().subscribeToUpdates();

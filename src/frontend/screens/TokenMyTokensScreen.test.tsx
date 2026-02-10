@@ -7,33 +7,14 @@ import type { TokenEntry } from "@/stores/tokenStore";
 
 // ─── Mock Tauri bindings ──────────────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    tokenQueryMyBalances: vi.fn().mockResolvedValue({ taskId: "task-1" }),
-    tokenRemove: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    tokenLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    tokenSaveOrder: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contextIsDeveloperMode: vi.fn().mockResolvedValue(false),
-    tokenEstimatePerpetualRewards: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "estimate-task-1" } }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
+import { commands, events } from "@/bindings";
 
 // Mock sonner toast
 const { mockToast } = vi.hoisted(() => ({
@@ -187,7 +168,7 @@ describe("TokenMyTokensScreen — empty state", () => {
   it("shows empty state when no tokens and not loading", async () => {
     renderScreen();
     await waitFor(() => {
-      expect(mockCommands.tokenQueryMyBalances).toHaveBeenCalled();
+      expect(vi.mocked(commands.tokenQueryMyBalances)).toHaveBeenCalled();
     });
     useTokenStore.setState({ loading: false, tokens: [] });
     await waitFor(() => {
@@ -205,14 +186,14 @@ describe("TokenMyTokensScreen — data loading", () => {
   it("calls loadMyTokenBalances on mount", async () => {
     renderScreen();
     await waitFor(() => {
-      expect(mockCommands.tokenQueryMyBalances).toHaveBeenCalled();
+      expect(vi.mocked(commands.tokenQueryMyBalances)).toHaveBeenCalled();
     });
   });
 
   it("subscribes to task events on mount", async () => {
     renderScreen();
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
   });
 });
@@ -242,13 +223,13 @@ describe("TokenMyTokensScreen — refresh", () => {
     const user = userEvent.setup();
     renderScreen();
     await waitFor(() => {
-      expect(mockCommands.tokenQueryMyBalances).toHaveBeenCalled();
+      expect(vi.mocked(commands.tokenQueryMyBalances)).toHaveBeenCalled();
     });
     useTokenStore.setState({ loading: false });
-    mockCommands.tokenQueryMyBalances.mockClear();
+    vi.mocked(commands.tokenQueryMyBalances).mockClear();
     await user.click(screen.getByText("Refresh"));
     await waitFor(() => {
-      expect(mockCommands.tokenQueryMyBalances).toHaveBeenCalled();
+      expect(vi.mocked(commands.tokenQueryMyBalances)).toHaveBeenCalled();
     });
   });
 
@@ -427,7 +408,7 @@ describe("TokenMyTokensScreen — remove flow", () => {
       expect(screen.getByText("Confirm")).toBeInTheDocument();
     });
     await user.click(screen.getByText("Confirm"));
-    expect(mockCommands.tokenRemove).toHaveBeenCalledWith({
+    expect(vi.mocked(commands.tokenRemove)).toHaveBeenCalledWith({
       tokenId: defaultTokens[0].tokenId,
     });
   });
@@ -459,11 +440,11 @@ describe("TokenMyTokensScreen — event subscription cleanup", () => {
 
   it("unsubscribes from events on unmount", async () => {
     const mockUnsubscribe = vi.fn();
-    mockEvents.taskResultEvent.listen.mockResolvedValue(mockUnsubscribe);
+    vi.mocked(events.taskResultEvent.listen).mockResolvedValue(mockUnsubscribe);
 
     const { unmount } = renderScreen();
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
     unmount();
     await waitFor(() => {
@@ -483,17 +464,17 @@ describe("TokenMyTokensScreen — rewards estimation", () => {
   it("checks developer mode on mount", async () => {
     renderScreen();
     await waitFor(() => {
-      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+      expect(vi.mocked(commands.contextIsDeveloperMode)).toHaveBeenCalled();
     });
   });
 
   it("shows rewards column when developer mode is enabled", async () => {
-    mockCommands.contextIsDeveloperMode.mockResolvedValue(true);
+    vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(true);
     const user = userEvent.setup();
     renderScreen();
     // Wait for dev mode check to complete
     await waitFor(() => {
-      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+      expect(vi.mocked(commands.contextIsDeveloperMode)).toHaveBeenCalled();
     });
     // Drill down to Level 2 where rewards column appears
     await user.click(screen.getByRole("button", { name: "TestToken" }));
@@ -503,29 +484,29 @@ describe("TokenMyTokensScreen — rewards estimation", () => {
   });
 
   it("does not show rewards column when developer mode is disabled", async () => {
-    mockCommands.contextIsDeveloperMode.mockResolvedValue(false);
+    vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(false);
     const user = userEvent.setup();
     renderScreen();
     await waitFor(() => {
-      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+      expect(vi.mocked(commands.contextIsDeveloperMode)).toHaveBeenCalled();
     });
     await user.click(screen.getByRole("button", { name: "TestToken" }));
     expect(screen.queryByText("Rewards")).not.toBeInTheDocument();
   });
 
   it("calls tokenEstimatePerpetualRewards when Estimate is clicked", async () => {
-    mockCommands.contextIsDeveloperMode.mockResolvedValue(true);
+    vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(true);
     const user = userEvent.setup();
     renderScreen();
     await waitFor(() => {
-      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+      expect(vi.mocked(commands.contextIsDeveloperMode)).toHaveBeenCalled();
     });
     await user.click(screen.getByRole("button", { name: "TestToken" }));
     await waitFor(() => {
       expect(screen.getByTestId("estimate-rewards-button")).toBeInTheDocument();
     });
     await user.click(screen.getByTestId("estimate-rewards-button"));
-    expect(mockCommands.tokenEstimatePerpetualRewards).toHaveBeenCalledWith({
+    expect(vi.mocked(commands.tokenEstimatePerpetualRewards)).toHaveBeenCalledWith({
       identityId: defaultTokens[0].identityId,
       tokenId: defaultTokens[0].tokenId,
     });
@@ -535,7 +516,7 @@ describe("TokenMyTokensScreen — rewards estimation", () => {
     renderScreen();
     await waitFor(() => {
       // The screen subscribes to events (both for store updates and estimate results)
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
   });
 });

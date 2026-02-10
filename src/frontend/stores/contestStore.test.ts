@@ -1,4 +1,31 @@
+/**
+ * contestStore tests -- using centralized mock IPC + fixture factories.
+ *
+ * Pattern:
+ * 1. createMockBindings() provides defaults for all 181 commands + 8 events
+ * 2. Override specific commands needed by the store under test
+ * 3. Use fixture factories instead of inline makers
+ */
+
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import {
+  createMockBindings,
+  mockBindingsModule,
+} from "@/test/mock-ipc";
+import {
+  createMockContestedName,
+  createMockScheduledVote,
+  createMockDpnsNameEntry,
+} from "@/test/fixtures";
+
+// ─── Mock bindings (centralized) ────────────────────────────────────
+
+vi.mock("../bindings", () => {
+  const initial = createMockBindings();
+  return mockBindingsModule(initial);
+});
+
+import { commands, events } from "../bindings";
 import {
   useContestStore,
   normalizeDpnsFilter,
@@ -15,43 +42,13 @@ import type {
   ScheduledVoteExecutedEvent,
 } from "../bindings";
 
-// ─── Mock bindings ──────────────────────────────────────────────────
+// ─── Test-local defaults ─────────────────────────────────────────────
+// The centralized fixtures use different default values (realistic IDs,
+// dynamic timestamps, etc.). These wrappers pin the same defaults as
+// the original inline test makers for backward-compatible assertions.
 
-vi.mock("../bindings", () => ({
-  commands: {
-    contestedQueryDpnsContests: vi.fn(),
-    contestedVoteOnDpnsNames: vi.fn(),
-    contestedScheduleDpnsVotes: vi.fn(),
-    contestedCastScheduledVote: vi.fn(),
-    contestedDeleteScheduledVote: vi.fn(),
-    contestedClearAllScheduledVotes: vi.fn(),
-    contestedClearExecutedScheduledVotes: vi.fn(),
-    contestedGetScheduledVotes: vi.fn(),
-    identityLocalDpnsNames: vi.fn(),
-    identityRefreshDpnsNames: vi.fn(),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-    scheduledVoteExecutedEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-  },
-}));
-
-import { commands, events } from "../bindings";
-
-// ─── Test fixtures ──────────────────────────────────────────────────
-
-function makeContest(
-  overrides?: Partial<ContestedName>,
-): ContestedName {
-  return {
-    normalizedContestedName: "alice",
+function makeContest(overrides?: Partial<ContestedName>): ContestedName {
+  return createMockContestedName({
     contestants: [
       {
         id: "contestant1",
@@ -65,37 +62,33 @@ function makeContest(
       },
     ],
     lockedVotes: 3,
-    abstainVotes: 1,
-    awardedTo: null,
     endTime: 1700000000,
     state: "ongoing",
     lastUpdated: 1699000000,
     ...overrides,
-  };
+  });
 }
 
 function makeScheduledVote(
   overrides?: Partial<ScheduledVoteDto>,
 ): ScheduledVoteDto {
-  return {
-    contestedName: "alice",
+  return createMockScheduledVote({
     voterId: "voter1",
     choice: "lock",
     unixTimestamp: 1700050000,
-    executedSuccessfully: false,
     ...overrides,
-  };
+  });
 }
 
 function makeDpnsName(
   overrides?: Partial<DpnsNameEntryDto>,
 ): DpnsNameEntryDto {
-  return {
+  return createMockDpnsNameEntry({
     identityId: "id1",
     name: "myname.dash",
     acquiredAt: 1699000000,
     ...overrides,
-  };
+  });
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -1065,7 +1058,6 @@ describe("normalizeDpnsFilter", () => {
   });
 
   it("lowercases the result", () => {
-    // ALICE → A1ICE (l→1) then lowercase → a1ice? No, uppercase L not converted
     // ALICE → toLower first: alice, then: a1ice? No, regex runs first.
     // Actually: ALICE → replace o/O: ALICE → replace l: ALICE → toLowerCase: alice
     // Capital L is not matched by /l/g

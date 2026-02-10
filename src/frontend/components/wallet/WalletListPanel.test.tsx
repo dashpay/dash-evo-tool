@@ -2,12 +2,16 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { WalletListPanel } from "./WalletListPanel";
+import {
+  createMockHdWallet,
+  createMockSingleKeyWallet,
+} from "@/test/fixtures";
 import type { WalletDto, SingleKeyWalletDto, WalletRefDto } from "@/bindings";
 
-// ─── Test fixtures ─────────────────────────────────────────────────
+// ─── Local wrappers over centralized fixtures (test-specific defaults) ──
 
 function makeHdWallet(overrides: Partial<WalletDto> = {}): WalletDto {
-  return {
+  return createMockHdWallet({
     seedHash: "abc123",
     usesPassword: false,
     alias: "My HD Wallet",
@@ -22,13 +26,13 @@ function makeHdWallet(overrides: Partial<WalletDto> = {}): WalletDto {
     identityIndexes: [],
     passwordHint: null,
     ...overrides,
-  };
+  });
 }
 
 function makeSingleKeyWallet(
   overrides: Partial<SingleKeyWalletDto> = {},
 ): SingleKeyWalletDto {
-  return {
+  return createMockSingleKeyWallet({
     keyHash: "def456",
     usesPassword: false,
     publicKey: "02aabbcc",
@@ -40,7 +44,7 @@ function makeSingleKeyWallet(
     utxoCount: 3,
     utxos: [],
     ...overrides,
-  };
+  });
 }
 
 const defaultProps = {

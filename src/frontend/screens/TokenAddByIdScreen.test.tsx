@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TokenAddByIdScreen } from "./TokenAddByIdScreen";
 import { useTokenStore } from "@/stores/tokenStore";
@@ -6,49 +6,14 @@ import { renderWithProviders } from "@/test/router-utils";
 
 // ─── Mock Tauri bindings ──────────────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    tokenFetchByContractId: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "fetch-contract-1" },
-    }),
-    tokenFetchByTokenId: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "fetch-token-1" },
-    }),
-    tokenSaveLocally: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "save-task-1" },
-    }),
-    tokenQueryMyBalances: vi.fn().mockResolvedValue({ taskId: "load-1" }),
-    tokenRemove: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    tokenLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    tokenSaveOrder: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    tokenQueryDescriptionsByKeyword: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "search-1" },
-    }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi
-        .fn()
-        .mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
+import { commands, events } from "@/bindings";
 
 // Mock sonner
 const { mockToast } = vi.hoisted(() => ({
@@ -211,7 +176,7 @@ describe("TokenAddByIdScreen — search interaction", () => {
       VALID_HEX_64,
     );
     await user.click(screen.getByLabelText("Search"));
-    expect(mockCommands.tokenFetchByContractId).toHaveBeenCalledWith({
+    expect(vi.mocked(commands.tokenFetchByContractId)).toHaveBeenCalledWith({
       contractId: VALID_HEX_64,
     });
   });
@@ -223,7 +188,7 @@ describe("TokenAddByIdScreen — search interaction", () => {
       screen.getByLabelText("Contract or token ID"),
       `${VALID_HEX_64}{Enter}`,
     );
-    expect(mockCommands.tokenFetchByContractId).toHaveBeenCalledWith({
+    expect(vi.mocked(commands.tokenFetchByContractId)).toHaveBeenCalledWith({
       contractId: VALID_HEX_64,
     });
   });
@@ -235,7 +200,7 @@ describe("TokenAddByIdScreen — search interaction", () => {
       screen.getByLabelText("Contract or token ID"),
       `  ${VALID_HEX_64}  {Enter}`,
     );
-    expect(mockCommands.tokenFetchByContractId).toHaveBeenCalledWith({
+    expect(vi.mocked(commands.tokenFetchByContractId)).toHaveBeenCalledWith({
       contractId: VALID_HEX_64,
     });
   });
@@ -271,7 +236,7 @@ describe("TokenAddByIdScreen — search interaction", () => {
       screen.getByLabelText("Contract or token ID"),
       "{Enter}",
     );
-    expect(mockCommands.tokenFetchByContractId).not.toHaveBeenCalled();
+    expect(vi.mocked(commands.tokenFetchByContractId)).not.toHaveBeenCalled();
   });
 });
 
@@ -352,7 +317,7 @@ describe("TokenAddByIdScreen — fallback to tokenFetchByTokenId", () => {
   });
 
   it("falls back to tokenFetchByTokenId when contract fetch fails", async () => {
-    mockCommands.tokenFetchByContractId.mockResolvedValueOnce({
+    vi.mocked(commands.tokenFetchByContractId).mockResolvedValueOnce({
       status: "error",
       error: "Contract not found",
     });
@@ -365,7 +330,7 @@ describe("TokenAddByIdScreen — fallback to tokenFetchByTokenId", () => {
     await user.click(screen.getByLabelText("Search"));
 
     await waitFor(() => {
-      expect(mockCommands.tokenFetchByTokenId).toHaveBeenCalledWith({
+      expect(vi.mocked(commands.tokenFetchByTokenId)).toHaveBeenCalledWith({
         tokenId: VALID_HEX_64,
       });
     });
@@ -379,21 +344,12 @@ describe("TokenAddByIdScreen — results display", () => {
   });
 
   it("displays found tokens when event arrives with results", async () => {
-    // Set up the event listener to capture the callback
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     // Wait for listener registration
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     // Trigger search
@@ -404,23 +360,27 @@ describe("TokenAddByIdScreen — results display", () => {
     await user.click(screen.getByLabelText("Search"));
 
     // Simulate backend result
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            {
-              tokenId: "token123abc",
-              contractId: VALID_HEX_64,
-              name: "Test Token",
-              description: "A test token",
-              decimals: 8,
-              tokenPosition: 0,
-            },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              {
+                tokenId: "token123abc",
+                contractId: VALID_HEX_64,
+                name: "Test Token",
+                description: "A test token",
+                decimals: 8,
+                tokenPosition: 0,
+              },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {
@@ -431,19 +391,11 @@ describe("TokenAddByIdScreen — results display", () => {
   });
 
   it("displays multiple found tokens", async () => {
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -452,17 +404,21 @@ describe("TokenAddByIdScreen — results display", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            { tokenId: "tok1", contractId: VALID_HEX_64, name: "Token A" },
-            { tokenId: "tok2", contractId: VALID_HEX_64, name: "Token B" },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              { tokenId: "tok1", contractId: VALID_HEX_64, name: "Token A" },
+              { tokenId: "tok2", contractId: VALID_HEX_64, name: "Token B" },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {
@@ -473,19 +429,11 @@ describe("TokenAddByIdScreen — results display", () => {
   });
 
   it("shows error when no tokens found in result", async () => {
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -494,12 +442,16 @@ describe("TokenAddByIdScreen — results display", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
-        payload: { tokens: [] },
-      },
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
+        payload: {
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: { tokens: [] },
+        },
+      });
     });
 
     await waitFor(() => {
@@ -517,19 +469,11 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
   });
 
   it("renders Add button for each found token", async () => {
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -538,20 +482,24 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            {
-              tokenId: "tok1",
-              contractId: VALID_HEX_64,
-              name: "My Token",
-            },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              {
+                tokenId: "tok1",
+                contractId: VALID_HEX_64,
+                name: "My Token",
+              },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {
@@ -562,19 +510,11 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
   });
 
   it("calls tokenSaveLocally when Add button is clicked", async () => {
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -583,22 +523,26 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            {
-              tokenId: "tok1",
-              contractId: VALID_HEX_64,
-              name: "My Token",
-              description: "test",
-              tokenPosition: 0,
-            },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              {
+                tokenId: "tok1",
+                contractId: VALID_HEX_64,
+                name: "My Token",
+                description: "test",
+                tokenPosition: 0,
+              },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {
@@ -608,7 +552,7 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
     await user.click(screen.getByLabelText("Add My Token to My Tokens"));
 
     await waitFor(() => {
-      expect(mockCommands.tokenSaveLocally).toHaveBeenCalledWith({
+      expect(vi.mocked(commands.tokenSaveLocally)).toHaveBeenCalledWith({
         tokenInfoJson: expect.objectContaining({
           token_id: "tok1",
           token_name: "My Token",
@@ -635,19 +579,11 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
       ],
     });
 
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -656,16 +592,20 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            { tokenId: "tok1", contractId: VALID_HEX_64, name: "My Token" },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              { tokenId: "tok1", contractId: VALID_HEX_64, name: "My Token" },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {
@@ -675,7 +615,7 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
     await user.click(screen.getByLabelText("Add My Token to My Tokens"));
 
     expect(mockToast.info).toHaveBeenCalledWith("Token already in My Tokens");
-    expect(mockCommands.tokenSaveLocally).not.toHaveBeenCalled();
+    expect(vi.mocked(commands.tokenSaveLocally)).not.toHaveBeenCalled();
   });
 });
 
@@ -686,19 +626,11 @@ describe("TokenAddByIdScreen — More Info dialog", () => {
   });
 
   it("opens TokenInfoDialog on More Info click", async () => {
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -707,22 +639,26 @@ describe("TokenAddByIdScreen — More Info dialog", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            {
-              tokenId: "tok1",
-              contractId: VALID_HEX_64,
-              name: "My Token",
-              description: "desc",
-              decimals: 8,
-            },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              {
+                tokenId: "tok1",
+                contractId: VALID_HEX_64,
+                name: "My Token",
+                description: "desc",
+                decimals: 8,
+              },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {
@@ -747,19 +683,11 @@ describe("TokenAddByIdScreen — error event handling", () => {
   });
 
   it("shows error when task error event is received", async () => {
-    let errorCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskErrorEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        errorCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(errorCallback).not.toBeNull();
+      expect(vi.mocked(events.taskErrorEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -768,8 +696,12 @@ describe("TokenAddByIdScreen — error event handling", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    errorCallback!({
-      payload: { taskId: "fetch-contract-1", message: "Network error" },
+    const errorCalls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+    const listener = errorCalls[errorCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
+        payload: { taskId: "mock-task-id", message: "Network error" },
+      });
     });
 
     await waitFor(() => {
@@ -789,20 +721,20 @@ describe("TokenAddByIdScreen — event subscription lifecycle", () => {
   it("subscribes to task events on mount", async () => {
     renderScreen();
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
+      expect(vi.mocked(events.taskErrorEvent.listen)).toHaveBeenCalled();
     });
   });
 
   it("unsubscribes from events on unmount", async () => {
     const mockUnsub1 = vi.fn();
     const mockUnsub2 = vi.fn();
-    mockEvents.taskResultEvent.listen.mockResolvedValue(mockUnsub1);
-    mockEvents.taskErrorEvent.listen.mockResolvedValue(mockUnsub2);
+    vi.mocked(events.taskResultEvent.listen).mockResolvedValue(mockUnsub1);
+    vi.mocked(events.taskErrorEvent.listen).mockResolvedValue(mockUnsub2);
 
     const { unmount } = renderScreen();
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
     unmount();
     await waitFor(() => {
@@ -819,19 +751,11 @@ describe("TokenAddByIdScreen — token result card display", () => {
   });
 
   it("shows 'Unnamed Token' for tokens with no name", async () => {
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -840,16 +764,20 @@ describe("TokenAddByIdScreen — token result card display", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            { tokenId: "tok1", contractId: VALID_HEX_64, name: null },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              { tokenId: "tok1", contractId: VALID_HEX_64, name: null },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {
@@ -858,19 +786,11 @@ describe("TokenAddByIdScreen — token result card display", () => {
   });
 
   it("shows Paused badge for paused tokens", async () => {
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -879,21 +799,25 @@ describe("TokenAddByIdScreen — token result card display", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            {
-              tokenId: "tok1",
-              contractId: VALID_HEX_64,
-              name: "Paused Token",
-              paused: true,
-            },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              {
+                tokenId: "tok1",
+                contractId: VALID_HEX_64,
+                name: "Paused Token",
+                paused: true,
+              },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {
@@ -902,19 +826,11 @@ describe("TokenAddByIdScreen — token result card display", () => {
   });
 
   it("shows token ID and contract ID in result card", async () => {
-    let eventCallback: ((event: { payload: unknown }) => void) | null = null;
-    mockEvents.taskResultEvent.listen.mockImplementation(
-      (cb: (event: { payload: unknown }) => void) => {
-        eventCallback = cb;
-        return Promise.resolve(() => {});
-      },
-    );
-
     const user = userEvent.setup();
     renderScreen();
 
     await waitFor(() => {
-      expect(eventCallback).not.toBeNull();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
 
     await user.type(
@@ -923,20 +839,24 @@ describe("TokenAddByIdScreen — token result card display", () => {
     );
     await user.click(screen.getByLabelText("Search"));
 
-    eventCallback!({
-      payload: {
-        resultType: "Token",
-        taskId: "fetch-contract-1",
+    const resultCalls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+    const listener = resultCalls[resultCalls.length - 1]?.[0];
+    await act(async () => {
+      listener?.({
         payload: {
-          tokens: [
-            {
-              tokenId: VALID_HEX_64,
-              contractId: VALID_HEX_64,
-              name: "Display Token",
-            },
-          ],
+          resultType: "Token",
+          taskId: "mock-task-id",
+          payload: {
+            tokens: [
+              {
+                tokenId: VALID_HEX_64,
+                contractId: VALID_HEX_64,
+                name: "Display Token",
+              },
+            ],
+          },
         },
-      },
+      });
     });
 
     await waitFor(() => {

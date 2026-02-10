@@ -2,7 +2,9 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { JsonViewer } from "./JsonViewer";
 
-// Mock useTheme
+// Mock useTheme — inline mock matching the original pattern.
+// Cannot use centralized createThemeMock here because render-helpers.tsx
+// imports from @/components/theme/ThemeProvider, causing hoisting issues.
 vi.mock("@/components/theme/ThemeProvider", () => ({
   useTheme: () => ({ resolvedTheme: "light", theme: "light", setTheme: () => {} }),
 }));

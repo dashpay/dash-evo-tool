@@ -1,43 +1,31 @@
+/**
+ * Tests for the documentStore Zustand store.
+ *
+ * Uses centralized mock IPC infrastructure from `@/test/mock-ipc` and
+ * centralized fixture factories from `@/test/fixtures` to reduce
+ * boilerplate and ensure consistency across test files.
+ */
+
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { createMockBindings, mockBindingsModule } from "@/test/mock-ipc";
+import { createMockDocumentPage } from "@/test/fixtures";
 import { useDocumentStore, DOCUMENT_PRIVATE_FIELDS } from "./documentStore";
 import type { TaskResultEvent } from "../bindings";
 import type { DocumentPageEntry } from "./documentStore";
 
 // ─── Mock bindings ──────────────────────────────────────────────────
 
-vi.mock("../bindings", () => ({
-  commands: {
-    documentFetchPage: vi.fn(),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-  },
-}));
+vi.mock("../bindings", () => {
+  const initial = createMockBindings();
+  return mockBindingsModule(initial);
+});
 
 import { commands, events } from "../bindings";
 
 // ─── Test fixtures ──────────────────────────────────────────────────
 
-function makePageEntry(overrides?: Partial<DocumentPageEntry>): DocumentPageEntry {
-  return {
-    id: "doc001",
-    document: {
-      id: "doc001",
-      ownerId: "owner001",
-      documentType: "domain",
-      data: { label: "test", normalizedLabel: "test" },
-      revision: 1,
-      createdAt: 1700000000000,
-      updatedAt: null,
-      transferredAt: null,
-    },
-    ...overrides,
-  };
+function mpe(overrides?: Partial<DocumentPageEntry>): DocumentPageEntry {
+  return createMockDocumentPage(overrides);
 }
 
 // ─── Reset store between tests ──────────────────────────────────────
@@ -299,7 +287,7 @@ describe("documentStore", () => {
   describe("goToNextPage", () => {
     it("fetches next page using last document as cursor", async () => {
       useDocumentStore.setState({
-        documents: [makePageEntry({ id: "doc-last" })],
+        documents: [mpe({ id: "doc-last" })],
         queryContractId: "contract001",
         queryDocumentType: "domain",
         currentPage: 1,
@@ -323,7 +311,7 @@ describe("documentStore", () => {
 
     it("returns null when no more pages", async () => {
       useDocumentStore.setState({
-        documents: [makePageEntry()],
+        documents: [mpe()],
         queryContractId: "contract001",
         queryDocumentType: "domain",
         hasNextPage: false,
@@ -336,7 +324,7 @@ describe("documentStore", () => {
 
     it("returns null when no query target", async () => {
       useDocumentStore.setState({
-        documents: [makePageEntry()],
+        documents: [mpe()],
         hasNextPage: true,
         queryContractId: null,
         queryDocumentType: null,
@@ -489,7 +477,7 @@ describe("documentStore", () => {
   describe("clearResults", () => {
     it("resets query state", () => {
       useDocumentStore.setState({
-        documents: [makePageEntry()],
+        documents: [mpe()],
         queryStatus: "complete",
         queryStartedAt: 123456,
         queryError: "old error",
@@ -519,7 +507,7 @@ describe("documentStore", () => {
         queryText: "SELECT * FROM domain",
         whereClauses: [{ field: "label", operator: "==", value: "test" }],
         orderByClauses: [{ field: "label", direction: "asc" }],
-        documents: [makePageEntry()],
+        documents: [mpe()],
       });
 
       useDocumentStore.getState().clearResults();
@@ -568,7 +556,7 @@ describe("documentStore", () => {
       });
       await useDocumentStore.getState().subscribeToUpdates();
 
-      const docs = [makePageEntry(), makePageEntry({ id: "doc002" })];
+      const docs = [mpe(), mpe({ id: "doc002" })];
       resultCallback!({
         payload: {
           taskId: "task-doc-1",
@@ -657,7 +645,7 @@ describe("documentStore", () => {
         payload: {
           taskId: "task-stale",
           resultType: "Document",
-          payload: { documents: [makePageEntry()], hasMore: false },
+          payload: { documents: [mpe()], hasMore: false },
         },
       });
 

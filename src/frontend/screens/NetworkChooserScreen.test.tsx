@@ -27,14 +27,25 @@ vi.mock("sonner", () => ({
   Toaster: () => null,
 }));
 
-// Build default mock commands
-function createMockCommands() {
-  return {
-    getNetworkInfo: vi.fn().mockResolvedValue({
+// Centralized bindings mock
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
+
+import { commands } from "@/bindings";
+
+describe("NetworkChooserScreen", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Set up default mock responses for NetworkChooserScreen
+    vi.mocked(commands.getNetworkInfo).mockResolvedValue({
       activeNetwork: "testnet",
       availableNetworks: ["dash", "testnet", "devnet", "regtest"],
-    }),
-    settingsGet: vi.fn().mockResolvedValue({
+    });
+    vi.mocked(commands.settingsGet).mockResolvedValue({
       status: "ok",
       data: {
         network: "testnet",
@@ -49,72 +60,14 @@ function createMockCommands() {
         hasPassword: false,
         dashQtPath: null,
       },
-    }),
-    contextIsDeveloperMode: vi.fn().mockResolvedValue(false),
-    settingsGetAutoStartSpv: vi.fn().mockResolvedValue({
+    });
+    vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(false);
+    vi.mocked(commands.settingsGetAutoStartSpv).mockResolvedValue({
       status: "ok",
       data: false,
-    }),
-    contextGetCoreBackendMode: vi.fn().mockResolvedValue("rpc"),
-    getSpvStatus: vi.fn().mockResolvedValue([]),
-    switchNetwork: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contextSetCoreBackendMode: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    walletStartSpv: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    walletStopSpv: vi.fn().mockResolvedValue(undefined),
-    walletClearSpvData: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    coreStartDashQt: vi.fn().mockResolvedValue(undefined),
-    coreGetBestChainLocks: vi.fn().mockResolvedValue(undefined),
-    contextEnableDeveloperMode: vi.fn().mockResolvedValue(undefined),
-    settingsUpdateDashCore: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    settingsUpdateDisableZmq: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    settingsUpdateCloseDashQtOnExit: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    settingsUpdateAutoStartSpv: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    settingsUpdateOnboardingCompleted: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    systemWipePlatformData: vi.fn().mockResolvedValue(undefined),
-    systemUpdateTheme: vi.fn().mockResolvedValue(undefined),
-  };
-}
-
-let mockCommands = createMockCommands();
-
-vi.mock("@/bindings", () => {
-  const listenFn = vi.fn().mockResolvedValue(() => {});
-  return {
-    get commands() {
-      return mockCommands;
-    },
-    events: {
-      spvStatusEvent: { listen: listenFn },
-      zmqConnectionStatusEvent: { listen: listenFn },
-    },
-  };
-});
-
-describe("NetworkChooserScreen", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCommands = createMockCommands();
+    });
+    vi.mocked(commands.contextGetCoreBackendMode).mockResolvedValue("rpc");
+    vi.mocked(commands.getSpvStatus).mockResolvedValue([]);
   });
 
   it("renders the screen container", async () => {
@@ -183,7 +136,7 @@ describe("NetworkChooserScreen", () => {
   });
 
   it("shows connection type selector when developer mode is enabled", async () => {
-    mockCommands.contextIsDeveloperMode.mockResolvedValue(true);
+    vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(true);
 
     render(<NetworkChooserScreen />);
     await waitFor(() => {
@@ -305,7 +258,7 @@ describe("NetworkChooserScreen", () => {
   });
 
   it("shows developer tools when developer mode is enabled", async () => {
-    mockCommands.contextIsDeveloperMode.mockResolvedValue(true);
+    vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(true);
 
     render(<NetworkChooserScreen />);
     await waitFor(() => {
@@ -322,7 +275,7 @@ describe("NetworkChooserScreen", () => {
   });
 
   it("shows auto-start SPV option when developer mode is enabled", async () => {
-    mockCommands.contextIsDeveloperMode.mockResolvedValue(true);
+    vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(true);
 
     render(<NetworkChooserScreen />);
     await waitFor(() => {
@@ -350,7 +303,7 @@ describe("NetworkChooserScreen", () => {
     fireEvent.click(checkbox);
 
     await waitFor(() => {
-      expect(mockCommands.settingsUpdateDashCore).toHaveBeenCalledWith({
+      expect(commands.settingsUpdateDashCore).toHaveBeenCalledWith({
         customDashQtPath: null,
         overwriteDashConf: true,
       });
@@ -369,7 +322,7 @@ describe("NetworkChooserScreen", () => {
     fireEvent.click(checkbox);
 
     await waitFor(() => {
-      expect(mockCommands.settingsUpdateDisableZmq).toHaveBeenCalledWith(true);
+      expect(commands.settingsUpdateDisableZmq).toHaveBeenCalledWith(true);
     });
   });
 
@@ -385,7 +338,7 @@ describe("NetworkChooserScreen", () => {
     fireEvent.click(checkbox);
 
     await waitFor(() => {
-      expect(mockCommands.contextEnableDeveloperMode).toHaveBeenCalledWith(
+      expect(commands.contextEnableDeveloperMode).toHaveBeenCalledWith(
         true,
       );
     });
@@ -405,7 +358,7 @@ describe("NetworkChooserScreen", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.settingsUpdateCloseDashQtOnExit,
+        commands.settingsUpdateCloseDashQtOnExit,
       ).toHaveBeenCalledWith(false);
     });
   });
@@ -432,11 +385,11 @@ describe("NetworkChooserScreen", () => {
   // Local network password
 
   it("shows local network password input when regtest + RPC", async () => {
-    mockCommands.getNetworkInfo.mockResolvedValue({
+    vi.mocked(commands.getNetworkInfo).mockResolvedValue({
       activeNetwork: "regtest",
       availableNetworks: ["dash", "regtest"],
     });
-    mockCommands.settingsGet.mockResolvedValue({
+    vi.mocked(commands.settingsGet).mockResolvedValue({
       status: "ok",
       data: {
         network: "regtest",
@@ -460,7 +413,7 @@ describe("NetworkChooserScreen", () => {
   });
 
   it("does NOT show local password when on mainnet", async () => {
-    mockCommands.getNetworkInfo.mockResolvedValue({
+    vi.mocked(commands.getNetworkInfo).mockResolvedValue({
       activeNetwork: "dash",
       availableNetworks: ["dash"],
     });
@@ -477,32 +430,32 @@ describe("NetworkChooserScreen", () => {
   it("calls getNetworkInfo on mount", async () => {
     render(<NetworkChooserScreen />);
     await waitFor(() => {
-      expect(mockCommands.getNetworkInfo).toHaveBeenCalled();
+      expect(commands.getNetworkInfo).toHaveBeenCalled();
     });
   });
 
   it("calls settingsGet on mount", async () => {
     render(<NetworkChooserScreen />);
     await waitFor(() => {
-      expect(mockCommands.settingsGet).toHaveBeenCalled();
+      expect(commands.settingsGet).toHaveBeenCalled();
     });
   });
 
   it("calls contextIsDeveloperMode on mount", async () => {
     render(<NetworkChooserScreen />);
     await waitFor(() => {
-      expect(mockCommands.contextIsDeveloperMode).toHaveBeenCalled();
+      expect(commands.contextIsDeveloperMode).toHaveBeenCalled();
     });
   });
 
   // Connect button interaction
 
   it("Connect button is hidden for regtest + RPC", async () => {
-    mockCommands.getNetworkInfo.mockResolvedValue({
+    vi.mocked(commands.getNetworkInfo).mockResolvedValue({
       activeNetwork: "regtest",
       availableNetworks: ["dash", "regtest"],
     });
-    mockCommands.settingsGet.mockResolvedValue({
+    vi.mocked(commands.settingsGet).mockResolvedValue({
       status: "ok",
       data: {
         network: "regtest",
@@ -529,9 +482,9 @@ describe("NetworkChooserScreen", () => {
   // SPV-specific behavior
 
   it("shows SPV experimental warning when SPV mode selected in dev mode", async () => {
-    mockCommands.contextIsDeveloperMode.mockResolvedValue(true);
-    mockCommands.contextGetCoreBackendMode.mockResolvedValue("spv");
-    mockCommands.settingsGet.mockResolvedValue({
+    vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(true);
+    vi.mocked(commands.contextGetCoreBackendMode).mockResolvedValue("spv");
+    vi.mocked(commands.settingsGet).mockResolvedValue({
       status: "ok",
       data: {
         network: "testnet",
@@ -557,7 +510,7 @@ describe("NetworkChooserScreen", () => {
   });
 
   it("displays Dash-Qt path when configured", async () => {
-    mockCommands.settingsGet.mockResolvedValue({
+    vi.mocked(commands.settingsGet).mockResolvedValue({
       status: "ok",
       data: {
         network: "testnet",

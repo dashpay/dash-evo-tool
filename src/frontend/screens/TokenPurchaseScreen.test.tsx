@@ -22,64 +22,17 @@ vi.mock("@tanstack/react-router", () => ({
     opts.select({ location: { search: currentSearch } }),
 }));
 
-const mockTokenPurchase = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-purchase-1" },
+const mockTokenPurchase = vi.fn();
+const mockTokenQueryPricing = vi.fn();
+
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-const mockTokenQueryPricing = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-pricing-1" },
-});
-
-const mockTaskResultListeners: Array<
-  (event: { payload: unknown }) => void
-> = [];
-const mockTaskErrorListeners: Array<
-  (event: { payload: unknown }) => void
-> = [];
-
-/** Emit to all registered task result listeners. */
-function emitTaskResult(payload: unknown) {
-  for (const listener of mockTaskResultListeners) {
-    listener({ payload });
-  }
-}
-
-/** Emit to all registered task error listeners. */
-function emitTaskError(payload: unknown) {
-  for (const listener of mockTaskErrorListeners) {
-    listener({ payload });
-  }
-}
-
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenPurchase: (...args: unknown[]) => mockTokenPurchase(...args),
-    tokenQueryPricing: (...args: unknown[]) => mockTokenQueryPricing(...args),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListeners.push(cb);
-        return Promise.resolve(() => {
-          const idx = mockTaskResultListeners.indexOf(cb);
-          if (idx >= 0) mockTaskResultListeners.splice(idx, 1);
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListeners.push(cb);
-        return Promise.resolve(() => {
-          const idx = mockTaskErrorListeners.indexOf(cb);
-          if (idx >= 0) mockTaskErrorListeners.splice(idx, 1);
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -146,6 +99,22 @@ vi.mock("@/lib/toastError", () => ({
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Emit to all registered task result listeners. */
+function emitTaskResult(payload: unknown) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload } as { payload: unknown });
+  }
+}
+
+/** Emit to all registered task error listeners. */
+function emitTaskError(payload: unknown) {
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload } as { payload: unknown });
+  }
+}
+
 function setup(searchOverrides?: Partial<Record<string, string>>) {
   if (searchOverrides) {
     currentSearch = { ...currentSearch, ...searchOverrides };
@@ -198,8 +167,6 @@ async function fetchPricingWithTieredPricing(
 describe("TokenPurchaseScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListeners.length = 0;
-    mockTaskErrorListeners.length = 0;
     currentSearch = {
       tokenId: "token-purchase-111",
       contractId: "contract-purchase-111",
@@ -209,6 +176,18 @@ describe("TokenPurchaseScreen", () => {
       decimals: "8",
       identityId: "id-purchase-identity",
     };
+    vi.mocked(commands.tokenPurchase).mockImplementation(mockTokenPurchase);
+    vi.mocked(commands.tokenQueryPricing).mockImplementation(
+      mockTokenQueryPricing,
+    );
+    mockTokenPurchase.mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-purchase-1" },
+    });
+    mockTokenQueryPricing.mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-pricing-1" },
+    });
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────

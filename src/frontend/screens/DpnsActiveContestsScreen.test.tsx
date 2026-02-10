@@ -6,36 +6,14 @@ import { renderWithProviders } from "@/test/router-utils";
 import type { ContestedName, SelectedVote } from "@/stores/contestStore";
 import type { QualifiedIdentityDto } from "@/bindings";
 
-// ─── Mock Tauri bindings ──────────────────────────────────────────
+// ─── Centralized mock bindings ───────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    contestedQueryDpnsContests: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contestedVoteOnDpnsNames: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contestedScheduleDpnsVotes: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contestedGetScheduledVotes: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    identityListVoting: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    identityLocalDpnsNames: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    scheduledVoteExecutedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
 
 // Mock sonner toast
 const { mockToast } = vi.hoisted(() => ({
@@ -66,6 +44,8 @@ const { mockNavigate } = vi.hoisted(() => ({
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ────────────────────────────────────────────────
 
@@ -212,7 +192,7 @@ describe("DpnsActiveContestsScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockCommands.contestedQueryDpnsContests).toHaveBeenCalled();
+      expect(commands.contestedQueryDpnsContests).toHaveBeenCalled();
     });
   });
 
@@ -220,7 +200,7 @@ describe("DpnsActiveContestsScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockCommands.identityListVoting).toHaveBeenCalled();
+      expect(commands.identityListVoting).toHaveBeenCalled();
     });
   });
 
@@ -228,9 +208,9 @@ describe("DpnsActiveContestsScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.scheduledVoteExecutedEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(events.scheduledVoteExecutedEvent.listen).toHaveBeenCalled();
     });
   });
 });
@@ -244,10 +224,10 @@ describe("DpnsActiveContestsScreen — action buttons", () => {
 
     // Wait for initial mount calls to complete, then clear
     await waitFor(() => {
-      expect(mockCommands.contestedQueryDpnsContests).toHaveBeenCalled();
+      expect(commands.contestedQueryDpnsContests).toHaveBeenCalled();
     });
-    mockCommands.contestedQueryDpnsContests.mockClear();
-    mockCommands.identityListVoting.mockClear();
+    vi.mocked(commands.contestedQueryDpnsContests).mockClear();
+    vi.mocked(commands.identityListVoting).mockClear();
 
     // Reset refreshing state (mount's loadContests sets it, and no event clears it in test)
     useContestStore.setState({ refreshing: false });
@@ -255,8 +235,8 @@ describe("DpnsActiveContestsScreen — action buttons", () => {
     await user.click(screen.getByRole("button", { name: /refresh contests/i }));
 
     await waitFor(() => {
-      expect(mockCommands.contestedQueryDpnsContests).toHaveBeenCalled();
-      expect(mockCommands.identityListVoting).toHaveBeenCalled();
+      expect(commands.contestedQueryDpnsContests).toHaveBeenCalled();
+      expect(commands.identityListVoting).toHaveBeenCalled();
     });
   });
 
@@ -393,7 +373,7 @@ describe("DpnsActiveContestsScreen — vote casting dialog", () => {
       { contestedName: "d4sh", choice: "lock", endTime: null },
     ];
     const votingIdentity = makeVotingIdentity();
-    mockCommands.identityListVoting.mockResolvedValue({
+    vi.mocked(commands.identityListVoting).mockResolvedValue({
       status: "ok",
       data: [votingIdentity],
     });
@@ -406,7 +386,7 @@ describe("DpnsActiveContestsScreen — vote casting dialog", () => {
 
     // Wait for voting identities to load
     await waitFor(() => {
-      expect(mockCommands.identityListVoting).toHaveBeenCalled();
+      expect(commands.identityListVoting).toHaveBeenCalled();
     });
 
     await user.click(screen.getByRole("button", { name: /cast or schedule votes/i }));
@@ -420,7 +400,7 @@ describe("DpnsActiveContestsScreen — vote casting dialog", () => {
     const selectedVotes: SelectedVote[] = [
       { contestedName: "d4sh", choice: "lock", endTime: null },
     ];
-    mockCommands.identityListVoting.mockResolvedValue({
+    vi.mocked(commands.identityListVoting).mockResolvedValue({
       status: "ok",
       data: [makeVotingIdentity()],
     });
@@ -432,7 +412,7 @@ describe("DpnsActiveContestsScreen — vote casting dialog", () => {
     const { user } = setup();
 
     await waitFor(() => {
-      expect(mockCommands.identityListVoting).toHaveBeenCalled();
+      expect(commands.identityListVoting).toHaveBeenCalled();
     });
 
     await user.click(screen.getByRole("button", { name: /cast or schedule votes/i }));

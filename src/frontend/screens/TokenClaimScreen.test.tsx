@@ -36,62 +36,17 @@ vi.mock("@tanstack/react-router", () => ({
     opts.select({ location: { search: currentSearch } }),
 }));
 
-const mockTokenClaim = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-claim-1" },
+const mockTokenClaim = vi.fn();
+const mockEstimatePerpetualRewards = vi.fn();
+
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-const mockEstimatePerpetualRewards = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-estimate-1" },
-});
-
-// Support multiple listeners (TokenOperationForm + ClaimScreen each register one)
-let mockTaskResultListeners: Array<(event: { payload: unknown }) => void> = [];
-let mockTaskErrorListeners: Array<(event: { payload: unknown }) => void> = [];
-
-function fireTaskResult(payload: unknown) {
-  for (const listener of mockTaskResultListeners) {
-    listener({ payload });
-  }
-}
-
-function fireTaskError(payload: unknown) {
-  for (const listener of mockTaskErrorListeners) {
-    listener({ payload });
-  }
-}
-
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenClaim: (...args: unknown[]) => mockTokenClaim(...args),
-    tokenEstimatePerpetualRewards: (...args: unknown[]) =>
-      mockEstimatePerpetualRewards(...args),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListeners.push(cb);
-        return Promise.resolve(() => {
-          mockTaskResultListeners = mockTaskResultListeners.filter(
-            (l) => l !== cb,
-          );
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListeners.push(cb);
-        return Promise.resolve(() => {
-          mockTaskErrorListeners = mockTaskErrorListeners.filter(
-            (l) => l !== cb,
-          );
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -158,6 +113,20 @@ vi.mock("@/lib/toastError", () => ({
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+function fireTaskResult(payload: unknown) {
+  const listeners = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of listeners) {
+    cb?.({ payload } as { payload: unknown });
+  }
+}
+
+function fireTaskError(payload: unknown) {
+  const listeners = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  for (const [cb] of listeners) {
+    cb?.({ payload } as { payload: unknown });
+  }
+}
+
 function setup(searchOverrides?: Partial<Record<string, string>>) {
   if (searchOverrides) {
     currentSearch = { ...currentSearch, ...searchOverrides };
@@ -173,8 +142,6 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
 describe("TokenClaimScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListeners = [];
-    mockTaskErrorListeners = [];
     currentSearch = {
       tokenId: "token-claim-111",
       contractId: "contract-claim-111",
@@ -184,6 +151,18 @@ describe("TokenClaimScreen", () => {
       decimals: "8",
       identityId: "id-claim-identity",
     };
+    vi.mocked(commands.tokenClaim).mockImplementation(mockTokenClaim);
+    vi.mocked(commands.tokenEstimatePerpetualRewards).mockImplementation(
+      mockEstimatePerpetualRewards,
+    );
+    mockTokenClaim.mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-claim-1" },
+    });
+    mockEstimatePerpetualRewards.mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-estimate-1" },
+    });
   });
 
   // ── Rendering ────────────────────────────────────────────────────────

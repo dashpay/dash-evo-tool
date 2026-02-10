@@ -5,33 +5,14 @@ import { useContestStore } from "@/stores/contestStore";
 import { renderWithProviders } from "@/test/router-utils";
 import type { ContestedName } from "@/stores/contestStore";
 
-// ─── Mock Tauri bindings ──────────────────────────────────────────
+// ─── Centralized mock bindings ───────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    contestedQueryDpnsContests: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contestedGetScheduledVotes: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    identityLocalDpnsNames: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    scheduledVoteExecutedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
 
 // Mock sonner toast
 const { mockToast } = vi.hoisted(() => ({
@@ -53,6 +34,8 @@ const { mockToastError } = vi.hoisted(() => ({
 vi.mock("@/lib/toastError", () => ({
   toastError: mockToastError,
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ────────────────────────────────────────────────
 
@@ -186,7 +169,7 @@ describe("DpnsPastContestsScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockCommands.contestedQueryDpnsContests).toHaveBeenCalled();
+      expect(commands.contestedQueryDpnsContests).toHaveBeenCalled();
     });
   });
 
@@ -194,9 +177,9 @@ describe("DpnsPastContestsScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.scheduledVoteExecutedEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(events.scheduledVoteExecutedEvent.listen).toHaveBeenCalled();
     });
   });
 });
@@ -209,16 +192,16 @@ describe("DpnsPastContestsScreen — action buttons", () => {
     const { user } = setup();
 
     await waitFor(() => {
-      expect(mockCommands.contestedQueryDpnsContests).toHaveBeenCalled();
+      expect(commands.contestedQueryDpnsContests).toHaveBeenCalled();
     });
-    mockCommands.contestedQueryDpnsContests.mockClear();
+    vi.mocked(commands.contestedQueryDpnsContests).mockClear();
 
     useContestStore.setState({ refreshing: false });
 
     await user.click(screen.getByRole("button", { name: /refresh contests/i }));
 
     await waitFor(() => {
-      expect(mockCommands.contestedQueryDpnsContests).toHaveBeenCalled();
+      expect(commands.contestedQueryDpnsContests).toHaveBeenCalled();
     });
   });
 

@@ -7,35 +7,14 @@ import { renderWithProviders } from "@/test/router-utils";
 import type { ContractSummaryDto } from "@/bindings";
 import type { DocumentPageEntry } from "@/stores/documentStore";
 
-// ─── Mock Tauri bindings ──────────────────────────────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    contractListLocal: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    contractGetById: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contractRemove: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contractSetAlias: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contractFetch: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t1" } }),
-    contractFetchWithDescriptions: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t2" } }),
-    contractSave: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t3" } }),
-    documentFetchPage: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t4" } }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) return mockCommands[prop];
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
 
 // Mock sonner toast
 const { mockToast } = vi.hoisted(() => ({
@@ -57,6 +36,8 @@ vi.mock("@/lib/toastError", () => ({
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
 }));
+
+import { commands } from "@/bindings";
 
 // ─── Test Fixtures ────────────────────────────────────────────────
 
@@ -161,13 +142,13 @@ describe("DocumentQueryScreen", () => {
   });
 
   it("loads contracts on mount", async () => {
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [makeSummary()],
     });
     renderWithProviders(<DocumentQueryScreen />);
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
   });
 
@@ -213,7 +194,7 @@ describe("DocumentQueryScreen", () => {
     renderWithProviders(<DocumentQueryScreen />);
     await user.click(screen.getByTestId("fetch-documents-btn"));
     await waitFor(() => {
-      expect(mockCommands.documentFetchPage).toHaveBeenCalledWith({
+      expect(commands.documentFetchPage).toHaveBeenCalledWith({
         contractId: CONTRACT_ID,
         documentTypeName: "domain",
         whereClauses: [],
@@ -467,7 +448,7 @@ describe("DocumentQueryScreen", () => {
   });
 
   it("renders contract tree panel with loaded contracts", async () => {
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [makeSummary({ alias: "dpns" }), makeSummary({ id: "bbb", alias: "dashpay" })],
     });
@@ -503,7 +484,7 @@ describe("DocumentQueryScreen", () => {
     await user.click(input);
     await user.keyboard("{Enter}");
     await waitFor(() => {
-      expect(mockCommands.documentFetchPage).toHaveBeenCalled();
+      expect(commands.documentFetchPage).toHaveBeenCalled();
     });
   });
 

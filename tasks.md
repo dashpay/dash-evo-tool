@@ -681,7 +681,7 @@
   Migrate 3 representative test files (one store test, one component test, one screen test) to the new infrastructure as proof-of-concept. Document the pattern in a brief comment header.
   Write tests (5+).
 
-- [ ] **7.5.1d Migrate existing component tests to shared mock infrastructure** (P2)
+- [x] **7.5.1d Migrate existing component tests to shared mock infrastructure** (P2)
   Systematically migrate all 96 test files from per-file mock boilerplate to the centralized mock IPC + fixtures. This eliminates ~44K lines of repetitive setup code. Prioritize by phase:
   1. Store tests (walletStore, identityStore, tokenStore, contractStore, contestStore, documentStore)
   2. Screen tests for Phases 2-3 (wallet screens, app shell)
@@ -1124,7 +1124,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 90 |
-| Completed | 112 |
-| Remaining | 15 |
+| Completed | 113 |
+| Remaining | 14 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

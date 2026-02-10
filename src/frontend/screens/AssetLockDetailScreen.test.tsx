@@ -12,17 +12,14 @@ vi.mock("@tanstack/react-router", () => ({
   useParams: () => mockParams,
 }));
 
-const mockWalletNotifyUnlocked = vi.fn();
-const mockWalletGetPrivateKey = vi.fn();
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    walletNotifyUnlocked: (...args: unknown[]) =>
-      mockWalletNotifyUnlocked(...args),
-    walletGetPrivateKey: (...args: unknown[]) =>
-      mockWalletGetPrivateKey(...args),
-  },
-}));
+import { commands } from "@/bindings";
 
 let walletStoreState: Record<string, unknown> = {};
 vi.mock("@/stores/walletStore", () => ({
@@ -321,7 +318,7 @@ describe("AssetLockDetailScreen", () => {
     it("fetches and shows private key on click", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGetPrivateKey.mockResolvedValue({
+      vi.mocked(commands.walletGetPrivateKey).mockResolvedValue({
         status: "ok", data: "cWIFkey123456789abcdefghijklmnop",
       });
       render(<AssetLockDetailScreen />);
@@ -335,7 +332,7 @@ describe("AssetLockDetailScreen", () => {
     it("shows hide key button after revealing", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGetPrivateKey.mockResolvedValue({
+      vi.mocked(commands.walletGetPrivateKey).mockResolvedValue({
         status: "ok", data: "cWIFkey123456789abcdefghijklmnop",
       });
       render(<AssetLockDetailScreen />);
@@ -349,7 +346,7 @@ describe("AssetLockDetailScreen", () => {
     it("hides key on hide click", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGetPrivateKey.mockResolvedValue({
+      vi.mocked(commands.walletGetPrivateKey).mockResolvedValue({
         status: "ok", data: "cWIFkey123456789abcdefghijklmnop",
       });
       render(<AssetLockDetailScreen />);
@@ -363,7 +360,7 @@ describe("AssetLockDetailScreen", () => {
     it("shows copy button when key is revealed", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGetPrivateKey.mockResolvedValue({
+      vi.mocked(commands.walletGetPrivateKey).mockResolvedValue({
         status: "ok", data: "cWIFkey123456789abcdefghijklmnop",
       });
       render(<AssetLockDetailScreen />);
@@ -377,7 +374,7 @@ describe("AssetLockDetailScreen", () => {
     it("shows error when key fetch fails", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGetPrivateKey.mockResolvedValue({
+      vi.mocked(commands.walletGetPrivateKey).mockResolvedValue({
         status: "error", error: "Failed to get key",
       });
       render(<AssetLockDetailScreen />);
@@ -423,7 +420,7 @@ describe("AssetLockDetailScreen", () => {
     it("has aria label for private key display", async () => {
       const user = userEvent.setup();
       setupWallet();
-      mockWalletGetPrivateKey.mockResolvedValue({
+      vi.mocked(commands.walletGetPrivateKey).mockResolvedValue({
         status: "ok", data: "cWIFkey123456789",
       });
       render(<AssetLockDetailScreen />);

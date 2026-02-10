@@ -35,34 +35,14 @@ const mockTokenGetMintingConfig = vi.fn().mockResolvedValue({
   },
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null = null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null = null;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenMint: (...args: unknown[]) => mockTokenMint(...args),
-    tokenGetMintingConfig: (...args: unknown[]) => mockTokenGetMintingConfig(...args),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
-        return Promise.resolve(() => {
-          mockTaskResultListener = null;
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
-        return Promise.resolve(() => {
-          mockTaskErrorListener = null;
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -154,8 +134,8 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
 describe("TokenMintScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
+    vi.mocked(commands.tokenMint).mockImplementation(mockTokenMint);
+    vi.mocked(commands.tokenGetMintingConfig).mockImplementation(mockTokenGetMintingConfig);
     // Default: allow choosing destination, no default destination
     mockTokenGetMintingConfig.mockResolvedValue({
       status: "ok",
@@ -411,7 +391,8 @@ describe("TokenMintScreen", () => {
       await user.click(confirmBtn);
 
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-mint-1",
             resultType: "Token",
@@ -437,7 +418,8 @@ describe("TokenMintScreen", () => {
       await user.click(confirmBtn);
 
       await act(async () => {
-        mockTaskErrorListener?.({
+        const listener = vi.mocked(events.taskErrorEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-mint-1",
             message: "Minting not allowed",
@@ -462,7 +444,8 @@ describe("TokenMintScreen", () => {
       await user.click(confirmBtn);
 
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-mint-1",
             resultType: "Token",

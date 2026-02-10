@@ -41,53 +41,14 @@ const mockTokenUnfreeze = vi.fn().mockResolvedValue({
   data: { taskId: "task-unfreeze-1" },
 });
 
-const mockTaskResultListeners: Array<(event: { payload: unknown }) => void> = [];
-const mockTaskErrorListeners: Array<(event: { payload: unknown }) => void> = [];
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-/** Emit a task result to all registered listeners. */
-function emitTaskResult(payload: unknown) {
-  for (const listener of mockTaskResultListeners) {
-    listener({ payload });
-  }
-}
-
-/** Emit a task error to all registered listeners. */
-function emitTaskError(payload: unknown) {
-  for (const listener of mockTaskErrorListeners) {
-    listener({ payload });
-  }
-}
-
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenUnfreeze: (...args: unknown[]) => mockTokenUnfreeze(...args),
-    tokenQueryFrozenIdentities: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "frozen-query-1" },
-    }),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListeners.push(cb);
-        return Promise.resolve(() => {
-          const idx = mockTaskResultListeners.indexOf(cb);
-          if (idx >= 0) mockTaskResultListeners.splice(idx, 1);
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListeners.push(cb);
-        return Promise.resolve(() => {
-          const idx = mockTaskErrorListeners.indexOf(cb);
-          if (idx >= 0) mockTaskErrorListeners.splice(idx, 1);
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -176,6 +137,22 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
   };
 }
 
+/** Helper to emit a task result to all registered listeners. */
+function emitTaskResult(payload: unknown) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload });
+  }
+}
+
+/** Helper to emit a task error to all registered listeners. */
+function emitTaskError(payload: unknown) {
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload });
+  }
+}
+
 /** Simulate frozen identity query result arriving. */
 async function completeFrozenQuery(frozenIds: string[]) {
   // Wait for the dispatch to complete (sets taskIdRef.current)
@@ -197,8 +174,11 @@ async function completeFrozenQuery(frozenIds: string[]) {
 describe("TokenUnfreezeScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListeners.length = 0;
-    mockTaskErrorListeners.length = 0;
+    vi.mocked(commands.tokenUnfreeze).mockImplementation(mockTokenUnfreeze);
+    vi.mocked(commands.tokenQueryFrozenIdentities).mockResolvedValue({
+      status: "ok",
+      data: { taskId: "frozen-query-1" },
+    });
     currentSearch = {
       tokenId: "token-unfreeze-222",
       contractId: "contract-unfreeze-222",

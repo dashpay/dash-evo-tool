@@ -10,56 +10,14 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
 }));
 
-const mockCoreSendWalletPayment = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-123" },
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
-const mockWalletFundPlatform = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-456" },
-});
-const mockWalletTransferPlatform = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-789" },
-});
-const mockWalletWithdraw = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-withdraw" },
-});
-const mockIdentityWithdraw = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-identity" },
-});
-const mockIdentityListLocal = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: [],
-});
-const mockWalletNotifyUnlocked = vi.fn().mockResolvedValue(undefined);
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    coreSendWalletPayment: (...args: unknown[]) =>
-      mockCoreSendWalletPayment(...args),
-    walletFundPlatformAddressFromUtxos: (...args: unknown[]) =>
-      mockWalletFundPlatform(...args),
-    walletTransferPlatformCredits: (...args: unknown[]) =>
-      mockWalletTransferPlatform(...args),
-    walletWithdrawFromPlatformAddress: (...args: unknown[]) =>
-      mockWalletWithdraw(...args),
-    identityWithdraw: (...args: unknown[]) => mockIdentityWithdraw(...args),
-    identityListLocal: () => mockIdentityListLocal(),
-    walletNotifyUnlocked: (...args: unknown[]) =>
-      mockWalletNotifyUnlocked(...args),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-  },
-}));
+import { commands } from "@/bindings";
 
 // ─── Wallet store mock ──────────────────────────────────────────────
 
@@ -324,7 +282,7 @@ describe("SendScreen", () => {
     await user.click(sendBtn);
 
     await waitFor(() => {
-      expect(mockCoreSendWalletPayment).toHaveBeenCalledWith({
+      expect(commands.coreSendWalletPayment).toHaveBeenCalledWith({
         walletSeedHash: "abc123",
         recipients: [
           { address: "XpYv3N7gTGBL4fE3b1Y5eZ8kMqP9oQ2rU1", amount: 150_000_000 },
@@ -375,7 +333,7 @@ describe("SendScreen", () => {
     await user.click(sendBtn);
 
     await waitFor(() => {
-      expect(mockWalletFundPlatform).toHaveBeenCalledWith({
+      expect(commands.walletFundPlatformAddressFromUtxos).toHaveBeenCalledWith({
         walletSeedHash: "abc123",
         amount: 200_000_000,
         destination:
@@ -388,7 +346,7 @@ describe("SendScreen", () => {
   // ─── Error handling ───────────────────────────────────────────
 
   it("shows error when send fails", async () => {
-    mockCoreSendWalletPayment.mockResolvedValueOnce({
+    vi.mocked(commands.coreSendWalletPayment).mockResolvedValueOnce({
       status: "error",
       error: "Insufficient funds",
     });
@@ -412,7 +370,7 @@ describe("SendScreen", () => {
   });
 
   it("error banner can be dismissed", async () => {
-    mockCoreSendWalletPayment.mockResolvedValueOnce({
+    vi.mocked(commands.coreSendWalletPayment).mockResolvedValueOnce({
       status: "error",
       error: "Some error",
     });
@@ -478,7 +436,7 @@ describe("SendScreen", () => {
   // ─── Identity source ─────────────────────────────────────────
 
   it("renders identity source options when identities are loaded", async () => {
-    mockIdentityListLocal.mockResolvedValueOnce({
+    vi.mocked(commands.identityListLocal).mockResolvedValueOnce({
       status: "ok",
       data: [
         {
@@ -516,7 +474,7 @@ describe("SendScreen", () => {
   });
 
   it("shows identity can only withdraw to Core warning", async () => {
-    mockIdentityListLocal.mockResolvedValueOnce({
+    vi.mocked(commands.identityListLocal).mockResolvedValueOnce({
       status: "ok",
       data: [
         {
@@ -691,7 +649,7 @@ describe("SendScreen", () => {
   });
 
   it("error banner has alert role", async () => {
-    mockCoreSendWalletPayment.mockResolvedValueOnce({
+    vi.mocked(commands.coreSendWalletPayment).mockResolvedValueOnce({
       status: "error",
       error: "Test error",
     });

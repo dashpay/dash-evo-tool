@@ -19,37 +19,15 @@ vi.mock("@tanstack/react-router", () => ({
 const mockLoadIdentities = vi.fn().mockResolvedValue(null);
 const mockLoadWallets = vi.fn().mockResolvedValue(null);
 const mockLoadMyTokenBalances = vi.fn().mockResolvedValue(null);
-const mockWalletNotifyUnlocked = vi.fn().mockResolvedValue({ status: "ok" });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null =
-  null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null =
-  null;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    walletNotifyUnlocked: (...args: unknown[]) =>
-      mockWalletNotifyUnlocked(...args),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
-        return Promise.resolve(() => {
-          mockTaskResultListener = null;
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
-        return Promise.resolve(() => {
-          mockTaskErrorListener = null;
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -162,8 +140,10 @@ function setup(overrides: Partial<TokenOperationFormProps> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockTaskResultListener = null;
-  mockTaskErrorListener = null;
+  vi.mocked(commands.walletNotifyUnlocked).mockResolvedValue({
+    status: "ok",
+    data: null,
+  });
 });
 
 // ─── autoSelectKey helper ───────────────────────────────────────────────────
@@ -791,10 +771,9 @@ describe("TokenOperationForm — task event listeners", () => {
     expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
 
     // Simulate task result event
+    const resultListener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
     await act(async () => {
-      mockTaskResultListener?.({
-        payload: { taskId: "task-123", resultType: "Token" },
-      });
+      resultListener?.({ payload: { taskId: "task-123", resultType: "Token" } });
     });
 
     expect(screen.getByTestId("operation-success")).toBeInTheDocument();
@@ -807,10 +786,9 @@ describe("TokenOperationForm — task event listeners", () => {
     const { user } = setup({ onSubmit });
     await user.click(screen.getByTestId("operation-submit"));
 
+    const errorListener = vi.mocked(events.taskErrorEvent.listen).mock.calls[0]?.[0];
     await act(async () => {
-      mockTaskErrorListener?.({
-        payload: { taskId: "task-456", message: "Backend error occurred" },
-      });
+      errorListener?.({ payload: { taskId: "task-456", message: "Backend error occurred" } });
     });
 
     expect(screen.getByTestId("operation-error")).toBeInTheDocument();
@@ -824,10 +802,9 @@ describe("TokenOperationForm — task event listeners", () => {
     const { user } = setup({ onSubmit });
     await user.click(screen.getByTestId("operation-submit"));
 
+    const resultListener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
     await act(async () => {
-      mockTaskResultListener?.({
-        payload: { taskId: "different-task", resultType: "Token" },
-      });
+      resultListener?.({ payload: { taskId: "different-task", resultType: "Token" } });
     });
 
     // Should still be broadcasting
@@ -845,10 +822,9 @@ describe("TokenOperationForm — success screen", () => {
     const merged = { onSubmit, ...overrides };
     const { user } = setup(merged);
     await user.click(screen.getByTestId("operation-submit"));
+    const resultListener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
     await act(async () => {
-      mockTaskResultListener?.({
-        payload: { taskId: "task-s1", resultType: "Token" },
-      });
+      resultListener?.({ payload: { taskId: "task-s1", resultType: "Token" } });
     });
   }
 

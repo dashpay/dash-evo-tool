@@ -22,39 +22,16 @@ vi.mock("@tanstack/react-router", () => ({
     opts.select({ location: { search: currentSearch } }),
 }));
 
-const mockTokenQueryClaims = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-vc-1" },
+const mockTokenQueryClaims = vi.fn();
+
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null =
-  null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null =
-  null;
-
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenQueryClaims: (...args: unknown[]) => mockTokenQueryClaims(...args),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
-        return Promise.resolve(() => {
-          mockTaskResultListener = null;
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
-        return Promise.resolve(() => {
-          mockTaskErrorListener = null;
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -112,8 +89,6 @@ const sampleClaims = [
 describe("TokenViewClaimsScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
     currentSearch = {
       tokenId: "token-vc-111",
       contractId: "contract-vc-111",
@@ -123,6 +98,13 @@ describe("TokenViewClaimsScreen", () => {
       decimals: "8",
       identityId: "id-vc-identity",
     };
+    vi.mocked(commands.tokenQueryClaims).mockImplementation(
+      mockTokenQueryClaims,
+    );
+    mockTokenQueryClaims.mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-vc-1" },
+    });
   });
 
   // ── Rendering ────────────────────────────────────────────────────────
@@ -208,8 +190,10 @@ describe("TokenViewClaimsScreen", () => {
       const fetchBtn = screen.getByTestId("fetch-claims-button");
       await user.click(fetchBtn);
 
+      const listener = vi.mocked(events.taskResultEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskResultListener?.({
+        listener?.({
           payload: {
             taskId: "task-vc-1",
             resultType: "Document",
@@ -227,8 +211,10 @@ describe("TokenViewClaimsScreen", () => {
       const fetchBtn = screen.getByTestId("fetch-claims-button");
       await user.click(fetchBtn);
 
+      const listener = vi.mocked(events.taskResultEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskResultListener?.({
+        listener?.({
           payload: {
             taskId: "task-vc-1",
             resultType: "Document",
@@ -258,8 +244,10 @@ describe("TokenViewClaimsScreen", () => {
       const fetchBtn = screen.getByTestId("fetch-claims-button");
       await user.click(fetchBtn);
 
+      const listener = vi.mocked(events.taskResultEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskResultListener?.({
+        listener?.({
           payload: {
             taskId: "task-vc-1",
             resultType: "Document",
@@ -279,8 +267,10 @@ describe("TokenViewClaimsScreen", () => {
       const fetchBtn = screen.getByTestId("fetch-claims-button");
       await user.click(fetchBtn);
 
+      const listener = vi.mocked(events.taskResultEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskResultListener?.({
+        listener?.({
           payload: {
             taskId: "task-vc-1",
             resultType: "Document",
@@ -300,8 +290,10 @@ describe("TokenViewClaimsScreen", () => {
       const fetchBtn = screen.getByTestId("fetch-claims-button");
       await user.click(fetchBtn);
 
+      const listener = vi.mocked(events.taskResultEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskResultListener?.({
+        listener?.({
           payload: {
             taskId: "task-vc-1",
             resultType: "Document",
@@ -321,8 +313,10 @@ describe("TokenViewClaimsScreen", () => {
       const fetchBtn = screen.getByTestId("fetch-claims-button");
       await user.click(fetchBtn);
 
+      const listener = vi.mocked(events.taskErrorEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskErrorListener?.({
+        listener?.({
           payload: {
             taskId: "task-vc-1",
             message: "Network timeout fetching claims",
@@ -394,8 +388,10 @@ describe("TokenViewClaimsScreen", () => {
       const fetchBtn = screen.getByTestId("fetch-claims-button");
       await user.click(fetchBtn);
 
+      const listener = vi.mocked(events.taskResultEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskResultListener?.({
+        listener?.({
           payload: {
             taskId: "task-vc-1",
             resultType: "Document",

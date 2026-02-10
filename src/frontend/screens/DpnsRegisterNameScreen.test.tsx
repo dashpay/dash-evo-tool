@@ -13,51 +13,14 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
 }));
 
-// ─── Mock Tauri bindings ────────────────────────────────────────────
+// ─── Centralized mock bindings ───────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    identityListLocal: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    identityLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    identityGetById: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    identityRegisterDpnsName: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "task-1" },
-    }),
-    identityRefreshDpnsNames: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    identityLocalDpnsNames: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    contestedQueryDpnsContests: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: null,
-    }),
-    contestedGetScheduledVotes: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: [],
-    }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    walletUpdatedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    scheduledVoteExecutedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
 
 // Mock sonner toast
 const { mockToast } = vi.hoisted(() => ({
@@ -72,6 +35,8 @@ vi.mock("sonner", () => ({
   toast: mockToast,
   Toaster: () => null,
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ──────────────────────────────────────────────────
 
@@ -147,7 +112,7 @@ function resetStores() {
  * loadIdentities resolves with them. This avoids the loading spinner.
  */
 function setupWithIdentities(identities: QualifiedIdentityDto[]) {
-  mockCommands.identityListLocal.mockResolvedValue({
+  vi.mocked(commands.identityListLocal).mockResolvedValue({
     status: "ok",
     data: identities,
   });
@@ -162,30 +127,26 @@ function setup() {
 }
 
 function resetMockDefaults() {
-  mockCommands.identityListLocal.mockResolvedValue({ status: "ok", data: [] });
-  mockCommands.identityLoadOrder.mockResolvedValue({ status: "ok", data: [] });
-  mockCommands.identityGetById.mockResolvedValue({ status: "ok", data: null });
-  mockCommands.identityRegisterDpnsName.mockResolvedValue({
+  vi.mocked(commands.identityListLocal).mockResolvedValue({ status: "ok", data: [] });
+  vi.mocked(commands.identityLoadOrder).mockResolvedValue({ status: "ok", data: [] });
+  vi.mocked(commands.identityGetById).mockResolvedValue({ status: "ok", data: null });
+  vi.mocked(commands.identityRegisterDpnsName).mockResolvedValue({
     status: "ok",
     data: { taskId: "task-1" },
   });
-  mockCommands.identityRefreshDpnsNames.mockResolvedValue({
+  vi.mocked(commands.identityRefreshDpnsNames).mockResolvedValue({
     status: "ok",
     data: null,
   });
-  mockCommands.identityLocalDpnsNames.mockResolvedValue({ status: "ok", data: [] });
-  mockCommands.contestedQueryDpnsContests.mockResolvedValue({
+  vi.mocked(commands.identityLocalDpnsNames).mockResolvedValue({ status: "ok", data: [] });
+  vi.mocked(commands.contestedQueryDpnsContests).mockResolvedValue({
     status: "ok",
     data: null,
   });
-  mockCommands.contestedGetScheduledVotes.mockResolvedValue({
+  vi.mocked(commands.contestedGetScheduledVotes).mockResolvedValue({
     status: "ok",
     data: [],
   });
-  mockEvents.taskResultEvent.listen.mockResolvedValue(() => {});
-  mockEvents.taskErrorEvent.listen.mockResolvedValue(() => {});
-  mockEvents.walletUpdatedEvent.listen.mockResolvedValue(() => {});
-  mockEvents.scheduledVoteExecutedEvent.listen.mockResolvedValue(() => {});
 }
 
 beforeEach(() => {
@@ -236,7 +197,7 @@ describe("DpnsRegisterNameScreen — rendering", () => {
 
   it("shows no identities warning when no identities loaded", async () => {
     // Mock returns empty list so after loadIdentities completes, identities is []
-    mockCommands.identityListLocal.mockResolvedValue({ status: "ok", data: [] });
+    vi.mocked(commands.identityListLocal).mockResolvedValue({ status: "ok", data: [] });
     setup();
 
     // Wait for loadIdentities to complete and form to render
@@ -283,7 +244,7 @@ describe("DpnsRegisterNameScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockCommands.identityListLocal).toHaveBeenCalled();
+      expect(commands.identityListLocal).toHaveBeenCalled();
     });
   });
 
@@ -291,7 +252,7 @@ describe("DpnsRegisterNameScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
   });
 });
@@ -381,7 +342,7 @@ describe("DpnsRegisterNameScreen — registration", () => {
     await user.click(screen.getByTestId("register-btn"));
 
     await waitFor(() => {
-      expect(mockCommands.identityRegisterDpnsName).toHaveBeenCalledWith({
+      expect(commands.identityRegisterDpnsName).toHaveBeenCalledWith({
         identityId: identity.id,
         name: "testname99",
       });
@@ -390,7 +351,7 @@ describe("DpnsRegisterNameScreen — registration", () => {
 
   it("shows registering state after submit", async () => {
     // Make the command hang (never resolve)
-    mockCommands.identityRegisterDpnsName.mockReturnValue(new Promise(() => {}));
+    vi.mocked(commands.identityRegisterDpnsName).mockReturnValue(new Promise(() => {}));
 
     const identity = makeIdentity();
     setupWithIdentities([identity]);
@@ -487,7 +448,7 @@ describe("DpnsRegisterNameScreen — registration", () => {
     });
 
     // refreshDpnsNames calls identityRefreshDpnsNames
-    expect(mockCommands.identityRefreshDpnsNames).toHaveBeenCalled();
+    expect(commands.identityRefreshDpnsNames).toHaveBeenCalled();
   });
 
   it("reloads identity after successful registration", async () => {
@@ -507,11 +468,11 @@ describe("DpnsRegisterNameScreen — registration", () => {
     });
 
     // reloadIdentity calls identityGetById with the identity ID string
-    expect(mockCommands.identityGetById).toHaveBeenCalledWith(identity.id);
+    expect(commands.identityGetById).toHaveBeenCalledWith(identity.id);
   });
 
   it("shows error state on failed registration", async () => {
-    mockCommands.identityRegisterDpnsName.mockResolvedValue({
+    vi.mocked(commands.identityRegisterDpnsName).mockResolvedValue({
       status: "error",
       error: "Platform error: insufficient funds",
     });
@@ -534,7 +495,7 @@ describe("DpnsRegisterNameScreen — registration", () => {
   });
 
   it("shows error state on exception during registration", async () => {
-    mockCommands.identityRegisterDpnsName.mockRejectedValue(
+    vi.mocked(commands.identityRegisterDpnsName).mockRejectedValue(
       new Error("Network timeout"),
     );
 
@@ -626,7 +587,7 @@ describe("DpnsRegisterNameScreen — navigation", () => {
 
 describe("DpnsRegisterNameScreen — error dismissal", () => {
   it("returns to form state when error is dismissed", async () => {
-    mockCommands.identityRegisterDpnsName.mockResolvedValue({
+    vi.mocked(commands.identityRegisterDpnsName).mockResolvedValue({
       status: "error",
       error: "Some error",
     });

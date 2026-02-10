@@ -36,40 +36,16 @@ vi.mock("@tanstack/react-router", () => ({
     opts.select({ location: { search: currentSearch } }),
 }));
 
-const mockTokenUpdateConfig = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-config-1" },
+const mockTokenUpdateConfig = vi.fn();
+
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null =
-  null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null =
-  null;
-
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenUpdateConfig: (...args: unknown[]) => mockTokenUpdateConfig(...args),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
-        return Promise.resolve(() => {
-          mockTaskResultListener = null;
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
-        return Promise.resolve(() => {
-          mockTaskErrorListener = null;
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -170,8 +146,6 @@ async function selectChangeItem(
 describe("TokenUpdateConfigScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
     currentSearch = {
       tokenId: "token-config-111",
       contractId: "contract-config-111",
@@ -181,6 +155,13 @@ describe("TokenUpdateConfigScreen", () => {
       decimals: "8",
       identityId: "id-config-identity",
     };
+    vi.mocked(commands.tokenUpdateConfig).mockImplementation(
+      mockTokenUpdateConfig,
+    );
+    mockTokenUpdateConfig.mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-config-1" },
+    });
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────
@@ -409,8 +390,10 @@ describe("TokenUpdateConfigScreen", () => {
       });
       await user.click(confirmButton);
 
+      const listener = vi.mocked(events.taskResultEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskResultListener?.({
+        listener?.({
           payload: {
             taskId: "task-config-1",
             resultType: "Token",
@@ -437,8 +420,10 @@ describe("TokenUpdateConfigScreen", () => {
       });
       await user.click(confirmButton);
 
+      const listener = vi.mocked(events.taskErrorEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskErrorListener?.({
+        listener?.({
           payload: {
             taskId: "task-config-1",
             message: "Config update failed",
@@ -464,8 +449,10 @@ describe("TokenUpdateConfigScreen", () => {
       });
       await user.click(confirmButton);
 
+      const listener = vi.mocked(events.taskResultEvent.listen).mock
+        .calls[0]?.[0];
       await act(async () => {
-        mockTaskResultListener?.({
+        listener?.({
           payload: {
             taskId: "task-config-1",
             resultType: "Token",

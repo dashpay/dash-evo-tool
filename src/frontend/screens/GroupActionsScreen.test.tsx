@@ -20,81 +20,21 @@ import { useIdentityStore } from "@/stores/identityStore";
 import { useContractStore } from "@/stores/contractStore";
 import type { QualifiedIdentityDto, ContractSummaryDto } from "@/bindings";
 
-// ─── Hoisted mocks ─────────────────────────────────────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-type EventCallback = (event: { payload: unknown }) => void;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-const { mockCommands, mockEvents, eventListeners, mockNavigate } = vi.hoisted(
-  () => {
-    const eventListeners: Record<string, EventCallback[]> = {
-      taskResultEvent: [],
-      taskErrorEvent: [],
-    };
-
-    const mockEvents = {
-      taskResultEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskResultEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskResultEvent =
-              eventListeners.taskResultEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      taskErrorEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskErrorEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskErrorEvent =
-              eventListeners.taskErrorEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      walletUpdatedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    };
-
-    const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-      identityListLocal: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: [] }),
-      identityLoadOrder: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: [] }),
-      identityGetById: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: null }),
-      contractListLocal: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: [] }),
-      contractFetchActiveGroupActions: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-ga-1" } }),
-      walletListAll: vi.fn().mockResolvedValue({
-        status: "ok",
-        data: { hdWallets: [], singleKeyWallets: [] },
-      }),
-    };
-
-    const mockNavigate = vi.fn();
-
-    return { mockCommands, mockEvents, eventListeners, mockNavigate };
-  },
-);
+const { mockNavigate } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
-}));
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) return mockCommands[prop];
-      return vi
-        .fn()
-        .mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
 }));
 
 const { mockToast } = vi.hoisted(() => ({
@@ -113,6 +53,8 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/toastError", () => ({
   toastError: vi.fn(),
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ─────────────────────────────────────────────────
 
@@ -186,23 +128,23 @@ function setStoreData(
 }
 
 function emitTaskResult(taskId: string, payload: unknown) {
-  eventListeners.taskResultEvent.forEach((cb) =>
-    cb({
-      payload: {
-        taskId,
-        resultType: "Contract",
-        payload,
-      },
-    }),
-  );
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  const listener = calls[calls.length - 1]?.[0];
+  listener?.({
+    payload: {
+      taskId,
+      resultType: "Contract",
+      payload,
+    },
+  });
 }
 
 function emitTaskError(taskId: string, message: string) {
-  eventListeners.taskErrorEvent.forEach((cb) =>
-    cb({
-      payload: { taskId, message },
-    }),
-  );
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  const listener = calls[calls.length - 1]?.[0];
+  listener?.({
+    payload: { taskId, message },
+  });
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────
@@ -210,8 +152,6 @@ function emitTaskError(taskId: string, message: string) {
 describe("GroupActionsScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    eventListeners.taskResultEvent = [];
-    eventListeners.taskErrorEvent = [];
     setStoreData([], []);
   });
 
@@ -403,7 +343,7 @@ describe("GroupActionsScreen", () => {
       );
 
       expect(
-        mockCommands.contractFetchActiveGroupActions,
+        commands.contractFetchActiveGroupActions,
       ).toHaveBeenCalledWith({
         contractId: contract.id,
         identityId: identity.id,
@@ -476,7 +416,7 @@ describe("GroupActionsScreen", () => {
       ];
 
       act(() => {
-        emitTaskResult("task-ga-1", actions);
+        emitTaskResult("mock-task-id", actions);
       });
 
       await waitFor(() => {
@@ -507,7 +447,7 @@ describe("GroupActionsScreen", () => {
       );
 
       act(() => {
-        emitTaskResult("task-ga-1", []);
+        emitTaskResult("mock-task-id", []);
       });
 
       await waitFor(() => {
@@ -518,7 +458,7 @@ describe("GroupActionsScreen", () => {
     });
 
     it("shows error when IPC call fails", async () => {
-      mockCommands.contractFetchActiveGroupActions.mockResolvedValueOnce({
+      vi.mocked(commands.contractFetchActiveGroupActions).mockResolvedValueOnce({
         status: "error",
         error: "Contract not found",
       });
@@ -570,7 +510,7 @@ describe("GroupActionsScreen", () => {
       );
 
       act(() => {
-        emitTaskError("task-ga-1", "Identity is not a member of any group");
+        emitTaskError("mock-task-id", "Identity is not a member of any group");
       });
 
       await waitFor(() => {
@@ -581,7 +521,7 @@ describe("GroupActionsScreen", () => {
     });
 
     it("dismisses error when dismiss button clicked", async () => {
-      mockCommands.contractFetchActiveGroupActions.mockResolvedValueOnce({
+      vi.mocked(commands.contractFetchActiveGroupActions).mockResolvedValueOnce({
         status: "error",
         error: "Some error",
       });
@@ -670,15 +610,15 @@ describe("GroupActionsScreen", () => {
 
       // Emit with correct ID but wrong result type
       act(() => {
-        eventListeners.taskResultEvent.forEach((cb) =>
-          cb({
-            payload: {
-              taskId: "task-ga-1",
-              resultType: "Identity",
-              payload: [makeGroupAction()],
-            },
-          }),
-        );
+        const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+        const listener = calls[calls.length - 1]?.[0];
+        listener?.({
+          payload: {
+            taskId: "mock-task-id",
+            resultType: "Identity",
+            payload: [makeGroupAction()],
+          },
+        });
       });
 
       // Should still be fetching
@@ -686,7 +626,7 @@ describe("GroupActionsScreen", () => {
     });
 
     it("handles IPC exception gracefully", async () => {
-      mockCommands.contractFetchActiveGroupActions.mockRejectedValueOnce(
+      vi.mocked(commands.contractFetchActiveGroupActions).mockRejectedValueOnce(
         new Error("Network error"),
       );
 
@@ -741,7 +681,7 @@ describe("GroupActionsScreen", () => {
       );
 
       act(() => {
-        emitTaskResult("task-ga-1", actions);
+        emitTaskResult("mock-task-id", actions);
       });
 
       await waitFor(() => {
@@ -817,7 +757,7 @@ describe("GroupActionsScreen", () => {
 
       // Wait for event listeners to be set up
       await waitFor(() => {
-        expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+        expect(events.taskResultEvent.listen).toHaveBeenCalled();
       });
 
       await userEvent.click(
@@ -836,7 +776,7 @@ describe("GroupActionsScreen", () => {
       );
 
       act(() => {
-        emitTaskResult("task-ga-1", actions);
+        emitTaskResult("mock-task-id", actions);
       });
 
       await waitFor(() => {
@@ -922,7 +862,7 @@ describe("GroupActionsScreen", () => {
       );
 
       act(() => {
-        emitTaskResult("task-ga-1", [action]);
+        emitTaskResult("mock-task-id", [action]);
       });
 
       await waitFor(() => {
@@ -1020,7 +960,7 @@ describe("GroupActionsScreen", () => {
       render(<GroupActionsScreen />);
 
       await waitFor(() => {
-        expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+        expect(events.taskResultEvent.listen).toHaveBeenCalled();
       });
     });
 
@@ -1028,7 +968,7 @@ describe("GroupActionsScreen", () => {
       render(<GroupActionsScreen />);
 
       await waitFor(() => {
-        expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+        expect(events.taskErrorEvent.listen).toHaveBeenCalled();
       });
     });
   });
@@ -1086,7 +1026,7 @@ describe("GroupActionsScreen", () => {
       await setupAndFetch();
 
       act(() => {
-        emitTaskResult("task-ga-1", [
+        emitTaskResult("mock-task-id", [
           {
             groupPosition: 0,
             actionId: "parsed-array-1",
@@ -1107,7 +1047,7 @@ describe("GroupActionsScreen", () => {
       await setupAndFetch();
 
       act(() => {
-        emitTaskResult("task-ga-1", null);
+        emitTaskResult("mock-task-id", null);
       });
 
       await waitFor(() => {
@@ -1121,7 +1061,7 @@ describe("GroupActionsScreen", () => {
       await setupAndFetch();
 
       act(() => {
-        emitTaskResult("task-ga-1", [
+        emitTaskResult("mock-task-id", [
           {
             groupPosition: 1,
             actionId: "camel-case-id",
@@ -1143,7 +1083,7 @@ describe("GroupActionsScreen", () => {
       await setupAndFetch();
 
       act(() => {
-        emitTaskResult("task-ga-1", [
+        emitTaskResult("mock-task-id", [
           {
             group_position: 1,
             action_id: "snake-case-id",
@@ -1207,7 +1147,7 @@ describe("GroupActionsScreen", () => {
       );
 
       act(() => {
-        emitTaskResult("task-ga-1", [makeGroupAction()]);
+        emitTaskResult("mock-task-id", [makeGroupAction()]);
       });
 
       await waitFor(() => {

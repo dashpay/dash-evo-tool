@@ -1,18 +1,15 @@
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createMockBindings, mockBindingsModule } from "@/test/mock-ipc";
+import { createMockSettings } from "@/test/fixtures";
 import { ThemeProvider, useTheme } from "./ThemeProvider";
 
-// Mock the bindings module
-vi.mock("@/bindings", () => ({
-  commands: {
-    settingsGet: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { themeMode: "system" },
-    }),
-    systemUpdateTheme: vi.fn().mockResolvedValue({ taskId: "1" }),
-  },
-}));
+// Mock the bindings module using centralized mock infrastructure
+vi.mock("@/bindings", () => {
+  const initial = createMockBindings();
+  return mockBindingsModule(initial);
+});
 
 // Helper component to expose theme context in tests
 function ThemeConsumer() {
@@ -154,19 +151,7 @@ describe("ThemeProvider", () => {
     const { commands } = await import("@/bindings");
     vi.mocked(commands.settingsGet).mockResolvedValueOnce({
       status: "ok",
-      data: {
-        themeMode: "dark",
-        network: "dash",
-        overwriteDashConf: false,
-        disableZmq: false,
-        onboardingCompleted: false,
-        showEvonodeTools: false,
-        userMode: "basic",
-        closeDashQtOnExit: false,
-        coreBackendMode: "spv",
-        hasPassword: false,
-        dashQtPath: null,
-      },
+      data: createMockSettings({ themeMode: "dark" }),
     });
 
     render(

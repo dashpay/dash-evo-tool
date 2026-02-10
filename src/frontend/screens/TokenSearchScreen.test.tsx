@@ -6,47 +6,14 @@ import { renderWithProviders } from "@/test/router-utils";
 
 // ─── Mock Tauri bindings ──────────────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    tokenQueryMyBalances: vi.fn().mockResolvedValue({ taskId: "task-1" }),
-    tokenQueryDescriptionsByKeyword: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "search-task-1" },
-    }),
-    tokenFetchByContractId: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "fetch-task-1" },
-    }),
-    tokenSaveLocally: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "save-task-1" },
-    }),
-    tokenRemove: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    tokenLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    tokenSaveOrder: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contractFetchWithDescriptions: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { taskId: "contract-task-1" },
-    }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
+import { commands, events } from "@/bindings";
 
 // Mock sonner
 const { mockToast } = vi.hoisted(() => ({
@@ -172,7 +139,7 @@ describe("TokenSearchScreen — search flow", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.tokenQueryDescriptionsByKeyword,
+        vi.mocked(commands.tokenQueryDescriptionsByKeyword),
       ).toHaveBeenCalledWith({
         keyword: "dash",
         startAfter: null,
@@ -191,7 +158,7 @@ describe("TokenSearchScreen — search flow", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.tokenQueryDescriptionsByKeyword,
+        vi.mocked(commands.tokenQueryDescriptionsByKeyword),
       ).toHaveBeenCalledWith({
         keyword: "token",
         startAfter: null,
@@ -236,17 +203,17 @@ describe("TokenSearchScreen — event subscription", () => {
   it("subscribes to task result events on mount", async () => {
     renderScreen();
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
   });
 
   it("unsubscribes from events on unmount", async () => {
     const mockUnsubscribe = vi.fn();
-    mockEvents.taskResultEvent.listen.mockResolvedValue(mockUnsubscribe);
+    vi.mocked(events.taskResultEvent.listen).mockResolvedValue(mockUnsubscribe);
 
     const { unmount } = renderScreen();
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
     });
     unmount();
     await waitFor(() => {

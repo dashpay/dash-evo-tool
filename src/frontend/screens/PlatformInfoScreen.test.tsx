@@ -3,71 +3,22 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PlatformInfoScreen } from "./PlatformInfoScreen";
 
-// ─── Hoisted mocks (required for vi.mock factory) ─────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-type EventCallback = (event: { payload: unknown }) => void;
-
-const { mockCommands, mockEvents, eventListeners, mockNavigate } = vi.hoisted(
-  () => {
-    const eventListeners: Record<string, EventCallback[]> = {
-      taskResultEvent: [],
-      taskErrorEvent: [],
-    };
-
-    const mockEvents = {
-      taskResultEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskResultEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskResultEvent =
-              eventListeners.taskResultEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      taskErrorEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskErrorEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskErrorEvent =
-              eventListeners.taskErrorEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-    };
-
-    const mockCommands = {
-      platformBasicInfo: vi.fn().mockResolvedValue({ taskId: "task-1" }),
-      platformCurrentEpochInfo: vi
-        .fn()
-        .mockResolvedValue({ taskId: "task-2" }),
-      platformTotalCredits: vi.fn().mockResolvedValue({ taskId: "task-3" }),
-      platformVersionVotingState: vi
-        .fn()
-        .mockResolvedValue({ taskId: "task-4" }),
-      platformValidatorSetInfo: vi
-        .fn()
-        .mockResolvedValue({ taskId: "task-5" }),
-      platformWithdrawalsInQueue: vi
-        .fn()
-        .mockResolvedValue({ taskId: "task-6" }),
-      platformRecentlyCompletedWithdrawals: vi
-        .fn()
-        .mockResolvedValue({ taskId: "task-7" }),
-    };
-
-    const mockNavigate = vi.fn();
-
-    return { mockCommands, mockEvents, eventListeners, mockNavigate };
-  },
-);
+const { mocks, mockNavigate } = await vi.hoisted(async () => {
+  const { createMockBindings } = await import("../test/mock-ipc");
+  const initial = createMockBindings();
+  const mockNavigate = vi.fn();
+  return { mocks: initial, mockNavigate };
+});
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
 }));
 
 vi.mock("@/bindings", () => ({
-  commands: mockCommands,
-  events: mockEvents,
+  commands: mocks.commands,
+  events: mocks.events,
 }));
 
 vi.mock("sonner", () => ({
@@ -81,17 +32,13 @@ vi.mock("sonner", () => ({
 
 function fireTaskResult(payload: unknown) {
   act(() => {
-    for (const listener of eventListeners.taskResultEvent) {
-      listener({ payload });
-    }
+    mocks.emitMockEvent("taskResultEvent", payload);
   });
 }
 
 function fireTaskError(payload: unknown) {
   act(() => {
-    for (const listener of eventListeners.taskErrorEvent) {
-      listener({ payload });
-    }
+    mocks.emitMockEvent("taskErrorEvent", payload);
   });
 }
 
@@ -100,8 +47,10 @@ function fireTaskError(payload: unknown) {
 describe("PlatformInfoScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    eventListeners.taskResultEvent = [];
-    eventListeners.taskErrorEvent = [];
+    // Clear event listener arrays so each test starts fresh
+    for (const arr of mocks.eventListeners.values()) {
+      arr.length = 0;
+    }
   });
 
   it("renders the page title and subtitle", () => {
@@ -141,7 +90,7 @@ describe("PlatformInfoScreen", () => {
     const card = screen.getByText("Basic Platform Info").closest("button")!;
     await user.click(card);
 
-    expect(mockCommands.platformBasicInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.commands.platformBasicInfo).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches epoch info command when clicked", async () => {
@@ -151,7 +100,7 @@ describe("PlatformInfoScreen", () => {
     const card = screen.getByText("Current Epoch Info").closest("button")!;
     await user.click(card);
 
-    expect(mockCommands.platformCurrentEpochInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.commands.platformCurrentEpochInfo).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches total credits command when clicked", async () => {
@@ -163,7 +112,7 @@ describe("PlatformInfoScreen", () => {
       .closest("button")!;
     await user.click(card);
 
-    expect(mockCommands.platformTotalCredits).toHaveBeenCalledTimes(1);
+    expect(mocks.commands.platformTotalCredits).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches version voting command when clicked", async () => {
@@ -173,7 +122,7 @@ describe("PlatformInfoScreen", () => {
     const card = screen.getByText("Version Voting State").closest("button")!;
     await user.click(card);
 
-    expect(mockCommands.platformVersionVotingState).toHaveBeenCalledTimes(1);
+    expect(mocks.commands.platformVersionVotingState).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches validator set command when clicked", async () => {
@@ -183,7 +132,7 @@ describe("PlatformInfoScreen", () => {
     const card = screen.getByText("Validator Set Info").closest("button")!;
     await user.click(card);
 
-    expect(mockCommands.platformValidatorSetInfo).toHaveBeenCalledTimes(1);
+    expect(mocks.commands.platformValidatorSetInfo).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches withdrawals in queue command when clicked", async () => {
@@ -193,7 +142,7 @@ describe("PlatformInfoScreen", () => {
     const card = screen.getByText("Withdrawals in Queue").closest("button")!;
     await user.click(card);
 
-    expect(mockCommands.platformWithdrawalsInQueue).toHaveBeenCalledTimes(1);
+    expect(mocks.commands.platformWithdrawalsInQueue).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches recently completed withdrawals command when clicked", async () => {
@@ -206,7 +155,7 @@ describe("PlatformInfoScreen", () => {
     await user.click(card);
 
     expect(
-      mockCommands.platformRecentlyCompletedWithdrawals,
+      mocks.commands.platformRecentlyCompletedWithdrawals,
     ).toHaveBeenCalledTimes(1);
   });
 
@@ -235,14 +184,14 @@ describe("PlatformInfoScreen", () => {
     render(<PlatformInfoScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const card = screen.getByText("Basic Platform Info").closest("button")!;
     await user.click(card);
 
     fireTaskResult({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       resultType: "Platform",
       payload: {
         type: "text",
@@ -264,14 +213,14 @@ describe("PlatformInfoScreen", () => {
     render(<PlatformInfoScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskErrorEvent.listen).toHaveBeenCalled();
     });
 
     const card = screen.getByText("Basic Platform Info").closest("button")!;
     await user.click(card);
 
     fireTaskError({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       message: "Network connection failed",
       details: "timeout",
       recoverable: true,
@@ -296,7 +245,7 @@ describe("PlatformInfoScreen", () => {
     render(<PlatformInfoScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const card = screen.getByText("Basic Platform Info").closest("button")!;
@@ -304,7 +253,7 @@ describe("PlatformInfoScreen", () => {
     expect(card).toBeDisabled();
 
     fireTaskResult({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       resultType: "Platform",
       payload: {
         type: "text",
@@ -323,7 +272,7 @@ describe("PlatformInfoScreen", () => {
     render(<PlatformInfoScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskErrorEvent.listen).toHaveBeenCalled();
     });
 
     const card = screen.getByText("Basic Platform Info").closest("button")!;
@@ -331,7 +280,7 @@ describe("PlatformInfoScreen", () => {
     expect(card).toBeDisabled();
 
     fireTaskError({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       message: "Some error",
       details: "",
       recoverable: false,
@@ -356,8 +305,8 @@ describe("PlatformInfoScreen", () => {
     render(<PlatformInfoScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalledTimes(1);
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalledTimes(1);
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalledTimes(1);
+      expect(mocks.events.taskErrorEvent.listen).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -366,7 +315,7 @@ describe("PlatformInfoScreen", () => {
     render(<PlatformInfoScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const card = screen.getByText("Basic Platform Info").closest("button")!;
@@ -374,7 +323,7 @@ describe("PlatformInfoScreen", () => {
 
     // Fire an Identity result — should be ignored
     fireTaskResult({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       resultType: "Identity",
       payload: null,
     });
@@ -385,7 +334,7 @@ describe("PlatformInfoScreen", () => {
 
   it("handles dispatch errors gracefully", async () => {
     const user = userEvent.setup();
-    mockCommands.platformBasicInfo.mockRejectedValueOnce(
+    mocks.commands.platformBasicInfo.mockRejectedValueOnce(
       new Error("IPC unavailable"),
     );
 

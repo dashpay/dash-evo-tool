@@ -9,19 +9,13 @@ vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
 }));
 
-// Mock bindings
-vi.mock("@/bindings", () => ({
-  commands: {
-    walletImportMnemonic: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { seedHash: "abc123", alias: "Imported Wallet" },
-    }),
-    walletImportPrivateKey: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { keyHash: "def456", alias: "Imported Key", address: "Xabc..." },
-    }),
-  },
-}));
+// Mock bindings (centralized)
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
 // Mock wallet store
 const mockLoadWallets = vi.fn().mockResolvedValue(undefined);

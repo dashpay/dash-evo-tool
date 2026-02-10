@@ -1,39 +1,38 @@
+/**
+ * identityStore tests — using centralized mock IPC + fixture factories.
+ *
+ * Pattern:
+ * 1. createMockBindings() provides defaults for all 181 commands + 8 events
+ * 2. Override specific commands needed by the store under test
+ * 3. Use fixture factories instead of inline makers
+ */
+
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
-import { useIdentityStore } from "./identityStore";
-import type { QualifiedIdentityDto, TaskResultEvent } from "../bindings";
+import {
+  createMockBindings,
+  mockBindingsModule,
+} from "@/test/mock-ipc";
+import { createMockIdentity } from "@/test/fixtures";
+import type { TaskResultEvent } from "../bindings";
 
-// ─── Mock bindings ──────────────────────────────────────────────────
+// ─── Mock bindings (centralized) ────────────────────────────────────
 
-vi.mock("../bindings", () => ({
-  commands: {
-    identityListLocal: vi.fn(),
-    identityLoadOrder: vi.fn(),
-    identityGetById: vi.fn(),
-    identitySetAlias: vi.fn(),
-    identitySaveOrder: vi.fn(),
-    identityDelete: vi.fn(),
-    identityRefresh: vi.fn(),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-  },
-}));
+vi.mock("../bindings", () => {
+  const initial = createMockBindings();
+  return mockBindingsModule(initial);
+});
 
 import { commands, events } from "../bindings";
+import { useIdentityStore } from "./identityStore";
 
-// ─── Test fixtures ──────────────────────────────────────────────────
+// ─── Test-local defaults ────────────────────────────────────────────
+// The centralized fixtures use different default values. These helpers
+// provide the same defaults as the original inline test makers for
+// backward-compatible assertions.
 
-function makeIdentity(
-  overrides?: Partial<QualifiedIdentityDto>,
-): QualifiedIdentityDto {
-  return {
+function mi(o?: Partial<Parameters<typeof createMockIdentity>[0]>) {
+  return createMockIdentity({
     id: "aabb001122",
-    identityType: "user",
     alias: "Alice",
     balance: 500000000,
     keys: [],
@@ -45,34 +44,30 @@ function makeIdentity(
     network: "testnet",
     voterIdentityId: null,
     operatorIdentityId: null,
-    ...overrides,
-  };
+    ...o,
+  });
 }
 
-function makeIdentity2(
-  overrides?: Partial<QualifiedIdentityDto>,
-): QualifiedIdentityDto {
-  return makeIdentity({
+function mi2(o?: Partial<Parameters<typeof createMockIdentity>[0]>) {
+  return mi({
     id: "ccdd003344",
     alias: "Bob",
     balance: 200000000,
     associatedWalletHashes: ["wallethash2"],
     walletIndex: 1,
-    ...overrides,
+    ...o,
   });
 }
 
-function makeIdentity3(
-  overrides?: Partial<QualifiedIdentityDto>,
-): QualifiedIdentityDto {
-  return makeIdentity({
+function mi3(o?: Partial<Parameters<typeof createMockIdentity>[0]>) {
+  return mi({
     id: "eeff005566",
     alias: "Charlie",
     balance: 100000000,
     identityType: "masternode",
     associatedWalletHashes: [],
     walletIndex: null,
-    ...overrides,
+    ...o,
   });
 }
 
@@ -117,7 +112,7 @@ describe("identityStore", () => {
 
   describe("loadIdentities", () => {
     it("loads identities from backend on success", async () => {
-      const identities = [makeIdentity(), makeIdentity2()];
+      const identities = [mi(), mi2()];
       (commands.identityListLocal as Mock).mockResolvedValue({
         status: "ok",
         data: identities,
@@ -156,9 +151,9 @@ describe("identityStore", () => {
     });
 
     it("applies saved custom order", async () => {
-      const id1 = makeIdentity({ id: "aaa" });
-      const id2 = makeIdentity2({ id: "bbb" });
-      const id3 = makeIdentity3({ id: "ccc" });
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
+      const id3 = mi3({ id: "ccc" });
 
       (commands.identityListLocal as Mock).mockResolvedValue({
         status: "ok",
@@ -182,9 +177,9 @@ describe("identityStore", () => {
     });
 
     it("handles identities not in saved order (appends them)", async () => {
-      const id1 = makeIdentity({ id: "aaa" });
-      const id2 = makeIdentity2({ id: "bbb" });
-      const id3 = makeIdentity3({ id: "ccc" });
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
+      const id3 = mi3({ id: "ccc" });
 
       (commands.identityListLocal as Mock).mockResolvedValue({
         status: "ok",
@@ -303,7 +298,7 @@ describe("identityStore", () => {
 
   describe("refreshAllIdentities", () => {
     it("dispatches refresh for all identities", async () => {
-      const identities = [makeIdentity(), makeIdentity2()];
+      const identities = [mi(), mi2()];
       useIdentityStore.setState({ identities });
       (commands.identityRefresh as Mock).mockResolvedValue({
         status: "ok",
@@ -328,7 +323,7 @@ describe("identityStore", () => {
     });
 
     it("sets refreshingAll=true during refresh", async () => {
-      useIdentityStore.setState({ identities: [makeIdentity()] });
+      useIdentityStore.setState({ identities: [mi()] });
       (commands.identityRefresh as Mock).mockResolvedValue({
         status: "ok",
         data: { taskId: "t1" },
@@ -344,7 +339,7 @@ describe("identityStore", () => {
   describe("setAlias", () => {
     it("updates alias on success", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity({ alias: "Old" })],
+        identities: [mi({ alias: "Old" })],
       });
       (commands.identitySetAlias as Mock).mockResolvedValue({
         status: "ok",
@@ -364,7 +359,7 @@ describe("identityStore", () => {
 
     it("clears alias when passing null", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity({ alias: "Old" })],
+        identities: [mi({ alias: "Old" })],
       });
       (commands.identitySetAlias as Mock).mockResolvedValue({
         status: "ok",
@@ -378,7 +373,7 @@ describe("identityStore", () => {
 
     it("does not update on failure", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity({ alias: "Original" })],
+        identities: [mi({ alias: "Original" })],
       });
       (commands.identitySetAlias as Mock).mockResolvedValue({
         status: "error",
@@ -396,8 +391,8 @@ describe("identityStore", () => {
 
   describe("reorderIdentityUp", () => {
     it("moves identity up in the list", async () => {
-      const id1 = makeIdentity({ id: "aaa" });
-      const id2 = makeIdentity2({ id: "bbb" });
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
       useIdentityStore.setState({ identities: [id1, id2] });
       (commands.identitySaveOrder as Mock).mockResolvedValue({
         status: "ok",
@@ -412,8 +407,8 @@ describe("identityStore", () => {
     });
 
     it("persists the new order", async () => {
-      const id1 = makeIdentity({ id: "aaa" });
-      const id2 = makeIdentity2({ id: "bbb" });
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
       useIdentityStore.setState({ identities: [id1, id2] });
       (commands.identitySaveOrder as Mock).mockResolvedValue({
         status: "ok",
@@ -428,8 +423,8 @@ describe("identityStore", () => {
     });
 
     it("does nothing for first identity", async () => {
-      const id1 = makeIdentity({ id: "aaa" });
-      const id2 = makeIdentity2({ id: "bbb" });
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
       useIdentityStore.setState({ identities: [id1, id2] });
 
       await useIdentityStore.getState().reorderIdentityUp("aaa");
@@ -440,7 +435,7 @@ describe("identityStore", () => {
     });
 
     it("does nothing for unknown identity", async () => {
-      useIdentityStore.setState({ identities: [makeIdentity()] });
+      useIdentityStore.setState({ identities: [mi()] });
 
       await useIdentityStore.getState().reorderIdentityUp("unknown");
 
@@ -450,8 +445,8 @@ describe("identityStore", () => {
 
   describe("reorderIdentityDown", () => {
     it("moves identity down in the list", async () => {
-      const id1 = makeIdentity({ id: "aaa" });
-      const id2 = makeIdentity2({ id: "bbb" });
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
       useIdentityStore.setState({ identities: [id1, id2] });
       (commands.identitySaveOrder as Mock).mockResolvedValue({
         status: "ok",
@@ -465,8 +460,8 @@ describe("identityStore", () => {
     });
 
     it("does nothing for last identity", async () => {
-      const id1 = makeIdentity({ id: "aaa" });
-      const id2 = makeIdentity2({ id: "bbb" });
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
       useIdentityStore.setState({ identities: [id1, id2] });
 
       await useIdentityStore.getState().reorderIdentityDown("bbb");
@@ -480,7 +475,7 @@ describe("identityStore", () => {
   describe("removeIdentity", () => {
     it("removes an identity from the store", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity({ id: "aaa" }), makeIdentity2({ id: "bbb" })],
+        identities: [mi({ id: "aaa" }), mi2({ id: "bbb" })],
       });
       (commands.identityDelete as Mock).mockResolvedValue({
         status: "ok",
@@ -500,7 +495,7 @@ describe("identityStore", () => {
 
     it("deselects if the removed identity was selected", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity()],
+        identities: [mi()],
         selectedIdentityId: "aabb001122",
       });
       (commands.identityDelete as Mock).mockResolvedValue({
@@ -519,7 +514,7 @@ describe("identityStore", () => {
 
     it("keeps selection if a different identity was removed", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity({ id: "aaa" }), makeIdentity2({ id: "bbb" })],
+        identities: [mi({ id: "aaa" }), mi2({ id: "bbb" })],
         selectedIdentityId: "aaa",
       });
       (commands.identityDelete as Mock).mockResolvedValue({
@@ -538,7 +533,7 @@ describe("identityStore", () => {
 
     it("persists updated order after removal", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity({ id: "aaa" }), makeIdentity2({ id: "bbb" })],
+        identities: [mi({ id: "aaa" }), mi2({ id: "bbb" })],
       });
       (commands.identityDelete as Mock).mockResolvedValue({
         status: "ok",
@@ -558,7 +553,7 @@ describe("identityStore", () => {
 
     it("sets error on failure without removing", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity()],
+        identities: [mi()],
       });
       (commands.identityDelete as Mock).mockResolvedValue({
         status: "error",
@@ -576,9 +571,9 @@ describe("identityStore", () => {
     it("sorts by alias ascending when switching from different column", () => {
       useIdentityStore.setState({
         identities: [
-          makeIdentity({ id: "1", alias: "Charlie" }),
-          makeIdentity({ id: "2", alias: "Alice" }),
-          makeIdentity({ id: "3", alias: "Bob" }),
+          mi({ id: "1", alias: "Charlie" }),
+          mi({ id: "2", alias: "Alice" }),
+          mi({ id: "3", alias: "Bob" }),
         ],
         sortColumn: "balance", // Different column so alias click starts ascending
       });
@@ -595,9 +590,9 @@ describe("identityStore", () => {
     it("toggles to descending on same column click", () => {
       useIdentityStore.setState({
         identities: [
-          makeIdentity({ id: "1", alias: "Alice" }),
-          makeIdentity({ id: "2", alias: "Charlie" }),
-          makeIdentity({ id: "3", alias: "Bob" }),
+          mi({ id: "1", alias: "Alice" }),
+          mi({ id: "2", alias: "Charlie" }),
+          mi({ id: "3", alias: "Bob" }),
         ],
         sortColumn: "alias",
         sortOrder: "ascending",
@@ -615,9 +610,9 @@ describe("identityStore", () => {
     it("sorts by balance", () => {
       useIdentityStore.setState({
         identities: [
-          makeIdentity({ id: "1", balance: 300 }),
-          makeIdentity({ id: "2", balance: 100 }),
-          makeIdentity({ id: "3", balance: 200 }),
+          mi({ id: "1", balance: 300 }),
+          mi({ id: "2", balance: 100 }),
+          mi({ id: "3", balance: 200 }),
         ],
       });
 
@@ -632,9 +627,9 @@ describe("identityStore", () => {
     it("sorts by type", () => {
       useIdentityStore.setState({
         identities: [
-          makeIdentity({ id: "1", identityType: "user" }),
-          makeIdentity({ id: "2", identityType: "evonode" }),
-          makeIdentity({ id: "3", identityType: "masternode" }),
+          mi({ id: "1", identityType: "user" }),
+          mi({ id: "2", identityType: "evonode" }),
+          mi({ id: "3", identityType: "masternode" }),
         ],
       });
 
@@ -650,7 +645,7 @@ describe("identityStore", () => {
       useIdentityStore.setState({
         sortColumn: "alias",
         sortOrder: "descending",
-        identities: [makeIdentity()],
+        identities: [mi()],
       });
 
       useIdentityStore.getState().setSortColumn("balance");
@@ -663,9 +658,9 @@ describe("identityStore", () => {
   describe("reloadIdentity", () => {
     it("updates an existing identity in the store", async () => {
       useIdentityStore.setState({
-        identities: [makeIdentity({ balance: 100 })],
+        identities: [mi({ balance: 100 })],
       });
-      const updated = makeIdentity({ balance: 999 });
+      const updated = mi({ balance: 999 });
       (commands.identityGetById as Mock).mockResolvedValue({
         status: "ok",
         data: updated,
@@ -679,8 +674,8 @@ describe("identityStore", () => {
     });
 
     it("appends a new identity if not found in store", async () => {
-      useIdentityStore.setState({ identities: [makeIdentity()] });
-      const newId = makeIdentity2({ id: "new999" });
+      useIdentityStore.setState({ identities: [mi()] });
+      const newId = mi2({ id: "new999" });
       (commands.identityGetById as Mock).mockResolvedValue({
         status: "ok",
         data: newId,
@@ -702,7 +697,7 @@ describe("identityStore", () => {
     });
 
     it("does nothing if identity not found on backend", async () => {
-      useIdentityStore.setState({ identities: [makeIdentity()] });
+      useIdentityStore.setState({ identities: [mi()] });
       (commands.identityGetById as Mock).mockResolvedValue({
         status: "ok",
         data: null,
@@ -751,7 +746,7 @@ describe("identityStore", () => {
     });
 
     it("reloads identity when task result has identityId", async () => {
-      const identity = makeIdentity({ id: "aabb001122" });
+      const identity = mi({ id: "aabb001122" });
       useIdentityStore.setState({
         identities: [identity],
         refreshingIds: new Set(["aabb001122"]),
@@ -766,7 +761,7 @@ describe("identityStore", () => {
       );
       (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
 
-      const updatedIdentity = makeIdentity({
+      const updatedIdentity = mi({
         id: "aabb001122",
         balance: 999,
       });

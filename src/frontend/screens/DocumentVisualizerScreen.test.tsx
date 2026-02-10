@@ -18,20 +18,17 @@ if (!Element.prototype.scrollIntoView) {
   Element.prototype.scrollIntoView = () => {};
 }
 
-// ─── Hoisted mocks ──────────────────────────────────────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-const { mockCommands, mockNavigate } = vi.hoisted(() => {
-  const mockCommands = {
-    contractListLocal: vi.fn(),
-    contractGetById: vi.fn(),
-    parseDocument: vi.fn(),
-  };
-  const mockNavigate = vi.fn();
-  return { mockCommands, mockNavigate };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-vi.mock("@/bindings", () => ({
-  commands: mockCommands,
+const { mockNavigate } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -49,6 +46,8 @@ vi.mock("@/components/theme/ThemeProvider", () => ({
     setTheme: () => {},
   }),
 }));
+
+import { commands } from "@/bindings";
 
 // ─── Test data ──────────────────────────────────────────────────────
 
@@ -85,13 +84,13 @@ describe("DocumentVisualizerScreen", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
 
     // Default: return contracts list
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: mockContracts,
     });
 
     // Default: return contract detail when requested
-    mockCommands.contractGetById.mockResolvedValue({
+    vi.mocked(commands.contractGetById).mockResolvedValue({
       status: "ok",
       data: mockContractDetail,
     });
@@ -114,7 +113,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalledTimes(1);
+      expect(commands.contractListLocal).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -172,7 +171,7 @@ describe("DocumentVisualizerScreen", () => {
 
     // Wait for contracts to load
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select a contract
@@ -185,7 +184,7 @@ describe("DocumentVisualizerScreen", () => {
 
     // Document type selector should now be enabled
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalledWith(
+      expect(commands.contractGetById).toHaveBeenCalledWith(
         mockContracts[0].id,
       );
     });
@@ -201,7 +200,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select a contract
@@ -212,7 +211,7 @@ describe("DocumentVisualizerScreen", () => {
     await user.click(screen.getByRole("option", { name: "DPNS" }));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalled();
+      expect(commands.contractGetById).toHaveBeenCalled();
     });
 
     // Open doc type selector
@@ -231,7 +230,7 @@ describe("DocumentVisualizerScreen", () => {
   it("calls parseDocument with all required parameters", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDocument.mockResolvedValue({
+    vi.mocked(commands.parseDocument).mockResolvedValue({
       status: "ok",
       data: { json: '{"$id": "doc123"}' },
     });
@@ -239,7 +238,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select contract
@@ -250,7 +249,7 @@ describe("DocumentVisualizerScreen", () => {
     await user.click(screen.getByRole("option", { name: "DPNS" }));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalled();
+      expect(commands.contractGetById).toHaveBeenCalled();
     });
 
     // Select doc type
@@ -270,7 +269,7 @@ describe("DocumentVisualizerScreen", () => {
     vi.advanceTimersByTime(350);
 
     await waitFor(() => {
-      expect(mockCommands.parseDocument).toHaveBeenCalledWith({
+      expect(commands.parseDocument).toHaveBeenCalledWith({
         hexData: "deadbeef",
         contractId: mockContracts[0].id,
         documentTypeName: "domain",
@@ -281,7 +280,7 @@ describe("DocumentVisualizerScreen", () => {
   it("displays error message on parse failure", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDocument.mockResolvedValue({
+    vi.mocked(commands.parseDocument).mockResolvedValue({
       status: "error",
       error: "Deserialization error: invalid document bytes",
     });
@@ -289,7 +288,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select contract + doc type
@@ -300,7 +299,7 @@ describe("DocumentVisualizerScreen", () => {
     await user.click(screen.getByRole("option", { name: "DPNS" }));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalled();
+      expect(commands.contractGetById).toHaveBeenCalled();
     });
 
     const docTypeSelect = screen.getByRole("combobox", {
@@ -328,7 +327,7 @@ describe("DocumentVisualizerScreen", () => {
   it("dismisses error when dismiss button is clicked", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDocument.mockResolvedValue({
+    vi.mocked(commands.parseDocument).mockResolvedValue({
       status: "error",
       error: "Deserialization error: bad data",
     });
@@ -336,7 +335,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select contract + doc type
@@ -347,7 +346,7 @@ describe("DocumentVisualizerScreen", () => {
     await user.click(screen.getByRole("option", { name: "DPNS" }));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalled();
+      expect(commands.contractGetById).toHaveBeenCalled();
     });
 
     const docTypeSelect = screen.getByRole("combobox", {
@@ -380,7 +379,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Type a search term
@@ -405,7 +404,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select contract + doc type
@@ -416,7 +415,7 @@ describe("DocumentVisualizerScreen", () => {
     await user.click(screen.getByRole("option", { name: "DPNS" }));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalled();
+      expect(commands.contractGetById).toHaveBeenCalled();
     });
 
     const docTypeSelect = screen.getByRole("combobox", {
@@ -438,7 +437,7 @@ describe("DocumentVisualizerScreen", () => {
     });
 
     // parseDocument should NOT have been called
-    expect(mockCommands.parseDocument).not.toHaveBeenCalled();
+    expect(commands.parseDocument).not.toHaveBeenCalled();
   });
 
   it("does not call parseDocument when only contract is selected (no doc type)", async () => {
@@ -446,7 +445,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select contract only
@@ -470,20 +469,20 @@ describe("DocumentVisualizerScreen", () => {
       ).toBeInTheDocument();
     });
 
-    expect(mockCommands.parseDocument).not.toHaveBeenCalled();
+    expect(commands.parseDocument).not.toHaveBeenCalled();
   });
 
   it("handles command throwing an exception", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDocument.mockRejectedValue(
+    vi.mocked(commands.parseDocument).mockRejectedValue(
       new Error("Backend unavailable"),
     );
 
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select contract + doc type
@@ -494,7 +493,7 @@ describe("DocumentVisualizerScreen", () => {
     await user.click(screen.getByRole("option", { name: "DPNS" }));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalled();
+      expect(commands.contractGetById).toHaveBeenCalled();
     });
 
     const docTypeSelect = screen.getByRole("combobox", {
@@ -518,7 +517,7 @@ describe("DocumentVisualizerScreen", () => {
   it("supports base64 input format", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDocument.mockResolvedValue({
+    vi.mocked(commands.parseDocument).mockResolvedValue({
       status: "ok",
       data: { json: '{"$id": "from-base64"}' },
     });
@@ -526,7 +525,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select contract + doc type
@@ -537,7 +536,7 @@ describe("DocumentVisualizerScreen", () => {
     await user.click(screen.getByRole("option", { name: "DPNS" }));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalled();
+      expect(commands.contractGetById).toHaveBeenCalled();
     });
 
     const docTypeSelect = screen.getByRole("combobox", {
@@ -553,7 +552,7 @@ describe("DocumentVisualizerScreen", () => {
     vi.advanceTimersByTime(350);
 
     await waitFor(() => {
-      expect(mockCommands.parseDocument).toHaveBeenCalledWith({
+      expect(commands.parseDocument).toHaveBeenCalledWith({
         hexData: "48656c6c6f20576f726c64",
         contractId: mockContracts[0].id,
         documentTypeName: "domain",
@@ -564,7 +563,7 @@ describe("DocumentVisualizerScreen", () => {
   it("supports comma-separated integer input format", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDocument.mockResolvedValue({
+    vi.mocked(commands.parseDocument).mockResolvedValue({
       status: "ok",
       data: { json: '{"$id": "from-csv"}' },
     });
@@ -572,7 +571,7 @@ describe("DocumentVisualizerScreen", () => {
     render(<DocumentVisualizerScreen />);
 
     await waitFor(() => {
-      expect(mockCommands.contractListLocal).toHaveBeenCalled();
+      expect(commands.contractListLocal).toHaveBeenCalled();
     });
 
     // Select contract + doc type
@@ -583,7 +582,7 @@ describe("DocumentVisualizerScreen", () => {
     await user.click(screen.getByRole("option", { name: "DPNS" }));
 
     await waitFor(() => {
-      expect(mockCommands.contractGetById).toHaveBeenCalled();
+      expect(commands.contractGetById).toHaveBeenCalled();
     });
 
     const docTypeSelect = screen.getByRole("combobox", {
@@ -599,7 +598,7 @@ describe("DocumentVisualizerScreen", () => {
     vi.advanceTimersByTime(350);
 
     await waitFor(() => {
-      expect(mockCommands.parseDocument).toHaveBeenCalledWith({
+      expect(commands.parseDocument).toHaveBeenCalledWith({
         hexData: "00ff80",
         contractId: mockContracts[0].id,
         documentTypeName: "domain",

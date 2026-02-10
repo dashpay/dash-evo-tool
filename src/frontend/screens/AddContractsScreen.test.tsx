@@ -3,71 +3,21 @@ import userEvent from "@testing-library/user-event";
 import { AddContractsScreen } from "./AddContractsScreen";
 import { useContractStore } from "@/stores/contractStore";
 
-// ─── Hoisted mocks (required for vi.mock factory) ─────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-type EventCallback = (event: { payload: unknown }) => void;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-const { mockCommands, mockEvents, eventListeners, mockNavigate } = vi.hoisted(
-  () => {
-    const eventListeners: Record<string, EventCallback[]> = {
-      taskResultEvent: [],
-      taskErrorEvent: [],
-    };
-
-    const mockEvents = {
-      taskResultEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskResultEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskResultEvent =
-              eventListeners.taskResultEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      taskErrorEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskErrorEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskErrorEvent =
-              eventListeners.taskErrorEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-    };
-
-    const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-      contractFetch: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-1" } }),
-      contractSetAlias: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: null }),
-      contractListLocal: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: [] }),
-      contractGetById: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: null }),
-    };
-
-    const mockNavigate = vi.fn();
-
-    return { mockCommands, mockEvents, eventListeners, mockNavigate };
-  },
-);
+const { mockNavigate } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
-}));
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) return mockCommands[prop];
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
 }));
 
 const { mockToast } = vi.hoisted(() => ({
@@ -87,6 +37,8 @@ vi.mock("@/lib/toastError", () => ({
   toastError: vi.fn(),
 }));
 
+import { commands, events } from "@/bindings";
+
 // ─── Helpers ─────────────────────────────────────────────────────
 
 const CONTRACT_ID_1 =
@@ -95,18 +47,18 @@ const CONTRACT_ID_2 =
   "1111222233334444555566667777888899990000aaaabbbbccccddddeeee0001";
 
 function fireTaskResult(payload: unknown) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  const listener = calls[calls.length - 1]?.[0];
   act(() => {
-    for (const listener of eventListeners.taskResultEvent) {
-      listener({ payload });
-    }
+    listener?.({ payload });
   });
 }
 
 function fireTaskError(payload: unknown) {
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  const listener = calls[calls.length - 1]?.[0];
   act(() => {
-    for (const listener of eventListeners.taskErrorEvent) {
-      listener({ payload });
-    }
+    listener?.({ payload });
   });
 }
 
@@ -126,11 +78,14 @@ function resetStores() {
 describe("AddContractsScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    eventListeners.taskResultEvent = [];
-    eventListeners.taskErrorEvent = [];
     resetStores();
+    // Default: contractFetch returns a task
+    vi.mocked(commands.contractFetch).mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-1" },
+    });
     // Default: contractListLocal returns empty list
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [],
     });
@@ -277,7 +232,7 @@ describe("AddContractsScreen", () => {
       screen.getByRole("button", { name: /add contracts$/i }),
     );
 
-    expect(mockCommands.contractFetch).toHaveBeenCalledWith({
+    expect(commands.contractFetch).toHaveBeenCalledWith({
       contractIds: [CONTRACT_ID_1],
     });
   });
@@ -293,7 +248,7 @@ describe("AddContractsScreen", () => {
       screen.getByRole("button", { name: /add contracts$/i }),
     );
 
-    expect(mockCommands.contractFetch).toHaveBeenCalledWith({
+    expect(commands.contractFetch).toHaveBeenCalledWith({
       contractIds: ["7TmjsEviZVDaGkCN3Rnz5D"],
     });
   });
@@ -315,7 +270,7 @@ describe("AddContractsScreen", () => {
       screen.getByRole("button", { name: /add contracts$/i }),
     );
 
-    expect(mockCommands.contractFetch).toHaveBeenCalledWith({
+    expect(commands.contractFetch).toHaveBeenCalledWith({
       contractIds: [CONTRACT_ID_1, CONTRACT_ID_2],
     });
   });
@@ -337,7 +292,7 @@ describe("AddContractsScreen", () => {
       screen.getByRole("button", { name: /add contracts$/i }),
     );
 
-    expect(mockCommands.contractFetch).toHaveBeenCalledWith({
+    expect(commands.contractFetch).toHaveBeenCalledWith({
       contractIds: [CONTRACT_ID_1],
     });
   });
@@ -395,7 +350,7 @@ describe("AddContractsScreen", () => {
     await user.type(input, CONTRACT_ID_1);
     await user.keyboard("{Enter}");
 
-    expect(mockCommands.contractFetch).toHaveBeenCalledWith({
+    expect(commands.contractFetch).toHaveBeenCalledWith({
       contractIds: [CONTRACT_ID_1],
     });
   });
@@ -437,11 +392,11 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     // Set up store to contain the found contract after reload
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 3, tokenCount: 0 }],
     });
@@ -471,10 +426,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -502,11 +457,11 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     // No contracts returned after fetch
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [],
     });
@@ -536,11 +491,11 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     // Only first contract found
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -581,10 +536,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -615,10 +570,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -645,7 +600,7 @@ describe("AddContractsScreen", () => {
 
     await user.click(screen.getByRole("button", { name: /set alias/i }));
 
-    expect(mockCommands.contractSetAlias).toHaveBeenCalledWith({
+    expect(commands.contractSetAlias).toHaveBeenCalledWith({
       contractId: CONTRACT_ID_1,
       alias: "my-contract",
     });
@@ -656,10 +611,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -698,10 +653,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -738,10 +693,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -767,7 +722,7 @@ describe("AddContractsScreen", () => {
     await user.type(aliasInput, "enter-alias");
     await user.keyboard("{Enter}");
 
-    expect(mockCommands.contractSetAlias).toHaveBeenCalledWith({
+    expect(commands.contractSetAlias).toHaveBeenCalledWith({
       contractId: CONTRACT_ID_1,
       alias: "enter-alias",
     });
@@ -780,7 +735,7 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(events.taskErrorEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText(/hex or base58/i);
@@ -805,7 +760,7 @@ describe("AddContractsScreen", () => {
 
   it("handles IPC dispatch error gracefully", async () => {
     const user = userEvent.setup();
-    mockCommands.contractFetch.mockRejectedValueOnce(
+    vi.mocked(commands.contractFetch).mockRejectedValueOnce(
       new Error("IPC unavailable"),
     );
 
@@ -825,7 +780,7 @@ describe("AddContractsScreen", () => {
 
   it("handles contractFetch returning error status", async () => {
     const user = userEvent.setup();
-    mockCommands.contractFetch.mockResolvedValueOnce({
+    vi.mocked(commands.contractFetch).mockResolvedValueOnce({
       status: "error",
       error: "Backend is not initialized",
     });
@@ -864,10 +819,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -899,8 +854,8 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalledTimes(1);
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalledTimes(1);
+      expect(events.taskResultEvent.listen).toHaveBeenCalledTimes(1);
+      expect(events.taskErrorEvent.listen).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -909,7 +864,7 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText(/hex or base58/i);
@@ -935,7 +890,7 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText(/hex or base58/i);
@@ -960,7 +915,7 @@ describe("AddContractsScreen", () => {
 
   it("shows error when contractSetAlias fails", async () => {
     const user = userEvent.setup();
-    mockCommands.contractSetAlias.mockResolvedValueOnce({
+    vi.mocked(commands.contractSetAlias).mockResolvedValueOnce({
       status: "error",
       error: "DB write failed",
     });
@@ -968,10 +923,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });
@@ -1010,10 +965,10 @@ describe("AddContractsScreen", () => {
     render(<AddContractsScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
-    mockCommands.contractListLocal.mockResolvedValue({
+    vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",
       data: [{ id: CONTRACT_ID_1, alias: null, documentTypeCount: 1, tokenCount: 0 }],
     });

@@ -1,57 +1,50 @@
+/**
+ * Tests for the tokenStore Zustand store.
+ *
+ * Uses centralized mock IPC infrastructure from `@/test/mock-ipc` and
+ * centralized fixture factories from `@/test/fixtures` to avoid inline
+ * mock definitions and keep test setup consistent across the codebase.
+ */
+
 import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { createMockBindings, mockBindingsModule } from "@/test/mock-ipc";
+import { createMockToken, createMockTokenSearchResult } from "@/test/fixtures";
 import { useTokenStore } from "./tokenStore";
 import type { TokenEntry, TokenSearchResult } from "./tokenStore";
 import type { TaskResultEvent } from "../bindings";
 
 // ─── Mock bindings ──────────────────────────────────────────────────
 
-vi.mock("../bindings", () => ({
-  commands: {
-    tokenQueryMyBalances: vi.fn(),
-    tokenQueryDescriptionsByKeyword: vi.fn(),
-    tokenFetchByContractId: vi.fn(),
-    tokenFetchByTokenId: vi.fn(),
-    tokenSaveLocally: vi.fn(),
-    tokenRemove: vi.fn(),
-    tokenLoadOrder: vi.fn(),
-    tokenSaveOrder: vi.fn(),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockResolvedValue(() => {}),
-    },
-  },
-}));
+vi.mock("../bindings", () => {
+  const initial = createMockBindings();
+  return mockBindingsModule(initial);
+});
 
 import { commands, events } from "../bindings";
 
 // ─── Test fixtures ──────────────────────────────────────────────────
 
+/** Wrapper matching the original inline defaults used throughout these tests. */
 function makeToken(overrides?: Partial<TokenEntry>): TokenEntry {
-  return {
+  return createMockToken({
     identityId: "identity001",
     tokenId: "token001",
     contractId: "contract001",
-    tokenPosition: 0,
     name: "TestToken",
-    ownerAlias: "Alice",
     balance: "1000000000",
-    decimals: 8,
     ...overrides,
-  };
+  });
 }
 
+/** Wrapper matching the original inline defaults used throughout these tests. */
 function makeSearchResult(
   overrides?: Partial<TokenSearchResult>,
 ): TokenSearchResult {
-  return {
+  return createMockTokenSearchResult({
     contractId: "contract001",
     description: "A test token",
     ...overrides,
-  };
+  });
 }
 
 // ─── Reset store between tests ──────────────────────────────────────

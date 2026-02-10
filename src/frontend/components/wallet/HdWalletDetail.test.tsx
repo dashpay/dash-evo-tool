@@ -2,6 +2,13 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HdWalletDetail } from "./HdWalletDetail";
+import {
+  createMockWalletAddress,
+  createMockWalletTransaction,
+  createMockAssetLock,
+  createMockPlatformAddress,
+  createMockHdWallet,
+} from "@/test/fixtures";
 import type {
   WalletDto,
   WalletAddressDto,
@@ -10,22 +17,22 @@ import type {
   PlatformAddressDto,
 } from "@/bindings";
 
-// ─── Test Fixtures ──────────────────────────────────────────────────
+// ─── Local wrappers over centralized fixtures (test-specific defaults) ──
 
 function makeAddress(overrides: Partial<WalletAddressDto> = {}): WalletAddressDto {
-  return {
+  return createMockWalletAddress({
     address: "XtZ1M2npV4oFZ4u7fHsVn7m3WRXHZ1Dqjx",
     balance: 100000000, // 1 DASH
     totalReceived: 200000000,
     derivationPath: "m/44'/5'/0'/0/0",
     ...overrides,
-  };
+  });
 }
 
 function makeTransaction(
   overrides: Partial<WalletTransactionDto> = {},
 ): WalletTransactionDto {
-  return {
+  return createMockWalletTransaction({
     txid: "abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
     timestamp: 1700000000,
     height: 100000,
@@ -35,33 +42,33 @@ function makeTransaction(
     label: null,
     isOurs: true,
     ...overrides,
-  };
+  });
 }
 
-function makeAssetLock(overrides: Partial<AssetLockDto> = {}): AssetLockDto {
-  return {
+function makeAssetLockFixture(overrides: Partial<AssetLockDto> = {}): AssetLockDto {
+  return createMockAssetLock({
     txid: "lock123def456lock123def456lock123def456lock123def456lock123def456",
     address: "XtZ1M2npV4oFZ4u7fHsVn7m3WRXHZ1Dqjx",
     amount: 10000000000,
     hasInstantLock: true,
     hasAssetLockProof: true,
     ...overrides,
-  };
+  });
 }
 
 function makePlatformAddress(
   overrides: Partial<PlatformAddressDto> = {},
 ): PlatformAddressDto {
-  return {
+  return createMockPlatformAddress({
     address: "XplatformAddr1234567890",
     balance: 5000000000, // credits
     nonce: 0,
     ...overrides,
-  };
+  });
 }
 
 function makeWallet(overrides: Partial<WalletDto> = {}): WalletDto {
-  return {
+  return createMockHdWallet({
     seedHash: "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111bbbb2222",
     usesPassword: false,
     alias: "My Test Wallet",
@@ -81,7 +88,7 @@ function makeWallet(overrides: Partial<WalletDto> = {}): WalletDto {
     identityIndexes: [],
     passwordHint: null,
     ...overrides,
-  };
+  });
 }
 
 // ─── Header Section Tests ──────────────────────────────────────────
@@ -503,7 +510,7 @@ describe("HdWalletDetail", () => {
       const user = userEvent.setup();
       const wallet = makeWallet({
         unusedAssetLocks: [
-          makeAssetLock({ txid: "lockTx001", amount: 10000000000 }),
+          makeAssetLockFixture({ txid: "lockTx001", amount: 10000000000 }),
         ],
       });
       render(<HdWalletDetail wallet={wallet} />);
@@ -566,7 +573,7 @@ describe("HdWalletDetail", () => {
       const user = userEvent.setup();
       const wallet = makeWallet({
         unusedAssetLocks: [
-          makeAssetLock({
+          makeAssetLockFixture({
             hasInstantLock: true,
             hasAssetLockProof: false,
           }),
@@ -585,7 +592,7 @@ describe("HdWalletDetail", () => {
     it("renders View button for asset locks", async () => {
       const user = userEvent.setup();
       const wallet = makeWallet({
-        unusedAssetLocks: [makeAssetLock({ txid: "viewLock123" })],
+        unusedAssetLocks: [makeAssetLockFixture({ txid: "viewLock123" })],
       });
       render(
         <HdWalletDetail
@@ -603,7 +610,7 @@ describe("HdWalletDetail", () => {
       const user = userEvent.setup();
       const onView = vi.fn();
       const wallet = makeWallet({
-        unusedAssetLocks: [makeAssetLock({ txid: "viewLock456" })],
+        unusedAssetLocks: [makeAssetLockFixture({ txid: "viewLock456" })],
       });
       render(<HdWalletDetail wallet={wallet} onViewAssetLock={onView} />);
       await user.click(screen.getByRole("tab", { name: "Asset Locks" }));
@@ -615,8 +622,8 @@ describe("HdWalletDetail", () => {
       const user = userEvent.setup();
       const wallet = makeWallet({
         unusedAssetLocks: [
-          makeAssetLock({ txid: "withProof", hasAssetLockProof: true }),
-          makeAssetLock({ txid: "noProof", hasAssetLockProof: false }),
+          makeAssetLockFixture({ txid: "withProof", hasAssetLockProof: true }),
+          makeAssetLockFixture({ txid: "noProof", hasAssetLockProof: false }),
         ],
       });
       render(
@@ -636,8 +643,8 @@ describe("HdWalletDetail", () => {
       const onFund = vi.fn();
       const wallet = makeWallet({
         unusedAssetLocks: [
-          makeAssetLock({ txid: "fundLock1" }),
-          makeAssetLock({ txid: "fundLock2" }),
+          makeAssetLockFixture({ txid: "fundLock1" }),
+          makeAssetLockFixture({ txid: "fundLock2" }),
         ],
       });
       render(<HdWalletDetail wallet={wallet} onFundAssetLock={onFund} />);

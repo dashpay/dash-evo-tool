@@ -1,19 +1,17 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { useUtxoMonitor } from "./useUtxoMonitor";
 
 // ─── Mock bindings ──────────────────────────────────────────────────
 
-const mockCoreRefreshWalletInfo = vi.fn();
-const mockWalletGetHd = vi.fn();
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    coreRefreshWalletInfo: (...args: unknown[]) =>
-      mockCoreRefreshWalletInfo(...args),
-    walletGetHd: (...args: unknown[]) => mockWalletGetHd(...args),
-  },
-}));
+import { commands } from "@/bindings";
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -36,8 +34,8 @@ function makeWalletResult(addresses: { address: string; balance: number }[]) {
 describe("useUtxoMonitor", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    mockCoreRefreshWalletInfo.mockResolvedValue({ status: "ok" });
-    mockWalletGetHd.mockResolvedValue(
+    (commands.coreRefreshWalletInfo as Mock).mockResolvedValue({ status: "ok" });
+    (commands.walletGetHd as Mock).mockResolvedValue(
       makeWalletResult([{ address: "yTestAddr", balance: 0 }]),
     );
   });
@@ -71,8 +69,8 @@ describe("useUtxoMonitor", () => {
     await act(async () => {
       vi.advanceTimersByTime(10000);
     });
-    expect(mockCoreRefreshWalletInfo).not.toHaveBeenCalled();
-    expect(mockWalletGetHd).not.toHaveBeenCalled();
+    expect(commands.coreRefreshWalletInfo).not.toHaveBeenCalled();
+    expect(commands.walletGetHd).not.toHaveBeenCalled();
   });
 
   it("does not poll when seedHash is null", async () => {
@@ -86,7 +84,7 @@ describe("useUtxoMonitor", () => {
     await act(async () => {
       vi.advanceTimersByTime(10000);
     });
-    expect(mockCoreRefreshWalletInfo).not.toHaveBeenCalled();
+    expect(commands.coreRefreshWalletInfo).not.toHaveBeenCalled();
   });
 
   it("does not poll when address is null", async () => {
@@ -100,7 +98,7 @@ describe("useUtxoMonitor", () => {
     await act(async () => {
       vi.advanceTimersByTime(10000);
     });
-    expect(mockCoreRefreshWalletInfo).not.toHaveBeenCalled();
+    expect(commands.coreRefreshWalletInfo).not.toHaveBeenCalled();
   });
 
   it("polls when enabled with valid params", async () => {
@@ -118,11 +116,11 @@ describe("useUtxoMonitor", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(mockCoreRefreshWalletInfo).toHaveBeenCalledWith({
+    expect(commands.coreRefreshWalletInfo).toHaveBeenCalledWith({
       walletSeedHash: "abc123",
       platformSyncMode: null,
     });
-    expect(mockWalletGetHd).toHaveBeenCalledWith("abc123");
+    expect(commands.walletGetHd).toHaveBeenCalledWith("abc123");
   });
 
   it("detects funds when address balance becomes non-zero", async () => {
@@ -130,7 +128,7 @@ describe("useUtxoMonitor", () => {
 
     // First call: no funds, second call: funds received
     let callCount = 0;
-    mockWalletGetHd.mockImplementation(() => {
+    (commands.walletGetHd as Mock).mockImplementation(() => {
       callCount++;
       if (callCount <= 1) {
         return Promise.resolve(
@@ -162,7 +160,7 @@ describe("useUtxoMonitor", () => {
   });
 
   it("stops polling once funds are detected", async () => {
-    mockWalletGetHd.mockResolvedValue(
+    (commands.walletGetHd as Mock).mockResolvedValue(
       makeWalletResult([{ address: "yTestAddr", balance: 50_000_000 }]),
     );
 
@@ -180,20 +178,20 @@ describe("useUtxoMonitor", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    const callCountAfterDetection = mockCoreRefreshWalletInfo.mock.calls.length;
+    const callCountAfterDetection = (commands.coreRefreshWalletInfo as Mock).mock.calls.length;
 
     // Advance more time — should not poll again
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10000);
     });
 
-    expect(mockCoreRefreshWalletInfo.mock.calls.length).toBe(
+    expect((commands.coreRefreshWalletInfo as Mock).mock.calls.length).toBe(
       callCountAfterDetection,
     );
   });
 
   it("resets state when address changes", async () => {
-    mockWalletGetHd.mockResolvedValue(
+    (commands.walletGetHd as Mock).mockResolvedValue(
       makeWalletResult([
         { address: "yAddr1", balance: 50_000_000 },
         { address: "yAddr2", balance: 0 },
@@ -224,7 +222,7 @@ describe("useUtxoMonitor", () => {
   });
 
   it("handles API errors gracefully", async () => {
-    mockCoreRefreshWalletInfo.mockRejectedValue(new Error("Network error"));
+    (commands.coreRefreshWalletInfo as Mock).mockRejectedValue(new Error("Network error"));
 
     const { result } = renderHook(() =>
       useUtxoMonitor({

@@ -27,35 +27,14 @@ const mockTokenResume = vi.fn().mockResolvedValue({
   data: { taskId: "task-resume-1" },
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null =
-  null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null =
-  null;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenResume: (...args: unknown[]) => mockTokenResume(...args),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
-        return Promise.resolve(() => {
-          mockTaskResultListener = null;
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
-        return Promise.resolve(() => {
-          mockTaskErrorListener = null;
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -137,8 +116,7 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
 describe("TokenResumeScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
+    vi.mocked(commands.tokenResume).mockImplementation(mockTokenResume);
     currentSearch = {
       tokenId: "token-resume-222",
       contractId: "contract-resume-222",
@@ -245,7 +223,8 @@ describe("TokenResumeScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-resume-1",
             resultType: "Token",
@@ -270,7 +249,8 @@ describe("TokenResumeScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-resume-1",
             resultType: "Token",
@@ -297,7 +277,8 @@ describe("TokenResumeScreen", () => {
       await user.click(confirmButton);
 
       await act(async () => {
-        mockTaskErrorListener?.({
+        const listener = vi.mocked(events.taskErrorEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-resume-1",
             message: "Resume failed: token not paused",

@@ -27,33 +27,14 @@ const mockTokenBurn = vi.fn().mockResolvedValue({
   data: { taskId: "task-burn-1" },
 });
 
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null = null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null = null;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenBurn: (...args: unknown[]) => mockTokenBurn(...args),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
-        return Promise.resolve(() => {
-          mockTaskResultListener = null;
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
-        return Promise.resolve(() => {
-          mockTaskErrorListener = null;
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -135,8 +116,7 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
 describe("TokenBurnScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
+    vi.mocked(commands.tokenBurn).mockImplementation(mockTokenBurn);
     currentSearch = {
       tokenId: "token-burn-111222",
       contractId: "contract-burn-111222",
@@ -365,7 +345,8 @@ describe("TokenBurnScreen", () => {
       await user.click(confirmBtn);
 
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-burn-1",
             resultType: "Token",
@@ -391,7 +372,8 @@ describe("TokenBurnScreen", () => {
       await user.click(confirmBtn);
 
       await act(async () => {
-        mockTaskErrorListener?.({
+        const listener = vi.mocked(events.taskErrorEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-burn-1",
             message: "Burning not allowed on this token",
@@ -416,7 +398,8 @@ describe("TokenBurnScreen", () => {
       await user.click(confirmBtn);
 
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-burn-1",
             resultType: "Token",
@@ -442,7 +425,8 @@ describe("TokenBurnScreen", () => {
       await user.click(confirmBtn);
 
       await act(async () => {
-        mockTaskResultListener?.({
+        const listener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
+        listener?.({
           payload: {
             taskId: "task-burn-1",
             resultType: "Token",

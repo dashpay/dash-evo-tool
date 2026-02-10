@@ -22,60 +22,17 @@ vi.mock("@tanstack/react-router", () => ({
     opts.select({ location: { search: currentSearch } }),
 }));
 
-const mockTokenSetDirectPurchasePrice = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "task-setprice-1" },
+const mockTokenSetDirectPurchasePrice = vi.fn();
+const mockTokenQueryPricing = vi.fn();
+
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-const mockTokenQueryPricing = vi.fn().mockResolvedValue({
-  status: "ok",
-  data: { taskId: "pricing-query-1" },
-});
-
-let mockTaskResultListeners: Array<(event: { payload: unknown }) => void> = [];
-let mockTaskErrorListeners: Array<(event: { payload: unknown }) => void> = [];
-
-/** Emit a task result event to all registered listeners. */
-function emitTaskResult(payload: unknown) {
-  for (const listener of mockTaskResultListeners) {
-    listener({ payload });
-  }
-}
-
-/** Emit a task error event to all registered listeners. */
-function emitTaskError(payload: unknown) {
-  for (const listener of mockTaskErrorListeners) {
-    listener({ payload });
-  }
-}
-
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenSetDirectPurchasePrice: (...args: unknown[]) =>
-      mockTokenSetDirectPurchasePrice(...args),
-    tokenQueryPricing: (...args: unknown[]) =>
-      mockTokenQueryPricing(...args),
-    walletNotifyUnlocked: vi.fn().mockResolvedValue({ status: "ok" }),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListeners.push(cb);
-        return Promise.resolve(() => {
-          mockTaskResultListeners = mockTaskResultListeners.filter((l) => l !== cb);
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListeners.push(cb);
-        return Promise.resolve(() => {
-          mockTaskErrorListeners = mockTaskErrorListeners.filter((l) => l !== cb);
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -142,6 +99,22 @@ vi.mock("@/lib/toastError", () => ({
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Emit a task result event to all registered listeners. */
+function emitTaskResult(payload: unknown) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload } as { payload: unknown });
+  }
+}
+
+/** Emit a task error event to all registered listeners. */
+function emitTaskError(payload: unknown) {
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload } as { payload: unknown });
+  }
+}
+
 function setup(searchOverrides?: Partial<Record<string, string>>) {
   if (searchOverrides) {
     currentSearch = { ...currentSearch, ...searchOverrides };
@@ -157,8 +130,6 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
 describe("TokenSetPriceScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListeners = [];
-    mockTaskErrorListeners = [];
     currentSearch = {
       tokenId: "token-setprice-111",
       contractId: "contract-setprice-111",
@@ -168,6 +139,20 @@ describe("TokenSetPriceScreen", () => {
       decimals: "8",
       identityId: "id-setprice-identity",
     };
+    vi.mocked(commands.tokenSetDirectPurchasePrice).mockImplementation(
+      mockTokenSetDirectPurchasePrice,
+    );
+    vi.mocked(commands.tokenQueryPricing).mockImplementation(
+      mockTokenQueryPricing,
+    );
+    mockTokenSetDirectPurchasePrice.mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-setprice-1" },
+    });
+    mockTokenQueryPricing.mockResolvedValue({
+      status: "ok",
+      data: { taskId: "pricing-query-1" },
+    });
   });
 
   // ── Rendering ──────────────────────────────────────────────────────────
@@ -239,7 +224,9 @@ describe("TokenSetPriceScreen", () => {
 
       await waitFor(() => {
         expect(mockTokenQueryPricing).toHaveBeenCalled();
-        expect(mockTaskResultListeners.length).toBeGreaterThan(0);
+        expect(
+          vi.mocked(events.taskResultEvent.listen).mock.calls.length,
+        ).toBeGreaterThan(0);
       });
 
       await act(async () => {
@@ -265,7 +252,9 @@ describe("TokenSetPriceScreen", () => {
 
       await waitFor(() => {
         expect(mockTokenQueryPricing).toHaveBeenCalled();
-        expect(mockTaskResultListeners.length).toBeGreaterThan(0);
+        expect(
+          vi.mocked(events.taskResultEvent.listen).mock.calls.length,
+        ).toBeGreaterThan(0);
       });
 
       await act(async () => {
@@ -300,7 +289,9 @@ describe("TokenSetPriceScreen", () => {
 
       await waitFor(() => {
         expect(mockTokenQueryPricing).toHaveBeenCalled();
-        expect(mockTaskResultListeners.length).toBeGreaterThan(0);
+        expect(
+          vi.mocked(events.taskResultEvent.listen).mock.calls.length,
+        ).toBeGreaterThan(0);
       });
 
       await act(async () => {
@@ -327,7 +318,9 @@ describe("TokenSetPriceScreen", () => {
 
       await waitFor(() => {
         expect(mockTokenQueryPricing).toHaveBeenCalled();
-        expect(mockTaskErrorListeners.length).toBeGreaterThan(0);
+        expect(
+          vi.mocked(events.taskErrorEvent.listen).mock.calls.length,
+        ).toBeGreaterThan(0);
       });
 
       await act(async () => {

@@ -3,57 +3,22 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { AddressBalanceScreen } from "./AddressBalanceScreen";
 
-// ─── Hoisted mocks (required for vi.mock factory) ─────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-type EventCallback = (event: { payload: unknown }) => void;
-
-const { mockCommands, mockEvents, eventListeners, mockNavigate } = vi.hoisted(
-  () => {
-    const eventListeners: Record<string, EventCallback[]> = {
-      taskResultEvent: [],
-      taskErrorEvent: [],
-    };
-
-    const mockEvents = {
-      taskResultEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskResultEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskResultEvent =
-              eventListeners.taskResultEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      taskErrorEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskErrorEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskErrorEvent =
-              eventListeners.taskErrorEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-    };
-
-    const mockCommands = {
-      platformFetchAddressBalance: vi
-        .fn()
-        .mockResolvedValue({ taskId: "task-1" }),
-    };
-
-    const mockNavigate = vi.fn();
-
-    return { mockCommands, mockEvents, eventListeners, mockNavigate };
-  },
-);
+const { mocks, mockNavigate } = await vi.hoisted(async () => {
+  const { createMockBindings } = await import("../test/mock-ipc");
+  const initial = createMockBindings();
+  const mockNavigate = vi.fn();
+  return { mocks: initial, mockNavigate };
+});
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
 }));
 
 vi.mock("@/bindings", () => ({
-  commands: mockCommands,
-  events: mockEvents,
+  commands: mocks.commands,
+  events: mocks.events,
 }));
 
 vi.mock("sonner", () => ({
@@ -67,17 +32,13 @@ vi.mock("sonner", () => ({
 
 function fireTaskResult(payload: unknown) {
   act(() => {
-    for (const listener of eventListeners.taskResultEvent) {
-      listener({ payload });
-    }
+    mocks.emitMockEvent("taskResultEvent", payload);
   });
 }
 
 function fireTaskError(payload: unknown) {
   act(() => {
-    for (const listener of eventListeners.taskErrorEvent) {
-      listener({ payload });
-    }
+    mocks.emitMockEvent("taskErrorEvent", payload);
   });
 }
 
@@ -86,8 +47,10 @@ function fireTaskError(payload: unknown) {
 describe("AddressBalanceScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    eventListeners.taskResultEvent = [];
-    eventListeners.taskErrorEvent = [];
+    // Clear event listener arrays so each test starts fresh
+    for (const arr of mocks.eventListeners.values()) {
+      arr.length = 0;
+    }
   });
 
   it("renders the page title and subtitle", () => {
@@ -167,7 +130,7 @@ describe("AddressBalanceScreen", () => {
     const button = screen.getByRole("button", { name: /fetch balance/i });
     await user.click(button);
 
-    expect(mockCommands.platformFetchAddressBalance).toHaveBeenCalledWith({
+    expect(mocks.commands.platformFetchAddressBalance).toHaveBeenCalledWith({
       address: "evo1abc123",
     });
   });
@@ -180,7 +143,7 @@ describe("AddressBalanceScreen", () => {
     await user.type(input, "evo1abc123");
     await user.keyboard("{Enter}");
 
-    expect(mockCommands.platformFetchAddressBalance).toHaveBeenCalledWith({
+    expect(mocks.commands.platformFetchAddressBalance).toHaveBeenCalledWith({
       address: "evo1abc123",
     });
   });
@@ -221,7 +184,7 @@ describe("AddressBalanceScreen", () => {
     render(<AddressBalanceScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText("evo1... or tevo1...");
@@ -231,7 +194,7 @@ describe("AddressBalanceScreen", () => {
     await user.click(button);
 
     fireTaskResult({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       resultType: "Platform",
       payload: {
         type: "addressBalance",
@@ -255,7 +218,7 @@ describe("AddressBalanceScreen", () => {
     render(<AddressBalanceScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText("evo1... or tevo1...");
@@ -265,7 +228,7 @@ describe("AddressBalanceScreen", () => {
     await user.click(button);
 
     fireTaskResult({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       resultType: "Platform",
       payload: {
         type: "addressBalance",
@@ -287,7 +250,7 @@ describe("AddressBalanceScreen", () => {
     render(<AddressBalanceScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskErrorEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText("evo1... or tevo1...");
@@ -297,7 +260,7 @@ describe("AddressBalanceScreen", () => {
     await user.click(button);
 
     fireTaskError({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       message: "Network connection failed",
       details: "timeout",
       recoverable: true,
@@ -322,7 +285,7 @@ describe("AddressBalanceScreen", () => {
     render(<AddressBalanceScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText("evo1... or tevo1...");
@@ -332,7 +295,7 @@ describe("AddressBalanceScreen", () => {
     await user.click(fetchBtn);
 
     fireTaskResult({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       resultType: "Platform",
       payload: {
         type: "addressBalance",
@@ -353,7 +316,7 @@ describe("AddressBalanceScreen", () => {
     render(<AddressBalanceScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskErrorEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText("evo1... or tevo1...");
@@ -363,7 +326,7 @@ describe("AddressBalanceScreen", () => {
     await user.click(fetchBtn);
 
     fireTaskError({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       message: "Some error",
       details: "",
       recoverable: false,
@@ -380,7 +343,7 @@ describe("AddressBalanceScreen", () => {
     render(<AddressBalanceScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalled();
     });
 
     const input = screen.getByPlaceholderText("evo1... or tevo1...");
@@ -391,7 +354,7 @@ describe("AddressBalanceScreen", () => {
 
     // Fire an Identity result — should be ignored
     fireTaskResult({
-      taskId: "task-1",
+      taskId: "mock-task-id",
       resultType: "Identity",
       payload: null,
     });
@@ -402,7 +365,7 @@ describe("AddressBalanceScreen", () => {
 
   it("handles dispatch errors gracefully", async () => {
     const user = userEvent.setup();
-    mockCommands.platformFetchAddressBalance.mockRejectedValueOnce(
+    mocks.commands.platformFetchAddressBalance.mockRejectedValueOnce(
       new Error("IPC unavailable"),
     );
 
@@ -427,8 +390,8 @@ describe("AddressBalanceScreen", () => {
     render(<AddressBalanceScreen />);
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalledTimes(1);
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalledTimes(1);
+      expect(mocks.events.taskResultEvent.listen).toHaveBeenCalledTimes(1);
+      expect(mocks.events.taskErrorEvent.listen).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -449,7 +412,7 @@ describe("AddressBalanceScreen", () => {
     const button = screen.getByRole("button", { name: /fetch balance/i });
     await user.click(button);
 
-    expect(mockCommands.platformFetchAddressBalance).toHaveBeenCalledWith({
+    expect(mocks.commands.platformFetchAddressBalance).toHaveBeenCalledWith({
       address: "evo1abc123",
     });
   });

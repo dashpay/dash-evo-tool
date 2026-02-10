@@ -8,42 +8,14 @@ import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
 // ─── Mock Tauri bindings ──────────────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    identityListLocal: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    identityLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    identitySetAlias: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    identitySaveOrder: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    identityDelete: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    identityRefresh: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t1" } }),
-    identityGetById: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    identityWithdraw: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t2" } }),
-    identityTransfer: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t3" } }),
-    identityTransferToAddresses: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t4" } }),
-    identityAddKey: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t5" } }),
-    identityDisableKeys: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t6" } }),
-    identityReplaceKey: vi.fn().mockResolvedValue({ status: "ok", data: { taskId: "t7" } }),
-    walletListAll: vi.fn().mockResolvedValue({ status: "ok", data: { hdWallets: [], singleKeyWallets: [], selected: null } }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    walletUpdatedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
 
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
+import { commands, events } from "@/bindings";
 
 // Mock sonner toast
 const { mockToast } = vi.hoisted(() => ({
@@ -106,11 +78,11 @@ function makeIdentity(
 // ─── Helpers ──────────────────────────────────────────────────────
 
 function setupMocksWithIdentities(identities: QualifiedIdentityDto[]) {
-  mockCommands.identityListLocal.mockResolvedValue({
+  vi.mocked(commands.identityListLocal).mockResolvedValue({
     status: "ok",
     data: identities,
   });
-  mockCommands.identityGetById.mockImplementation(async (id: string) => {
+  vi.mocked(commands.identityGetById).mockImplementation(async (id: string) => {
     const found = identities.find((i) => i.id === id);
     return found
       ? { status: "ok", data: found }
@@ -144,15 +116,15 @@ function resetStores() {
 beforeEach(() => {
   vi.clearAllMocks();
   resetStores();
-  mockCommands.identityListLocal.mockResolvedValue({
+  vi.mocked(commands.identityListLocal).mockResolvedValue({
     status: "ok",
     data: [],
   });
-  mockCommands.identityLoadOrder.mockResolvedValue({
+  vi.mocked(commands.identityLoadOrder).mockResolvedValue({
     status: "ok",
     data: [],
   });
-  mockCommands.walletListAll.mockResolvedValue({
+  vi.mocked(commands.walletListAll).mockResolvedValue({
     status: "ok",
     data: { hdWallets: [], singleKeyWallets: [], selected: null },
   });
@@ -163,7 +135,7 @@ beforeEach(() => {
 describe("IdentitiesScreen", () => {
   describe("loading state", () => {
     it("shows a loading spinner while identities are loading", () => {
-      mockCommands.identityListLocal.mockReturnValue(new Promise(() => {}));
+      vi.mocked(commands.identityListLocal).mockReturnValue(new Promise(() => {}));
       useIdentityStore.setState({ loading: true });
       renderWithProviders(<IdentitiesScreen />);
       expect(screen.getByText("Loading identities...")).toBeInTheDocument();
@@ -278,7 +250,7 @@ describe("IdentitiesScreen", () => {
       await user.click(refreshItem);
 
       await waitFor(() => {
-        expect(mockCommands.identityRefresh).toHaveBeenCalledWith({
+        expect(vi.mocked(commands.identityRefresh)).toHaveBeenCalledWith({
           identityId: identity.id,
         });
       });
@@ -312,7 +284,7 @@ describe("IdentitiesScreen", () => {
       await user.type(input, "NewAlias{Enter}");
 
       await waitFor(() => {
-        expect(mockCommands.identitySetAlias).toHaveBeenCalledWith({
+        expect(vi.mocked(commands.identitySetAlias)).toHaveBeenCalledWith({
           identityId: identity.id,
           alias: "NewAlias",
         });
@@ -374,7 +346,7 @@ describe("IdentitiesScreen", () => {
       await user.click(confirmButton);
 
       await waitFor(() => {
-        expect(mockCommands.identityDelete).toHaveBeenCalledWith({
+        expect(vi.mocked(commands.identityDelete)).toHaveBeenCalledWith({
           identityId: identity.id,
         });
       });
@@ -406,7 +378,7 @@ describe("IdentitiesScreen", () => {
       await user.click(moveUpButtons[1]);
 
       await waitFor(() => {
-        expect(mockCommands.identitySaveOrder).toHaveBeenCalled();
+        expect(vi.mocked(commands.identitySaveOrder)).toHaveBeenCalled();
       });
     });
   });
@@ -611,14 +583,14 @@ describe("IdentitiesScreen", () => {
     it("subscribes to task result events on mount", async () => {
       renderWithProviders(<IdentitiesScreen />);
       await waitFor(() => {
-        expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
+        expect(vi.mocked(events.taskResultEvent.listen)).toHaveBeenCalled();
       });
     });
 
     it("subscribes to task error events on mount", async () => {
       renderWithProviders(<IdentitiesScreen />);
       await waitFor(() => {
-        expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+        expect(vi.mocked(events.taskErrorEvent.listen)).toHaveBeenCalled();
       });
     });
   });
@@ -716,7 +688,7 @@ describe("IdentitiesScreen", () => {
       });
       setupMocksWithIdentities([identity]);
 
-      mockCommands.walletListAll.mockResolvedValue({
+      vi.mocked(commands.walletListAll).mockResolvedValue({
         status: "ok",
         data: {
           hdWallets: [
@@ -777,7 +749,7 @@ describe("IdentitiesScreen", () => {
       await user.click(refreshAllButton);
 
       await waitFor(() => {
-        expect(mockCommands.identityRefresh).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(commands.identityRefresh)).toHaveBeenCalledTimes(2);
       });
     });
   });

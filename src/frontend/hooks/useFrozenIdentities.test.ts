@@ -1,40 +1,21 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
 import { useFrozenIdentities } from "./useFrozenIdentities";
+import { createMockIdentity } from "@/test/fixtures";
 
-// ─── Mocks ──────────────────────────────────────────────────────────────────
+// ─── Mock bindings ───────────────────────────────────────────────────────
 
-const mockTokenQueryFrozenIdentities = vi.fn();
-let mockTaskResultListener: ((event: { payload: unknown }) => void) | null = null;
-let mockTaskErrorListener: ((event: { payload: unknown }) => void) | null = null;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    tokenQueryFrozenIdentities: (...args: unknown[]) =>
-      mockTokenQueryFrozenIdentities(...args),
-  },
-  events: {
-    taskResultEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskResultListener = cb;
-        return Promise.resolve(() => {
-          mockTaskResultListener = null;
-        });
-      }),
-    },
-    taskErrorEvent: {
-      listen: vi.fn().mockImplementation((cb) => {
-        mockTaskErrorListener = cb;
-        return Promise.resolve(() => {
-          mockTaskErrorListener = null;
-        });
-      }),
-    },
-  },
-}));
+import { commands, events } from "@/bindings";
 
 const mockIdentities = [
-  {
+  createMockIdentity({
     id: "aabbcc001122",
     alias: "Alice",
     balance: 1000,
@@ -43,10 +24,10 @@ const mockIdentities = [
     associatedWalletHashes: [],
     walletIndex: 0,
     topUps: [],
-    status: "Active",
-    identityType: "User",
-  },
-  {
+    status: "active",
+    identityType: "user",
+  }),
+  createMockIdentity({
     id: "ddeeff334455667788990011",
     alias: null,
     balance: 2000,
@@ -55,10 +36,10 @@ const mockIdentities = [
     associatedWalletHashes: [],
     walletIndex: 0,
     topUps: [],
-    status: "Active",
-    identityType: "User",
-  },
-  {
+    status: "active",
+    identityType: "user",
+  }),
+  createMockIdentity({
     id: "112233445566",
     alias: "Bob",
     balance: 3000,
@@ -67,9 +48,9 @@ const mockIdentities = [
     associatedWalletHashes: [],
     walletIndex: 0,
     topUps: [],
-    status: "Active",
-    identityType: "User",
-  },
+    status: "active",
+    identityType: "user",
+  }),
 ];
 
 vi.mock("@/stores/identityStore", () => ({
@@ -78,14 +59,22 @@ vi.mock("@/stores/identityStore", () => ({
   }),
 }));
 
+// ─── Helpers ─────────────────────────────────────────────────────────────
+
+/** Retrieve the most recently registered listener for a given event. */
+function getLastListener(
+  eventMock: { listen: Mock },
+): ((event: { payload: unknown }) => void) | null {
+  const { calls } = (eventMock.listen as Mock).mock;
+  return calls.length > 0 ? calls[calls.length - 1][0] : null;
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe("useFrozenIdentities", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockTaskResultListener = null;
-    mockTaskErrorListener = null;
-    mockTokenQueryFrozenIdentities.mockResolvedValue({
+    (commands.tokenQueryFrozenIdentities as Mock).mockResolvedValue({
       status: "ok",
       data: { taskId: "frozen-task-1" },
     });
@@ -102,7 +91,7 @@ describe("useFrozenIdentities", () => {
     renderHook(() => useFrozenIdentities("token-abc"));
 
     await waitFor(() => {
-      expect(mockTokenQueryFrozenIdentities).toHaveBeenCalledWith({
+      expect(commands.tokenQueryFrozenIdentities).toHaveBeenCalledWith({
         tokenId: "token-abc",
         identityIds: ["aabbcc001122", "ddeeff334455667788990011", "112233445566"],
       });
@@ -113,11 +102,11 @@ describe("useFrozenIdentities", () => {
     const { result } = renderHook(() => useFrozenIdentities("token-abc"));
 
     await waitFor(() => {
-      expect(mockTaskResultListener).not.toBeNull();
+      expect(getLastListener(events.taskResultEvent)).not.toBeNull();
     });
 
     await act(async () => {
-      mockTaskResultListener?.({
+      getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "frozen-task-1",
           resultType: "Token",
@@ -137,11 +126,11 @@ describe("useFrozenIdentities", () => {
     const { result } = renderHook(() => useFrozenIdentities("token-abc"));
 
     await waitFor(() => {
-      expect(mockTaskResultListener).not.toBeNull();
+      expect(getLastListener(events.taskResultEvent)).not.toBeNull();
     });
 
     await act(async () => {
-      mockTaskResultListener?.({
+      getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "frozen-task-1",
           resultType: "Token",
@@ -159,11 +148,11 @@ describe("useFrozenIdentities", () => {
     const { result } = renderHook(() => useFrozenIdentities("token-abc"));
 
     await waitFor(() => {
-      expect(mockTaskResultListener).not.toBeNull();
+      expect(getLastListener(events.taskResultEvent)).not.toBeNull();
     });
 
     await act(async () => {
-      mockTaskResultListener?.({
+      getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "frozen-task-1",
           resultType: "Token",
@@ -180,11 +169,11 @@ describe("useFrozenIdentities", () => {
     const { result } = renderHook(() => useFrozenIdentities("token-abc"));
 
     await waitFor(() => {
-      expect(mockTaskResultListener).not.toBeNull();
+      expect(getLastListener(events.taskResultEvent)).not.toBeNull();
     });
 
     await act(async () => {
-      mockTaskResultListener?.({
+      getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "frozen-task-1",
           resultType: "Token",
@@ -201,11 +190,11 @@ describe("useFrozenIdentities", () => {
     const { result } = renderHook(() => useFrozenIdentities("token-abc"));
 
     await waitFor(() => {
-      expect(mockTaskErrorListener).not.toBeNull();
+      expect(getLastListener(events.taskErrorEvent)).not.toBeNull();
     });
 
     await act(async () => {
-      mockTaskErrorListener?.({
+      getLastListener(events.taskErrorEvent)?.({
         payload: {
           taskId: "frozen-task-1",
           message: "Network error",
@@ -218,7 +207,7 @@ describe("useFrozenIdentities", () => {
   });
 
   it("sets error when IPC dispatch fails", async () => {
-    mockTokenQueryFrozenIdentities.mockResolvedValue({
+    (commands.tokenQueryFrozenIdentities as Mock).mockResolvedValue({
       status: "error",
       error: "Token not found",
     });
@@ -240,18 +229,18 @@ describe("useFrozenIdentities", () => {
     });
 
     expect(result.current.frozenIdentities).toEqual([]);
-    expect(mockTokenQueryFrozenIdentities).not.toHaveBeenCalled();
+    expect(commands.tokenQueryFrozenIdentities).not.toHaveBeenCalled();
   });
 
   it("ignores task results for other task IDs", async () => {
     const { result } = renderHook(() => useFrozenIdentities("token-abc"));
 
     await waitFor(() => {
-      expect(mockTaskResultListener).not.toBeNull();
+      expect(getLastListener(events.taskResultEvent)).not.toBeNull();
     });
 
     await act(async () => {
-      mockTaskResultListener?.({
+      getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "some-other-task",
           resultType: "Token",
@@ -265,7 +254,7 @@ describe("useFrozenIdentities", () => {
   });
 
   it("handles IPC throw gracefully", async () => {
-    mockTokenQueryFrozenIdentities.mockRejectedValue(new Error("Connection refused"));
+    (commands.tokenQueryFrozenIdentities as Mock).mockRejectedValue(new Error("Connection refused"));
 
     const { result } = renderHook(() => useFrozenIdentities("token-abc"));
 

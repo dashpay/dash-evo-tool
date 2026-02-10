@@ -1,20 +1,20 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ContractVisualizerScreen } from "./ContractVisualizerScreen";
 
-// ─── Hoisted mocks ──────────────────────────────────────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-const { mockCommands, mockNavigate } = vi.hoisted(() => {
-  const mockCommands = {
-    parseDataContract: vi.fn(),
-  };
+const { mocks, mockNavigate } = await vi.hoisted(async () => {
+  const { createMockBindings } = await import("../test/mock-ipc");
+  const initial = createMockBindings();
   const mockNavigate = vi.fn();
-  return { mockCommands, mockNavigate };
+  return { mocks: initial, mockNavigate };
 });
 
 vi.mock("@/bindings", () => ({
-  commands: mockCommands,
+  commands: mocks.commands,
+  events: mocks.events,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -73,7 +73,7 @@ describe("ContractVisualizerScreen", () => {
   it("calls parseDataContract when hex input is provided", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockResolvedValue({
+    mocks.commands.parseDataContract.mockResolvedValue({
       status: "ok",
       data: { json: '{"$id": "abc123"}' },
     });
@@ -89,7 +89,7 @@ describe("ContractVisualizerScreen", () => {
     vi.advanceTimersByTime(350);
 
     await waitFor(() => {
-      expect(mockCommands.parseDataContract).toHaveBeenCalledWith({
+      expect(mocks.commands.parseDataContract).toHaveBeenCalledWith({
         hexData: "deadbeef",
       });
     });
@@ -98,7 +98,7 @@ describe("ContractVisualizerScreen", () => {
   it("displays parsed JSON on success", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockResolvedValue({
+    mocks.commands.parseDataContract.mockResolvedValue({
       status: "ok",
       data: { json: '{\n  "$id": "abc123",\n  "$version": 1\n}' },
     });
@@ -119,7 +119,7 @@ describe("ContractVisualizerScreen", () => {
   it("displays error message on parse failure", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockResolvedValue({
+    mocks.commands.parseDataContract.mockResolvedValue({
       status: "error",
       error: "Deserialization error: invalid bytes",
     });
@@ -145,7 +145,7 @@ describe("ContractVisualizerScreen", () => {
   it("dismisses error when dismiss button is clicked", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockResolvedValue({
+    mocks.commands.parseDataContract.mockResolvedValue({
       status: "error",
       error: "Deserialization error: bad data",
     });
@@ -189,13 +189,13 @@ describe("ContractVisualizerScreen", () => {
     });
 
     // parseDataContract should NOT have been called
-    expect(mockCommands.parseDataContract).not.toHaveBeenCalled();
+    expect(mocks.commands.parseDataContract).not.toHaveBeenCalled();
   });
 
   it("debounces parsing (only calls once for rapid typing)", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockResolvedValue({
+    mocks.commands.parseDataContract.mockResolvedValue({
       status: "ok",
       data: { json: '{}' },
     });
@@ -218,7 +218,7 @@ describe("ContractVisualizerScreen", () => {
       // Should have been called at most once after all typing settled,
       // but since each character resets the debounce, only the final
       // value should trigger the parse
-      const calls = mockCommands.parseDataContract.mock.calls;
+      const calls = mocks.commands.parseDataContract.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       // The last call should have the full hex data
       const lastCall = calls[calls.length - 1];
@@ -229,7 +229,7 @@ describe("ContractVisualizerScreen", () => {
   it("returns to idle state when input is cleared", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockResolvedValue({
+    mocks.commands.parseDataContract.mockResolvedValue({
       status: "ok",
       data: { json: '{"test": true}' },
     });
@@ -260,7 +260,7 @@ describe("ContractVisualizerScreen", () => {
   it("handles command throwing an exception", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockRejectedValue(
+    mocks.commands.parseDataContract.mockRejectedValue(
       new Error("Backend unavailable"),
     );
 
@@ -281,7 +281,7 @@ describe("ContractVisualizerScreen", () => {
   it("supports base64 input format", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockResolvedValue({
+    mocks.commands.parseDataContract.mockResolvedValue({
       status: "ok",
       data: { json: '{"$id": "from-base64"}' },
     });
@@ -296,7 +296,7 @@ describe("ContractVisualizerScreen", () => {
     vi.advanceTimersByTime(350);
 
     await waitFor(() => {
-      expect(mockCommands.parseDataContract).toHaveBeenCalledWith({
+      expect(mocks.commands.parseDataContract).toHaveBeenCalledWith({
         hexData: "48656c6c6f20576f726c64",
       });
     });
@@ -305,7 +305,7 @@ describe("ContractVisualizerScreen", () => {
   it("supports comma-separated integer input format", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
-    mockCommands.parseDataContract.mockResolvedValue({
+    mocks.commands.parseDataContract.mockResolvedValue({
       status: "ok",
       data: { json: '{"$id": "from-csv"}' },
     });
@@ -319,7 +319,7 @@ describe("ContractVisualizerScreen", () => {
     vi.advanceTimersByTime(350);
 
     await waitFor(() => {
-      expect(mockCommands.parseDataContract).toHaveBeenCalledWith({
+      expect(mocks.commands.parseDataContract).toHaveBeenCalledWith({
         hexData: "00ff80",
       });
     });

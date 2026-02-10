@@ -6,75 +6,21 @@ import { useContractStore } from "@/stores/contractStore";
 import { useWalletStore } from "@/stores/walletStore";
 import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
-// ─── Hoisted mocks ─────────────────────────────────────────────────
+// ─── Centralized mock bindings ──────────────────────────────────
 
-type EventCallback = (event: { payload: unknown }) => void;
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-const { mockCommands, mockEvents, eventListeners, mockNavigate } = vi.hoisted(
-  () => {
-    const eventListeners: Record<string, EventCallback[]> = {
-      taskResultEvent: [],
-      taskErrorEvent: [],
-    };
-
-    const mockEvents = {
-      taskResultEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskResultEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskResultEvent =
-              eventListeners.taskResultEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      taskErrorEvent: {
-        listen: vi.fn().mockImplementation((cb: EventCallback) => {
-          eventListeners.taskErrorEvent.push(cb);
-          return Promise.resolve(() => {
-            eventListeners.taskErrorEvent =
-              eventListeners.taskErrorEvent.filter((l) => l !== cb);
-          });
-        }),
-      },
-      walletUpdatedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    };
-
-    const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-      identityListLocal: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-      identityLoadOrder: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-      identityGetById: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-      contractRegister: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { taskId: "task-1" } }),
-      contractListLocal: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: [] }),
-      walletListAll: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: { hdWallets: [], singleKeyWallets: [] } }),
-      walletNotifyUnlocked: vi
-        .fn()
-        .mockResolvedValue({ status: "ok", data: null }),
-    };
-
-    const mockNavigate = vi.fn();
-
-    return { mockCommands, mockEvents, eventListeners, mockNavigate };
-  },
-);
+const { mockNavigate } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
-}));
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) return mockCommands[prop];
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
 }));
 
 const { mockToast } = vi.hoisted(() => ({
@@ -93,6 +39,8 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/toastError", () => ({
   toastError: vi.fn(),
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ─────────────────────────────────────────────────
 
@@ -215,7 +163,7 @@ function resetStores() {
 }
 
 function setupWithIdentities(identities: QualifiedIdentityDto[]) {
-  mockCommands.identityListLocal.mockResolvedValue({
+  vi.mocked(commands.identityListLocal).mockResolvedValue({
     status: "ok",
     data: identities,
   });
@@ -223,18 +171,18 @@ function setupWithIdentities(identities: QualifiedIdentityDto[]) {
 }
 
 function fireTaskResult(payload: unknown) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  const listener = calls[calls.length - 1]?.[0];
   act(() => {
-    for (const listener of eventListeners.taskResultEvent) {
-      listener({ payload });
-    }
+    listener?.({ payload });
   });
 }
 
 function fireTaskError(payload: unknown) {
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  const listener = calls[calls.length - 1]?.[0];
   act(() => {
-    for (const listener of eventListeners.taskErrorEvent) {
-      listener({ payload });
-    }
+    listener?.({ payload });
   });
 }
 
@@ -249,9 +197,7 @@ function setup() {
 beforeEach(() => {
   vi.clearAllMocks();
   resetStores();
-  eventListeners.taskResultEvent = [];
-  eventListeners.taskErrorEvent = [];
-  mockCommands.contractRegister.mockResolvedValue({
+  vi.mocked(commands.contractRegister).mockResolvedValue({
     status: "ok",
     data: { taskId: "task-1" },
   });
@@ -618,7 +564,7 @@ describe("RegisterContractScreen", () => {
         screen.getByRole("button", { name: /Register Contract/i }),
       );
 
-      expect(mockCommands.contractRegister).toHaveBeenCalledWith(
+      expect(commands.contractRegister).toHaveBeenCalledWith(
         expect.objectContaining({
           identityId: identity.id,
           keyId: 0,
@@ -651,7 +597,7 @@ describe("RegisterContractScreen", () => {
         screen.getByRole("button", { name: /Register Contract/i }),
       );
 
-      expect(mockCommands.contractRegister).toHaveBeenCalledWith(
+      expect(commands.contractRegister).toHaveBeenCalledWith(
         expect.objectContaining({
           alias: "My Contract",
         }),
@@ -765,7 +711,7 @@ describe("RegisterContractScreen", () => {
     });
 
     it("shows error when IPC command returns error", async () => {
-      mockCommands.contractRegister.mockResolvedValue({
+      vi.mocked(commands.contractRegister).mockResolvedValue({
         status: "error",
         error: "Network error",
       });
@@ -795,7 +741,7 @@ describe("RegisterContractScreen", () => {
     });
 
     it("shows error when IPC command throws", async () => {
-      mockCommands.contractRegister.mockRejectedValue(
+      vi.mocked(commands.contractRegister).mockRejectedValue(
         new Error("Connection refused"),
       );
 
@@ -901,7 +847,7 @@ describe("RegisterContractScreen", () => {
 
   describe("error dismissal", () => {
     it("returns to input phase when dismiss is clicked", async () => {
-      mockCommands.contractRegister.mockResolvedValue({
+      vi.mocked(commands.contractRegister).mockResolvedValue({
         status: "error",
         error: "Some error",
       });
@@ -1040,7 +986,7 @@ describe("RegisterContractScreen", () => {
   describe("wallet lock state", () => {
     function setupWithLockedWallet(usesPassword = true) {
       const wallet = makeWalletDto({ usesPassword, passwordHint: usesPassword ? "hint" : null });
-      mockCommands.walletListAll.mockResolvedValue({
+      vi.mocked(commands.walletListAll).mockResolvedValue({
         status: "ok",
         data: { hdWallets: [wallet], singleKeyWallets: [], selectedWallet: null },
       });
@@ -1126,8 +1072,8 @@ describe("RegisterContractScreen", () => {
       setup();
 
       await waitFor(() => {
-        expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
-        expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+        expect(events.taskResultEvent.listen).toHaveBeenCalled();
+        expect(events.taskErrorEvent.listen).toHaveBeenCalled();
       });
     });
   });
@@ -1167,7 +1113,7 @@ describe("RegisterContractScreen", () => {
         screen.getByRole("button", { name: /Register Contract/i }),
       );
 
-      expect(mockCommands.contractRegister).toHaveBeenCalledWith(
+      expect(commands.contractRegister).toHaveBeenCalledWith(
         expect.objectContaining({
           keyId: 1, // HIGH key
         }),
@@ -1201,7 +1147,7 @@ describe("RegisterContractScreen", () => {
         screen.getByRole("button", { name: /Register Contract/i }),
       );
 
-      expect(mockCommands.contractRegister).toHaveBeenCalledWith(
+      expect(commands.contractRegister).toHaveBeenCalledWith(
         expect.objectContaining({
           keyId: 2,
         }),

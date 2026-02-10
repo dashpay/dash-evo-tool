@@ -30,25 +30,14 @@ vi.mock("@/components/theme/ThemeProvider", () => ({
   }),
 }));
 
-const mockTokenRegisterContract = vi
-  .fn()
-  .mockResolvedValue({ status: "ok", data: { taskId: "task-1" } });
-const mockWalletNotifyUnlocked = vi
-  .fn()
-  .mockResolvedValue({ status: "ok" });
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    walletNotifyUnlocked: (...args: unknown[]) =>
-      mockWalletNotifyUnlocked(...args),
-    tokenRegisterContract: (...args: unknown[]) =>
-      mockTokenRegisterContract(...args),
-  },
-  events: {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  },
-}));
+import { commands } from "@/bindings";
 
 const mockIdentities = [
   {
@@ -500,12 +489,16 @@ describe("ReviewStep", () => {
   let onReset: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    vi.clearAllMocks();
     onReset = vi.fn();
-    mockTokenRegisterContract.mockClear();
-    mockWalletNotifyUnlocked.mockClear();
-    mockLoadIdentities.mockClear();
-    mockLoadWallets.mockClear();
-    mockLoadMyTokenBalances.mockClear();
+    vi.mocked(commands.tokenRegisterContract).mockResolvedValue({
+      status: "ok",
+      data: { taskId: "task-1" },
+    });
+    vi.mocked(commands.walletNotifyUnlocked).mockResolvedValue({
+      status: "ok",
+      data: null,
+    });
   });
 
   it("renders the review step container", () => {
@@ -765,8 +758,8 @@ describe("ReviewStep", () => {
     await user.click(screen.getByTestId("review-create-button"));
     await user.click(screen.getByTestId("review-confirm-submit"));
 
-    expect(mockTokenRegisterContract).toHaveBeenCalledTimes(1);
-    const args = mockTokenRegisterContract.mock.calls[0][0];
+    expect(vi.mocked(commands.tokenRegisterContract)).toHaveBeenCalledTimes(1);
+    const args = vi.mocked(commands.tokenRegisterContract).mock.calls[0][0];
     expect(args.identityId).toBe("id-abc123def456");
     expect(args.keyId).toBe(1); // HIGH key auto-selected
   });
@@ -784,7 +777,7 @@ describe("ReviewStep", () => {
   });
 
   it("shows error state when IPC returns error", async () => {
-    mockTokenRegisterContract.mockResolvedValueOnce({
+    vi.mocked(commands.tokenRegisterContract).mockResolvedValueOnce({
       status: "error",
       error: "Insufficient balance",
     });
@@ -799,7 +792,7 @@ describe("ReviewStep", () => {
   });
 
   it("shows try again button on error", async () => {
-    mockTokenRegisterContract.mockResolvedValueOnce({
+    vi.mocked(commands.tokenRegisterContract).mockResolvedValueOnce({
       status: "error",
       error: "Network error",
     });
@@ -812,7 +805,7 @@ describe("ReviewStep", () => {
   });
 
   it("returns to idle state when Try Again is clicked", async () => {
-    mockTokenRegisterContract.mockResolvedValueOnce({
+    vi.mocked(commands.tokenRegisterContract).mockResolvedValueOnce({
       status: "error",
       error: "Network error",
     });
@@ -826,7 +819,7 @@ describe("ReviewStep", () => {
   });
 
   it("shows error when IPC throws", async () => {
-    mockTokenRegisterContract.mockRejectedValueOnce(
+    vi.mocked(commands.tokenRegisterContract).mockRejectedValueOnce(
       new Error("Connection lost"),
     );
     const user = userEvent.setup();

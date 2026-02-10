@@ -3,15 +3,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DesignSystem } from "./DesignSystem";
 import { ThemeProvider } from "@/components/theme";
 
-vi.mock("@/bindings", () => ({
-  commands: {
-    settingsGet: vi.fn().mockResolvedValue({
-      status: "ok",
-      data: { themeMode: "light" },
-    }),
-    systemUpdateTheme: vi.fn().mockResolvedValue({ taskId: "1" }),
-  },
-}));
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
+});
 
 function renderDesignSystem(defaultTheme: "light" | "dark" | "system" = "light") {
   return render(

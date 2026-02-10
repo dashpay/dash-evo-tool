@@ -6,36 +6,14 @@ import { renderWithProviders } from "@/test/router-utils";
 import type { ScheduledVoteWithStatus } from "@/stores/contestStore";
 import type { VoteChoiceDto } from "@/bindings";
 
-// ─── Mock Tauri bindings ──────────────────────────────────────────
+// ─── Centralized mock bindings ───────────────────────────────────
 
-const { mockCommands, mockEvents } = vi.hoisted(() => {
-  const mockCommands: Record<string, ReturnType<typeof vi.fn>> = {
-    contestedGetScheduledVotes: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
-    contestedCastScheduledVote: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contestedDeleteScheduledVote: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-    contestedClearAllScheduledVotes: vi.fn().mockResolvedValue(null),
-    contestedClearExecutedScheduledVotes: vi.fn().mockResolvedValue(null),
-    contestedQueryDpnsContests: vi.fn().mockResolvedValue({ status: "ok", data: null }),
-  };
-  const mockEvents = {
-    taskResultEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    taskErrorEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-    scheduledVoteExecutedEvent: { listen: vi.fn().mockResolvedValue(() => {}) },
-  };
-  return { mockCommands, mockEvents };
+vi.mock("@/bindings", async () => {
+  const { createMockBindings, mockBindingsModule } = await import(
+    "@/test/mock-ipc"
+  );
+  return mockBindingsModule(createMockBindings());
 });
-
-vi.mock("@/bindings", () => ({
-  commands: new Proxy({} as Record<string, unknown>, {
-    get: (_target, prop: string) => {
-      if (prop in mockCommands) {
-        return mockCommands[prop];
-      }
-      return vi.fn().mockResolvedValue({ status: "error", error: "not mocked" });
-    },
-  }),
-  events: mockEvents,
-}));
 
 // Mock sonner toast
 const { mockToast } = vi.hoisted(() => ({
@@ -57,6 +35,8 @@ const { mockToastError } = vi.hoisted(() => ({
 vi.mock("@/lib/toastError", () => ({
   toastError: mockToastError,
 }));
+
+import { commands, events } from "@/bindings";
 
 // ─── Test Fixtures ────────────────────────────────────────────────
 
@@ -106,7 +86,7 @@ function resetStore() {
 }
 
 function setupWithVotes(votes: ScheduledVoteWithStatus[] = [makeVote()]) {
-  mockCommands.contestedGetScheduledVotes.mockResolvedValue({
+  vi.mocked(commands.contestedGetScheduledVotes).mockResolvedValue({
     status: "ok",
     data: votes.map((sv) => sv.vote),
   });
@@ -202,7 +182,7 @@ describe("DpnsScheduledVotesScreen — data loading", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.contestedGetScheduledVotes,
+        commands.contestedGetScheduledVotes,
       ).toHaveBeenCalled();
     });
   });
@@ -211,10 +191,10 @@ describe("DpnsScheduledVotesScreen — data loading", () => {
     setup();
 
     await waitFor(() => {
-      expect(mockEvents.taskResultEvent.listen).toHaveBeenCalled();
-      expect(mockEvents.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(events.taskResultEvent.listen).toHaveBeenCalled();
+      expect(events.taskErrorEvent.listen).toHaveBeenCalled();
       expect(
-        mockEvents.scheduledVoteExecutedEvent.listen,
+        events.scheduledVoteExecutedEvent.listen,
       ).toHaveBeenCalled();
     });
   });
@@ -232,7 +212,7 @@ describe("DpnsScheduledVotesScreen — action buttons", () => {
     });
 
     // Clear mock to isolate the click action
-    mockCommands.contestedGetScheduledVotes.mockClear();
+    vi.mocked(commands.contestedGetScheduledVotes).mockClear();
 
     await user.click(
       screen.getByRole("button", { name: /refresh scheduled votes/i }),
@@ -240,7 +220,7 @@ describe("DpnsScheduledVotesScreen — action buttons", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.contestedGetScheduledVotes,
+        commands.contestedGetScheduledVotes,
       ).toHaveBeenCalled();
     });
   });
@@ -259,7 +239,7 @@ describe("DpnsScheduledVotesScreen — action buttons", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.contestedClearAllScheduledVotes,
+        commands.contestedClearAllScheduledVotes,
       ).toHaveBeenCalled();
     });
   });
@@ -287,7 +267,7 @@ describe("DpnsScheduledVotesScreen — action buttons", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.contestedClearExecutedScheduledVotes,
+        commands.contestedClearExecutedScheduledVotes,
       ).toHaveBeenCalled();
     });
   });
@@ -331,7 +311,7 @@ describe("DpnsScheduledVotesScreen — Cast Now", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.contestedCastScheduledVote,
+        commands.contestedCastScheduledVote,
       ).toHaveBeenCalledWith({ vote: vote.vote });
     });
   });
@@ -364,7 +344,7 @@ describe("DpnsScheduledVotesScreen — Remove", () => {
 
     await waitFor(() => {
       expect(
-        mockCommands.contestedDeleteScheduledVote,
+        commands.contestedDeleteScheduledVote,
       ).toHaveBeenCalledWith({
         voterId: "abcdef1234567890abcdef1234567890",
         contestedName: "test-name",

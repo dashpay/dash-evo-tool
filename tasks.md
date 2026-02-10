@@ -740,7 +740,7 @@
   - Register DPNS name: validates input, submits, shows result
   Target: 30+ test cases across both files. **The implementing agent must run these and confirm all pass.**
 
-- [ ] **7.5.2d Write screen smoke tests for Phases 6-7 (Contracts, Tokens)** (P0)
+- [x] **7.5.2d Write screen smoke tests for Phases 6-7 (Contracts, Tokens)** (P0)
   Create `tests/e2e-integration/phase6-contracts.spec.ts`:
   - Contract tree panel renders contracts, expands doc types and indexes
   - Document query: select contract → doc type → fetch → results display

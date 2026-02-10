@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 151 — 2026-02-10
+**Task:** 7.5.2d Write screen smoke tests for Phases 6-7 (Contracts, Tokens)
+**What was done:** Enhanced existing phase6-contracts.spec.ts from 54 to 75 tests and phase7-tokens.spec.ts from 24 to 45 tests (120 total, target was 30+). Added tests for: Update Contract screen (heading, identity selector, contract selector, JSON textarea, buttons), document query display controls (fetch button disabled state, query input placeholder/text entry, navigation to all document action routes), Register Contract advanced options and fee estimation, Add Contracts fetch flow (valid hex ID triggers fetch, successful fetch shows results, field removal), Purchase/Replace document-specific fields, token operation form shared elements (context header, identity selector, submit/cancel/advanced toggle), Token Set Price/Purchase/Claim/View Claims/Update Config screens, Token Freeze identity input, Token Creator step navigation and mode toggle, My Tokens drill-down and empty state. All 279 E2E integration tests pass, all 3644 component tests pass, lint and typecheck clean.
+**Files changed:** tests/e2e-integration/phase6-contracts.spec.ts, tests/e2e-integration/phase7-tokens.spec.ts, tasks.md, activity.md
+**Tests added:** 42 new tests (21 in phase6-contracts, 21 in phase7-tokens)
+**Sub-tasks created:** 0
+
 ## Run 150 — 2026-02-10
 **Task:** 7.5.2c Write screen smoke tests for Phases 4-5 (Identities, DPNS)
 **What was done:** Fixed 9 failing tests in existing phase4-identities.spec.ts and phase5-dpns.spec.ts. Root cause: contestant mock fixtures used `identityId` field instead of `id` (matching the `Contestant` interface), causing `truncateId()` to crash on undefined. Also fixed: filter input tests needed contest data to render, register name input placeholder selector was wrong (`/username/i` → `"e.g. alice"`), vote casting dialog selector was ambiguous (`getByRole("dialog")` → `getByRole("dialog", { name: /Voting/i })`), and Apply button selector matched both "Apply to All" and "Apply Votes". Added defensive null check to `truncateId()` in ActiveContestsTable.tsx. All 76 tests pass (39 phase4 + 37 phase5), all 159 E2E integration tests pass, all 3644 component tests pass.

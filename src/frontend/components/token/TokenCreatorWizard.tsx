@@ -14,6 +14,11 @@ import {
   createDefaultDistributionState,
 } from "./DistributionStep";
 import type { DistributionState } from "./DistributionStep";
+import {
+  ControlRulesStep,
+  createDefaultControlRulesState,
+} from "./ControlRulesStep";
+import type { ControlRulesState } from "./ControlRulesStep";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -344,6 +349,9 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
   const [distribution, setDistribution] = useState<DistributionState>(
     createDefaultDistributionState,
   );
+  const [controlRules, setControlRules] = useState<ControlRulesState>(
+    createDefaultControlRulesState,
+  );
 
   const canGoNext = useCallback(() => {
     if (currentStep === 0) {
@@ -419,7 +427,7 @@ export function TokenCreatorWizard({ onCancel }: TokenCreatorWizardProps) {
           <DistributionStep state={distribution} onChange={setDistribution} />
         )}
         {currentStep === 2 && (
-          <PlaceholderStep label="Control Rules" />
+          <ControlRulesStep state={controlRules} onChange={setControlRules} />
         )}
         {currentStep === 3 && (
           <PlaceholderStep label="Groups" />

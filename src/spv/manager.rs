@@ -56,15 +56,16 @@ impl From<u8> for CoreBackendMode {
 
 /// High-level status of the SPV client runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum SpvStatus {
     #[default]
-    Idle,
-    Starting,
-    Syncing,
-    Running,
-    Stopping,
-    Stopped,
-    Error,
+    Idle = 0,
+    Starting = 1,
+    Syncing = 2,
+    Running = 3,
+    Stopping = 4,
+    Stopped = 5,
+    Error = 6,
 }
 
 impl SpvStatus {
@@ -73,6 +74,35 @@ impl SpvStatus {
             self,
             SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running | SpvStatus::Stopping
         )
+    }
+}
+
+impl std::fmt::Display for SpvStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SpvStatus::Idle => write!(f, "Idle"),
+            SpvStatus::Starting => write!(f, "Starting"),
+            SpvStatus::Syncing => write!(f, "Syncing"),
+            SpvStatus::Running => write!(f, "Running"),
+            SpvStatus::Stopping => write!(f, "Stopping"),
+            SpvStatus::Stopped => write!(f, "Stopped"),
+            SpvStatus::Error => write!(f, "Error"),
+        }
+    }
+}
+
+impl From<u8> for SpvStatus {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => SpvStatus::Idle,
+            1 => SpvStatus::Starting,
+            2 => SpvStatus::Syncing,
+            3 => SpvStatus::Running,
+            4 => SpvStatus::Stopping,
+            5 => SpvStatus::Stopped,
+            6 => SpvStatus::Error,
+            _ => SpvStatus::Idle,
+        }
     }
 }
 

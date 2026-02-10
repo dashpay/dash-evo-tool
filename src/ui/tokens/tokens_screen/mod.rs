@@ -3240,8 +3240,14 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3546,8 +3552,14 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3666,8 +3678,14 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection

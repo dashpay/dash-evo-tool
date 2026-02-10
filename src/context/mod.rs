@@ -1,3 +1,4 @@
+pub mod connection_status;
 mod contract_token_db;
 mod identity_db;
 mod settings_db;
@@ -19,6 +20,7 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::{CoreBackendMode, SpvManager};
 use crate::utils::tasks::TaskManager;
+use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::{Auth, Client};
@@ -59,7 +61,6 @@ pub struct AppContext {
     pub(crate) config: Arc<RwLock<NetworkConfig>>,
     pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
     pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
-    pub(crate) zmq_connection_status: Mutex<ZMQConnectionEvent>,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) dashpay_contract: Arc<DataContract>,
@@ -84,6 +85,8 @@ pub struct AppContext {
     pub(crate) subtasks: Arc<TaskManager>,
     pub(crate) spv_manager: Arc<SpvManager>,
     core_backend_mode: AtomicU8,
+    /// Tracks the connection status to currently active network
+    pub(crate) connection_status: Arc<ConnectionStatus>,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -102,6 +105,7 @@ impl AppContext {
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
         subtasks: Arc<TaskManager>,
+        connection_status: Arc<ConnectionStatus>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
@@ -254,12 +258,12 @@ impl AppContext {
             single_key_wallets: RwLock::new(single_key_wallets),
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
-            zmq_connection_status: Mutex::new(ZMQConnectionEvent::Disconnected),
             animate,
             cached_settings: RwLock::new(None),
             subtasks,
             spv_manager,
             core_backend_mode: AtomicU8::new(saved_core_backend_mode),
+            connection_status,
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
@@ -331,6 +335,10 @@ impl AppContext {
 
     pub fn core_backend_mode(&self) -> CoreBackendMode {
         self.core_backend_mode.load(Ordering::Relaxed).into()
+    }
+
+    pub fn connection_status(&self) -> &ConnectionStatus {
+        &self.connection_status
     }
 
     pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {

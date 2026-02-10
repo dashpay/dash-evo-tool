@@ -1,9 +1,10 @@
 use crate::app::AppAction;
-use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::BackendTask;
+use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
+use crate::context::connection_status::ConnectionStatus;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::component_trait::Component;
@@ -43,10 +44,6 @@ pub struct NetworkChooserScreen {
     pub local_app_context: Option<Arc<AppContext>>,
     pub local_network_dashmate_password: String,
     pub current_network: Network,
-    pub mainnet_core_status_online: bool,
-    pub testnet_core_status_online: bool,
-    pub devnet_core_status_online: bool,
-    pub local_core_status_online: bool,
     pub recheck_time: Option<TimestampMillis>,
     custom_dash_qt_path: Option<PathBuf>,
     custom_dash_qt_error_message: Option<String>,
@@ -141,10 +138,6 @@ impl NetworkChooserScreen {
             local_app_context: local_app_context.cloned(),
             local_network_dashmate_password,
             current_network,
-            mainnet_core_status_online: false,
-            testnet_core_status_online: false,
-            devnet_core_status_online: false,
-            local_core_status_online: false,
             recheck_time: None,
             custom_dash_qt_path,
             custom_dash_qt_error_message: None,
@@ -450,20 +443,23 @@ impl NetworkChooserScreen {
                 .entry(self.current_network)
                 .or_insert(CoreBackendMode::Rpc);
 
-            // Check connection status
-            let (is_connected, snapshot) = match current_backend_mode {
-                CoreBackendMode::Rpc => (self.check_network_status(self.current_network), None),
-                CoreBackendMode::Spv => {
-                    let ctx = self.current_app_context();
-                    let snap = ctx.spv_manager().status();
-                    let connected = snap.status.is_active() || snap.status == SpvStatus::Running;
-                    (connected, Some(snap))
-                }
+            let ctx = self.current_app_context();
+            let status = ctx.connection_status();
+            let disable_zmq = status.disable_zmq();
+            let rpc_online = status.rpc_online();
+            let zmq_connected = status.zmq_connected();
+            let spv_status = status.spv_status();
+            let spv_connected = ConnectionStatus::spv_connected(spv_status);
+            let snapshot = if current_backend_mode == CoreBackendMode::Spv {
+                Some(ctx.spv_manager().status().clone())
+            } else {
+                None
             };
+            let overall_connected = status.overall_connected();
 
             // Button on the left with status
             ui.horizontal(|ui| {
-                if is_connected {
+                if overall_connected {
                     if current_backend_mode == CoreBackendMode::Spv {
                         let disconnect_button = egui::Button::new(
                             egui::RichText::new("Disconnect").color(DashColors::WHITE),
@@ -510,13 +506,22 @@ impl NetworkChooserScreen {
                         }
                     } else {
                         // For Core mode, just show status since it can switch networks freely
-                        ui.colored_label(DashColors::DASH_BLUE, "✅ Connected");
+                        let label = if disable_zmq {
+                            "✅ Connected (RPC, ZMQ disabled)"
+                        } else {
+                            "✅ Connected (RPC + ZMQ)"
+                        };
+                        ui.colored_label(DashColors::DASH_BLUE, label);
                     }
                 } else {
                     // Don't show Connect button for Local network in RPC mode
                     // (there's no Dash-Qt to start for local/regtest)
-                    let show_connect_button = !(self.current_network == Network::Regtest
-                        && current_backend_mode == CoreBackendMode::Rpc);
+                    let show_connect_button = match current_backend_mode {
+                        CoreBackendMode::Spv => true,
+                        CoreBackendMode::Rpc => {
+                            !rpc_online && self.current_network != Network::Regtest
+                        }
+                    };
 
                     if show_connect_button {
                         let connect_button = egui::Button::new(
@@ -552,6 +557,7 @@ impl NetworkChooserScreen {
                             }
                         }
                     }
+
                 }
             });
 
@@ -568,6 +574,82 @@ impl NetworkChooserScreen {
 
                 self.render_spv_sync_progress(ui, snap);
             }
+
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+
+            ui.vertical(|ui| {
+                if current_backend_mode == CoreBackendMode::Rpc && !self.developer_mode {
+                    ui.horizontal(|ui| {
+                        ui.label("Core RPC:");
+                        let rpc_color = if rpc_online {
+                            DashColors::SUCCESS
+                        } else {
+                            DashColors::ERROR
+                        };
+                        let rpc_label = if rpc_online { "Connected" } else { "Disconnected" };
+                        ui.colored_label(rpc_color, rpc_label);
+
+                        ui.label(",");
+                        ui.label("ZMQ:");
+                        if disable_zmq {
+                            ui.colored_label(DashColors::text_secondary(dark_mode), "Disabled");
+                        } else {
+                            let zmq_color = if zmq_connected {
+                                DashColors::SUCCESS
+                            } else {
+                                DashColors::ERROR
+                            };
+                            let zmq_label = if zmq_connected { "Connected" } else { "Disconnected" };
+                            ui.colored_label(zmq_color, zmq_label);
+                        }
+                    });
+                }
+
+                if current_backend_mode == CoreBackendMode::Rpc && self.developer_mode {
+                    ui.horizontal(|ui| {
+                        ui.label("Dash Core RPC:");
+                        let color = if rpc_online {
+                            DashColors::SUCCESS
+                        } else {
+                            DashColors::ERROR
+                        };
+                        let label = if rpc_online { "Connected" } else { "Disconnected" };
+                        ui.colored_label(color, label);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("ZMQ:");
+                        if disable_zmq {
+                            ui.colored_label(
+                                DashColors::text_secondary(dark_mode),
+                                "Disabled",
+                            );
+                        } else {
+                            let color = if zmq_connected {
+                                DashColors::SUCCESS
+                            } else {
+                                DashColors::ERROR
+                            };
+                            let label = if zmq_connected { "Connected" } else { "Disconnected" };
+                            ui.colored_label(color, label);
+                        }
+                    });
+                }
+
+                if current_backend_mode == CoreBackendMode::Spv {
+                    ui.horizontal(|ui| {
+                        ui.label("SPV:");
+                        let color = if spv_connected {
+                            DashColors::SUCCESS
+                        } else {
+                            DashColors::ERROR
+                        };
+                        ui.colored_label(color, spv_status.to_string());
+                    });
+                }
+            });
         });
 
         // Advanced Settings section with clean dropdown
@@ -1697,17 +1779,6 @@ impl NetworkChooserScreen {
         }
     }
 
-    /// Check if the network is working
-    fn check_network_status(&self, network: Network) -> bool {
-        match network {
-            Network::Dash => self.mainnet_core_status_online,
-            Network::Testnet => self.testnet_core_status_online,
-            Network::Devnet => self.devnet_core_status_online,
-            Network::Regtest => self.local_core_status_online,
-            _ => false,
-        }
-    }
-
     fn any_rpc_backend(&self) -> bool {
         self.backend_modes
             .iter()
@@ -1807,43 +1878,6 @@ impl ScreenLike for NetworkChooserScreen {
         if let Some(ctx) = &self.local_app_context {
             self.backend_modes
                 .insert(Network::Regtest, ctx.core_backend_mode());
-        }
-    }
-
-    fn display_message(&mut self, message: &str, _message_type: super::MessageType) {
-        if message.contains("Failed to get best chain lock for mainnet, testnet, devnet, and local")
-        {
-            self.mainnet_core_status_online = false;
-            self.testnet_core_status_online = false;
-            self.devnet_core_status_online = false;
-            self.local_core_status_online = false;
-        }
-    }
-
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-            mainnet_chainlock,
-            testnet_chainlock,
-            devnet_chainlock,
-            local_chainlock,
-        )) = backend_task_success_result
-        {
-            match mainnet_chainlock {
-                Some(_) => self.mainnet_core_status_online = true,
-                None => self.mainnet_core_status_online = false,
-            }
-            match testnet_chainlock {
-                Some(_) => self.testnet_core_status_online = true,
-                None => self.testnet_core_status_online = false,
-            }
-            match devnet_chainlock {
-                Some(_) => self.devnet_core_status_online = true,
-                None => self.devnet_core_status_online = false,
-            }
-            match local_chainlock {
-                Some(_) => self.local_core_status_online = true,
-                None => self.local_core_status_online = false,
-            }
         }
     }
 

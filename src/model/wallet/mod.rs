@@ -99,6 +99,7 @@ pub trait DerivationPathHelpers {
     fn is_bip44(&self, network: Network) -> bool;
     fn is_bip44_external(&self, network: Network) -> bool;
     fn is_bip44_change(&self, network: Network) -> bool;
+    fn is_bip32(&self) -> bool;
     fn is_asset_lock_funding(&self, network: Network) -> bool;
     fn is_platform_payment(&self, network: Network) -> bool;
     fn bip44_account_index(&self) -> Option<u32>;
@@ -137,6 +138,11 @@ impl DerivationPathHelpers for DerivationPath {
         }
         let components = self.as_ref();
         components.len() >= 5 && components[3] == ChildNumber::Normal { index: 1 }
+    }
+
+    fn is_bip32(&self) -> bool {
+        let components = self.as_ref();
+        matches!(components.len(), 2..=3) && components[0] == ChildNumber::Hardened { index: 0 }
     }
 
     fn is_asset_lock_funding(&self, network: Network) -> bool {
@@ -1805,6 +1811,37 @@ impl Wallet {
             .db
             .update_address_balance(&self.seed_hash(), address, new_balance)
             .map_err(|e| e.to_string())
+    }
+
+    /// Recalculate and persist balances for all addresses affected by spent UTXOs.
+    ///
+    /// Call this after removing entries from `self.utxos` to keep `address_balances`
+    /// and the database in sync.
+    pub fn recalculate_affected_address_balances(
+        &mut self,
+        used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
+        context: &AppContext,
+    ) -> Result<(), String> {
+        let affected_addresses: BTreeSet<_> =
+            used_utxos.values().map(|(_, addr)| addr.clone()).collect();
+        for address in affected_addresses {
+            self.recalculate_address_balance(&address, context)?;
+        }
+        Ok(())
+    }
+
+    /// Recalculate and persist the balance for a single address from its remaining UTXOs.
+    pub fn recalculate_address_balance(
+        &mut self,
+        address: &Address,
+        context: &AppContext,
+    ) -> Result<(), String> {
+        let new_balance = self
+            .utxos
+            .get(address)
+            .map(|utxo_map| utxo_map.values().map(|tx_out| tx_out.value).sum())
+            .unwrap_or(0);
+        self.update_address_balance(address, new_balance, context)
     }
 
     pub fn update_address_total_received(

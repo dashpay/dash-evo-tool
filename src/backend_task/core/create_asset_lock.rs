@@ -1,13 +1,12 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::fee::Credits;
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
-    pub fn create_registration_asset_lock(
+    pub async fn create_registration_asset_lock(
         &self,
         wallet: Arc<RwLock<Wallet>>,
         amount: Credits,
@@ -39,10 +38,8 @@ impl AppContext {
         }
 
         // Broadcast the transaction
-        self.core_client
-            .read()
-            .expect("Core client lock was poisoned")
-            .send_raw_transaction(&asset_lock_transaction)
+        self.broadcast_raw_transaction(&asset_lock_transaction)
+            .await
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 
         // Update wallet UTXOs
@@ -59,6 +56,8 @@ impl AppContext {
                     .drop_utxo(utxo, &self.network.to_string())
                     .map_err(|e| e.to_string())?;
             }
+
+            wallet_guard.recalculate_affected_address_balances(&used_utxos, self)?;
         }
 
         Ok(BackendTaskSuccessResult::Message(format!(
@@ -67,7 +66,7 @@ impl AppContext {
         )))
     }
 
-    pub fn create_top_up_asset_lock(
+    pub async fn create_top_up_asset_lock(
         &self,
         wallet: Arc<RwLock<Wallet>>,
         amount: Credits,
@@ -101,10 +100,8 @@ impl AppContext {
         }
 
         // Broadcast the transaction
-        self.core_client
-            .read()
-            .expect("Core client lock was poisoned")
-            .send_raw_transaction(&asset_lock_transaction)
+        self.broadcast_raw_transaction(&asset_lock_transaction)
+            .await
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 
         // Update wallet UTXOs
@@ -121,6 +118,8 @@ impl AppContext {
                     .drop_utxo(utxo, &self.network.to_string())
                     .map_err(|e| e.to_string())?;
             }
+
+            wallet_guard.recalculate_affected_address_balances(&used_utxos, self)?;
         }
 
         Ok(BackendTaskSuccessResult::Message(format!(

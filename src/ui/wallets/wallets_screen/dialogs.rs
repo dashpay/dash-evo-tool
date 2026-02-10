@@ -207,6 +207,24 @@ impl WalletsBalancesScreen {
             return AppAction::None;
         }
 
+        // Refresh cached balances from the wallet so SPV updates are reflected
+        if let Some(wallet) = &self.selected_wallet
+            && let Ok(wallet_guard) = wallet.read()
+        {
+            use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+            for (addr_str, balance) in &mut self.receive_dialog.core_addresses {
+                if let Ok(addr) = addr_str.parse::<Address<NetworkUnchecked>>()
+                    && let Ok(addr) = addr.require_network(self.app_context.network)
+                {
+                    *balance = wallet_guard
+                        .address_balances
+                        .get(&addr)
+                        .copied()
+                        .unwrap_or(0);
+                }
+            }
+        }
+
         let dark_mode = ctx.style().visuals.dark_mode;
 
         // Determine current address based on selected type

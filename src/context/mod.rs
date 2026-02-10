@@ -5,7 +5,7 @@ mod settings_db;
 mod transaction_processing;
 mod wallet_lifecycle;
 
-pub(crate) use transaction_processing::get_transaction_info_via_dapi;
+pub(crate) use transaction_processing::get_transaction_info;
 
 use crate::app_dir::core_cookie_path;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;

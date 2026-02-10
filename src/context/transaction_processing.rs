@@ -1,5 +1,7 @@
 use super::AppContext;
+use crate::spv::CoreBackendMode;
 use dash_sdk::Sdk;
+use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayload::AssetLockPayloadType;
 use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction, TxOut, Txid};
@@ -10,6 +12,68 @@ use rusqlite::Result;
 use std::collections::HashMap;
 
 impl AppContext {
+    /// Broadcast a raw transaction via Core RPC or SPV depending on backend mode.
+    pub(crate) async fn broadcast_raw_transaction(&self, tx: &Transaction) -> Result<Txid, String> {
+        match self.core_backend_mode() {
+            CoreBackendMode::Rpc => self
+                .core_client
+                .read()
+                .map_err(|e| format!("core client lock poisoned: {}", e))?
+                .send_raw_transaction(tx)
+                .map_err(|e| e.to_string()),
+            CoreBackendMode::Spv => {
+                self.spv_manager.broadcast_transaction(tx).await?;
+                Ok(tx.txid())
+            }
+        }
+    }
+
+    /// Wait for an asset lock proof (InstantLock or ChainLock) for the given transaction.
+    ///
+    /// Polls `transactions_waiting_for_finality` until a proof appears, with a
+    /// backend-mode-dependent timeout (SPV: 5 min, RPC: 2 min). Cleans up the
+    /// tracking entry on both success and timeout.
+    pub(crate) async fn wait_for_asset_lock_proof(
+        &self,
+        tx_id: Txid,
+    ) -> Result<AssetLockProof, String> {
+        use tokio::time::Duration;
+
+        let timeout_duration = match self.core_backend_mode() {
+            CoreBackendMode::Spv => Duration::from_secs(300),
+            CoreBackendMode::Rpc => Duration::from_secs(120),
+        };
+
+        match tokio::time::timeout(timeout_duration, async {
+            loop {
+                {
+                    let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                        return proof.clone();
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .await
+        {
+            Ok(proof) => {
+                let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                proofs.remove(&tx_id);
+                Ok(proof)
+            }
+            Err(_) => {
+                let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                proofs.remove(&tx_id);
+                Err(format!(
+                    "Timeout waiting for asset lock proof after {} seconds. \
+                     The transaction may not have been confirmed by the network.",
+                    timeout_duration.as_secs()
+                ))
+            }
+        }
+    }
+
     pub(crate) fn received_transaction_finality(
         &self,
         tx: &Transaction,
@@ -205,7 +269,7 @@ pub(crate) struct DapiTransactionInfo {
 
 /// Query transaction info from DAPI. Works in both SPV and RPC modes
 /// since DAPI (platform gRPC) is always available via the SDK.
-pub(crate) async fn get_transaction_info_via_dapi(
+pub(crate) async fn get_transaction_info(
     sdk: &Sdk,
     tx_id: &Txid,
 ) -> Result<DapiTransactionInfo, String> {

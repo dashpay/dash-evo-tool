@@ -46,6 +46,8 @@ import { TokenUnfreezeScreen } from "@/screens/TokenUnfreezeScreen";
 import { TokenDestroyFrozenFundsScreen } from "@/screens/TokenDestroyFrozenFundsScreen";
 import { TokenPauseScreen } from "@/screens/TokenPauseScreen";
 import { TokenResumeScreen } from "@/screens/TokenResumeScreen";
+import { TokenClaimScreen } from "@/screens/TokenClaimScreen";
+import { TokenViewClaimsScreen } from "@/screens/TokenViewClaimsScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -335,13 +337,13 @@ const tokensResumeRoute = createRoute({
 const tokensClaimRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/claim",
-  component: () => <PlaceholderScreen title="Claim Tokens" />,
+  component: TokenClaimScreen,
 });
 
 const tokensViewClaimsRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/view-claims",
-  component: () => <PlaceholderScreen title="View Token Claims" />,
+  component: TokenViewClaimsScreen,
 });
 
 const tokensSetPriceRoute = createRoute({

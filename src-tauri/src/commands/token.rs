@@ -277,6 +277,16 @@ pub struct RegisterTokenContractInput {
     pub key_id: u32,
 }
 
+/// Input for querying token claims from the token history contract.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryTokenClaimsInput {
+    /// Token ID (hex).
+    pub token_id: IdentifierDto,
+    /// Recipient identity ID (hex).
+    pub recipient_id: IdentifierDto,
+}
+
 /// Input for removing a token.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -804,6 +814,53 @@ pub fn token_estimate_perpetual_rewards(
             token_id,
         },
     ));
+    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
+    Ok(DispatchTaskResponse { task_id })
+}
+
+/// Query token claims from the token history contract.
+///
+/// Uses the system token history contract to fetch "claim" documents
+/// filtered by token ID and recipient identity ID. Result via event
+/// (arrives as a Document result type).
+#[tauri::command]
+#[specta::specta]
+pub fn token_query_claims(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    input: QueryTokenClaimsInput,
+) -> Result<DispatchTaskResponse, String> {
+    use dash_evo_tool::backend_task::document::DocumentTask;
+    use dash_sdk::dpp::platform_value::Value;
+    use dash_sdk::drive::query::{WhereClause, WhereOperator};
+
+    let token_id = parse_identifier(&input.token_id)?;
+    let recipient_id = parse_identifier(&input.recipient_id)?;
+
+    let ctx = state.current_context();
+    let token_history_contract = ctx.token_history_contract();
+
+    let query = dash_sdk::platform::DocumentQuery {
+        data_contract: token_history_contract,
+        document_type_name: "claim".to_string(),
+        where_clauses: vec![
+            WhereClause {
+                field: "tokenId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(token_id.into()),
+            },
+            WhereClause {
+                field: "recipientId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(recipient_id.into()),
+            },
+        ],
+        order_by_clauses: vec![],
+        limit: 0,
+        start: None,
+    };
+
+    let task = BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocuments(query)));
     let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
     Ok(DispatchTaskResponse { task_id })
 }

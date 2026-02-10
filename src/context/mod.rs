@@ -394,6 +394,11 @@ impl AppContext {
         self.dashpay_contract.id()
     }
 
+    /// Get the token history contract.
+    pub fn token_history_contract(&self) -> Arc<DataContract> {
+        Arc::clone(&self.token_history_contract)
+    }
+
     /// Returns `None` if the wallet is not found. Used by the Tauri IPC layer
     /// to look up wallets by their serializable seed hash identifiers.
     pub fn wallet_by_seed_hash(&self, seed_hash: &WalletSeedHash) -> Option<Arc<RwLock<Wallet>>> {

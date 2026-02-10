@@ -1290,6 +1290,21 @@ async tokenEstimatePerpetualRewards(input: EstimatePerpetualRewardsInput) : Prom
 }
 },
 /**
+ * Query token claims from the token history contract.
+ *
+ * Uses the system token history contract to fetch "claim" documents
+ * filtered by token ID and recipient identity ID. Result via event
+ * (arrives as a Document result type).
+ */
+async tokenQueryClaims(input: QueryTokenClaimsInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("token_query_claims", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Update token configuration.
  *
  * Dispatches `TokenTask::UpdateTokenConfig`. Result via event.
@@ -3176,6 +3191,18 @@ identityId: string;
  * Token ID (hex).
  */
 tokenId: string }
+/**
+ * Input for querying token claims from the token history contract.
+ */
+export type QueryTokenClaimsInput = {
+/**
+ * Token ID (hex).
+ */
+tokenId: string;
+/**
+ * Recipient identity ID (hex).
+ */
+recipientId: string }
 /**
  * Input for querying token pricing.
  */

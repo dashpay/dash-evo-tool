@@ -248,6 +248,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::token::token_resume,
             commands::token::token_claim,
             commands::token::token_estimate_perpetual_rewards,
+            commands::token::token_query_claims,
             commands::token::token_update_config,
             commands::token::token_purchase,
             commands::token::token_set_direct_purchase_price,

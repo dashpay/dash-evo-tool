@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 154 — 2026-02-10
+**Task:** 7.5.2f Write screen smoke tests for Phases 8-9 as they're completed
+**What was done:** Created `tests/e2e-integration/phase9-tools.spec.ts` with 42 tests across 6 test suites: Tools Landing Page (8 tests — heading, categories, cards, descriptions, navigation), Platform Info Screen (8 tests — title, query cards, descriptions, loading, results, errors, dismiss, disabled state), Address Balance Screen (9 tests — title, input, validation, fetch, results, errors), Contract Visualizer Screen (5 tests — title, subtitle, HexInput, Result, error/success/dismiss), Document Visualizer Screen (7 tests — title, subtitle, selectors, filter, HexInput, disabled state, error), Placeholder Screens (5 tests — Proof Log, Transition Visualizer, Proof Visualizer, Masternode List Diff, GroveSTARK). Created `tests/e2e-integration/phase8-dashpay.spec.ts` with 11 tests covering all 5 DashPay placeholder routes (main, profile, contacts, payments, search) plus 2 cross-section navigation tests. All 53 new tests pass, all 350 E2E integration tests pass, all 3710 component tests pass, lint and typecheck clean.
+**Files changed:** tests/e2e-integration/phase9-tools.spec.ts, tests/e2e-integration/phase8-dashpay.spec.ts, tasks.md, activity.md
+**Tests added:** 53 new E2E integration tests (42 phase9-tools + 11 phase8-dashpay)
+**Sub-tasks created:** 0
+
 ## Run 153 — 2026-02-10
 **Task:** 8.2a Create dashpayStore with profile, contacts, and requests slices
 **What was done:** Created `src/frontend/stores/dashpayStore.ts` with Zustand, implementing 5 slices: profile (load from DB, update via Platform task), contacts (load/refresh, search/filter/sort state, hide/unhide), contact requests (load incoming+outgoing, refresh, send/accept/reject with per-request tracking), payments (load/refresh, send), and profile search (search dispatch, clear). Includes identity selection with data clearing on switch, `subscribeToUpdates()` for DashPay task result/error events with automatic local data reload, and utility actions (clearErrors, reset). Exported from stores/index.ts. Wrote 66 unit tests covering all actions, state transitions, error handling, event subscriptions, and edge cases. All 3710 tests pass (66 new + 3644 existing), lint and typecheck clean.

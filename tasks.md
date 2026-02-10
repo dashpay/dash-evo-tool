@@ -766,12 +766,14 @@
   - **Identity management journey:** Load Identity → View Keys → Add Key → Top Up → Withdraw → Transfer Credits
   Target: 5 journey tests, each exercising 3-6 screens in sequence.
 
-- [ ] **7.5.2f Write screen smoke tests for Phases 8-9 as they're completed** (P1)
+- [x] **7.5.2f Write screen smoke tests for Phases 8-9 as they're completed** (P1)
   Placeholder — as DashPay (Phase 8) and Tools (Phase 9) screens are implemented, add corresponding Playwright integration tests:
   - `tests/e2e-integration/phase8-dashpay.spec.ts`
   - `tests/e2e-integration/phase9-tools.spec.ts`
   Follow the same pattern: mock IPC returns realistic data, verify every screen renders and basic interactions work.
   Target: 20+ test cases per phase.
+
+  > **Completed (Run 154):** Created phase9-tools.spec.ts (42 tests) covering Tools landing page, Platform Info, Address Balance, Contract Visualizer, Document Visualizer, and 5 placeholder screens. Created phase8-dashpay.spec.ts (11 tests) covering all 5 DashPay placeholder routes plus cross-section navigation. 53 new tests total, all 350 E2E integration tests pass.
 
 ### Layer 3: Full E2E with Real Tauri Backend (Docker/Linux)
 

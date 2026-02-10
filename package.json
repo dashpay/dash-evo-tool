@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:components": "vitest run --reporter=verbose",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --project=chromium --project=webkit",
+    "test:e2e-integration": "VITE_E2E_MOCK=true playwright test --project=integration",
     "tauri": "tauri"
   },
   "dependencies": {

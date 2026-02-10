@@ -691,7 +691,7 @@
 
 ### Layer 2: Playwright Integration Tests with Mock IPC
 
-- [ ] **7.5.2a Configure Playwright mock IPC integration** (P0)
+- [x] **7.5.2a Configure Playwright mock IPC integration** (P0)
   Set up Playwright to run against Vite dev server with mock IPC enabled:
   - Add `VITE_E2E_MOCK=true` environment flag
   - In app entry point, conditionally load `@tauri-apps/api/mocks` `mockIPC()` when flag is set

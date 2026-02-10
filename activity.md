@@ -1035,3 +1035,10 @@
 **Files changed:** 56 test files across stores/, screens/, components/, hooks/, plus tasks.md, activity.md
 **Tests added:** 0 new tests (migration only — test count unchanged at 3644)
 **Sub-tasks created:** 0
+
+## Run 148 — 2026-02-10
+**Task:** 7.5.2a Configure Playwright mock IPC integration
+**What was done:** Set up Playwright E2E integration testing with mock IPC. Created `src/frontend/e2e-mock-ipc.ts` — a browser-side module that uses `@tauri-apps/api/mocks` (`mockIPC` with `shouldMockEvents: true`) to intercept all 181 Tauri IPC commands with realistic default responses. The module exposes `window.__E2E_MOCK_IPC__` for Playwright to configure custom handlers, track call history, and emit events via `page.evaluate()`. Updated `main.tsx` to conditionally load the mock IPC when `VITE_E2E_MOCK=true`. Updated `playwright.config.ts` to add an `integration` project pointing to `tests/e2e-integration/`. Created `tests/e2e-integration/fixtures.ts` with `MockIPCHelper` class providing `preconfigure()` (survives page reload via `addInitScript`), `navigateWithHandlers()`, `setHandler()`, `emitEvent()`, and call history assertions. Created `tests/e2e-integration/helpers.ts` with navigation, data loading, and event trigger utilities. Wrote 12 setup verification tests covering mock initialization, default handlers, pre-configured handler overrides, call history tracking/clearing, wallet rendering with HD and single-key mock data, empty state, onboarding redirect logic, and sidebar navigation. Added `test:e2e-integration` npm script. Key discovery: mock responses must be RAW invoke return values (not wrapped in Result), since `bindings.ts` adds the Result envelope.
+**Files changed:** src/frontend/e2e-mock-ipc.ts (new), src/frontend/main.tsx, playwright.config.ts, package.json, tests/e2e-integration/fixtures.ts (new), tests/e2e-integration/helpers.ts (new), tests/e2e-integration/setup-verification.spec.ts (new), tasks.md, activity.md
+**Tests added:** 12 Playwright integration tests (setup verification suite)
+**Sub-tasks created:** 0

@@ -36,6 +36,7 @@ import { DocumentActionScreen } from "@/screens/DocumentActionScreen";
 import { GroupActionsScreen } from "@/screens/GroupActionsScreen";
 import { TokenMyTokensScreen } from "@/screens/TokenMyTokensScreen";
 import { TokenSearchScreen } from "@/screens/TokenSearchScreen";
+import { TokenAddByIdScreen } from "@/screens/TokenAddByIdScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -271,7 +272,7 @@ const tokensCreatorRoute = createRoute({
 const tokensAddByIdRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/add-by-id",
-  component: () => <PlaceholderScreen title="Add Token by ID" />,
+  component: TokenAddByIdScreen,
 });
 
 const tokensTransferRoute = createRoute({

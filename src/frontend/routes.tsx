@@ -44,6 +44,8 @@ import { TokenBurnScreen } from "@/screens/TokenBurnScreen";
 import { TokenFreezeScreen } from "@/screens/TokenFreezeScreen";
 import { TokenUnfreezeScreen } from "@/screens/TokenUnfreezeScreen";
 import { TokenDestroyFrozenFundsScreen } from "@/screens/TokenDestroyFrozenFundsScreen";
+import { TokenPauseScreen } from "@/screens/TokenPauseScreen";
+import { TokenResumeScreen } from "@/screens/TokenResumeScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -321,13 +323,13 @@ const tokensDestroyFrozenRoute = createRoute({
 const tokensPauseRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/pause",
-  component: () => <PlaceholderScreen title="Pause Token" />,
+  component: TokenPauseScreen,
 });
 
 const tokensResumeRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/resume",
-  component: () => <PlaceholderScreen title="Resume Token" />,
+  component: TokenResumeScreen,
 });
 
 const tokensClaimRoute = createRoute({

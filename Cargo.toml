@@ -71,7 +71,8 @@ crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "8.0.0" }
-
+tz-rs = { version = "0.7.0" }
+tempfile = "3.20.0"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"
@@ -84,7 +85,6 @@ native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"
 
 [dev-dependencies]
-tempfile = { version = "3.20.0" }
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
 
 [build-dependencies]

@@ -701,7 +701,7 @@
   **Verify:** A trivial test navigates to `/app/wallets`, mock IPC returns wallet data, wallet list renders. The implementing agent must run `npm run test:e2e-integration` and confirm it passes.
   Write setup verification tests (5+).
 
-- [ ] **7.5.2b Write screen smoke tests for Phases 2-3 (Shell, Wallets)** (P0)
+- [x] **7.5.2b Write screen smoke tests for Phases 2-3 (Shell, Wallets)** (P0)
   Create `tests/e2e-integration/phase2-shell.spec.ts`:
   - App shell renders with sidebar, top bar, and content area
   - Navigation between all 7 sections works and updates breadcrumbs

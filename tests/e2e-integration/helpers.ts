@@ -21,13 +21,23 @@ export type AppSection =
   | "Tools"
   | "Settings";
 
+/** Map section labels to their data-testid values */
+const sectionTestIds: Record<AppSection, string> = {
+  DashPay: "nav-dashpay",
+  Identities: "nav-identities",
+  Contracts: "nav-contracts",
+  Tokens: "nav-tokens",
+  Wallets: "nav-wallets",
+  Tools: "nav-tools",
+  Settings: "nav-settings",
+};
+
 /**
  * Navigate to a section using the sidebar navigation.
- * Waits for the URL to update.
+ * Uses data-testid selectors to avoid ambiguity with breadcrumb nav.
  */
 export async function navigateToSection(page: Page, section: AppSection) {
-  const nav = page.getByRole("navigation");
-  await nav.getByText(section, { exact: true }).click();
+  await page.getByTestId(sectionTestIds[section]).click();
 }
 
 /**

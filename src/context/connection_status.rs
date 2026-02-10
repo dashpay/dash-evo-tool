@@ -164,21 +164,6 @@ impl ConnectionStatus {
         self.overall_connected.store(connected, Ordering::Relaxed);
     }
 
-    pub fn overall_connected_with(
-        &self,
-        backend_mode: CoreBackendMode,
-        disable_zmq: bool,
-        spv_status: SpvStatus,
-    ) -> bool {
-        let dapi_available = self.dapi_available();
-        match backend_mode {
-            CoreBackendMode::Rpc => {
-                self.rpc_online() && (disable_zmq || self.zmq_connected()) && dapi_available
-            }
-            CoreBackendMode::Spv => Self::spv_connected(spv_status) && dapi_available,
-        }
-    }
-
     pub fn tooltip_text(&self) -> String {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();

@@ -31,6 +31,7 @@ import { DocumentVisualizerScreen } from "@/screens/DocumentVisualizerScreen";
 import { DocumentQueryScreen } from "@/screens/DocumentQueryScreen";
 import { AddContractsScreen } from "@/screens/AddContractsScreen";
 import { RegisterContractScreen } from "@/screens/RegisterContractScreen";
+import { UpdateContractScreen } from "@/screens/UpdateContractScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -159,6 +160,12 @@ const contractsRegisterRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/register",
   component: RegisterContractScreen,
+});
+
+const contractsUpdateRoute = createRoute({
+  getParentRoute: () => contractsRoute,
+  path: "/update-contract",
+  component: UpdateContractScreen,
 });
 
 const contractsDpnsActiveRoute = createRoute({
@@ -352,6 +359,7 @@ const routeTree = rootRoute.addChildren([
       contractsIndexRoute,
       contractsAddRoute,
       contractsRegisterRoute,
+      contractsUpdateRoute,
       contractsDpnsActiveRoute,
       contractsDpnsPastRoute,
       contractsDpnsOwnedRoute,

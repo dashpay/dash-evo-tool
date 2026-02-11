@@ -84,7 +84,8 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
-    pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
+    last_repaint_request: Instant,     // Throttle periodic repaint scheduling to once per second
+    pub subtasks: Arc<TaskManager>,    // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)
@@ -625,6 +626,7 @@ impl AppState {
             task_result_receiver,
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
+            last_repaint_request: Instant::now(),
             subtasks,
             show_welcome_screen: !onboarding_completed,
             welcome_screen: None,
@@ -855,6 +857,14 @@ impl App for AppState {
                     self.visible_screen_mut().refresh();
                 }
             }
+        }
+
+        // Schedule a periodic repaint every ~1 second so timed messages update
+        // their countdown and other periodic UI elements stay current.
+        // Throttled so we don't re-schedule on every frame during user interaction.
+        if self.last_repaint_request.elapsed() >= Duration::from_secs(1) {
+            ctx.request_repaint_after(Duration::from_secs(1));
+            self.last_repaint_request = Instant::now();
         }
 
         // **Poll the instant_send_receiver for any new InstantSend messages**

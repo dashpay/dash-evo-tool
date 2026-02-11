@@ -49,7 +49,7 @@ impl AppContext {
         theme_mode: ThemeMode,
     ) -> Result<BackendTaskSuccessResult, String> {
         let _guard = self.invalidate_settings_cache();
-        
+
         self.db
             .update_theme_preference(theme_mode)
             .map_err(|e| e.to_string())?;

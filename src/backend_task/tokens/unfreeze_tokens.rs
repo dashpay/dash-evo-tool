@@ -3,11 +3,12 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
+use dash_sdk::dpp::tokens::info::v0::IdentityTokenInfoV0Accessors;
 use dash_sdk::platform::tokens::builders::unfreeze::TokenUnfreezeTransitionBuilder;
-use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
+use dash_sdk::platform::tokens::transitions::UnfreezeResult;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use dash_sdk::{Error, Sdk};
 use std::sync::Arc;
@@ -45,14 +46,8 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let state_transition = builder
-            .sign(sdk, &signing_key, actor_identity, self.platform_version())
-            .await
-            .map_err(|e| format!("Error signing Unfreeze Tokens transition: {}", e))?;
-
-        // Broadcast
-        let _proof_result = state_transition
-            .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+        let result = sdk
+            .token_unfreeze_identity(builder, &signing_key, actor_identity)
             .await
             .map_err(|e| match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
@@ -75,9 +70,39 @@ impl AppContext {
                 e => format!("Error broadcasting Unfreeze Tokens transition: {}", e),
             })?;
 
-        // Return success
-        Ok(BackendTaskSuccessResult::Message(
-            "UnfreezeTokens".to_string(),
-        ))
+        // Log the proof-verified unfreeze result
+        match result {
+            UnfreezeResult::IdentityInfo(identity_id, info) => {
+                tracing::info!(
+                    "UnfreezeTokens: identity {} frozen={}",
+                    identity_id,
+                    info.frozen()
+                );
+            }
+            UnfreezeResult::HistoricalDocument(document) => {
+                tracing::info!("UnfreezeTokens: historical document id={}", document.id());
+            }
+            UnfreezeResult::GroupActionWithDocument(power, doc) => {
+                tracing::info!(
+                    "UnfreezeTokens: group action power={}, has_doc={}",
+                    power,
+                    doc.is_some()
+                );
+            }
+            UnfreezeResult::GroupActionWithIdentityInfo(power, info) => {
+                tracing::info!(
+                    "UnfreezeTokens: group action power={}, frozen={}",
+                    power,
+                    info.frozen()
+                );
+            }
+        }
+
+        // Return success with fee result
+        use crate::backend_task::FeeResult;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::UnfrozeTokens(fee_result))
     }
 }

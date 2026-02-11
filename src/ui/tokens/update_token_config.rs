@@ -1,21 +1,23 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser, render_group_action_text};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
+use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use crate::ui::{MessageType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -33,7 +35,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
-use egui::RichText;
+use egui::{Frame, Margin, RichText};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -52,6 +54,7 @@ pub struct UpdateTokenConfigScreen {
     pub update_text: String,
     pub text_input_error: String,
     signing_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
     identity: QualifiedIdentity,
     pub public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
@@ -63,9 +66,10 @@ pub struct UpdateTokenConfigScreen {
     pub authorized_group_input: Option<String>,
 
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>, // unused
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl UpdateTokenConfigScreen {
@@ -106,20 +110,21 @@ impl UpdateTokenConfigScreen {
             update_text: "".to_string(),
             text_input_error: "".to_string(),
             signing_key: possible_key,
+            show_advanced_options: false,
             public_note: None,
 
             authorized_identity_input: None,
             authorized_group_input: None,
 
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message,
 
             identity: identity_token_info.identity,
             group,
             is_unilateral_group_member,
             group_action_id: None,
+            completed_fee_result: None,
         }
     }
 
@@ -207,10 +212,10 @@ impl UpdateTokenConfigScreen {
                 .members()
                 .get(&self.identity_token_info.identity.identity.id());
 
-            if let Some(your_power) = your_power {
-                if your_power >= &group.required_power() {
-                    self.is_unilateral_group_member = true;
-                }
+            if let Some(your_power) = your_power
+                && your_power >= &group.required_power()
+            {
+                self.is_unilateral_group_member = true;
             }
         }
     }
@@ -614,13 +619,12 @@ impl UpdateTokenConfigScreen {
                 ui.label(&self.update_text);
 
                 ui.horizontal(|ui| {
-                    if let Some(opt_json) = opt_json {
-                        if ui.button("View Current").clicked() {
+                    if let Some(opt_json) = opt_json
+                        && ui.button("View Current").clicked() {
                             self.update_text =
                                 serde_json::to_string_pretty(opt_json).unwrap_or_default();
                             // Update displayed text
                         }
-                    }
 
                     if !self.text_input_error.is_empty() {
                         ui.colored_label(Color32::RED, &self.text_input_error);
@@ -705,6 +709,28 @@ impl UpdateTokenConfigScreen {
                 }
             });
         }
+
+        // Display estimated fee before action button
+        let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
+        ui.add_space(10.0);
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        egui::Frame::new()
+            .fill(crate::ui::theme::DashColors::surface(dark_mode))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .corner_radius(5.0)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Estimated Fee:")
+                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                    );
+                    ui.label(
+                        RichText::new(format_credits_as_dash(estimated_fee))
+                            .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .strong(),
+                    );
+                });
+            });
 
         let button_text = render_group_action_text(
             ui,
@@ -880,69 +906,50 @@ impl UpdateTokenConfigScreen {
     }
 
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            if self.group_action_id.is_some() {
-                // This ConfigUpdate is already initiated by the group, we are just signing it
-                ui.heading("Group ConfigUpdate Signing Successful.");
-            } else if !self.is_unilateral_group_member {
-                ui.heading("Group ConfigUpdate Initiated.");
-            } else {
-                ui.heading("ConfigUpdate Successful.");
-            }
-
-            ui.add_space(20.0);
-
-            if self.group_action_id.is_some() {
-                if ui.button("Back to Group Actions").clicked() {
-                    action |= AppAction::PopScreenAndRefresh;
-                }
-                if ui.button("Back to Tokens").clicked() {
-                    action |= AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenMyTokenBalances,
-                    );
-                }
-            } else {
-                if ui.button("Back to Tokens").clicked() {
-                    action |= AppAction::PopScreenAndRefresh;
-                }
-
-                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
-                    action |= AppAction::PopThenAddScreenToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                        Screen::GroupActionsScreen(GroupActionsScreen::new(
-                            &self.app_context.clone(),
-                        )),
-                    );
-                }
-            }
-        });
-        action
+        crate::ui::helpers::show_group_token_success_screen(
+            ui,
+            "Config Update",
+            self.group_action_id.is_some(),
+            self.is_unilateral_group_member,
+            self.group.is_some(),
+            &self.app_context,
+        )
     }
 }
 
 impl ScreenLike for UpdateTokenConfigScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Success => {
-                self.backend_message =
-                    Some((message.to_string(), MessageType::Success, Utc::now()));
-                if message.contains("Successfully updated token config item") {
-                    self.update_status = UpdateTokenConfigStatus::NotUpdating;
-                }
-            }
             MessageType::Error => {
                 self.backend_message = Some((message.to_string(), MessageType::Error, Utc::now()));
-                if message.contains("Failed to update token config") {
-                    self.update_status = UpdateTokenConfigStatus::NotUpdating;
-                }
+                self.update_status = UpdateTokenConfigStatus::NotUpdating;
             }
             MessageType::Info => {
                 self.backend_message = Some((message.to_string(), MessageType::Info, Utc::now()));
             }
+            _ => {}
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::UpdatedTokenConfig(change_item, fee_result) =
+            backend_task_success_result
+        {
+            self.completed_fee_result = Some(fee_result.clone());
+            let fee_info = format!(
+                " (Fee: Estimated {} • Actual {})",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(fee_result.actual_fee)
+            );
+            self.backend_message = Some((
+                format!(
+                    "Successfully updated token config item: {}{}",
+                    change_item, fee_info
+                ),
+                MessageType::Success,
+                Utc::now(),
+            ));
+            self.update_status = UpdateTokenConfigStatus::NotUpdating;
         }
     }
 
@@ -987,12 +994,11 @@ impl ScreenLike for UpdateTokenConfigScreen {
         // Central panel
         island_central_panel(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(msg) = &self.backend_message {
-                    if msg.1 == MessageType::Success {
+                if let Some(msg) = &self.backend_message
+                    && msg.1 == MessageType::Success {
                         action |= self.show_success_screen(ui);
                         return;
                     }
-                }
 
                 ui.heading("Update Token Configuration");
                 ui.add_space(10.0);
@@ -1045,46 +1051,76 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 }
             } else {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
-                if self.selected_wallet.is_some() {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
-                        // Must unlock before we can proceed
+                if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
                         return;
                     }
                 }
 
-                // 1) Key selection
-                ui.heading("1. Select the key to sign the transaction with");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Update Token Config");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity),
-                    &mut selected_identity,
-                    &mut self.signing_key,
-                    TransactionType::TokenAction,
-                );
-
-                ui.add_space(10.0);
-                ui.separator();
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the transaction with");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity,
+                        &mut self.signing_key,
+                        TransactionType::TokenAction,
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                }
                 ui.add_space(10.0);
 
                 action |= self.render_token_config_updater(ui);
 
-                if let Some((msg, msg_type, _)) = &self.backend_message {
+                if let Some((msg, msg_type, _)) = self.backend_message.clone() {
                     ui.add_space(10.0);
                     match msg_type {
                         MessageType::Success => {
-                            ui.colored_label(Color32::DARK_GREEN, msg);
+                            ui.colored_label(Color32::DARK_GREEN, &msg);
                         }
                         MessageType::Error => {
-                            ui.colored_label(Color32::DARK_RED, msg);
+                            let error_color = Color32::from_rgb(255, 100, 100);
+                            Frame::new()
+                                .fill(error_color.gamma_multiply(0.1))
+                                .inner_margin(Margin::symmetric(10, 8))
+                                .corner_radius(5.0)
+                                .stroke(egui::Stroke::new(1.0, error_color))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                        ui.add_space(10.0);
+                                        if ui.small_button("Dismiss").clicked() {
+                                            self.backend_message = None;
+                                        }
+                                    });
+                                });
                         }
                         MessageType::Info => {
-                            ui.label(msg);
+                            ui.label(&msg);
                         }
                     };
                 }
@@ -1100,37 +1136,19 @@ impl ScreenLike for UpdateTokenConfigScreen {
             }); // end of ScrollArea
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
-    }
-}
-
-impl ScreenWithWalletUnlock for UpdateTokenConfigScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }
 

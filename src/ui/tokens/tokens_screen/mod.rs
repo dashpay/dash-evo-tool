@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde_json;
 
 use chrono::{DateTime, Duration, Utc};
-use dash_sdk::dpp::balances::credits::TokenAmount;
+use dash_sdk::dpp::balances::credits::{TokenAmount};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPresetFeatures, TokenConfigurationV0};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::v0::TokenDistributionRulesV0;
@@ -45,8 +45,8 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Context, Ui};
+use crate::ui::theme::DashColors;
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
@@ -56,13 +56,18 @@ use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
+use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
@@ -70,6 +75,8 @@ const INV_LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/inv_log_fu
 const LOG_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/log_function.png");
 const LINEAR_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/linear_function.png");
 const POLYNOMIAL_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/polynomial_function.png");
+
+const DEFAULT_DECIMALS: u8 = 8;
 
 pub fn load_formula_image(bytes: &[u8]) -> ColorImage {
     let image = ImageReader::new(std::io::Cursor::new(bytes))
@@ -189,18 +196,13 @@ pub enum ContractSearchStatus {
     ErrorMessage(String),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Default)]
 pub enum TokenCreatorStatus {
+    #[default]
     NotStarted,
     WaitingForResult(u64),
     Complete,
     ErrorMessage(String),
-}
-
-impl Default for TokenCreatorStatus {
-    fn default() -> Self {
-        Self::NotStarted
-    }
 }
 
 /// Sorting columns
@@ -242,12 +244,32 @@ impl ChangeControlRulesUI {
         current_groups: &[GroupConfigUI],
         action_name: &str,
         special_case_option: Option<&mut bool>,
+        is_expanded: &mut bool,
     ) {
-        ui.collapsing(action_name, |ui| {
-            egui::Grid::new("basic_token_info_grid")
-                .num_columns(2)
-                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                .show(ui, |ui| {
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if *is_expanded { "−" } else { "+" };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+            );
+            if button_response.clicked() {
+                *is_expanded = !*is_expanded;
+            }
+            ui.label(action_name);
+        });
+
+        if *is_expanded {
+            ui.indent(format!("{}_content", action_name), |ui| {
+                egui::Grid::new(format!("{}_grid", action_name))
+                    .num_columns(2)
+                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                    .show(ui, |ui| {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
@@ -436,8 +458,8 @@ impl ChangeControlRulesUI {
                     );
                     ui.end_row();
 
-                    if let Some(special_case_option) = special_case_option {
-                        if action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
+                    if let Some(special_case_option) = special_case_option
+                        && action_name == "Freeze" && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
                             ui.horizontal(|ui| {
                                 ui.checkbox(
                                     special_case_option,
@@ -453,9 +475,9 @@ impl ChangeControlRulesUI {
                             });
                             ui.end_row();
                         }
-                    }
                 });
-        });
+            });
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -469,12 +491,34 @@ impl ChangeControlRulesUI {
         new_tokens_destination_identity_rules: &mut ChangeControlRulesUI,
         new_tokens_destination_identity: &mut String,
         minting_allow_choosing_destination_rules: &mut ChangeControlRulesUI,
+        is_expanded: &mut bool,
+        new_tokens_destination_expanded: &mut bool,
+        minting_allow_choosing_expanded: &mut bool,
     ) {
-        ui.collapsing("Manual Mint", |ui| {
-            egui::Grid::new("basic_token_info_grid")
-                .num_columns(2)
-                .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                .show(ui, |ui| {
+        ui.horizontal(|ui| {
+            // +/- button
+            let button_text = if *is_expanded { "−" } else { "+" };
+            let button_response = ui.add(
+                egui::Button::new(
+                    RichText::new(button_text)
+                        .size(20.0)
+                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                )
+                .fill(Color32::TRANSPARENT)
+                .stroke(egui::Stroke::NONE),
+            );
+            if button_response.clicked() {
+                *is_expanded = !*is_expanded;
+            }
+            ui.label("Manual Mint");
+        });
+
+        if *is_expanded {
+            ui.indent("manual_mint_content", |ui| {
+                egui::Grid::new("manual_mint_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
+                    .show(ui, |ui| {
                     // Authorized action takers
                     ui.horizontal(|ui| {
                         ui.label("Authorized to perform action:");
@@ -704,7 +748,7 @@ impl ChangeControlRulesUI {
                             ui.text_edit_singleline(new_tokens_destination_identity);
                             ui.end_row();
 
-                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, current_groups,"New Tokens Destination Identity Rules", None);
+                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, current_groups,"New Tokens Destination Identity Rules", None, new_tokens_destination_expanded);
                         }
 
                         ui.end_row();
@@ -718,7 +762,7 @@ impl ChangeControlRulesUI {
 
                         if *minting_allow_choosing_destination {
                             ui.end_row();
-                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, current_groups, "Minting Allow Choosing Destination Rules", None);
+                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, current_groups, "Minting Allow Choosing Destination Rules", None, minting_allow_choosing_expanded);
                         }
                         ui.end_row();
 
@@ -735,7 +779,8 @@ impl ChangeControlRulesUI {
                         }
                     }
                 });
-        });
+            });
+        }
     }
 
     pub fn extract_change_control_rules(
@@ -743,29 +788,29 @@ impl ChangeControlRulesUI {
         action_name: &str,
     ) -> Result<ChangeControlRules, String> {
         // 1) Update self.rules.authorized_to_make_change if it’s Identity or Group
-        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change {
-            if let Some(ref id_str) = self.authorized_identity {
-                let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                    format!(
-                        "Invalid base58 identifier for {} authorized identity",
-                        action_name
-                    )
-                })?;
-                self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
-            }
+        if let AuthorizedActionTakers::Identity(_) = self.rules.authorized_to_make_change
+            && let Some(ref id_str) = self.authorized_identity
+        {
+            let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                format!(
+                    "Invalid base58 identifier for {} authorized identity",
+                    action_name
+                )
+            })?;
+            self.rules.authorized_to_make_change = AuthorizedActionTakers::Identity(parsed);
         }
 
         // 2) Update self.rules.admin_action_takers if it’s Identity or Group
-        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers {
-            if let Some(ref id_str) = self.admin_identity {
-                let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
-                    format!(
-                        "Invalid base58 identifier for {} admin identity",
-                        action_name
-                    )
-                })?;
-                self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
-            }
+        if let AuthorizedActionTakers::Identity(_) = self.rules.admin_action_takers
+            && let Some(ref id_str) = self.admin_identity
+        {
+            let parsed = Identifier::from_string(id_str, Encoding::Base58).map_err(|_| {
+                format!(
+                    "Invalid base58 identifier for {} admin identity",
+                    action_name
+                )
+            })?;
+            self.rules.admin_action_takers = AuthorizedActionTakers::Identity(parsed);
         }
 
         // 3) Construct the ChangeControlRules
@@ -896,6 +941,179 @@ impl std::fmt::Display for TokenNameLanguage {
     }
 }
 
+impl TokenNameLanguage {
+    pub fn iso_code(self) -> &'static str {
+        match self {
+            TokenNameLanguage::English => "en",
+            TokenNameLanguage::Arabic => "ar",
+            TokenNameLanguage::Bengali => "bn",
+            TokenNameLanguage::Burmese => "my",
+            TokenNameLanguage::Chinese => "zh",
+            TokenNameLanguage::Czech => "cs",
+            TokenNameLanguage::Dutch => "nl",
+            TokenNameLanguage::Farsi => "fa",
+            TokenNameLanguage::Filipino => "fil",
+            TokenNameLanguage::French => "fr",
+            TokenNameLanguage::German => "de",
+            TokenNameLanguage::Greek => "el",
+            TokenNameLanguage::Gujarati => "gu",
+            TokenNameLanguage::Hausa => "ha",
+            TokenNameLanguage::Hebrew => "he",
+            TokenNameLanguage::Hindi => "hi",
+            TokenNameLanguage::Hungarian => "hu",
+            TokenNameLanguage::Igbo => "ig",
+            TokenNameLanguage::Indonesian => "id",
+            TokenNameLanguage::Italian => "it",
+            TokenNameLanguage::Japanese => "ja",
+            TokenNameLanguage::Javanese => "jv",
+            TokenNameLanguage::Kannada => "kn",
+            TokenNameLanguage::Khmer => "km",
+            TokenNameLanguage::Korean => "ko",
+            TokenNameLanguage::Malay => "ms",
+            TokenNameLanguage::Malayalam => "ml",
+            TokenNameLanguage::Mandarin => "zh",
+            TokenNameLanguage::Marathi => "mr",
+            TokenNameLanguage::Nepali => "ne",
+            TokenNameLanguage::Oriya => "or",
+            TokenNameLanguage::Pashto => "ps",
+            TokenNameLanguage::Polish => "pl",
+            TokenNameLanguage::Portuguese => "pt",
+            TokenNameLanguage::Punjabi => "pa",
+            TokenNameLanguage::Romanian => "ro",
+            TokenNameLanguage::Russian => "ru",
+            TokenNameLanguage::Serbian => "sr",
+            TokenNameLanguage::Sindhi => "sd",
+            TokenNameLanguage::Sinhala => "si",
+            TokenNameLanguage::Somali => "so",
+            TokenNameLanguage::Spanish => "es",
+            TokenNameLanguage::Swahili => "sw",
+            TokenNameLanguage::Swedish => "sv",
+            TokenNameLanguage::Tamil => "ta",
+            TokenNameLanguage::Telugu => "te",
+            TokenNameLanguage::Thai => "th",
+            TokenNameLanguage::Turkish => "tr",
+            TokenNameLanguage::Ukrainian => "uk",
+            TokenNameLanguage::Urdu => "ur",
+            TokenNameLanguage::Vietnamese => "vi",
+            TokenNameLanguage::Yoruba => "yo",
+        }
+    }
+
+    pub fn ui_label(self) -> &'static str {
+        match self {
+            TokenNameLanguage::English => "English",
+            TokenNameLanguage::Arabic => "Arabic",
+            TokenNameLanguage::Bengali => "Bengali",
+            TokenNameLanguage::Burmese => "Burmese",
+            TokenNameLanguage::Chinese => "Chinese",
+            TokenNameLanguage::Czech => "Czech",
+            TokenNameLanguage::Dutch => "Dutch",
+            TokenNameLanguage::Farsi => "Farsi (Persian)",
+            TokenNameLanguage::Filipino => "Filipino (Tagalog)",
+            TokenNameLanguage::French => "French",
+            TokenNameLanguage::German => "German",
+            TokenNameLanguage::Greek => "Greek",
+            TokenNameLanguage::Gujarati => "Gujarati",
+            TokenNameLanguage::Hausa => "Hausa",
+            TokenNameLanguage::Hebrew => "Hebrew",
+            TokenNameLanguage::Hindi => "Hindi",
+            TokenNameLanguage::Hungarian => "Hungarian",
+            TokenNameLanguage::Igbo => "Igbo",
+            TokenNameLanguage::Indonesian => "Indonesian",
+            TokenNameLanguage::Italian => "Italian",
+            TokenNameLanguage::Japanese => "Japanese",
+            TokenNameLanguage::Javanese => "Javanese",
+            TokenNameLanguage::Kannada => "Kannada",
+            TokenNameLanguage::Khmer => "Khmer",
+            TokenNameLanguage::Korean => "Korean",
+            TokenNameLanguage::Malay => "Malay",
+            TokenNameLanguage::Malayalam => "Malayalam",
+            TokenNameLanguage::Mandarin => "Mandarin Chinese",
+            TokenNameLanguage::Marathi => "Marathi",
+            TokenNameLanguage::Nepali => "Nepali",
+            TokenNameLanguage::Oriya => "Oriya",
+            TokenNameLanguage::Pashto => "Pashto",
+            TokenNameLanguage::Polish => "Polish",
+            TokenNameLanguage::Portuguese => "Portuguese",
+            TokenNameLanguage::Punjabi => "Punjabi",
+            TokenNameLanguage::Romanian => "Romanian",
+            TokenNameLanguage::Russian => "Russian",
+            TokenNameLanguage::Serbian => "Serbian",
+            TokenNameLanguage::Sindhi => "Sindhi",
+            TokenNameLanguage::Sinhala => "Sinhala",
+            TokenNameLanguage::Somali => "Somali",
+            TokenNameLanguage::Spanish => "Spanish",
+            TokenNameLanguage::Swahili => "Swahili",
+            TokenNameLanguage::Swedish => "Swedish",
+            TokenNameLanguage::Tamil => "Tamil",
+            TokenNameLanguage::Telugu => "Telugu",
+            TokenNameLanguage::Thai => "Thai",
+            TokenNameLanguage::Turkish => "Turkish",
+            TokenNameLanguage::Ukrainian => "Ukrainian",
+            TokenNameLanguage::Urdu => "Urdu",
+            TokenNameLanguage::Vietnamese => "Vietnamese",
+            TokenNameLanguage::Yoruba => "Yoruba",
+        }
+    }
+
+    pub fn selection_order() -> &'static [TokenNameLanguage] {
+        &[
+            TokenNameLanguage::English,
+            TokenNameLanguage::Arabic,
+            TokenNameLanguage::Bengali,
+            TokenNameLanguage::Burmese,
+            TokenNameLanguage::Chinese,
+            TokenNameLanguage::Czech,
+            TokenNameLanguage::Dutch,
+            TokenNameLanguage::Farsi,
+            TokenNameLanguage::Filipino,
+            TokenNameLanguage::French,
+            TokenNameLanguage::German,
+            TokenNameLanguage::Greek,
+            TokenNameLanguage::Gujarati,
+            TokenNameLanguage::Hausa,
+            TokenNameLanguage::Hebrew,
+            TokenNameLanguage::Hindi,
+            TokenNameLanguage::Hungarian,
+            TokenNameLanguage::Igbo,
+            TokenNameLanguage::Indonesian,
+            TokenNameLanguage::Italian,
+            TokenNameLanguage::Japanese,
+            TokenNameLanguage::Javanese,
+            TokenNameLanguage::Kannada,
+            TokenNameLanguage::Khmer,
+            TokenNameLanguage::Korean,
+            TokenNameLanguage::Malay,
+            TokenNameLanguage::Malayalam,
+            TokenNameLanguage::Mandarin,
+            TokenNameLanguage::Marathi,
+            TokenNameLanguage::Nepali,
+            TokenNameLanguage::Oriya,
+            TokenNameLanguage::Pashto,
+            TokenNameLanguage::Polish,
+            TokenNameLanguage::Portuguese,
+            TokenNameLanguage::Punjabi,
+            TokenNameLanguage::Romanian,
+            TokenNameLanguage::Russian,
+            TokenNameLanguage::Serbian,
+            TokenNameLanguage::Sindhi,
+            TokenNameLanguage::Sinhala,
+            TokenNameLanguage::Somali,
+            TokenNameLanguage::Spanish,
+            TokenNameLanguage::Swahili,
+            TokenNameLanguage::Swedish,
+            TokenNameLanguage::Tamil,
+            TokenNameLanguage::Telugu,
+            TokenNameLanguage::Thai,
+            TokenNameLanguage::Turkish,
+            TokenNameLanguage::Ukrainian,
+            TokenNameLanguage::Urdu,
+            TokenNameLanguage::Vietnamese,
+            TokenNameLanguage::Yoruba,
+        ]
+    }
+}
+
 #[derive(Clone, Debug)]
 /// All arguments needed by `build_data_contract_v1_with_one_token`.
 pub struct TokenBuildArgs {
@@ -952,6 +1170,29 @@ pub struct TokensScreen {
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
     should_reset_collapsing_states: bool,
+    // Token Creator expanded sections
+    token_creator_advanced_expanded: bool,
+    token_creator_action_rules_expanded: bool,
+    token_creator_main_control_expanded: bool,
+    token_creator_distribution_expanded: bool,
+    token_creator_groups_expanded: bool,
+    token_creator_groups_items_expanded: std::collections::HashSet<String>,
+    token_creator_document_schemas_expanded: bool,
+    // Individual action rules expanded states
+    token_creator_manual_mint_expanded: bool,
+    token_creator_manual_burn_expanded: bool,
+    token_creator_freeze_expanded: bool,
+    token_creator_unfreeze_expanded: bool,
+    token_creator_destroy_frozen_expanded: bool,
+    token_creator_emergency_action_expanded: bool,
+    token_creator_max_supply_change_expanded: bool,
+    token_creator_conventions_change_expanded: bool,
+    token_creator_marketplace_expanded: bool,
+    token_creator_direct_purchase_pricing_expanded: bool,
+    // Nested rules expanded states
+    token_creator_new_tokens_destination_expanded: bool,
+    token_creator_minting_allow_choosing_expanded: bool,
+    token_creator_perpetual_distribution_rules_expanded: bool,
 
     // Contract Search
     pub selected_contract_id: Option<Identifier>,
@@ -976,8 +1217,10 @@ pub struct TokensScreen {
     // Remove token
     confirm_remove_identity_token_balance_popup: bool,
     identity_token_balance_to_remove: Option<IdentityTokenBasicInfo>,
+    remove_identity_token_balance_confirmation_dialog: Option<ConfirmationDialog>,
     confirm_remove_token_popup: bool,
     token_to_remove: Option<Identifier>,
+    remove_token_confirmation_dialog: Option<ConfirmationDialog>,
 
     // Reward explanations
     reward_explanations: IndexMap<IdentityTokenIdentifier, IntervalEvaluationExplanation>,
@@ -989,23 +1232,27 @@ pub struct TokensScreen {
     // ====================================
     //           Token Creator
     // ====================================
+    show_advanced_token_creator: bool,
     selected_token_preset: Option<TokenConfigurationPresetFeatures>,
     show_pop_up_info: Option<String>,
+    identity_id_string: String,
     selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     token_names_input: Vec<(String, String, TokenNameLanguage, TokenSearchable)>,
     contract_keywords_input: String,
     token_description_input: String,
     should_capitalize_input: bool,
     decimals_input: String,
-    base_supply_input: String,
-    max_supply_input: String,
+    base_supply_amount: Option<Amount>,
+    base_supply_input: Option<AmountInput>,
+    max_supply_amount: Option<Amount>,
+    max_supply_input: Option<AmountInput>,
     start_as_paused_input: bool,
     main_control_group_input: String,
     show_token_creator_confirmation_popup: bool,
+    token_creator_confirmation_dialog: Option<ConfirmationDialog>,
     token_creator_status: TokenCreatorStatus,
     token_creator_error_message: Option<String>,
     show_advanced_keeps_history: bool,
@@ -1061,9 +1308,9 @@ pub struct TokensScreen {
     // --- FixedAmount ---
     pub fixed_amount_input: String,
 
-    // --- Random ---
-    pub random_min_input: String,
-    pub random_max_input: String,
+    // --- Random ---  -  not supported
+    // pub random_min_input: String,
+    // pub random_max_input: String,
 
     // --- StepDecreasingAmount ---
     pub step_count_input: String,
@@ -1327,8 +1574,10 @@ impl TokensScreen {
             // Remove token
             confirm_remove_identity_token_balance_popup: false,
             identity_token_balance_to_remove: None,
+            remove_identity_token_balance_confirmation_dialog: None,
             confirm_remove_token_popup: false,
             token_to_remove: None,
+            remove_token_confirmation_dialog: None,
 
             // Reward explanations
             reward_explanations: IndexMap::new(),
@@ -1336,14 +1585,16 @@ impl TokensScreen {
             show_token_info_popup: None,
 
             // Token Creator
+            show_advanced_token_creator: false,
             selected_token_preset: None,
             show_pop_up_info: None,
+            identity_id_string: String::new(),
             selected_identity: None,
             selected_key: None,
             selected_wallet: None,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             show_token_creator_confirmation_popup: false,
+            token_creator_confirmation_dialog: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
             token_creator_error_message: None,
             token_names_input: vec![(
@@ -1355,11 +1606,11 @@ impl TokensScreen {
             contract_keywords_input: String::new(),
             token_description_input: String::new(),
             should_capitalize_input: true,
-            decimals_input: 0.to_string(),
-            base_supply_input: TokenConfigurationV0::default_most_restrictive()
-                .base_supply()
-                .to_string(),
-            max_supply_input: String::new(),
+            decimals_input: DEFAULT_DECIMALS.to_string(),
+            base_supply_amount: None,
+            base_supply_input: None,
+            max_supply_amount: None,
+            max_supply_input: None,
             start_as_paused_input: false,
             show_advanced_keeps_history: false,
             token_advanced_keeps_history: TokenKeepsHistoryRulesV0::default_for_keeping_all_history(
@@ -1406,8 +1657,8 @@ impl TokensScreen {
             perpetual_dist_interval_unit: IntervalTimeUnit::Day,
             perpetual_dist_function: DistributionFunctionUI::FixedAmount,
             fixed_amount_input: String::new(),
-            random_min_input: String::new(),
-            random_max_input: String::new(),
+            // random_min_input: String::new(),
+            // random_max_input: String::new(),
             step_count_input: String::new(),
             decrease_per_interval_numerator_input: String::new(),
             decrease_per_interval_denominator_input: String::new(),
@@ -1482,6 +1733,29 @@ impl TokensScreen {
             function_images,
             function_textures: BTreeMap::default(),
             should_reset_collapsing_states: false,
+            // Token Creator expanded sections
+            token_creator_advanced_expanded: false,
+            token_creator_action_rules_expanded: false,
+            token_creator_main_control_expanded: false,
+            token_creator_distribution_expanded: false,
+            token_creator_groups_expanded: false,
+            token_creator_groups_items_expanded: std::collections::HashSet::new(),
+            token_creator_document_schemas_expanded: false,
+            // Individual action rules expanded states
+            token_creator_manual_mint_expanded: false,
+            token_creator_manual_burn_expanded: false,
+            token_creator_freeze_expanded: false,
+            token_creator_unfreeze_expanded: false,
+            token_creator_destroy_frozen_expanded: false,
+            token_creator_emergency_action_expanded: false,
+            token_creator_max_supply_change_expanded: false,
+            token_creator_conventions_change_expanded: false,
+            token_creator_marketplace_expanded: false,
+            token_creator_direct_purchase_pricing_expanded: false,
+            // Nested rules expanded states
+            token_creator_new_tokens_destination_expanded: false,
+            token_creator_minting_allow_choosing_expanded: false,
+            token_creator_perpetual_distribution_rules_expanded: false,
 
             // Token adding status
             adding_token_start_time: None,
@@ -1521,8 +1795,15 @@ impl TokensScreen {
             }
         }
 
+        // Append any tokens not present in the saved order (e.g., newly added tokens)
+        for (key, value) in &self.my_tokens {
+            if !reordered.contains_key(key) {
+                reordered.insert(*key, value.clone());
+            }
+        }
+
         // Replace the original with the reordered map
-        //self.my_tokens = reordered;
+        self.my_tokens = reordered;
     }
 
     /// Save the current map's order of token IDs to the DB
@@ -1618,17 +1899,17 @@ impl TokensScreen {
             let response = tri_state(ui, &mut parent_state, "Keep history");
 
             // propagate changes from parent to all children
-            if response.clicked() {
-                if let Some(val) = parent_state {
-                    self.token_advanced_keeps_history.keeps_transfer_history = val;
-                    self.token_advanced_keeps_history.keeps_freezing_history = val;
-                    self.token_advanced_keeps_history.keeps_minting_history = val;
-                    self.token_advanced_keeps_history.keeps_burning_history = val;
-                    self.token_advanced_keeps_history
-                        .keeps_direct_pricing_history = val;
-                    self.token_advanced_keeps_history
-                        .keeps_direct_purchase_history = val;
-                }
+            if response.clicked()
+                && let Some(val) = parent_state
+            {
+                self.token_advanced_keeps_history.keeps_transfer_history = val;
+                self.token_advanced_keeps_history.keeps_freezing_history = val;
+                self.token_advanced_keeps_history.keeps_minting_history = val;
+                self.token_advanced_keeps_history.keeps_burning_history = val;
+                self.token_advanced_keeps_history
+                    .keeps_direct_pricing_history = val;
+                self.token_advanced_keeps_history
+                    .keeps_direct_purchase_history = val;
             }
 
             ui.add_space(8.0);
@@ -1767,7 +2048,7 @@ impl TokensScreen {
                         .step_decreasing_initial_emission_input
                         .parse::<u64>()
                         .unwrap_or(0),
-                    min_value: if self.step_decreasing_start_period_offset_input.is_empty() {
+                    min_value: if self.step_decreasing_min_value_input.is_empty() {
                         None
                     } else {
                         match self.step_decreasing_min_value_input.parse::<u64>() {
@@ -1781,7 +2062,7 @@ impl TokensScreen {
                             }
                         }
                     },
-                    max_interval_count: if self.step_decreasing_start_period_offset_input.is_empty()
+                    max_interval_count: if self.step_decreasing_max_interval_count_input.is_empty()
                     {
                         None
                     } else {
@@ -2093,6 +2374,7 @@ impl TokensScreen {
     }
 
     fn reset_token_creator(&mut self) {
+        self.identity_id_string = String::new();
         self.selected_identity = None;
         self.selected_key = None;
         self.token_creator_status = TokenCreatorStatus::NotStarted;
@@ -2104,9 +2386,11 @@ impl TokensScreen {
         )];
         self.contract_keywords_input = "".to_string();
         self.token_description_input = "".to_string();
-        self.decimals_input = "8".to_string();
-        self.base_supply_input = "100000".to_string();
-        self.max_supply_input = "".to_string();
+        self.decimals_input = DEFAULT_DECIMALS.to_string(); //
+        self.base_supply_input = None;
+        self.base_supply_amount = None;
+        self.max_supply_input = None;
+        self.max_supply_amount = None;
         self.start_as_paused_input = false;
         self.should_capitalize_input = true;
         self.token_advanced_keeps_history =
@@ -2133,8 +2417,8 @@ impl TokensScreen {
         self.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::None;
         self.perpetual_dist_interval_input = "".to_string();
         self.fixed_amount_input = "".to_string();
-        self.random_min_input = "".to_string();
-        self.random_max_input = "".to_string();
+        // self.random_min_input = "".to_string();
+        // self.random_max_input = "".to_string();
         self.step_count_input = "".to_string();
         self.decrease_per_interval_numerator_input = "".to_string();
         self.decrease_per_interval_denominator_input = "".to_string();
@@ -2290,20 +2574,28 @@ impl TokensScreen {
             }
         };
 
-        let mut is_open = true;
-
-        egui::Window::new("Confirm Stop Tracking Balance")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label(format!(
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self
+            .remove_identity_token_balance_confirmation_dialog
+            .get_or_insert_with(|| {
+                ConfirmationDialog::new(
+                "Confirm Stop Tracking Balance",
+                format!(
                     "Are you sure you want to stop tracking the token \"{}\" for identity \"{}\"?",
                     token_to_remove.token_alias,
                     token_to_remove.identity_id.to_string(Encoding::Base58)
-                ));
+                ),
+            )
+            .confirm_text(Some("Confirm"))
+            .cancel_text(Some("Cancel"))
+            });
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
+        // Show the dialog and handle the response
+        let response = confirmation_dialog.show(ui).inner;
+
+        if let Some(status) = response.dialog_response {
+            match status {
+                ConfirmationStatus::Confirmed => {
                     if let Err(e) = self
                         .app_context
                         .remove_token_balance(token_to_remove.token_id, token_to_remove.identity_id)
@@ -2313,26 +2605,19 @@ impl TokensScreen {
                             MessageType::Error,
                             Utc::now(),
                         ));
-                        self.confirm_remove_identity_token_balance_popup = false;
-                        self.identity_token_balance_to_remove = None;
                     } else {
-                        self.confirm_remove_identity_token_balance_popup = false;
-                        self.identity_token_balance_to_remove = None;
                         self.refresh();
-                    };
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
+                    }
                     self.confirm_remove_identity_token_balance_popup = false;
                     self.identity_token_balance_to_remove = None;
+                    self.remove_identity_token_balance_confirmation_dialog = None;
                 }
-            });
-
-        // If user closes the popup window (the [x] button), also reset state
-        if !is_open {
-            self.confirm_remove_identity_token_balance_popup = false;
-            self.identity_token_balance_to_remove = None;
+                ConfirmationStatus::Canceled => {
+                    self.confirm_remove_identity_token_balance_popup = false;
+                    self.identity_token_balance_to_remove = None;
+                    self.remove_identity_token_balance_confirmation_dialog = None;
+                }
+            }
         }
     }
 
@@ -2353,49 +2638,89 @@ impl TokensScreen {
             .map(|t| t.token_name.clone())
             .unwrap_or_else(|| token_to_remove.to_string(Encoding::Base58));
 
-        let mut is_open = true;
-
-        egui::Window::new("Confirm Remove Token")
-            .collapsible(false)
-            .open(&mut is_open)
-            .show(ui.ctx(), |ui| {
-                ui.label(format!(
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.remove_token_confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new(
+                "Confirm Remove Token",
+                format!(
                     "Are you sure you want to stop tracking the token \"{}\"? You can re-add it later. Your actual token balance will not change with this action.",
                     token_name,
-                ));
+                ),
+            )
+            .confirm_text(Some("Confirm"))
+            .cancel_text(Some("Cancel"))
+        });
 
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    if let Err(e) = self.app_context.db.remove_token(
-                        &token_to_remove,
-                        &self.app_context,
-                    ) {
+        // Show the dialog and handle the response
+        let response = confirmation_dialog.show(ui).inner;
+
+        if let Some(status) = response.dialog_response {
+            match status {
+                ConfirmationStatus::Confirmed => {
+                    if let Err(e) = self
+                        .app_context
+                        .db
+                        .remove_token(&token_to_remove, &self.app_context)
+                    {
                         self.backend_message = Some((
                             format!("Error removing token balance: {}", e),
                             MessageType::Error,
                             Utc::now(),
                         ));
-                        self.confirm_remove_token_popup = false;
-                        self.token_to_remove = None;
                     } else {
-                        self.confirm_remove_token_popup = false;
-                        self.token_to_remove = None;
                         self.refresh();
                     }
-                }
-
-                // Cancel button
-                if ui.button("Cancel").clicked() {
                     self.confirm_remove_token_popup = false;
                     self.token_to_remove = None;
+                    self.remove_token_confirmation_dialog = None;
                 }
-            });
-
-        // If user closes the popup window (the [x] button), also reset state
-        if !is_open {
-            self.confirm_remove_token_popup = false;
-            self.token_to_remove = None;
+                ConfirmationStatus::Canceled => {
+                    self.confirm_remove_token_popup = false;
+                    self.token_to_remove = None;
+                    self.remove_token_confirmation_dialog = None;
+                }
+            }
         }
+    }
+
+    /// Renders the base supply amount input using AmountInput component
+    fn render_base_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+        let input = self
+            .base_supply_input
+            .get_or_insert_with(|| AmountInput::new(Amount::new(0, decimals)));
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
+        }
+
+        let response = input.show(ui);
+        response.inner.update(&mut self.base_supply_amount);
+    }
+
+    /// Renders the max supply amount input using AmountInput component
+    fn render_max_supply_input(&mut self, ui: &mut egui::Ui) {
+        let decimals = self.decimals_input.parse::<u8>().unwrap_or(0);
+
+        let input = self.max_supply_input.get_or_insert_with(|| {
+            let initial_amount = Amount::new(
+                TokenConfigurationV0::default_most_restrictive()
+                    .max_supply()
+                    .unwrap_or(0),
+                decimals,
+            );
+
+            AmountInput::new(initial_amount)
+        });
+
+        if decimals != input.decimal_places() {
+            // Update decimals; it will change actual value but I guess this is what user expects
+            input.set_decimal_places(decimals);
+        }
+
+        let response = input.show(ui);
+        response.inner.update(&mut self.max_supply_amount);
     }
 }
 
@@ -2417,6 +2742,11 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+
+        // Clear pricing data to force re-fetching when tokens are selected
+        // This ensures we get updated pricing after changes like SetPrice
+        self.token_pricing_data.clear();
+        self.pricing_loading_state.clear();
 
         self.my_tokens = my_tokens(
             &self.app_context,
@@ -2453,6 +2783,11 @@ impl ScreenLike for TokensScreen {
             .into_iter()
             .map(|qi| (qi.identity.id(), qi))
             .collect();
+
+        // Clear pricing data to force re-fetching when tokens are selected
+        // This ensures we get updated pricing after changes like SetPrice
+        self.token_pricing_data.clear();
+        self.pricing_loading_state.clear();
 
         self.my_tokens = my_tokens(
             &self.app_context,
@@ -2598,17 +2933,15 @@ impl ScreenLike for TokensScreen {
                         ui.horizontal(|ui| {
                             ui.add_space(10.0);
                             ui.label(format!("Refreshing... Time so far: {}", elapsed));
-                            ui.add(
-                                egui::widgets::Spinner::default()
-                                    .color(Color32::from_rgb(0, 128, 255)),
-                            );
+                            ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                         });
                         ui.add_space(2.0); // Space below
                     } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
                         ui.add_space(25.0); // Same space as refreshing indicator
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                         let color = match msg_type {
                             MessageType::Error => Color32::DARK_RED,
-                            MessageType::Info => Color32::BLACK,
+                            MessageType::Info => DashColors::text_primary(dark_mode),
                             MessageType::Success => Color32::DARK_GREEN,
                         };
                         ui.horizontal(|ui| {
@@ -2633,19 +2966,10 @@ impl ScreenLike for TokensScreen {
 
                     // If we have info text, open a pop-up window to show it
                     if let Some(info_text) = self.show_pop_up_info.clone() {
-                        egui::Window::new("Distribution Type Info")
-                            .collapsible(false)
-                            .resizable(true)
-                            .show(ui.ctx(), |ui| {
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    let mut cache = CommonMarkCache::default();
-                                    CommonMarkViewer::new().show(ui, &mut cache, &info_text);
-                                });
-
-                                if ui.button("Close").clicked() {
-                                    self.show_pop_up_info = None;
-                                }
-                            });
+                        let mut popup = InfoPopup::new("Information", &info_text);
+                        if popup.show(ui).inner {
+                            self.show_pop_up_info = None;
+                        }
                     }
 
                     inner_action
@@ -2689,11 +3013,24 @@ impl ScreenLike for TokensScreen {
             }
         }
 
-        if action == AppAction::None {
-            if let Some(bt) = self.pending_backend_task.take() {
-                action = AppAction::BackendTask(bt);
+        if action == AppAction::None
+            && let Some(bt) = self.pending_backend_task.take()
+        {
+            action = AppAction::BackendTask(bt);
+        }
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
             }
         }
+
         action
     }
 
@@ -2712,8 +3049,6 @@ impl ScreenLike for TokensScreen {
                 {
                     self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
                     self.token_creator_error_message = Some(msg.to_string());
-                } else {
-                    return;
                 }
             }
             TokensSubscreen::MyTokens => {
@@ -2740,13 +3075,12 @@ impl ScreenLike for TokensScreen {
                 }
             }
             TokensSubscreen::SearchTokens => {
-                if msg.contains("Error fetching tokens") {
+                if msg_type == MessageType::Error {
                     self.contract_search_status =
                         ContractSearchStatus::ErrorMessage(msg.to_string());
                     // Clear adding status on error
                     self.adding_token_start_time = None;
                     self.adding_token_name = None;
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
                 } else if msg.contains("Added token")
                     | msg.contains("Token already added")
                     | msg.contains("Saved token to db")
@@ -2759,8 +3093,6 @@ impl ScreenLike for TokensScreen {
                         MessageType::Success,
                         Utc::now(),
                     ));
-                } else {
-                    return;
                 }
             }
         }
@@ -2815,50 +3147,36 @@ impl ScreenLike for TokensScreen {
                 // Refresh display
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
+            BackendTaskSuccessResult::FetchedTokenBalances => {
+                // Refresh my_tokens to show updated balances
+                self.my_tokens = my_tokens(
+                    &self.app_context,
+                    &self.identities,
+                    &self.all_known_tokens,
+                    &self.token_pricing_data,
+                );
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
+            }
+            BackendTaskSuccessResult::RegisteredTokenContract => {
+                self.token_creator_status = TokenCreatorStatus::Complete;
+            }
             _ => {}
         }
-    }
-}
-
-impl ScreenWithWalletUnlock for TokensScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.token_creator_error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.token_creator_error_message.as_ref()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Once;
 
+    use crate::app_dir::copy_env_file_if_not_exists;
     use crate::database::Database;
     use crate::model::qualified_identity::IdentityStatus;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 
-    use super::*; use dash_sdk::dpp::dashcore::Network;
+    use super::*;
+    use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration_localization::accessors::v0::TokenConfigurationLocalizationV0Getters;
     use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::TokenKeepsHistoryRules;
@@ -2866,6 +3184,34 @@ mod tests {
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
+
+    fn ensure_test_env() {
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            copy_env_file_if_not_exists(); // required by AppContext::new()
+
+            // Ensure minimum required configs exist even if .env isn't loaded.
+            // Safety: tests set env vars once to ensure deterministic config.
+            // No other test mutates these values.
+            unsafe {
+                std::env::set_var("MAINNET_dapi_addresses", "http://127.0.0.1:1443");
+                std::env::set_var("MAINNET_core_host", "127.0.0.1");
+                std::env::set_var("MAINNET_core_rpc_port", "9998");
+                std::env::set_var("MAINNET_core_rpc_user", "dashrpc");
+                std::env::set_var("MAINNET_core_rpc_password", "password");
+                std::env::set_var("MAINNET_insight_api_url", "http://127.0.0.1:3001");
+                std::env::set_var("MAINNET_show_in_ui", "true");
+
+                std::env::set_var("LOCAL_dapi_addresses", "http://127.0.0.1:2443");
+                std::env::set_var("LOCAL_core_host", "127.0.0.1");
+                std::env::set_var("LOCAL_core_rpc_port", "20302");
+                std::env::set_var("LOCAL_core_rpc_user", "dashmate");
+                std::env::set_var("LOCAL_core_rpc_password", "password");
+                std::env::set_var("LOCAL_insight_api_url", "http://127.0.0.1:3001");
+                std::env::set_var("LOCAL_show_in_ui", "true");
+            }
+        });
+    }
 
     impl ChangeControlRulesUI {
         /// Sets every field to some dummy/test value to ensure coverage in tests.
@@ -2888,12 +3234,20 @@ mod tests {
 
     #[test]
     fn test_token_creator_ui_builds_correct_contract() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_token_creator";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        ensure_test_env();
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -2920,6 +3274,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
+            network: Network::Dash,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -2935,9 +3290,11 @@ mod tests {
             TokenNameLanguage::English,
             true,
         )];
-        token_creator_ui.base_supply_input = "5000000".to_string();
-        token_creator_ui.max_supply_input = "10000000".to_string();
-        token_creator_ui.decimals_input = "8".to_string();
+        token_creator_ui.base_supply_input = None;
+        token_creator_ui.base_supply_amount = Some(Amount::new(5000000, 8));
+        token_creator_ui.max_supply_input = None;
+        token_creator_ui.max_supply_amount = Some(Amount::new(10000000, 8));
+        token_creator_ui.decimals_input = DEFAULT_DECIMALS.to_string();
         token_creator_ui.start_as_paused_input = true;
         token_creator_ui.token_advanced_keeps_history =
             TokenKeepsHistoryRulesV0::default_for_keeping_all_history(true);
@@ -3005,7 +3362,7 @@ mod tests {
         // -------------------------------------------------
         // Groups
         // -------------------------------------------------
-        // We'll define 2 groups for testing: positions 2 (main) and 7
+        // We'll define 2 groups for testing: positions 0 (main) and 1
         token_creator_ui.groups_ui = vec![
             GroupConfigUI {
                 required_power_str: "2".to_string(),
@@ -3165,35 +3522,44 @@ mod tests {
         };
         assert_eq!(
             new_dest_id.to_string(Encoding::Base58),
-            "GCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9"
         );
         assert!(dist_rules_v0.minting_allow_choosing_destination);
 
         // F) Check the Groups
-        //    (Positions 2 and 7, from above)
+        //    (Positions 0 and 1, from above)
         assert_eq!(contract_v1.groups.len(), 2, "We added two groups in the UI");
-        let group2 = contract_v1.groups.get(&2).expect("Expected group pos=2");
+
+        let group0 = contract_v1.groups.get(&0).expect("Expected group pos=0");
         assert_eq!(
-            group2.required_power(),
+            group0.required_power(),
             2,
-            "Group #2 required_power mismatch"
+            "Group #0 required_power mismatch"
         );
-        let members = &group2.members();
+        let members = &group0.members();
         assert_eq!(members.len(), 2);
 
-        let group7 = contract_v1.groups.get(&7).expect("Expected group pos=7");
-        assert_eq!(group7.required_power(), 1);
-        assert_eq!(group7.members().len(), 0);
+        let group1 = contract_v1.groups.get(&1).expect("Expected group pos=1");
+        assert_eq!(group1.required_power(), 1);
+        assert_eq!(group1.members().len(), 0);
     }
 
     #[test]
     fn test_distribution_function_random() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_distribution_random";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        ensure_test_env();
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3220,6 +3586,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
+            network: Network::Dash,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3235,12 +3602,16 @@ mod tests {
             true,
         )];
 
+        // Set base supply
+        token_creator_ui.base_supply_amount = Some(Amount::new(1000000, 8));
+
         // Enable perpetual distribution, select Random
         token_creator_ui.enable_perpetual_distribution = true;
         token_creator_ui.perpetual_dist_type = PerpetualDistributionIntervalTypeUI::TimeBased;
-        token_creator_ui.perpetual_dist_interval_input = "60000".to_string();
-        token_creator_ui.random_min_input = "100".to_string();
-        token_creator_ui.random_max_input = "200".to_string();
+        token_creator_ui.perpetual_dist_function = DistributionFunctionUI::FixedAmount;
+        token_creator_ui.perpetual_dist_interval_input = "60".to_string();
+        token_creator_ui.perpetual_dist_interval_unit = IntervalTimeUnit::Second;
+        token_creator_ui.fixed_amount_input = "100".to_string();
 
         // Parse + build
         let build_args = token_creator_ui
@@ -3289,11 +3660,10 @@ mod tests {
             RewardDistributionType::TimeBasedDistribution { interval, function } => {
                 assert_eq!(*interval, 60000, "Expected 60s (in ms)");
                 match function {
-                    DistributionFunction::Random { min, max } => {
-                        assert_eq!(*min, 100);
-                        assert_eq!(*max, 200);
+                    DistributionFunction::FixedAmount { amount } => {
+                        assert_eq!(*amount, 100);
                     }
-                    _ => panic!("Expected DistributionFunction::Random"),
+                    _ => panic!("Expected DistributionFunction::FixedAmount"),
                 }
             }
             _ => panic!("Expected TimeBasedDistribution"),
@@ -3302,12 +3672,20 @@ mod tests {
 
     #[test]
     fn test_parse_token_build_args_fails_with_empty_token_name() {
-        let db_file_path = "test_db";
+        let db_file_path = "test_db_empty_token_name";
+        let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
         db.initialize(Path::new(&db_file_path)).unwrap();
 
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        ensure_test_env();
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -3334,6 +3712,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
+            network: Network::Dash,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);

@@ -90,13 +90,13 @@ impl AppContext {
             }
             ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => self
                 .insert_scheduled_votes(scheduled_votes)
-                .map(|_| BackendTaskSuccessResult::Message("Votes scheduled".to_string()))
+                .map(|_| BackendTaskSuccessResult::ScheduledVotes)
                 .map_err(|e| format!("Error inserting scheduled votes: {}", e)),
             ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => self
                 .vote_on_dpns_name(
                     &scheduled_vote.contested_name,
                     scheduled_vote.choice,
-                    &vec![(**voter).clone()],
+                    &[(**voter).clone()],
                     sdk,
                     sender,
                 )

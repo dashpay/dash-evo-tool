@@ -6,10 +6,10 @@ use crate::backend_task::identity::{
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, WalletFundedScreenStep,
 };
-use crate::ui::identities::funding_common::{copy_to_clipboard, generate_qr_code_image};
+use crate::ui::identities::funding_common::{self, copy_to_clipboard, generate_qr_code_image};
 use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;
-use egui::{Color32, Ui};
+use egui::Ui;
 use std::sync::Arc;
 
 impl AddNewIdentityScreen {
@@ -23,7 +23,7 @@ impl AddNewIdentityScreen {
                     let mut wallet = wallet_guard.write().unwrap();
                     let receive_address = wallet.receive_address(
                         self.app_context.network,
-                        false,
+                        true,
                         Some(&self.app_context),
                     )?;
 
@@ -119,6 +119,15 @@ impl AddNewIdentityScreen {
     }
 
     pub fn render_ui_by_wallet_qr_code(&mut self, ui: &mut Ui, step_number: u32) -> AppAction {
+        // Update state when funds land on the QR funding address
+        if let Some(utxo) = funding_common::capture_qr_funding_utxo_if_available(
+            &self.step,
+            self.selected_wallet.as_ref(),
+            self.funding_address.as_ref(),
+        ) {
+            self.funding_utxo = Some(utxo);
+        }
+
         // Extract the step from the RwLock to minimize borrow scope
         let step = *self.step.read().unwrap();
 
@@ -136,9 +145,17 @@ impl AddNewIdentityScreen {
 
         self.render_funding_amount_input(ui);
 
-        let Ok(amount_dash) = self.funding_amount.parse::<f64>() else {
+        if step == WalletFundedScreenStep::WaitingOnFunds {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(1));
+        }
+
+        // Get the amount in DASH from the Amount struct
+        let Some(amount) = &self.funding_amount else {
             return AppAction::None;
         };
+
+        let amount_dash = amount.value() as f64 / 100_000_000_000.0; // credits to DASH
 
         if amount_dash <= 0.0 {
             return AppAction::None;
@@ -148,22 +165,13 @@ impl AddNewIdentityScreen {
             egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
             |ui| {
                 if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                self.error_message = Some(e);
-            }
-
-            ui.add_space(20.0);
-
-            if let Some(error_message) = self.error_message.as_ref() {
-                ui.colored_label(Color32::DARK_RED, error_message);
-                ui.add_space(20.0);
-            }
-
-            match step {
-                WalletFundedScreenStep::ChooseFundingMethod => {}
-                WalletFundedScreenStep::WaitingOnFunds => {
-                    ui.heading("=> Waiting for funds. <=");
+                    self.error_message = Some(e);
                 }
-                WalletFundedScreenStep::FundsReceived => {
+
+                ui.add_space(20.0);
+
+                // Handle FundsReceived action regardless of error state
+                if step == WalletFundedScreenStep::FundsReceived {
                     let Some(selected_wallet) = &self.selected_wallet else {
                         return AppAction::None;
                     };
@@ -187,26 +195,33 @@ impl AddNewIdentityScreen {
                         // Create the backend task to register the identity
                         return AppAction::BackendTask(BackendTask::IdentityTask(
                             IdentityTask::RegisterIdentity(identity_input),
-                        ))
+                        ));
                     }
                 }
-                WalletFundedScreenStep::ReadyToCreate => {}
-                WalletFundedScreenStep::WaitingForAssetLock => {
-                    ui.heading("=> Waiting for Core Chain to produce proof of transfer of funds. <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
+
+                // Only show status messages if there's no error
+                if self.error_message.is_none() {
+                    match step {
+                        WalletFundedScreenStep::WaitingOnFunds => {
+                            ui.heading("=> Waiting for funds. <=");
+                        }
+                        WalletFundedScreenStep::WaitingForAssetLock => {
+                            ui.heading(
+                                "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                            );
+                        }
+                        WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                            ui.heading("=> Waiting for Platform acknowledgement. <=");
+                        }
+                        WalletFundedScreenStep::Success => {
+                            ui.heading("...Success...");
+                        }
+                        _ => {}
+                    }
                 }
-                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                    ui.heading("=> Waiting for Platform acknowledgement. <=");
-                    ui.add_space(20.0);
-                    ui.label("NOTE: If this gets stuck, the funds were likely either transferred to the wallet or asset locked,\nand you can use the funding method selector in step 1 to change the method and use those funds to complete the process.");
-                }
-                WalletFundedScreenStep::Success => {
-                    ui.heading("...Success...");
-                }
-            }
-            AppAction::None
-        });
+                AppAction::None
+            },
+        );
 
         ui.add_space(40.0);
 

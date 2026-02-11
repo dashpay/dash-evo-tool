@@ -1,5 +1,7 @@
 mod add_key_to_identity;
+mod discover_identities;
 mod load_identity;
+mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;
 mod refresh_identity;
 mod refresh_loaded_identities_dpns_names;
@@ -9,7 +11,7 @@ mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
 
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, FeeResult};
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
@@ -17,7 +19,6 @@ use crate::model::qualified_identity::qualified_identity_public_key::QualifiedId
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::dashcore::bip32::DerivationPath;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey, TxOut};
 use dash_sdk::dpp::ProtocolError;
@@ -25,10 +26,12 @@ use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
 use dash_sdk::dpp::fee::Credits;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -43,18 +46,25 @@ pub struct IdentityInputToLoad {
     pub owner_private_key_input: String,
     pub payout_address_private_key_input: String,
     pub keys_input: Vec<String>,
+    pub derive_keys_from_wallets: bool,
+    pub selected_wallet_seed_hash: Option<WalletSeedHash>,
 }
+
+/// A key input tuple containing the private key with derivation path, key type, purpose,
+/// security level, and optional contract bounds.
+pub type KeyInput = (
+    (PrivateKey, DerivationPath),
+    KeyType,
+    Purpose,
+    SecurityLevel,
+    Option<ContractBounds>,
+);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityKeys {
     pub(crate) master_private_key: Option<(PrivateKey, DerivationPath)>,
     pub(crate) master_private_key_type: KeyType,
-    pub(crate) keys_input: Vec<(
-        (PrivateKey, DerivationPath),
-        KeyType,
-        Purpose,
-        SecurityLevel,
-    )>,
+    pub(crate) keys_input: Vec<KeyInput>,
 }
 
 impl IdentityKeys {
@@ -95,13 +105,22 @@ impl IdentityKeys {
         }
 
         key_map.extend(keys_input.iter().enumerate().map(
-            |(i, ((private_key, derivation_path), key_type, purpose, security_level))| {
+            |(
+                i,
+                (
+                    (private_key, derivation_path),
+                    key_type,
+                    purpose,
+                    security_level,
+                    contract_bounds,
+                ),
+            )| {
                 let id = (i + 1) as KeyID;
                 let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                     id,
                     purpose: *purpose,
                     security_level: *security_level,
-                    contract_bounds: None,
+                    contract_bounds: contract_bounds.clone(),
                     key_type: *key_type,
                     read_only: false,
                     data: private_key.public_key(&secp).to_bytes().into(),
@@ -161,7 +180,7 @@ impl IdentityKeys {
             key_map.insert(0, key);
         }
         key_map.extend(keys_input.iter().enumerate().map(
-            |(i, ((private_key, _), key_type, purpose, security_level))| {
+            |(i, ((private_key, _), key_type, purpose, security_level, contract_bounds))| {
                 let id = (i + 1) as KeyID;
                 let data = match key_type {
                     KeyType::ECDSA_SECP256K1 => private_key.public_key(&secp).to_bytes().into(),
@@ -177,7 +196,7 @@ impl IdentityKeys {
                     id,
                     purpose: *purpose,
                     security_level: *security_level,
-                    contract_bounds: None,
+                    contract_bounds: contract_bounds.clone(),
                     key_type: *key_type,
                     read_only: false,
                     data,
@@ -198,6 +217,13 @@ pub enum RegisterIdentityFundingMethod {
     UseAssetLock(Address, Box<AssetLockProof>, Box<Transaction>),
     FundWithUtxo(OutPoint, TxOut, Address, IdentityIndex),
     FundWithWallet(Duffs, IdentityIndex),
+    /// Fund identity creation from Platform addresses
+    FundWithPlatformAddresses {
+        /// Platform addresses and credits to use
+        inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        /// Wallet seed hash for signing
+        wallet_seed_hash: WalletSeedHash,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,11 +275,31 @@ pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
     #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
+    SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
+    /// Search for an identity by its DPNS name (without .dash suffix)
+    /// Second parameter is optional wallet seed hash for key derivation
+    SearchIdentityByDpnsName(String, Option<WalletSeedHash>),
     RegisterIdentity(IdentityRegistrationInfo),
     TopUpIdentity(IdentityTopUpInfo),
+    /// Top up an identity from Platform addresses
+    TopUpIdentityFromPlatformAddresses {
+        identity: QualifiedIdentity,
+        /// Platform addresses and amounts to use for top-up
+        inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        /// Wallet seed hash for signing
+        wallet_seed_hash: WalletSeedHash,
+    },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
+    /// Transfer credits from identity to Platform addresses
+    TransferToAddresses {
+        identity: QualifiedIdentity,
+        /// Platform addresses and amounts to receive credits
+        outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        /// Key ID to use for signing (if any)
+        key_id: Option<KeyID>,
+    },
     RegisterDpnsName(RegisterDpnsNameInput),
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
@@ -452,7 +498,7 @@ impl AppContext {
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
-                self.register_identity(registration_info, sender).await
+                self.register_identity(registration_info).await
             }
             IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
             IdentityTask::RefreshIdentity(qualified_identity) => self
@@ -464,15 +510,204 @@ impl AppContext {
                     .await
             }
             IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
-                self.load_user_identity_from_wallet(sdk, wallet, identity_index)
+                self.load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
                     .await
             }
-            IdentityTask::TopUpIdentity(top_up_info) => {
-                self.top_up_identity(top_up_info, sender).await
+            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => {
+                self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
+                    .await
+            }
+            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => {
+                self.load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
+                    .await
+            }
+            IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
+            IdentityTask::TopUpIdentityFromPlatformAddresses {
+                identity,
+                inputs,
+                wallet_seed_hash,
+            } => {
+                self.top_up_identity_from_platform_addresses(
+                    sdk,
+                    identity,
+                    inputs,
+                    wallet_seed_hash,
+                )
+                .await
+            }
+            IdentityTask::TransferToAddresses {
+                identity,
+                outputs,
+                key_id,
+            } => {
+                self.transfer_to_addresses(sdk, identity, outputs, key_id)
+                    .await
             }
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 self.refresh_loaded_identities_dpns_names(sender).await
             }
         }
+    }
+
+    /// Top up an identity using credits from Platform addresses
+    async fn top_up_identity_from_platform_addresses(
+        &self,
+        sdk: &Sdk,
+        qualified_identity: QualifiedIdentity,
+        inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        wallet_seed_hash: WalletSeedHash,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
+
+        // Estimate fee for top-up from platform addresses
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
+
+        tracing::info!(
+            "top_up_identity_from_platform_addresses: identity={}, inputs={:?}",
+            qualified_identity.identity.id(),
+            inputs
+        );
+
+        // Get the wallet for signing - clone it to avoid holding guard across await
+        let wallet_clone = {
+            let wallet = {
+                let wallets = self.wallets.read().unwrap();
+                wallets
+                    .get(&wallet_seed_hash)
+                    .cloned()
+                    .ok_or_else(|| "Wallet not found".to_string())?
+            };
+
+            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+
+            // Ensure wallet is open
+            if !wallet_guard.is_open() {
+                return Err("Wallet must be unlocked to sign Platform transactions".to_string());
+            }
+
+            wallet_guard.clone()
+        };
+
+        tracing::info!("Wallet loaded and open, calling top_up_from_addresses...");
+
+        // Get the identity
+        let identity = qualified_identity.identity.clone();
+
+        // Execute the top-up
+        let (address_infos, new_balance) = identity
+            .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
+            .await
+            .map_err(|e| {
+                tracing::error!("top_up_from_addresses failed: {}", e);
+                format!("Failed to top up identity from Platform addresses: {}", e)
+            })?;
+
+        tracing::info!(
+            "top_up_from_addresses succeeded, new_balance={}",
+            new_balance
+        );
+
+        // Update source address balances using proof-verified data from SDK response
+        if let Err(e) =
+            self.update_wallet_platform_address_info_from_sdk(wallet_seed_hash, &address_infos)
+        {
+            tracing::warn!("Failed to update wallet platform address info: {}", e);
+        }
+
+        // Update the identity balance in memory
+        let mut updated_identity = qualified_identity.clone();
+        updated_identity.identity.set_balance(new_balance);
+
+        // Store the updated identity (use update to preserve wallet association)
+        self.update_local_qualified_identity(&updated_identity)
+            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::ToppedUpIdentity(
+            updated_identity,
+            fee_result,
+        ))
+    }
+
+    /// Transfer credits from an identity to Platform addresses
+    async fn transfer_to_addresses(
+        &self,
+        sdk: &Sdk,
+        qualified_identity: QualifiedIdentity,
+        outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
+        key_id: Option<KeyID>,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
+
+        // Get the identity
+        let identity = qualified_identity.identity.clone();
+
+        // Get the signing key if specified
+        let signing_key = key_id.and_then(|id| identity.get_public_key_by_id(id));
+
+        // Track balance before transfer for fee calculation
+        let balance_before = identity.balance();
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = fee_estimator.estimate_credit_transfer_to_addresses(outputs.len());
+
+        // Execute the transfer - qualified_identity is consumed here as the signer
+        let (address_infos, new_balance) = identity
+            .transfer_credits_to_addresses(
+                sdk,
+                outputs.clone(),
+                signing_key,
+                &qualified_identity,
+                None,
+            )
+            .await
+            .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
+
+        // Update destination address balances in any wallets that contain them
+        // (using proof-verified data from the SDK response)
+        {
+            let wallets = self.wallets.read().unwrap();
+            for (seed_hash, wallet_arc) in wallets.iter() {
+                if let Err(e) =
+                    self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
+                {
+                    tracing::warn!("Failed to update wallet platform address info: {}", e);
+                }
+                // Break early since all wallets share the same network addresses
+                let _ = wallet_arc; // silence unused warning
+            }
+        }
+
+        // Update the identity balance in memory
+        let mut updated_identity = qualified_identity;
+        updated_identity.identity.set_balance(new_balance);
+
+        // Calculate actual fee
+        let total_outputs: Credits = outputs.values().sum();
+        let actual_fee = balance_before
+            .saturating_sub(new_balance)
+            .saturating_sub(total_outputs);
+
+        tracing::info!(
+            "Credit transfer to addresses complete: estimated fee {} credits, actual fee {} credits",
+            estimated_fee,
+            actual_fee
+        );
+        if actual_fee != estimated_fee {
+            tracing::warn!(
+                "Fee mismatch: estimated {} vs actual {} (diff: {})",
+                estimated_fee,
+                actual_fee,
+                actual_fee as i64 - estimated_fee as i64
+            );
+        }
+
+        // Store the updated identity (use update to preserve wallet association)
+        self.update_local_qualified_identity(&updated_identity)
+            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+
+        let fee_result = FeeResult::new(estimated_fee, actual_fee);
+        Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))
     }
 }

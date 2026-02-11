@@ -6,10 +6,14 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::wallet::Wallet;
 use crate::ui::ScreenLike;
+use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
+use crate::ui::theme::DashColors;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
@@ -26,7 +30,7 @@ use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBound
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
-use egui::{Color32, RichText, ScrollArea, TextEdit};
+use egui::{Color32, Frame, Margin, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
 
 pub struct KeyInfoScreen {
@@ -38,8 +42,7 @@ pub struct KeyInfoScreen {
     private_key_input: String,
     error_message: Option<String>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     message_input: String,
     signed_message: Option<String>,
     sign_error_message: Option<String>,
@@ -86,7 +89,8 @@ impl ScreenLike for KeyInfoScreen {
             let inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
-                ui.heading(RichText::new("Key Information").color(Color32::BLACK));
+                let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+                ui.heading(RichText::new("Key Information").color(text_primary));
                 ui.add_space(10.0);
 
                 egui::Grid::new("key_info_grid")
@@ -95,15 +99,14 @@ impl ScreenLike for KeyInfoScreen {
                     .striped(false)
                     .show(ui, |ui| {
                         // Key ID
-                        ui.label(RichText::new("Key ID:").strong().color(Color32::BLACK));
-                        ui.label(RichText::new(format!("{}", self.key.id())).color(Color32::BLACK));
+                        ui.label(RichText::new("Key ID:").strong().color(text_primary));
+                        ui.label(RichText::new(format!("{}", self.key.id())).color(text_primary));
                         ui.end_row();
 
                         // Purpose
-                        ui.label(RichText::new("Purpose:").strong().color(Color32::BLACK));
+                        ui.label(RichText::new("Purpose:").strong().color(text_primary));
                         ui.label(
-                            RichText::new(format!("{:?}", self.key.purpose()))
-                                .color(Color32::BLACK),
+                            RichText::new(format!("{:?}", self.key.purpose())).color(text_primary),
                         );
                         ui.end_row();
 
@@ -111,27 +114,25 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(
                             RichText::new("Security Level:")
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         ui.label(
                             RichText::new(format!("{:?}", self.key.security_level()))
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         ui.end_row();
 
                         // Type
-                        ui.label(RichText::new("Type:").strong().color(Color32::BLACK));
+                        ui.label(RichText::new("Type:").strong().color(text_primary));
                         ui.label(
-                            RichText::new(format!("{:?}", self.key.key_type()))
-                                .color(Color32::BLACK),
+                            RichText::new(format!("{:?}", self.key.key_type())).color(text_primary),
                         );
                         ui.end_row();
 
                         // Read Only
-                        ui.label(RichText::new("Read Only:").strong().color(Color32::BLACK));
+                        ui.label(RichText::new("Read Only:").strong().color(text_primary));
                         ui.label(
-                            RichText::new(format!("{}", self.key.read_only()))
-                                .color(Color32::BLACK),
+                            RichText::new(format!("{}", self.key.read_only())).color(text_primary),
                         );
                         ui.end_row();
 
@@ -139,12 +140,12 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(
                             RichText::new("Active/Disabled:")
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         if !self.key.is_disabled() {
-                            ui.label(RichText::new("Active").color(Color32::BLACK));
+                            ui.label(RichText::new("Active").color(text_primary));
                         } else {
-                            ui.label(RichText::new("Disabled").color(Color32::BLACK));
+                            ui.label(RichText::new("Disabled").color(text_primary));
                         }
                         ui.end_row();
 
@@ -155,7 +156,7 @@ impl ScreenLike for KeyInfoScreen {
                             ui.label(
                                 RichText::new("In local Wallet")
                                     .strong()
-                                    .color(Color32::BLACK),
+                                    .color(text_primary),
                             );
                             ui.label(
                                 RichText::new(format!(
@@ -163,7 +164,7 @@ impl ScreenLike for KeyInfoScreen {
                                     wallet_derivation_path.derivation_path
                                 ))
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                             );
                             ui.end_row();
                         }
@@ -173,13 +174,13 @@ impl ScreenLike for KeyInfoScreen {
                             ui.label(
                                 RichText::new("Contract Bounds:")
                                     .strong()
-                                    .color(Color32::BLACK),
+                                    .color(text_primary),
                             );
                             match contract_bounds {
                                 ContractBounds::SingleContract { id } => {
                                     ui.label(
                                         RichText::new(format!("Contract ID: {}", id))
-                                            .color(Color32::BLACK),
+                                            .color(text_primary),
                                     );
                                 }
                                 ContractBounds::SingleContractDocumentType {
@@ -191,7 +192,7 @@ impl ScreenLike for KeyInfoScreen {
                                             "Contract ID: {}\nDocument Type: {}",
                                             id, document_type_name
                                         ))
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                     );
                                 }
                             }
@@ -206,7 +207,7 @@ impl ScreenLike for KeyInfoScreen {
                 ui.add_space(10.0);
 
                 // Display the public key information
-                ui.heading(RichText::new("Public Key Information").color(Color32::BLACK));
+                ui.heading(RichText::new("Public Key Information").color(text_primary));
                 ui.add_space(10.0);
 
                 egui::Grid::new("public_key_info_grid")
@@ -220,11 +221,11 @@ impl ScreenLike for KeyInfoScreen {
                                 ui.label(
                                     RichText::new("Public Key (Hex):")
                                         .strong()
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                 );
                                 ui.label(
                                     RichText::new(self.key.data().to_string(Encoding::Hex))
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                 );
                                 ui.end_row();
 
@@ -232,11 +233,11 @@ impl ScreenLike for KeyInfoScreen {
                                 ui.label(
                                     RichText::new("Public Key (Base64):")
                                         .strong()
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                 );
                                 ui.label(
                                     RichText::new(self.key.data().to_string(Encoding::Base64))
-                                        .color(Color32::BLACK),
+                                        .color(text_primary),
                                 );
                                 ui.end_row();
                             }
@@ -247,12 +248,12 @@ impl ScreenLike for KeyInfoScreen {
                         ui.label(
                             RichText::new("Public Key Hash:")
                                 .strong()
-                                .color(Color32::BLACK),
+                                .color(text_primary),
                         );
                         match self.key.public_key_hash() {
                             Ok(hash) => {
                                 let hash_hex = hex::encode(hash);
-                                ui.label(RichText::new(hash_hex).color(Color32::BLACK));
+                                ui.label(RichText::new(hash_hex).color(text_primary));
                             }
                             Err(e) => {
                                 ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
@@ -261,7 +262,7 @@ impl ScreenLike for KeyInfoScreen {
 
                         if self.key.key_type().is_core_address_key_type() {
                             // Public Key Hash
-                            ui.label(RichText::new("Address:").strong().color(Color32::BLACK));
+                            ui.label(RichText::new("Address:").strong().color(text_primary));
                             match self.key.public_key_hash() {
                                 Ok(hash) => {
                                     let address = if self.key.key_type() == BIP13_SCRIPT_HASH {
@@ -276,7 +277,7 @@ impl ScreenLike for KeyInfoScreen {
                                         )
                                     };
                                     ui.label(
-                                        RichText::new(address.to_string()).color(Color32::BLACK),
+                                        RichText::new(address.to_string()).color(text_primary),
                                     );
                                 }
                                 Err(e) => {
@@ -294,16 +295,42 @@ impl ScreenLike for KeyInfoScreen {
 
                 // Display the private key if available
                 if let Some((private_key, _)) = self.private_key_data.as_mut() {
-                    ui.heading(RichText::new("Private Key").color(Color32::BLACK));
+                    ui.heading(RichText::new("Private Key").color(text_primary));
                     ui.add_space(10.0);
 
                     match private_key {
                         PrivateKeyData::Clear(clear) | PrivateKeyData::AlwaysClear(clear) => {
-                            let private_key_hex = hex::encode(clear);
-                            ui.add(
-                                TextEdit::singleline(&mut private_key_hex.as_str().to_owned())
-                                    .desired_width(f32::INFINITY),
-                            );
+                            egui::Grid::new("private_key_grid")
+                                .num_columns(2)
+                                .spacing([10.0, 10.0])
+                                .show(ui, |ui| {
+                                    if let Ok(secret_key) = SecretKey::from_slice(clear) {
+                                        let private_key =
+                                            PrivateKey::new(secret_key, self.app_context.network);
+                                        ui.label(
+                                            RichText::new("Private Key (WIF):")
+                                                .strong()
+                                                .color(ui.visuals().text_color()),
+                                        );
+                                        ui.label(
+                                            RichText::new(private_key.to_wif())
+                                                .color(ui.visuals().text_color()),
+                                        );
+                                        ui.end_row();
+                                    }
+
+                                    ui.label(
+                                        RichText::new("Private Key (Hex):")
+                                            .strong()
+                                            .color(ui.visuals().text_color()),
+                                    );
+                                    let private_key_hex = hex::encode(clear);
+                                    ui.label(
+                                        RichText::new(private_key_hex)
+                                            .color(ui.visuals().text_color()),
+                                    );
+                                    ui.end_row();
+                                });
                             ui.add_space(10.0);
                             if ui.button("Remove private key from DET").clicked() {
                                 self.show_confirm_remove_private_key = true;
@@ -311,7 +338,7 @@ impl ScreenLike for KeyInfoScreen {
                             self.render_sign_input(ui);
                         }
                         PrivateKeyData::Encrypted(_) => {
-                            ui.label(RichText::new("Key is encrypted").color(Color32::BLACK));
+                            ui.label(RichText::new("Key is encrypted").color(text_primary));
                             ui.add_space(10.0);
 
                             //todo decrypt key
@@ -322,27 +349,74 @@ impl ScreenLike for KeyInfoScreen {
                                 && self.selected_wallet.is_some()
                             {
                                 if let Some(private_key) = self.decrypted_private_key {
-                                    let private_key_wif = private_key.to_wif();
-                                    ui.add(
-                                        TextEdit::multiline(
-                                            &mut private_key_wif.as_str().to_owned(),
-                                        )
-                                        .desired_width(f32::INFINITY),
-                                    );
+                                    egui::Grid::new("private_key_grid_wallet")
+                                        .num_columns(2)
+                                        .spacing([10.0, 10.0])
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                RichText::new("Private Key (WIF):")
+                                                    .strong()
+                                                    .color(ui.visuals().text_color()),
+                                            );
+                                            let private_key_wif = private_key.to_wif();
+                                            ui.label(
+                                                RichText::new(private_key_wif)
+                                                    .color(ui.visuals().text_color()),
+                                            );
+                                            ui.end_row();
+
+                                            ui.label(
+                                                RichText::new("Private Key (Hex):")
+                                                    .strong()
+                                                    .color(ui.visuals().text_color()),
+                                            );
+                                            let private_key_hex =
+                                                hex::encode(private_key.inner.secret_bytes());
+                                            ui.label(
+                                                RichText::new(private_key_hex)
+                                                    .color(ui.visuals().text_color()),
+                                            );
+                                            ui.end_row();
+                                        });
                                 } else {
                                     let wallet =
                                         self.selected_wallet.as_ref().unwrap().read().unwrap();
                                     match wallet.private_key_at_derivation_path(
                                         &derivation_path.derivation_path,
+                                        self.app_context.network,
                                     ) {
                                         Ok(private_key) => {
-                                            let private_key_wif = private_key.to_wif();
-                                            ui.add(
-                                                TextEdit::multiline(
-                                                    &mut private_key_wif.as_str().to_owned(),
-                                                )
-                                                .desired_width(f32::INFINITY),
-                                            );
+                                            egui::Grid::new("private_key_grid_wallet2")
+                                                .num_columns(2)
+                                                .spacing([10.0, 10.0])
+                                                .show(ui, |ui| {
+                                                    ui.label(
+                                                        RichText::new("Private Key (WIF):")
+                                                            .strong()
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    let private_key_wif = private_key.to_wif();
+                                                    ui.label(
+                                                        RichText::new(private_key_wif)
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    ui.end_row();
+
+                                                    ui.label(
+                                                        RichText::new("Private Key (Hex):")
+                                                            .strong()
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    let private_key_hex = hex::encode(
+                                                        private_key.inner.secret_bytes(),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(private_key_hex)
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    ui.end_row();
+                                                });
+
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {
@@ -365,15 +439,40 @@ impl ScreenLike for KeyInfoScreen {
                                         self.selected_wallet.as_ref().unwrap().read().unwrap();
                                     match wallet.private_key_at_derivation_path(
                                         &derivation_path.derivation_path,
+                                        self.app_context.network,
                                     ) {
                                         Ok(private_key) => {
-                                            let private_key_wif = private_key.to_wif();
-                                            ui.add(
-                                                TextEdit::multiline(
-                                                    &mut private_key_wif.as_str().to_owned(),
-                                                )
-                                                .desired_width(f32::INFINITY),
-                                            );
+                                            egui::Grid::new("private_key_grid_wallet2")
+                                                .num_columns(2)
+                                                .spacing([10.0, 10.0])
+                                                .show(ui, |ui| {
+                                                    ui.label(
+                                                        RichText::new("Private Key (WIF):")
+                                                            .strong()
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    let private_key_wif = private_key.to_wif();
+                                                    ui.label(
+                                                        RichText::new(private_key_wif)
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    ui.end_row();
+
+                                                    ui.label(
+                                                        RichText::new("Private Key (Hex):")
+                                                            .strong()
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    let private_key_hex = hex::encode(
+                                                        private_key.inner.secret_bytes(),
+                                                    );
+                                                    ui.label(
+                                                        RichText::new(private_key_hex)
+                                                            .color(ui.visuals().text_color()),
+                                                    );
+                                                    ui.end_row();
+                                                });
+
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {
@@ -399,7 +498,7 @@ impl ScreenLike for KeyInfoScreen {
                         }
                     }
                 } else {
-                    ui.label(RichText::new("Enter Private Key:").color(Color32::BLACK));
+                    ui.label(RichText::new("Enter Private Key:").color(text_primary));
                     ui.text_edit_singleline(&mut self.private_key_input);
 
                     if ui.button("Add Private Key").clicked() {
@@ -407,32 +506,47 @@ impl ScreenLike for KeyInfoScreen {
                     }
 
                     // Display error message if validation fails
-                    if let Some(error_message) = &self.error_message {
-                        ui.colored_label(egui::Color32::RED, error_message);
+                    if let Some(error_message) = self.error_message.clone() {
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", error_message))
+                                            .color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.error_message = None;
+                                    }
+                                });
+                            });
                     }
                 }
 
-                if self.view_wallet_unlock {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-                    if !needed_unlock || just_unlocked {
+                if self.view_wallet_unlock
+                    && let Some(wallet) = &self.selected_wallet
+                {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
+                    } else {
                         self.wallet_open = true;
                     }
-                }
-
-                // Show the popup window if `show_popup` is true
-                if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-                    egui::Window::new("Sign Message Info")
-                        .collapsible(false) // Prevent collapsing
-                        .resizable(false) // Prevent resizing
-                        .show(ctx, |ui| {
-                            ui.label(RichText::new(show_pop_up_info_text).color(Color32::BLACK));
-                            ui.add_space(10.0);
-
-                            // Add a close button to dismiss the popup
-                            if ui.button("Close").clicked() {
-                                self.show_pop_up_info = None
-                            }
-                        });
                 }
 
                 // Show the remove private key confirmation popup
@@ -445,6 +559,31 @@ impl ScreenLike for KeyInfoScreen {
 
             inner_action
         });
+
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
+        // Show the popup window if `show_popup` is true
+        if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let mut popup = InfoPopup::new("Sign Message Info", &show_pop_up_info_text);
+                    if popup.show(ui).inner {
+                        self.show_pop_up_info = None;
+                    }
+                });
+        }
+
         action
     }
 }
@@ -474,8 +613,7 @@ impl KeyInfoScreen {
             private_key_input: String::new(),
             error_message: None,
             selected_wallet,
-            wallet_password: "".to_string(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             message_input: "".to_string(),
             signed_message: None,
             sign_error_message: None,
@@ -521,7 +659,7 @@ impl KeyInfoScreen {
             );
             match self
                 .app_context
-                .insert_local_qualified_identity(&self.identity, &None)
+                .update_local_qualified_identity(&self.identity)
             {
                 Ok(_) => {
                     self.error_message = None;
@@ -536,12 +674,13 @@ impl KeyInfoScreen {
     }
 
     fn render_sign_input(&mut self, ui: &mut egui::Ui) {
+        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.heading(RichText::new("Sign").color(Color32::BLACK));
+            ui.heading(RichText::new("Sign").color(text_primary));
 
             // Create an info icon button
             let response = crate::ui::helpers::info_icon_button(ui, "Enter a message and click Sign to encrypt it with your private key. You can send the encrypted message to someone and they can decrypt it using your public key. This is useful for proving you own the private key.");
@@ -553,7 +692,7 @@ impl KeyInfoScreen {
         });
         ui.add_space(5.0);
 
-        ui.label(RichText::new("Enter message to sign:").color(Color32::BLACK));
+        ui.label(RichText::new("Enter message to sign:").color(text_primary));
         ui.add_space(5.0);
         ui.add(
             egui::TextEdit::multiline(&mut self.message_input)
@@ -567,8 +706,24 @@ impl KeyInfoScreen {
             self.sign_message();
         }
 
-        if let Some(error_message) = &self.sign_error_message {
-            ui.colored_label(egui::Color32::RED, error_message);
+        if let Some(error_message) = self.sign_error_message.clone() {
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("Error: {}", error_message)).color(error_color),
+                        );
+                        ui.add_space(10.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.sign_error_message = None;
+                        }
+                    });
+                });
         }
 
         if let Some(signed_message) = &self.signed_message {
@@ -576,7 +731,7 @@ impl KeyInfoScreen {
             ui.separator();
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Signed Message (Base64):").color(Color32::BLACK));
+            ui.label(RichText::new("Signed Message (Base64):").color(text_primary));
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::multiline(&mut signed_message.as_str().to_owned())
@@ -634,13 +789,14 @@ impl KeyInfoScreen {
     }
 
     fn render_remove_private_key_confirm(&mut self, ui: &mut egui::Ui) {
+        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
         egui::Window::new("Remove Private Key")
             .collapsible(false) // Prevent collapsing
             .resizable(false) // Prevent resizing
             .show(ui.ctx(), |ui| {
                 ui.label(
                     RichText::new("Are you sure you want to remove the private key?")
-                        .color(Color32::BLACK),
+                        .color(text_primary),
                 );
                 ui.add_space(10.0);
 
@@ -657,7 +813,7 @@ impl KeyInfoScreen {
                             .remove(&(self.key.purpose().into(), self.key.id()));
                         match self
                             .app_context
-                            .insert_local_qualified_identity(&self.identity, &None)
+                            .update_local_qualified_identity(&self.identity)
                         {
                             Ok(_) => {
                                 self.error_message = None;
@@ -670,35 +826,5 @@ impl KeyInfoScreen {
                     }
                 });
             });
-    }
-}
-
-impl ScreenWithWalletUnlock for KeyInfoScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }

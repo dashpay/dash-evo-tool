@@ -1,25 +1,34 @@
 use super::tokens_screen::IdentityTokenInfo;
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::Wallet;
+use crate::ui::components::ComponentResponse;
+use crate::ui::components::amount_input::AmountInput;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use crate::ui::theme::DashColors;
+use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
@@ -29,7 +38,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
 use egui::RichText;
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
@@ -42,6 +51,24 @@ pub enum PricingType {
     SinglePrice,
     TieredPricing,
     RemovePricing,
+}
+
+impl From<TokenPricingSchedule> for PricingType {
+    fn from(schedule: TokenPricingSchedule) -> Self {
+        match schedule {
+            TokenPricingSchedule::SinglePrice(_) => PricingType::SinglePrice,
+            TokenPricingSchedule::SetPrices(_) => PricingType::TieredPricing,
+        }
+    }
+}
+
+impl From<Option<TokenPricingSchedule>> for PricingType {
+    fn from(schedule: Option<TokenPricingSchedule>) -> Self {
+        match schedule {
+            Some(schedule) => PricingType::from(schedule),
+            None => PricingType::RemovePricing,
+        }
+    }
 }
 
 /// Internal states for the mint process.
@@ -57,15 +84,22 @@ pub enum SetTokenPriceStatus {
 pub struct SetTokenPriceScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
     pub public_note: Option<String>,
     group: Option<(GroupContractPosition, Group)>,
     is_unilateral_group_member: bool,
     pub group_action_id: Option<Identifier>,
 
     pub token_pricing_schedule: String,
-    pricing_type: PricingType,
-    single_price: String,
-    tiered_prices: Vec<(String, String)>,
+    /// Token pricing schedule to use; if None, we will remove the pricing schedule
+    pub pricing_type: PricingType,
+
+    // AmountInput components for pricing - following the design pattern
+    single_price_amount: Option<Amount>,
+    single_price_input: Option<AmountInput>,
+
+    // Tiered pricing with AmountInput components
+    pub tiered_prices: Vec<(Option<AmountInput>, Option<AmountInput>)>, // (amount_input, price_input)
     status: SetTokenPriceStatus,
     error_message: Option<String>,
 
@@ -74,21 +108,59 @@ pub struct SetTokenPriceScreen {
 
     /// Confirmation popup
     show_confirmation_popup: bool,
+    confirmation_dialog: Option<ConfirmationDialog>,
 
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
+    // Fee result from completed operation
+    completed_fee_result: Option<FeeResult>,
 }
 
+/// 1 Dash = 100,000,000,000 credits
+pub const CREDITS_PER_DASH: Credits = 100_000_000_000;
+
 impl SetTokenPriceScreen {
-    /// Converts Dash amount to credits (1 Dash = 100,000,000,000 credits)
-    fn dash_to_credits(dash_amount: f64) -> Credits {
-        (dash_amount * 100_000_000_000.0) as Credits
+    fn token_decimal_divisor(&self) -> u64 {
+        10u64.pow(
+            self.identity_token_info
+                .token_config
+                .conventions()
+                .decimals() as u32,
+        )
+    }
+
+    fn minimum_price_amount(&self) -> Amount {
+        Amount::new(self.token_decimal_divisor(), DASH_DECIMAL_PLACES).with_unit_name("DASH")
+    }
+
+    fn validate_price_for_token(&self, price: &Amount) -> Result<u64, String> {
+        let credits_price_per_token = price.value();
+        if credits_price_per_token == 0 {
+            return Err("Price must be greater than 0".to_string());
+        }
+
+        let decimal_divisor = self.token_decimal_divisor();
+
+        if credits_price_per_token < decimal_divisor {
+            return Err(format!(
+                "Price too low for this token's precision. Minimum price is {}.",
+                self.minimum_price_amount()
+            ));
+        }
+
+        if !credits_price_per_token.is_multiple_of(decimal_divisor) {
+            return Err(format!(
+                "Price must be in multiples of {} to match the token decimals.",
+                self.minimum_price_amount()
+            ));
+        }
+
+        Ok(credits_price_per_token / decimal_divisor)
     }
 
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let possible_key = identity_token_info
+        let possible_key: Option<&IdentityPublicKey> = identity_token_info
             .identity
             .identity
             .get_first_public_key_matching(
@@ -169,17 +241,17 @@ impl SetTokenPriceScreen {
         };
 
         let mut is_unilateral_group_member = false;
-        if group.is_some() {
-            if let Some((_, group)) = group.clone() {
-                let your_power = group
-                    .members()
-                    .get(&identity_token_info.identity.identity.id());
+        if group.is_some()
+            && let Some((_, group)) = group.clone()
+        {
+            let your_power = group
+                .members()
+                .get(&identity_token_info.identity.identity.id());
 
-                if let Some(your_power) = your_power {
-                    if your_power >= &group.required_power() {
-                        is_unilateral_group_member = true;
-                    }
-                }
+            if let Some(your_power) = your_power
+                && your_power >= &group.required_power()
+            {
+                is_unilateral_group_member = true;
             }
         };
 
@@ -194,21 +266,75 @@ impl SetTokenPriceScreen {
         Self {
             identity_token_info: identity_token_info.clone(),
             selected_key: possible_key.cloned(),
+            show_advanced_options: false,
             public_note: None,
             group,
             is_unilateral_group_member,
             group_action_id: None,
             token_pricing_schedule: "".to_string(),
-            pricing_type: PricingType::SinglePrice,
-            single_price: "".to_string(),
-            tiered_prices: vec![("1".to_string(), "".to_string())],
+            pricing_type: PricingType::RemovePricing,
+            single_price_amount: None,
+            single_price_input: None,
+            tiered_prices: vec![(None, None)],
             status: SetTokenPriceStatus::NotStarted,
             error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
+            confirmation_dialog: None,
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            completed_fee_result: None,
+        }
+    }
+
+    pub fn with_schedule(self, token_pricing_schedule: Option<TokenPricingSchedule>) -> Self {
+        let token_decimals = self
+            .identity_token_info
+            .token_config
+            .conventions()
+            .decimals();
+        let decimal_multiplier = 10u64.pow(token_decimals as u32);
+
+        let (single_price_amount, tiered_prices) = match &token_pricing_schedule {
+            Some(TokenPricingSchedule::SinglePrice(price_per_smallest_unit)) => {
+                // Convert price per smallest unit back to price per token for display
+                let price_per_token = price_per_smallest_unit * decimal_multiplier;
+                let amount =
+                    Amount::new(price_per_token, DASH_DECIMAL_PLACES).with_unit_name("DASH");
+                (Some(amount), vec![(None, None)])
+            }
+            Some(TokenPricingSchedule::SetPrices(prices)) => {
+                let tiered_prices = prices
+                    .iter()
+                    .map(|(amount, price_per_smallest_unit)| {
+                        // Create amount input for token threshold
+                        let amount_input = AmountInput::new(Amount::from_token(
+                            &self.identity_token_info,
+                            *amount,
+                        ))
+                        .with_hint_text("Token amount threshold");
+
+                        // Convert price per smallest unit back to price per token for display
+                        let price_per_token = price_per_smallest_unit * decimal_multiplier;
+                        let price = Amount::new(price_per_token, DASH_DECIMAL_PLACES)
+                            .with_unit_name("DASH");
+                        let price_input = AmountInput::new(price)
+                            .with_hint_text("Enter price in Dash")
+                            .with_min_amount(Some(1));
+                        (Some(amount_input), Some(price_input))
+                    })
+                    .collect::<Vec<_>>();
+
+                (None, tiered_prices)
+            }
+            None => (None, vec![(None, None)]),
+        };
+
+        Self {
+            pricing_type: PricingType::from(token_pricing_schedule),
+            single_price_amount,
+            tiered_prices,
+            ..self
         }
     }
 
@@ -238,33 +364,52 @@ impl SetTokenPriceScreen {
         match self.pricing_type {
             PricingType::SinglePrice => {
                 ui.label("Set a fixed price per token:");
-                ui.horizontal(|ui| {
-                    ui.label("Price per token (Dash):");
-                    ui.text_edit_singleline(&mut self.single_price);
+
+                if self.token_decimal_divisor() > 1 {
+                    ui.colored_label(
+                        Color32::DARK_RED,
+                        format!(
+                            "Prices must be multiples of {} to match this token's precision.",
+                            self.minimum_price_amount()
+                        ),
+                    );
+                }
+
+                // Lazy initialization of AmountInput following the design pattern
+                let single_price_input = self.single_price_input.get_or_insert_with(|| {
+                    let initial_amount = self
+                        .single_price_amount
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| Amount::new_dash(0.0));
+                    AmountInput::new(initial_amount)
+                        .with_label("Price per token:")
+                        .with_hint_text("Enter price in Dash")
+                        .with_min_amount(Some(1)) // Minimum 1 credit (very small amount)
                 });
 
-                // Show preview
-                if !self.single_price.is_empty() {
-                    if let Ok(price) = self.single_price.parse::<f64>() {
-                        if price > 0.0 {
-                            ui.add_space(5.0);
-                            let credits = Self::dash_to_credits(price);
-                            ui.colored_label(
-                                Color32::DARK_GREEN,
-                                format!("Price: {} Dash per token ({} credits)", price, credits),
-                            );
-                        } else {
-                            ui.colored_label(Color32::DARK_RED, "X Price must be greater than 0");
-                        }
-                    } else {
-                        ui.colored_label(
-                            Color32::DARK_RED,
-                            "X Invalid price - must be a positive number",
-                        );
-                    }
+                let response = single_price_input.show(ui);
+
+                // Update the domain data if there's a valid change
+                if response.inner.has_changed() && response.inner.is_valid() {
+                    self.single_price_amount = response.inner.changed_value().clone();
+                }
+
+                // Show validation preview
+                if let Some(amount) = &self.single_price_amount
+                    && amount.value() > 0
+                {
+                    ui.add_space(5.0);
+                    let credits = amount.value();
+                    ui.colored_label(
+                        Color32::DARK_GREEN,
+                        format!("Price: {} per token ({} credits)", amount, credits),
+                    );
                 }
             }
             PricingType::TieredPricing => {
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let text_primary = DashColors::text_primary(dark_mode);
                 ui.label("Add pricing tiers to offer volume discounts");
                 ui.add_space(10.0);
 
@@ -286,7 +431,7 @@ impl SetTokenPriceScreen {
                         header.col(|ui| {
                             ui.label(
                                 RichText::new("Minimum Amount")
-                                    .color(Color32::BLACK)
+                                    .color(text_primary)
                                     .strong()
                                     .underline(),
                             );
@@ -294,7 +439,7 @@ impl SetTokenPriceScreen {
                         header.col(|ui| {
                             ui.label(
                                 RichText::new("Price per Token")
-                                    .color(Color32::BLACK)
+                                    .color(text_primary)
                                     .strong()
                                     .underline(),
                             );
@@ -302,57 +447,51 @@ impl SetTokenPriceScreen {
                         header.col(|ui| {
                             ui.label(
                                 RichText::new("Remove")
-                                    .color(Color32::BLACK)
+                                    .color(text_primary)
                                     .strong()
                                     .underline(),
                             );
                         });
                     })
                     .body(|mut body| {
-                        for (i, (amount, price)) in self.tiered_prices.iter_mut().enumerate() {
-                            body.row(25.0, |mut row| {
+                        for i in 0..self.tiered_prices.len() {
+                            body.row(30.0, |mut row| {
                                 row.col(|ui| {
                                     if i == 0 {
-                                        // First tier is hardcoded to 1 token
-                                        ui.label("1");
-                                        *amount = "1".to_string(); // Ensure it's always 1
+                                        // First tier is hardcoded to 1 token - create AmountInput with value 1
+                                        let amount_input =
+                                            self.tiered_prices[i].0.get_or_insert_with(|| {
+                                                AmountInput::new(Amount::from_token(
+                                                    &self.identity_token_info,
+                                                    1,
+                                                ))
+                                                .with_hint_text("Token amount threshold")
+                                            });
+                                        amount_input.show(ui);
+                                        // Make sure it's always 1 - we could disable editing or show as read-only
                                     } else {
-                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                        ui.add(
-                                            egui::TextEdit::singleline(amount)
-                                                .hint_text(
-                                                    RichText::new("100").color(Color32::GRAY),
-                                                )
-                                                .desired_width(100.0)
-                                                .text_color(
-                                                    crate::ui::theme::DashColors::text_primary(
-                                                        dark_mode,
-                                                    ),
-                                                )
-                                                .background_color(
-                                                    crate::ui::theme::DashColors::input_background(
-                                                        dark_mode,
-                                                    ),
-                                                ),
-                                        );
+                                        // Other tiers use AmountInput for token amounts
+                                        let amount_input =
+                                            self.tiered_prices[i].0.get_or_insert_with(|| {
+                                                AmountInput::new(Amount::from_token(
+                                                    &self.identity_token_info,
+                                                    0,
+                                                ))
+                                                .with_hint_text("Token amount threshold")
+                                            });
+                                        amount_input.show(ui);
                                     }
                                 });
                                 row.col(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                    ui.add(
-                                        egui::TextEdit::singleline(price)
-                                            .hint_text(RichText::new("50").color(Color32::GRAY))
-                                            .desired_width(120.0)
-                                            .text_color(crate::ui::theme::DashColors::text_primary(
-                                                dark_mode,
-                                            ))
-                                            .background_color(
-                                                crate::ui::theme::DashColors::input_background(
-                                                    dark_mode,
-                                                ),
-                                            ),
-                                    );
-                                    ui.label(" Dash");
+                                    // Use AmountInput for price with lazy initialization
+                                    let price_input =
+                                        self.tiered_prices[i].1.get_or_insert_with(|| {
+                                            AmountInput::new(Amount::new_dash(0.0))
+                                                .with_hint_text("Enter price in Dash")
+                                                .with_min_amount(Some(1)) // Minimum 1 credit
+                                        });
+
+                                    let _response = price_input.show(ui);
                                 });
                                 row.col(|ui| {
                                     if can_remove && i > 0 && ui.small_button("X").clicked() {
@@ -370,8 +509,8 @@ impl SetTokenPriceScreen {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("+ Add Tier").clicked() {
-                        // Add empty tier - user will fill in values
-                        self.tiered_prices.push(("".to_string(), "".to_string()));
+                        // Add empty tier with lazy initialization
+                        self.tiered_prices.push((None, None));
                     }
                 });
 
@@ -390,19 +529,20 @@ impl SetTokenPriceScreen {
         let mut valid_tiers = Vec::new();
         let mut has_errors = false;
 
-        for (amount_str, price_str) in &self.tiered_prices {
-            if amount_str.trim().is_empty() || price_str.trim().is_empty() {
-                continue;
-            }
+        for (amount_input, price_input) in &self.tiered_prices {
+            let Some(price) = price_input.as_ref().and_then(|input| input.current_value()) else {
+                continue; // Skip if no price input is available
+            };
 
-            match (amount_str.parse::<u64>(), price_str.parse::<f64>()) {
-                (Ok(amount), Ok(price)) if price > 0.0 => {
-                    valid_tiers.push((amount, price));
-                }
-                _ => {
-                    has_errors = true;
-                }
-            }
+            let Some(amount_value) = amount_input
+                .as_ref()
+                .and_then(|input| input.current_value())
+            else {
+                has_errors = true;
+                continue; // Skip if amount is invalid
+            };
+
+            valid_tiers.push((amount_value, price));
         }
 
         // Only show preview if there are valid tiers or errors
@@ -410,7 +550,7 @@ impl SetTokenPriceScreen {
             ui.group(|ui| {
                 // Sort tiers by amount
                 if !valid_tiers.is_empty() {
-                    valid_tiers.sort_by_key(|(amount, _)| *amount);
+                    valid_tiers.sort_by_key(|(amount, _)| amount.value());
                 }
 
                 if has_errors {
@@ -420,10 +560,18 @@ impl SetTokenPriceScreen {
                 if !valid_tiers.is_empty() {
                     ui.colored_label(Color32::DARK_GREEN, "Pricing Structure:");
                     for (amount, price) in &valid_tiers {
-                        let credits = Self::dash_to_credits(*price);
+                        let credits = price.value();
                         ui.label(format!(
-                            "  - {} or more tokens: {} Dash each ({} credits)",
+                            "  - {} or more tokens: {} each ({} credits)",
                             amount, price, credits
+                        ));
+                    }
+
+                    if self.token_decimal_divisor() > 1 {
+                        ui.add_space(5.0);
+                        ui.label(format!(
+                            "Each tier price must be a multiple of {}.",
+                            self.minimum_price_amount()
                         ));
                     }
                 }
@@ -435,49 +583,36 @@ impl SetTokenPriceScreen {
     fn create_pricing_schedule(&self) -> Result<Option<TokenPricingSchedule>, String> {
         match self.pricing_type {
             PricingType::RemovePricing => Ok(None),
-            PricingType::SinglePrice => {
-                if self.single_price.trim().is_empty() {
-                    return Err("Please enter a price".to_string());
-                }
-                match self.single_price.trim().parse::<f64>() {
-                    Ok(dash_price) if dash_price > 0.0 => {
-                        let credits_price = Self::dash_to_credits(dash_price);
-                        Ok(Some(TokenPricingSchedule::SinglePrice(credits_price)))
-                    }
-                    Ok(_) => Err("Price must be greater than 0".to_string()),
-                    Err(_) => Err("Invalid price - must be a positive number".to_string()),
-                }
-            }
+            PricingType::SinglePrice => match &self.single_price_amount {
+                Some(amount) => self
+                    .validate_price_for_token(amount)
+                    .map(|price| Some(TokenPricingSchedule::SinglePrice(price))),
+                None => Err("Please enter a price".to_string()),
+            },
             PricingType::TieredPricing => {
                 let mut map = std::collections::BTreeMap::new();
 
-                for (amount_str, price_str) in &self.tiered_prices {
-                    if amount_str.trim().is_empty() || price_str.trim().is_empty() {
+                for (amount_input, price_input) in &self.tiered_prices {
+                    let Some(price) = price_input.as_ref().and_then(|input| input.current_value())
+                    else {
+                        continue;
+                    };
+
+                    let Some(amount_value) = amount_input
+                        .as_ref()
+                        .and_then(|input| input.current_value())
+                    else {
+                        continue;
+                    };
+
+                    let amount = amount_value.value();
+                    if amount == 0 {
                         continue;
                     }
 
-                    let amount = amount_str.trim().parse::<u64>().map_err(|_| {
-                        format!(
-                            "Invalid amount '{}' - must be a positive number",
-                            amount_str.trim()
-                        )
-                    })?;
-                    let dash_price = price_str.trim().parse::<f64>().map_err(|_| {
-                        format!(
-                            "Invalid price '{}' - must be a positive number",
-                            price_str.trim()
-                        )
-                    })?;
+                    let price_per_smallest_unit = self.validate_price_for_token(&price)?;
 
-                    if dash_price <= 0.0 {
-                        return Err(format!(
-                            "Price '{}' must be greater than 0",
-                            price_str.trim()
-                        ));
-                    }
-
-                    let credits_price = Self::dash_to_credits(dash_price);
-                    map.insert(amount, credits_price);
+                    map.insert(amount, price_per_smallest_unit);
                 }
 
                 if map.is_empty() {
@@ -489,204 +624,222 @@ impl SetTokenPriceScreen {
         }
     }
 
-    /// Renders a confirm popup with the final "Are you sure?" step
-    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        let mut is_open = true;
-        egui::Window::new("Confirm SetPricingSchedule")
-            .collapsible(false)
-            .open(&mut is_open)
-            .frame(
-                egui::Frame::default()
-                    .fill(Color32::from_rgb(245, 245, 245))
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(200, 200, 200)))
-                    .shadow(egui::epaint::Shadow::default())
-                    .inner_margin(egui::Margin::same(20))
-                    .corner_radius(egui::CornerRadius::same(8)),
-            )
-            .show(ui.ctx(), |ui| {
-                // Validate user input
-                let token_pricing_schedule_opt = match self.create_pricing_schedule() {
-                    Ok(schedule) => schedule,
-                    Err(error) => {
-                        self.error_message = Some(error.clone());
-                        self.status = SetTokenPriceStatus::ErrorMessage(error);
-                        self.show_confirmation_popup = false;
-                        return;
-                    }
-                };
+    /// Validate the current pricing configuration before showing confirmation dialog
+    fn validate_pricing_configuration(&self) -> Result<(), String> {
+        match self.pricing_type {
+            PricingType::RemovePricing => Ok(()),
+            PricingType::SinglePrice => match &self.single_price_amount {
+                Some(amount) => self.validate_price_for_token(amount).map(|_| ()),
+                None => Err("Please enter a price".to_string()),
+            },
+            PricingType::TieredPricing => {
+                let mut valid_tiers = 0;
 
-                // Show confirmation message based on pricing type
-                match &self.pricing_type {
-                    PricingType::RemovePricing => {
-                        ui.colored_label(
-                            Color32::from_rgb(180, 100, 0),
-                            "WARNING: Are you sure you want to remove the pricing schedule?",
-                        );
-                        ui.label("This will make the token unavailable for direct purchase.");
-                    }
-                    PricingType::SinglePrice => {
-                        if let Ok(dash_price) = self.single_price.trim().parse::<f64>() {
-                            ui.label(format!(
-                                "Are you sure you want to set a fixed price of {} Dash per token?",
-                                dash_price
-                            ));
-                        }
-                    }
-                    PricingType::TieredPricing => {
-                        ui.label("Are you sure you want to set the following tiered pricing?");
-                        ui.add_space(5.0);
-                        for (amount_str, price_str) in &self.tiered_prices {
-                            if amount_str.trim().is_empty() || price_str.trim().is_empty() {
-                                continue;
-                            }
-                            if let (Ok(amount), Ok(dash_price)) = (
-                                amount_str.trim().parse::<u64>(),
-                                price_str.trim().parse::<f64>(),
-                            ) {
-                                ui.label(format!(
-                                    "  - {} or more tokens: {} Dash each",
-                                    amount, dash_price
-                                ));
-                            }
-                        }
-                    }
-                }
-
-                ui.add_space(10.0);
-
-                // Confirm button
-                if ui.button("Confirm").clicked() {
-                    self.show_confirmation_popup = false;
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    self.status = SetTokenPriceStatus::WaitingForResult(now);
-
-                    let group_info = if self.group_action_id.is_some() {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
-                                GroupStateTransitionInfo {
-                                    group_contract_position: *pos,
-                                    action_id: self.group_action_id.unwrap(),
-                                    action_is_proposer: false,
-                                },
-                            )
-                        })
-                    } else {
-                        self.group.as_ref().map(|(pos, _)| {
-                            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
-                        })
+                for (amount_input, price_input) in &self.tiered_prices {
+                    let Some(price) = price_input.as_ref().and_then(|input| input.current_value())
+                    else {
+                        continue;
                     };
 
-                    // Dispatch the actual backend mint action
-                    action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                        TokenTask::SetDirectPurchasePrice {
-                            identity: self.identity_token_info.identity.clone(),
-                            data_contract: Arc::new(
-                                self.identity_token_info.data_contract.contract.clone(),
-                            ),
-                            token_position: self.identity_token_info.token_position,
-                            signing_key: self.selected_key.clone().expect("Expected a key"),
-                            public_note: if self.group_action_id.is_some() {
-                                None
-                            } else {
-                                self.public_note.clone()
-                            },
-                            token_pricing_schedule: token_pricing_schedule_opt,
-                            group_info,
-                        },
-                    )));
+                    let Some(amount_value) = amount_input
+                        .as_ref()
+                        .and_then(|input| input.current_value())
+                    else {
+                        continue;
+                    };
+
+                    if amount_value.value() == 0 {
+                        continue;
+                    }
+
+                    self.validate_price_for_token(&price)?;
+                    valid_tiers += 1;
                 }
 
-                // Cancel button
-                if ui.button("Cancel").clicked() {
-                    self.show_confirmation_popup = false;
+                if valid_tiers == 0 {
+                    return Err("Please add at least one valid pricing tier".to_string());
                 }
-            });
 
-        if !is_open {
-            self.show_confirmation_popup = false;
+                Ok(())
+            }
         }
-        action
+    }
+
+    /// Generate the confirmation message for the set price dialog
+    ///
+    /// ## Panics
+    ///
+    /// Panics if the pricing type is not set correctly or if the single price is not a valid number.
+    fn confirmation_message(&self) -> String {
+        match &self.pricing_type {
+            PricingType::RemovePricing => {
+                "WARNING: Are you sure you want to remove the pricing schedule? This will make the token unavailable for direct purchase.".to_string()
+            }
+            PricingType::SinglePrice => {
+                if let Some(amount) = &self.single_price_amount {
+                    format!(
+                        "Are you sure you want to set a fixed price of {} per token?",
+                        amount
+                    )
+                } else {
+                    "Are you sure you want to set the pricing schedule?".to_string()
+                }
+            }
+            PricingType::TieredPricing => {
+                let mut message = "Are you sure you want to set the following tiered pricing?".to_string();
+                for (amount_input, price_input) in &self.tiered_prices {
+                    let Some(price) = price_input.as_ref().and_then(|input| input.current_value()) else {
+                        continue; // Skip if no price input is available
+                    };
+
+                    let Some(amount_value) = amount_input
+                        .as_ref()
+                        .and_then(|input| input.current_value())
+                    else {
+                        continue;
+                    };
+
+                    message.push_str(&format!(
+                        "\n  - {} or more tokens: {} each",
+                        amount_value, price
+                    ));
+                }
+                message
+            }
+        }
+    }
+
+    /// Handle the confirmation action when user clicks OK
+    fn confirmation_ok(&mut self) -> AppAction {
+        self.show_confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
+
+        // Validate user input and create pricing schedule
+        let token_pricing_schedule_opt = match self.create_pricing_schedule() {
+            Ok(schedule) => schedule,
+            Err(error) => {
+                // This should not happen if validation was done before opening dialog,
+                // but we handle it as a safety net
+                self.set_error_state(format!("Validation error: {}", error));
+                return AppAction::None;
+            }
+        };
+
+        // Set waiting state
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_secs();
+        self.status = SetTokenPriceStatus::WaitingForResult(now);
+
+        // Prepare group info
+        let group_info = if self.group_action_id.is_some() {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                    GroupStateTransitionInfo {
+                        group_contract_position: *pos,
+                        action_id: self.group_action_id.unwrap(),
+                        action_is_proposer: false,
+                    },
+                )
+            })
+        } else {
+            self.group.as_ref().map(|(pos, _)| {
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
+            })
+        };
+
+        // Create and return the backend task
+        AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+            TokenTask::SetDirectPurchasePrice {
+                identity: self.identity_token_info.identity.clone(),
+                data_contract: Arc::new(self.identity_token_info.data_contract.contract.clone()),
+                token_position: self.identity_token_info.token_position,
+                signing_key: self.selected_key.clone().expect("Expected a key"),
+                public_note: if self.group_action_id.is_some() {
+                    None
+                } else {
+                    self.public_note.clone()
+                },
+                token_pricing_schedule: token_pricing_schedule_opt,
+                group_info,
+            },
+        )))
+    }
+
+    /// Handle the cancel action when user clicks Cancel or closes dialog
+    fn confirmation_cancel(&mut self) -> AppAction {
+        self.show_confirmation_popup = false;
+        self.confirmation_dialog = None; // Reset the dialog for next use
+        AppAction::None
+    }
+
+    /// Set error state with the given message
+    fn set_error_state(&mut self, error: String) {
+        self.error_message = Some(error.clone());
+        self.status = SetTokenPriceStatus::ErrorMessage(error);
+    }
+
+    /// Renders a confirm popup with the final "Are you sure?" step
+    fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        // Prepare values before borrowing
+        let confirmation_message = self.confirmation_message();
+        let is_danger_mode = self.pricing_type == PricingType::RemovePricing;
+
+        // Lazy initialization of the confirmation dialog
+        let confirmation_dialog = self.confirmation_dialog.get_or_insert_with(|| {
+            ConfirmationDialog::new("Confirm pricing schedule update", confirmation_message)
+                .confirm_text(Some("Confirm"))
+                .cancel_text(Some("Cancel"))
+                .danger_mode(is_danger_mode)
+        });
+
+        let response = confirmation_dialog.show(ui);
+
+        match response.inner.dialog_response {
+            Some(ConfirmationStatus::Confirmed) => self.confirmation_ok(),
+            Some(ConfirmationStatus::Canceled) => self.confirmation_cancel(),
+            None => AppAction::None,
+        }
     }
 
     /// Renders a simple "Success!" screen after completion
     fn show_success_screen(&self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            ui.heading("🎉");
-            if self.group_action_id.is_some() {
-                // This is already initiated by the group, we are just signing it
-                ui.heading("Group Action to Set Price Signed Successfully.");
-            } else if !self.is_unilateral_group_member && self.group.is_some() {
-                ui.heading("Group Action to Set Price Initiated.");
-            } else {
-                ui.heading("Set Price of Token Successfully.");
-            }
-
-            ui.add_space(20.0);
-
-            if self.group_action_id.is_some() {
-                if ui.button("Back to Group Actions").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
-                }
-                if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::SetMainScreenThenGoToMainScreen(
-                        RootScreenType::RootScreenMyTokenBalances,
-                    );
-                }
-            } else {
-                if ui.button("Back to Tokens").clicked() {
-                    action = AppAction::PopScreenAndRefresh;
-                }
-
-                if !self.is_unilateral_group_member && ui.button("Go to Group Actions").clicked() {
-                    action = AppAction::PopThenAddScreenToMainScreen(
-                        RootScreenType::RootScreenDocumentQuery,
-                        Screen::GroupActionsScreen(GroupActionsScreen::new(
-                            &self.app_context.clone(),
-                        )),
-                    );
-                }
-            }
-        });
-        action
+        crate::ui::helpers::show_group_token_success_screen_with_fee(
+            ui,
+            "Set Price",
+            self.group_action_id.is_some(),
+            self.is_unilateral_group_member,
+            self.group.is_some(),
+            &self.app_context,
+            None,
+        )
     }
 }
 
 impl ScreenLike for SetTokenPriceScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Successfully set token pricing schedule")
-                    || message == "SetDirectPurchasePrice"
-                {
-                    self.status = SetTokenPriceStatus::Complete;
-                }
-            }
-            MessageType::Error => {
-                self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
-                self.error_message = Some(message.to_string());
-            }
-            MessageType::Info => {
-                // no-op
-            }
+        if let MessageType::Error = message_type {
+            self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
+        }
+    }
+
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
+            self.completed_fee_result = Some(fee_result);
+            self.status = SetTokenPriceStatus::Complete;
         }
     }
 
     fn refresh(&mut self) {
         // If you need to reload local identity data or re-check keys:
-        if let Ok(all_identities) = self.app_context.load_local_user_identities() {
-            if let Some(updated_identity) = all_identities
+        if let Ok(all_identities) = self.app_context.load_local_user_identities()
+            && let Some(updated_identity) = all_identities
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity_token_info.identity.identity.id())
-            {
-                self.identity_token_info.identity = updated_identity;
-            }
+        {
+            self.identity_token_info.identity = updated_identity;
         }
     }
 
@@ -797,35 +950,52 @@ impl ScreenLike for SetTokenPriceScreen {
                 }
             } else {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
-                if self.selected_wallet.is_some() {
-                    let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-
-                    if needed_unlock && !just_unlocked {
-                        // Must unlock before we can proceed
+                if let Some(wallet) = &self.selected_wallet {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        self.error_message = Some(e);
+                    }
+                    if wallet_needs_unlock(wallet) {
+                        ui.add_space(10.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(200, 150, 50),
+                            "Wallet is locked. Please unlock to continue.",
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Unlock Wallet").clicked() {
+                            self.wallet_unlock_popup.open();
+                        }
                         return;
                     }
                 }
 
-                // 1) Key selection
-                ui.heading("1. Select the key to sign the SetPrice transaction");
+                // Header with Advanced Options checkbox
+                ui.horizontal(|ui| {
+                    ui.heading("Set Token Price");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                    });
+                });
                 ui.add_space(10.0);
 
-                let mut selected_identity = Some(self.identity_token_info.identity.clone());
-                add_identity_key_chooser(
-                    ui,
-                    &self.app_context,
-                    std::iter::once(&self.identity_token_info.identity),
-                    &mut selected_identity,
-                    &mut self.selected_key,
-                    TransactionType::TokenAction,
-                );
-
+                // Key selection (only in advanced mode)
+                if self.show_advanced_options {
+                    ui.heading("1. Select the key to sign the SetPrice transaction");
+                    ui.add_space(10.0);
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        &self.identity_token_info.identity,
+                        &mut self.selected_key,
+                        TransactionType::TokenAction,
+                    );
+                    ui.add_space(10.0);
+                    ui.separator();
+                }
                 ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
 
-                // 2) Pricing schedule
-                ui.heading("2. Pricing Configuration");
+                // Pricing schedule
+                let step_num = if self.show_advanced_options { 2 } else { 1 };
+                ui.heading(format!("{}. Pricing Configuration", step_num));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
@@ -842,7 +1012,8 @@ impl ScreenLike for SetTokenPriceScreen {
                 ui.add_space(10.0);
 
                 // Render text input for the public note
-                ui.heading("3. Public note (optional)");
+                let step_num = if self.show_advanced_options { 3 } else { 2 };
+                ui.heading(format!("{}. Public note (optional)", step_num));
                 ui.add_space(5.0);
                 if self.group_action_id.is_some() {
                     ui.label(
@@ -910,26 +1081,37 @@ impl ScreenLike for SetTokenPriceScreen {
                     "Set Price"
                 };
 
-                // Set price button
-                let can_proceed = match self.pricing_type {
-                    PricingType::RemovePricing => true,
-                    PricingType::SinglePrice => {
-                        if let Ok(price) = self.single_price.trim().parse::<f64>() {
-                            price > 0.0
-                        } else {
-                            false
-                        }
-                    },
-                    PricingType::TieredPricing => {
-                        self.tiered_prices.iter().any(|(amount, price)| {
-                            !amount.trim().is_empty() && !price.trim().is_empty() &&
-                            amount.trim().parse::<u64>().is_ok() &&
-                            if let Ok(p) = price.trim().parse::<f64>() { p > 0.0 } else { false }
-                        })
-                    }
-                };
+                // Fee estimation display
+                let fee_estimator = self.app_context.fee_estimator();
+                let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
 
-                let button_color = if can_proceed {
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
+
+                ui.add_space(10.0);
+
+                // Set price button
+                let validation_result = self.validate_pricing_configuration();
+                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult(_));
+
+                let button_color = if validation_result.is_ok() {
                     Color32::from_rgb(0, 128, 255)
                 } else {
                     Color32::from_rgb(100, 100, 100)
@@ -939,10 +1121,10 @@ impl ScreenLike for SetTokenPriceScreen {
                     .fill(button_color)
                     .corner_radius(3.0);
 
-                let button_response = ui.add_enabled(can_proceed, button);
+                let button_response = ui.add_enabled(button_active, button);
 
-                if !can_proceed {
-                    button_response.on_hover_text("Please enter valid pricing information");
+                if let Err(hover_message) = validation_result {
+                                    button_response.on_disabled_hover_text(hover_message);
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }
@@ -967,7 +1149,22 @@ impl ScreenLike for SetTokenPriceScreen {
                         ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
                     }
                     SetTokenPriceStatus::ErrorMessage(msg) => {
-                        ui.colored_label(Color32::DARK_RED, format!("Error: {}", msg));
+                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.status = SetTokenPriceStatus::NotStarted;
+                                    }
+                                });
+                            });
                     }
                     SetTokenPriceStatus::Complete => {
                         // handled above
@@ -977,36 +1174,18 @@ impl ScreenLike for SetTokenPriceScreen {
             }); // end of ScrollArea
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
-    }
-}
-
-impl ScreenWithWalletUnlock for SetTokenPriceScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }

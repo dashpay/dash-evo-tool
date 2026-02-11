@@ -42,8 +42,8 @@ impl Database {
         Ok(())
     }
 
-    #[allow(dead_code)] // May be used for address-specific UTXO queries
-    fn get_utxos_by_address(
+    /// Get UTXOs for a specific address
+    pub fn get_utxos_by_address(
         &self,
         address: &str,
         network: &str,
@@ -85,5 +85,209 @@ impl Database {
         }
 
         Ok(utxos)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::test_helpers::create_test_database;
+
+    fn create_test_address(network: Network) -> Address {
+        // Create a test P2PKH address
+        let pubkey_bytes = [0x02; 33]; // Dummy compressed public key
+        let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&pubkey_bytes).unwrap();
+        Address::p2pkh(&pubkey, network)
+    }
+
+    fn create_test_txid() -> Txid {
+        // Create a test txid from 32 bytes
+        let txid_bytes: [u8; 32] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ];
+        Txid::from_slice(&txid_bytes).unwrap()
+    }
+
+    #[test]
+    fn test_insert_utxo() {
+        let db = create_test_database().expect("Failed to create test database");
+        let network = Network::Testnet;
+        let address = create_test_address(network);
+        let txid = create_test_txid();
+        let script_pubkey = address.script_pubkey();
+
+        // Insert a UTXO
+        db.insert_utxo(
+            txid.as_byte_array(),
+            0,
+            &address,
+            100_000_000, // 1 DASH
+            script_pubkey.as_bytes(),
+            network,
+        )
+        .expect("Failed to insert UTXO");
+
+        // Verify it was inserted by retrieving it
+        let utxos = db
+            .get_utxos_by_address(&address.to_string(), &network.to_string())
+            .expect("Failed to get UTXOs");
+
+        assert_eq!(utxos.len(), 1);
+        assert_eq!(utxos[0].0.txid, txid);
+        assert_eq!(utxos[0].0.vout, 0);
+        assert_eq!(utxos[0].1.value, 100_000_000);
+    }
+
+    #[test]
+    fn test_insert_utxo_duplicate_ignored() {
+        let db = create_test_database().expect("Failed to create test database");
+        let network = Network::Testnet;
+        let address = create_test_address(network);
+        let txid = create_test_txid();
+        let script_pubkey = address.script_pubkey();
+
+        // Insert the same UTXO twice (should be ignored due to INSERT OR IGNORE)
+        db.insert_utxo(
+            txid.as_byte_array(),
+            0,
+            &address,
+            100_000_000,
+            script_pubkey.as_bytes(),
+            network,
+        )
+        .expect("Failed to insert UTXO");
+
+        db.insert_utxo(
+            txid.as_byte_array(),
+            0,
+            &address,
+            200_000_000, // Different value
+            script_pubkey.as_bytes(),
+            network,
+        )
+        .expect("Failed to insert UTXO");
+
+        // Should still only have 1 UTXO with original value
+        let utxos = db
+            .get_utxos_by_address(&address.to_string(), &network.to_string())
+            .expect("Failed to get UTXOs");
+
+        assert_eq!(utxos.len(), 1);
+        assert_eq!(utxos[0].1.value, 100_000_000); // Original value preserved
+    }
+
+    #[test]
+    fn test_drop_utxo() {
+        let db = create_test_database().expect("Failed to create test database");
+        let network = Network::Testnet;
+        let address = create_test_address(network);
+        let txid = create_test_txid();
+        let script_pubkey = address.script_pubkey();
+
+        // Insert a UTXO
+        db.insert_utxo(
+            txid.as_byte_array(),
+            0,
+            &address,
+            100_000_000,
+            script_pubkey.as_bytes(),
+            network,
+        )
+        .expect("Failed to insert UTXO");
+
+        // Verify it exists
+        let utxos = db
+            .get_utxos_by_address(&address.to_string(), &network.to_string())
+            .expect("Failed to get UTXOs");
+        assert_eq!(utxos.len(), 1);
+
+        // Drop the UTXO
+        let outpoint = OutPoint { txid, vout: 0 };
+        db.drop_utxo(&outpoint, &network.to_string())
+            .expect("Failed to drop UTXO");
+
+        // Verify it's gone
+        let utxos = db
+            .get_utxos_by_address(&address.to_string(), &network.to_string())
+            .expect("Failed to get UTXOs");
+        assert_eq!(utxos.len(), 0);
+    }
+
+    #[test]
+    fn test_utxo_network_filtering() {
+        let db = create_test_database().expect("Failed to create test database");
+        let testnet_address = create_test_address(Network::Testnet);
+        let mainnet_address = create_test_address(Network::Dash);
+        let txid = create_test_txid();
+
+        // Insert UTXO for testnet
+        db.insert_utxo(
+            txid.as_byte_array(),
+            0,
+            &testnet_address,
+            100_000_000,
+            testnet_address.script_pubkey().as_bytes(),
+            Network::Testnet,
+        )
+        .expect("Failed to insert testnet UTXO");
+
+        // Insert UTXO for mainnet with different vout
+        db.insert_utxo(
+            txid.as_byte_array(),
+            1,
+            &mainnet_address,
+            200_000_000,
+            mainnet_address.script_pubkey().as_bytes(),
+            Network::Dash,
+        )
+        .expect("Failed to insert mainnet UTXO");
+
+        // Query testnet UTXOs
+        let testnet_utxos = db
+            .get_utxos_by_address(&testnet_address.to_string(), "testnet")
+            .expect("Failed to get testnet UTXOs");
+        assert_eq!(testnet_utxos.len(), 1);
+        assert_eq!(testnet_utxos[0].1.value, 100_000_000);
+
+        // Query mainnet UTXOs
+        let mainnet_utxos = db
+            .get_utxos_by_address(&mainnet_address.to_string(), "dash")
+            .expect("Failed to get mainnet UTXOs");
+        assert_eq!(mainnet_utxos.len(), 1);
+        assert_eq!(mainnet_utxos[0].1.value, 200_000_000);
+    }
+
+    #[test]
+    fn test_multiple_utxos_same_address() {
+        let db = create_test_database().expect("Failed to create test database");
+        let network = Network::Testnet;
+        let address = create_test_address(network);
+        let txid = create_test_txid();
+        let script_pubkey = address.script_pubkey();
+
+        // Insert multiple UTXOs for the same address (different vouts)
+        for vout in 0..5 {
+            db.insert_utxo(
+                txid.as_byte_array(),
+                vout,
+                &address,
+                (vout as u64 + 1) * 100_000_000,
+                script_pubkey.as_bytes(),
+                network,
+            )
+            .expect("Failed to insert UTXO");
+        }
+
+        // Should have 5 UTXOs
+        let utxos = db
+            .get_utxos_by_address(&address.to_string(), &network.to_string())
+            .expect("Failed to get UTXOs");
+        assert_eq!(utxos.len(), 5);
+
+        // Calculate total value
+        let total: u64 = utxos.iter().map(|(_, tx_out)| tx_out.value).sum();
+        assert_eq!(total, 1_500_000_000); // 1+2+3+4+5 = 15 DASH
     }
 }

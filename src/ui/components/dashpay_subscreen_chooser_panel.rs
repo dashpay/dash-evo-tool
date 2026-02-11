@@ -1,0 +1,120 @@
+use crate::app::AppAction;
+use crate::context::AppContext;
+use crate::ui::RootScreenType;
+use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
+use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
+use egui::{Context, Frame, Margin, RichText, SidePanel};
+use std::sync::Arc;
+
+pub fn add_dashpay_subscreen_chooser_panel(
+    ctx: &Context,
+    app_context: &Arc<AppContext>,
+    current_subscreen: DashPaySubscreen,
+) -> AppAction {
+    let mut action = AppAction::None;
+    let dark_mode = ctx.style().visuals.dark_mode;
+
+    // Build subscreens list - Payment History requires SPV which is dev mode only
+    let mut subscreens = vec![DashPaySubscreen::Profile, DashPaySubscreen::Contacts];
+
+    // Only show Payment History in developer mode (requires SPV)
+    if app_context.is_developer_mode() {
+        subscreens.push(DashPaySubscreen::Payments);
+    }
+
+    subscreens.push(DashPaySubscreen::ProfileSearch);
+
+    let active_screen = current_subscreen;
+
+    SidePanel::left("dashpay_subscreen_chooser_panel")
+        .default_width(270.0)
+        .frame(
+            Frame::new()
+                .fill(DashColors::background(dark_mode)) // Light background instead of transparent
+                .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
+        )
+        .show(ctx, |ui| {
+            // Fill the entire available height
+            let available_height = ui.available_height();
+
+            // Create an island panel with rounded edges that fills the height
+            Frame::new()
+                .fill(DashColors::surface(dark_mode))
+                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                .inner_margin(Margin::same(Spacing::XL as i8))
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+                .shadow(Shadow::elevated())
+                .show(ui, |ui| {
+                    // Account for both outer margin (10px * 2) and inner margin
+                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
+                    // Display subscreen names
+                    ui.vertical(|ui| {
+                        ui.add_space(Spacing::SM);
+
+                        for subscreen in subscreens {
+                            let is_active = active_screen == subscreen;
+
+                            let display_name = match subscreen {
+                                DashPaySubscreen::Contacts => "Contacts",
+                                DashPaySubscreen::Profile => "My Profile",
+                                DashPaySubscreen::Payments => "Payment History",
+                                DashPaySubscreen::ProfileSearch => "Search Profiles",
+                            };
+
+                            let button = if is_active {
+                                egui::Button::new(
+                                    RichText::new(display_name)
+                                        .color(DashColors::WHITE)
+                                        .size(Typography::SCALE_SM),
+                                )
+                                .fill(DashColors::DASH_BLUE)
+                                .stroke(egui::Stroke::NONE)
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                .min_size(egui::Vec2::new(150.0, 28.0))
+                            } else {
+                                egui::Button::new(
+                                    RichText::new(display_name)
+                                        .color(DashColors::text_primary(dark_mode))
+                                        .size(Typography::SCALE_SM),
+                                )
+                                .fill(DashColors::glass_white(dark_mode))
+                                .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+                                .min_size(egui::Vec2::new(150.0, 28.0))
+                            };
+
+                            // Show the subscreen name as a clickable option
+                            if ui.add(button).clicked() {
+                                // Handle navigation based on which subscreen is selected
+                                match subscreen {
+                                    DashPaySubscreen::Contacts => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenDashPayContacts,
+                                        )
+                                    }
+                                    DashPaySubscreen::Profile => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenDashPayProfile,
+                                        )
+                                    }
+                                    DashPaySubscreen::Payments => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenDashPayPayments,
+                                        )
+                                    }
+                                    DashPaySubscreen::ProfileSearch => {
+                                        action = AppAction::SetMainScreen(
+                                            RootScreenType::RootScreenDashPayProfileSearch,
+                                        )
+                                    }
+                                }
+                            }
+
+                            ui.add_space(Spacing::SM);
+                        }
+                    });
+                }); // Close the island frame
+        });
+
+    action
+}

@@ -58,6 +58,8 @@ pub struct ClaimTokensScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
+    claim_all: bool,
+    claimed_amount: Option<u64>,
 }
 
 impl ClaimTokensScreen {
@@ -126,6 +128,8 @@ impl ClaimTokensScreen {
             selected_wallet,
             wallet_password: String::new(),
             show_password: false,
+            claim_all: true,
+            claimed_amount: None,
         }
     }
 
@@ -211,6 +215,7 @@ impl ClaimTokensScreen {
                                 distribution_type,
                                 signing_key: self.selected_key.clone().expect("No key selected"),
                                 public_note: self.public_note.clone(),
+                                claim_all: self.claim_all,
                             })),
                             BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                         ],
@@ -239,6 +244,12 @@ impl ClaimTokensScreen {
 
             ui.add_space(20.0);
 
+            // Show amount claimed if available
+            if let Some(amount) = self.claimed_amount {
+                ui.label(format!("Amount claimed: {} tokens", amount));
+                ui.add_space(10.0);
+            }
+
             if ui.button("Back to Tokens").clicked() {
                 action = AppAction::PopScreenAndRefresh;
             }
@@ -253,15 +264,13 @@ impl ScreenLike for ClaimTokensScreen {
         backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
     ) {
         if let BackendTaskSuccessResult::TokensClaimed(amount) = backend_task_success_result {
+            self.claimed_amount = Some(amount);
             if amount > 0 {
-                self.display_message(
-                    &format!("Claimed {} tokens successfully!", amount),
-                    MessageType::Success,
-                );
                 self.status = ClaimTokensStatus::Complete;
             } else {
-                self.status =
-                    ClaimTokensStatus::ErrorMessage("No tokens available to claim.".to_string());
+                self.status = ClaimTokensStatus::ErrorMessage(
+                    "No tokens available to claim.".to_string(),
+                );
             }
         }
     }
@@ -518,6 +527,13 @@ impl ScreenLike for ClaimTokensScreen {
                     {}", extra_info));
                     ui.add_space(10.0);
                 }
+
+                // Add "Claim all" checkbox
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.claim_all, "Claim all")
+                        .on_hover_text("When enabled, automatically claims all available tokens by repeating claims until no more tokens are available. When disabled, performs a single claim operation.");
+                });
+                ui.add_space(10.0);
 
                 let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))
                     .fill(Color32::from_rgb(0, 128, 0))

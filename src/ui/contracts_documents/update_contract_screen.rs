@@ -1,15 +1,20 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::FeeResult;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::helpers::{TransactionType, add_identity_key_chooser};
+use crate::ui::components::wallet_unlock_popup::{
+    WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
+};
+use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
@@ -19,7 +24,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, TextEdit};
+use eframe::egui::{self, Color32, Context, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -46,12 +51,14 @@ pub struct UpdateDataContractScreen {
 
     pub qualified_identities: Vec<QualifiedIdentity>,
     pub selected_qualified_identity: Option<QualifiedIdentity>,
+    selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
+    show_advanced_options: bool,
 
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
+    completed_fee_result: Option<FeeResult>,
 }
 
 impl UpdateDataContractScreen {
@@ -78,9 +85,8 @@ impl UpdateDataContractScreen {
             })
             .collect::<Vec<_>>();
 
-        let mut selected_key = None;
-        if let Some(identity) = &selected_qualified_identity {
-            selected_key = identity
+        let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {
+            identity
                 .identity
                 .get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
@@ -88,8 +94,13 @@ impl UpdateDataContractScreen {
                     KeyType::all_key_types().into(),
                     false,
                 )
-                .cloned();
-        }
+                .cloned()
+        });
+
+        let selected_identity_string = selected_qualified_identity
+            .as_ref()
+            .map(|qi| qi.identity.id().to_string(Encoding::Base58))
+            .unwrap_or_default();
 
         Self {
             app_context: app_context.clone(),
@@ -100,12 +111,14 @@ impl UpdateDataContractScreen {
 
             qualified_identities,
             selected_qualified_identity,
+            selected_identity_string,
             selected_key,
+            show_advanced_options: false,
 
             selected_wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
+            completed_fee_result: None,
         }
     }
 
@@ -169,6 +182,34 @@ impl UpdateDataContractScreen {
             });
     }
 
+    /// Renders an error message at the top of the screen with a styled bubble
+    fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
+        let error_msg = match &self.broadcast_status {
+            BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
+            BroadcastStatus::BroadcastError(msg) => Some(format!("Broadcast error: {msg}")),
+            _ => None,
+        };
+
+        if let Some(msg) = error_msg {
+            let error_color = Color32::from_rgb(255, 100, 100);
+            Frame::new()
+                .fill(error_color.gamma_multiply(0.1))
+                .inner_margin(Margin::symmetric(10, 8))
+                .corner_radius(5.0)
+                .stroke(egui::Stroke::new(1.0, error_color))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.add(egui::Label::new(RichText::new(&msg).color(error_color)).wrap());
+                        ui.add_space(8.0);
+                        if ui.small_button("Dismiss").clicked() {
+                            self.broadcast_status = BroadcastStatus::Idle;
+                        }
+                    });
+                });
+            ui.add_space(10.0);
+        }
+    }
+
     fn ui_parsed_contract(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut app_action = AppAction::None;
 
@@ -176,13 +217,42 @@ impl UpdateDataContractScreen {
 
         match &self.broadcast_status {
             BroadcastStatus::Idle => {}
-            BroadcastStatus::ParsingError(err) => {
-                ui.colored_label(Color32::RED, format!("Parsing error: {err}"));
+            BroadcastStatus::ParsingError(_) | BroadcastStatus::BroadcastError(_) => {
+                // Errors are now shown at the top via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
-                // “Update” button
+                // Fee estimation display - contract updates charge registration fees for the new contract
                 ui.add_space(10.0);
+                let platform_version = self.app_context.platform_version();
+                let registration_fee = contract.registration_cost(platform_version).unwrap_or(0);
+                let base_fee = platform_version
+                    .fee_version
+                    .state_transition_min_fees
+                    .contract_update;
+                let estimated_fee = base_fee.saturating_add(registration_fee);
+
+                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                Frame::new()
+                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Estimated fee:")
+                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode))
+                                    .size(14.0),
+                            );
+                            ui.label(
+                                RichText::new(format_credits_as_dash(estimated_fee))
+                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .size(14.0),
+                            );
+                        });
+                    });
+
                 // Update button
+                ui.add_space(10.0);
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
@@ -239,65 +309,51 @@ impl UpdateDataContractScreen {
                     "Fetching contract from Platform... {elapsed} seconds elapsed."
                 ));
             }
-            BroadcastStatus::BroadcastError(msg) => {
-                ui.label("Fetched nonce successfully. ✅ ");
-                ui.colored_label(Color32::RED, format!("Broadcast error: {msg}"));
-            }
             BroadcastStatus::Done => {
                 ui.colored_label(Color32::DARK_GREEN, "Data Contract updated successfully!");
             }
         }
 
-        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action {
-            if let ContractTask::UpdateDataContract(_, _, _) = **contract_task {
-                self.broadcast_status = BroadcastStatus::FetchingNonce(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs(),
-                );
-            }
+        if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action
+            && let ContractTask::UpdateDataContract(_, _, _) = **contract_task
+        {
+            self.broadcast_status = BroadcastStatus::FetchingNonce(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            );
         }
 
         app_action
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
+        let action = crate::ui::helpers::show_success_screen_with_info(
+            ui,
+            "Data Contract Updated Successfully!".to_string(),
+            vec![
+                (
+                    "Back to Contracts screen".to_string(),
+                    AppAction::GoToMainScreen,
+                ),
+                (
+                    "Update another contract".to_string(),
+                    AppAction::Custom("update_another".to_string()),
+                ),
+            ],
+            None,
+        );
 
-        // Center the content vertically and horizontally
-        ui.vertical_centered(|ui| {
-            ui.add_space(50.0);
-
-            if let Some(error_message) = &self.error_message {
-                if error_message.contains("proof error logged, contract inserted into the database")
-                {
-                    ui.heading("⚠");
-                    ui.heading("Transaction succeeded but received a proof error.");
-                    ui.add_space(10.0);
-                    ui.label("Please check if the contract was updated correctly.");
-                    ui.label(
-                        "If it was, this is just a Platform proofs bug and no need for concern.",
-                    );
-                    ui.label("Either way, please report to Dash Core Group.");
-                }
-            } else {
-                ui.heading("🎉");
-                ui.heading("Successfully updated data contract.");
-            }
-
-            ui.add_space(20.0);
-
-            if ui.button("Back to Contracts screen").clicked() {
-                action = AppAction::GoToMainScreen;
-            }
-            ui.add_space(5.0);
-
-            if ui.button("Update another contract").clicked() {
-                self.contract_json_input = String::new();
-                self.broadcast_status = BroadcastStatus::Idle;
-            }
-        });
+        // Handle the custom action to reset the form
+        if let AppAction::Custom(ref s) = action
+            && s == "update_another"
+        {
+            self.contract_json_input = String::new();
+            self.broadcast_status = BroadcastStatus::Idle;
+            self.completed_fee_result = None;
+            return AppAction::None;
+        }
 
         action
     }
@@ -305,45 +361,39 @@ impl UpdateDataContractScreen {
 
 impl ScreenLike for UpdateDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Success => {
-                if message.contains("Nonce fetched successfully") {
-                    self.broadcast_status = BroadcastStatus::Broadcasting(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                    );
-                } else if message.contains("Transaction returned proof error") {
-                    self.broadcast_status = BroadcastStatus::ProofError(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
-                    );
-                } else {
-                    self.broadcast_status = BroadcastStatus::Done;
-                }
-            }
-            MessageType::Error => {
-                if message.contains("proof error logged, contract inserted into the database") {
-                    self.error_message = Some(message.to_string());
-                    self.broadcast_status = BroadcastStatus::Done;
-                } else {
-                    self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
-                }
-            }
-            MessageType::Info => {
-                // You could display an info label, or do nothing
+        if message_type == MessageType::Error {
+            if message.contains("proof error logged, contract inserted into the database") {
+                self.error_message = Some(message.to_string());
+                self.broadcast_status = BroadcastStatus::Done;
+            } else {
+                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
             }
         }
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        // If a separate result needs to be handled here, you can do so
-        // For example, if success is a special message or we want to show it in the UI
-        if let BackendTaskSuccessResult::Message(_msg) = result {
-            self.broadcast_status = BroadcastStatus::Done;
+        match result {
+            BackendTaskSuccessResult::FetchedNonce => {
+                self.broadcast_status = BroadcastStatus::Broadcasting(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                );
+            }
+            BackendTaskSuccessResult::UpdatedContract(fee_result) => {
+                self.completed_fee_result = Some(fee_result);
+                self.broadcast_status = BroadcastStatus::Done;
+            }
+            BackendTaskSuccessResult::ProofErrorLogged => {
+                self.broadcast_status = BroadcastStatus::ProofError(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs(),
+                );
+            }
+            _ => {}
         }
     }
 
@@ -369,8 +419,16 @@ impl ScreenLike for UpdateDataContractScreen {
                 return self.show_success(ui);
             }
 
-            ui.heading("Update Data Contract");
+            ui.horizontal(|ui| {
+                ui.heading("Update Data Contract");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
+                });
+            });
             ui.add_space(10.0);
+
+            // Show error message at the top if there's an error
+            self.render_error_bubble(ui);
 
             // If no identities loaded, give message
             if self.qualified_identities.is_empty() {
@@ -402,17 +460,68 @@ impl ScreenLike for UpdateDataContractScreen {
                 return AppAction::None;
             }
 
-            // Select the identity to update the name for
+            // Select the identity to update the contract for
             ui.heading("1. Select Identity");
             ui.add_space(5.0);
-            add_identity_key_chooser(
-                ui,
-                &self.app_context,
-                self.qualified_identities.iter(),
-                &mut self.selected_qualified_identity,
-                &mut self.selected_key,
-                TransactionType::UpdateContract,
+
+            // Identity selector
+            let response = ui.add(
+                IdentitySelector::new(
+                    "update_contract_identity_selector",
+                    &mut self.selected_identity_string,
+                    &self.qualified_identities,
+                )
+                .selected_identity(&mut self.selected_qualified_identity)
+                .unwrap()
+                .width(300.0)
+                .label("Identity:")
+                .other_option(false),
             );
+
+            // Handle identity change - auto-select key and update wallet
+            if response.changed() {
+                if let Some(identity) = &self.selected_qualified_identity {
+                    // Auto-select a suitable key for contract updates
+                    self.selected_key = identity
+                        .identity
+                        .get_first_public_key_matching(
+                            Purpose::AUTHENTICATION,
+                            HashSet::from([SecurityLevel::CRITICAL]),
+                            KeyType::all_key_types().into(),
+                            false,
+                        )
+                        .cloned();
+
+                    // Update wallet
+                    self.selected_wallet = get_selected_wallet(
+                        identity,
+                        Some(&self.app_context),
+                        None,
+                        &mut self.error_message,
+                    );
+
+                    // Re-parse contract with new owner ID
+                    self.parse_contract();
+                } else {
+                    self.selected_key = None;
+                    self.selected_wallet = None;
+                }
+            }
+
+            // Key selector (only shown in advanced mode)
+            if self.show_advanced_options {
+                ui.add_space(10.0);
+                if let Some(identity) = &self.selected_qualified_identity {
+                    add_key_chooser(
+                        ui,
+                        &self.app_context,
+                        identity,
+                        &mut self.selected_key,
+                        TransactionType::UpdateContract,
+                    );
+                }
+            }
+
             ui.add_space(5.0);
             if let Some(identity) = &self.selected_qualified_identity {
                 ui.label(format!(
@@ -430,9 +539,20 @@ impl ScreenLike for UpdateDataContractScreen {
             ui.add_space(10.0);
 
             // Render the wallet unlock if needed
-            if self.selected_wallet.is_some() {
-                let (needed_unlock, just_unlocked) = self.render_wallet_unlock_if_needed(ui);
-                if needed_unlock && !just_unlocked {
+            if let Some(wallet) = &self.selected_wallet {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    self.error_message = Some(e);
+                }
+                if wallet_needs_unlock(wallet) {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        egui::Color32::from_rgb(200, 150, 50),
+                        "Wallet is locked. Please unlock to continue.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Unlock Wallet").clicked() {
+                        self.wallet_unlock_popup.open();
+                    }
                     return AppAction::None;
                 }
             }
@@ -490,37 +610,18 @@ impl ScreenLike for UpdateDataContractScreen {
             self.ui_parsed_contract(ui)
         });
 
+        // Show wallet unlock popup if open
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = &self.selected_wallet
+        {
+            let result = self
+                .wallet_unlock_popup
+                .show(ctx, wallet, &self.app_context);
+            if result == WalletUnlockResult::Unlocked {
+                // Wallet unlocked successfully
+            }
+        }
+
         action
-    }
-}
-
-// If you also need wallet unlocking, implement the trait
-impl ScreenWithWalletUnlock for UpdateDataContractScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
-    }
-
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
     }
 }

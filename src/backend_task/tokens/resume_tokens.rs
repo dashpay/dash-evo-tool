@@ -50,7 +50,7 @@ impl AppContext {
             .map_err(|e| format!("Error signing Resume Tokens transition: {}", e))?;
 
         // Broadcast
-        let _proof_result = state_transition
+        let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
             .map_err(|e| match e {
@@ -74,9 +74,14 @@ impl AppContext {
                 e => format!("Error broadcasting Resume Tokens transition: {}", e),
             })?;
 
-        // Return success
-        Ok(BackendTaskSuccessResult::Message(
-            "ResumeTokens".to_string(),
-        ))
+        // Log proof result for audit trail
+        tracing::info!("ResumeTokens proof result: {}", proof_result);
+
+        // Return success with fee result
+        use crate::backend_task::FeeResult;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::ResumedTokens(fee_result))
     }
 }

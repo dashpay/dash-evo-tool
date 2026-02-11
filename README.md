@@ -14,6 +14,7 @@ The tool supports both Mainnet and Testnet networks. Check out the [documentatio
 - [Prerequisites](#prerequisites)
   - [Rust Installation](#rust-installation)
   - [Dependencies](#dependencies)
+  - [Windows Runtime Dependencies](#windows-runtime-dependencies)
   - [Dash Core Wallet Setup](#dash-core-wallet-setup)
 - [Installation](#installation)
 - [Getting Started](#getting-started)
@@ -67,6 +68,14 @@ system, unzip, and install:
    sudo unzip protoc-*-linux-x86_64.zip -d /usr/local
    ```
 
+### Windows Runtime Dependencies
+
+If you use the prebuilt Windows binary, make sure the target machine has:
+
+- Microsoft Visual C++ Redistributable (vc_redist x64): https://aka.ms/vc14/vc_redist.x64.exe
+- OpenGL 2.0 support. If OpenGL 2.0 is not available (or the app fails to start with OpenGL-related errors), install the OpenCL, OpenGL, and Vulkan Compatibility Pack:
+  https://apps.microsoft.com/detail/9nqpsl29bfff?ocid=webpdpshare
+
 ### Dash Core Wallet Setup
 
 - **Dash Core Wallet**: Download and install from [dash.org/wallets](https://www.dash.org/wallets/).
@@ -114,6 +123,16 @@ When the application runs for the first time, it creates an application director
 | macOS | `~/Library/Application Support/Dash-Evo-Tool/` |
 | Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config` |
 | Linux | `/home/<user>/.config/dash-evo-tool/` |
+
+#### Local Network or Devnet Configuration
+
+To connect to a local network or devnet, you need to configure the `.env` file with your network settings:
+
+1. Copy `.env.example` to the application directory for your OS (see table above)
+2. Rename it to `.env`
+3. Update the configuration values to match your local network or devnet settings
+
+See [`.env.example`](.env.example) for available configuration options.
 
 ### Connect to a Network
 

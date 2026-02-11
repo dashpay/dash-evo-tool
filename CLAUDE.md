@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - `master` is a **release-only** branch, updated every few months. Do not use it as a base for diffs or PRs during active development.
 - `v1.0-dev` is the current active development branch. Use it as the base for general diffs, comparisons, and new feature branches.
-- PR and commits should use conventional commit naming.
+- PR and commits should follow conventional commit naming rules.
 
 ## Build Commands
 

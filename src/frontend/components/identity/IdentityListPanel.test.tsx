@@ -829,6 +829,62 @@ describe("IdentityListPanel — accessibility", () => {
   });
 });
 
+// ─── Header Create/Load buttons ─────────────────────────────────────
+
+describe("IdentityListPanel — header create/load buttons", () => {
+  it("shows create identity button in header when identities exist", () => {
+    const onCreateIdentity = vi.fn();
+    setup({
+      identities: [makeIdentity()],
+      onCreateIdentity,
+    });
+    expect(screen.getByTestId("create-identity-btn")).toBeInTheDocument();
+  });
+
+  it("shows load identity button in header when identities exist", () => {
+    const onLoadIdentity = vi.fn();
+    setup({
+      identities: [makeIdentity()],
+      onLoadIdentity,
+    });
+    expect(screen.getByTestId("load-identity-btn")).toBeInTheDocument();
+  });
+
+  it("calls onCreateIdentity when header create button clicked", async () => {
+    const onCreateIdentity = vi.fn();
+    const { user } = setup({
+      identities: [makeIdentity()],
+      onCreateIdentity,
+    });
+    await user.click(screen.getByTestId("create-identity-btn"));
+    expect(onCreateIdentity).toHaveBeenCalledOnce();
+  });
+
+  it("calls onLoadIdentity when header load button clicked", async () => {
+    const onLoadIdentity = vi.fn();
+    const { user } = setup({
+      identities: [makeIdentity()],
+      onLoadIdentity,
+    });
+    await user.click(screen.getByTestId("load-identity-btn"));
+    expect(onLoadIdentity).toHaveBeenCalledOnce();
+  });
+
+  it("does not show create button when onCreateIdentity not provided", () => {
+    setup({
+      identities: [makeIdentity()],
+    });
+    expect(screen.queryByTestId("create-identity-btn")).not.toBeInTheDocument();
+  });
+
+  it("does not show load button when onLoadIdentity not provided", () => {
+    setup({
+      identities: [makeIdentity()],
+    });
+    expect(screen.queryByTestId("load-identity-btn")).not.toBeInTheDocument();
+  });
+});
+
 // ─── Encoding tooltip ──────────────────────────────────────────────
 
 describe("IdentityListPanel — encoding tooltip", () => {

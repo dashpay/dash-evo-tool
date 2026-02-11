@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 187 — 2026-02-11
+**Task:** 10.1d, 10.1e, 10.1f — YAML toggle verification, field selection verification, and Create/Load Identity buttons
+**What was done:** Verified that tasks 10.1d (YAML display mode toggle) and 10.1e (document field selection dropdown) were already fully implemented with tests — checked them off. For 10.1f, added Create Identity (+) and Load Identity (search) icon buttons to the IdentityListPanel header so they remain visible and discoverable even when identities already exist. Previously these buttons only appeared in the empty state. Added 6 new tests verifying button rendering and click behavior.
+**Files changed:** src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/components/identity/IdentityListPanel.test.tsx, tasks.md, activity.md
+**Tests added:** 6 new tests (header create/load buttons: render, click, absence when callbacks not provided)
+**Sub-tasks created:** 0
+
 ## Run 186 — 2026-02-11
 **Task:** 10.1c Verify and fix DPNS Owned Names "Set Alias" action
 **What was done:** Verified the Set Alias button in OwnedNamesPanel correctly calls the `identitySetAlias` IPC command with `.dash` suffix. Fixed a state sync issue: after setting an alias from the DPNS Owned Names screen, the identity store's in-memory state was not updated, meaning the Identities screen would show stale alias data. Added `useIdentityStore.setState()` call on successful alias set to update the identity list immediately. Added a new test verifying the identity store is updated on success.

@@ -1085,11 +1085,11 @@
   - [x] **10.1a** Add "In Wallet" info to identity list cards — show wallet association without needing to open detail panel
   - [x] **10.1b** Add direct key viewing from identity detail panel — allow viewing individual keys without navigating to KeyManagementScreen
   - [x] **10.1c** Verify and fix DPNS Owned Names "Set Alias" action — ensure clicking a name sets the identity alias
-  - [ ] **10.1d** Add YAML display mode toggle to DocumentQueryScreen — egui supports JSON+YAML, Tauri may only have JSON
-  - [ ] **10.1e** Verify and fix document field selection dropdown in DocumentQueryScreen — ensure field selection works
+  - [x] **10.1d** Add YAML display mode toggle to DocumentQueryScreen — egui supports JSON+YAML, Tauri may only have JSON
+  - [x] **10.1e** Verify and fix document field selection dropdown in DocumentQueryScreen — ensure field selection works
 
   **Sub-tasks produced (P2 fixes):**
-  - [ ] **10.1f** Add Create/Load Identity buttons to main toolbar for discoverability
+  - [x] **10.1f** Add Create/Load Identity buttons to main toolbar for discoverability
   - [ ] **10.1g** Add DPNS filter character substitution (o→0, l→1) for confusable characters
   - [ ] **10.1h** Add visual highlighting in DPNS active contests when locked votes exceed max contestant votes
   - [ ] **10.1i** Verify Network Chooser: Core status indicators and custom Dash-Qt path selector
@@ -1162,7 +1162,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 188 |
-| Remaining | 8 |
+| Completed | 191 |
+| Remaining | 5 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

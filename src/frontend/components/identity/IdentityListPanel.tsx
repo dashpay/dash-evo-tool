@@ -19,6 +19,8 @@ import {
   Loader2,
   Check,
   Wallet,
+  Plus,
+  Search,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -662,6 +664,40 @@ export function IdentityListPanel({
           </Badge>
         </div>
         <div className="flex items-center gap-0.5">
+          {/* Create Identity button */}
+          {onCreateIdentity && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={onCreateIdentity}
+                  aria-label="Create identity"
+                  data-testid="create-identity-btn"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Create identity</TooltipContent>
+            </Tooltip>
+          )}
+          {/* Load Identity button */}
+          {onLoadIdentity && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={onLoadIdentity}
+                  aria-label="Load identity"
+                  data-testid="load-identity-btn"
+                >
+                  <Search className="h-3.5 w-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Load identity</TooltipContent>
+            </Tooltip>
+          )}
           {/* Sort dropdown */}
           {onSortChange && (
             <DropdownMenu>

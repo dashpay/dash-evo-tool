@@ -51,19 +51,23 @@ impl AppContext {
             command.arg("-local");
         }
         // Spawn the Dash-Qt process
+        let mut dash_qt = command.spawn().map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to start dash-qt binary at {}: {}",
+                    format_path_for_display(&dash_qt_path),
+                    e
+                ),
+            )
+        })?;
+
+        tracing::debug!(?command, pid = dash_qt.id(), "dash-qt started");
 
         // Spawn a task to wait for the Dash-Qt process to exit
         let cancel = self.subtasks.cancellation_token.clone();
         let db = Arc::clone(&self.db);
         self.subtasks.spawn_sync(async move {
-            let mut dash_qt = command
-                .spawn()
-                .inspect_err(
-                    |e| tracing::error!(error=?e, ?command, "failed to start dash-qt binary"),
-                )
-                .expect("Failed to spawn dash-qt process");
-
-            tracing::debug!(?command, pid = dash_qt.id(), "dash-qt started");
 
             // Wait for the process to exit or current task to be cancelled
             tokio::select! {

@@ -84,8 +84,8 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
-    last_repaint_request: Instant,     // Throttle periodic repaint scheduling to once per second
-    pub subtasks: Arc<TaskManager>,    // Subtasks manager for graceful shutdown
+    last_repaint_request: Instant,      // Throttle periodic repaint scheduling to once per second
+    pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)

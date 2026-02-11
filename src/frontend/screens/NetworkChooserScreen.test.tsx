@@ -538,4 +538,115 @@ describe("NetworkChooserScreen", () => {
       expect(screen.getByText("Path: /usr/local/bin/dash-qt")).toBeInTheDocument();
     });
   });
+
+  // Browse button and file picker
+
+  it("shows Browse button in Advanced Settings", async () => {
+    render(<NetworkChooserScreen />);
+    await waitFor(() => {
+      expect(screen.getByTestId("advanced-settings-toggle")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("advanced-settings-toggle"));
+
+    expect(screen.getByTestId("dashqt-browse-button")).toBeInTheDocument();
+  });
+
+  it("Browse button calls settingsPickDashQtPath and auto-saves on valid path", async () => {
+    vi.mocked(commands.settingsPickDashQtPath).mockResolvedValue({
+      status: "ok",
+      data: { path: "/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt", error: null },
+    });
+
+    render(<NetworkChooserScreen />);
+    await waitFor(() => {
+      expect(screen.getByTestId("advanced-settings-toggle")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("advanced-settings-toggle"));
+    fireEvent.click(screen.getByTestId("dashqt-browse-button"));
+
+    await waitFor(() => {
+      expect(commands.settingsPickDashQtPath).toHaveBeenCalled();
+    });
+
+    await waitFor(() => {
+      expect(commands.settingsUpdateDashCore).toHaveBeenCalledWith({
+        customDashQtPath: "/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt",
+        overwriteDashConf: false,
+      });
+    });
+  });
+
+  it("Browse button shows error when invalid file is selected", async () => {
+    vi.mocked(commands.settingsPickDashQtPath).mockResolvedValue({
+      status: "ok",
+      data: { path: null, error: "Invalid file: Please select a valid 'Dash-Qt or Dash-Qt.app'." },
+    });
+
+    render(<NetworkChooserScreen />);
+    await waitFor(() => {
+      expect(screen.getByTestId("advanced-settings-toggle")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("advanced-settings-toggle"));
+    fireEvent.click(screen.getByTestId("dashqt-browse-button"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("dashqt-path-error")).toBeInTheDocument();
+      expect(
+        screen.getByText("Invalid file: Please select a valid 'Dash-Qt or Dash-Qt.app'."),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("error can be dismissed", async () => {
+    vi.mocked(commands.settingsPickDashQtPath).mockResolvedValue({
+      status: "ok",
+      data: { path: null, error: "Invalid file" },
+    });
+
+    render(<NetworkChooserScreen />);
+    await waitFor(() => {
+      expect(screen.getByTestId("advanced-settings-toggle")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("advanced-settings-toggle"));
+    fireEvent.click(screen.getByTestId("dashqt-browse-button"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("dashqt-path-error")).toBeInTheDocument();
+    });
+
+    // Click the dismiss button (X icon inside the error)
+    const dismissBtn = screen.getByTestId("dashqt-path-error").querySelector("button")!;
+    fireEvent.click(dismissBtn);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("dashqt-path-error")).not.toBeInTheDocument();
+    });
+  });
+
+  it("Browse does nothing when user cancels file dialog", async () => {
+    vi.mocked(commands.settingsPickDashQtPath).mockResolvedValue({
+      status: "ok",
+      data: { path: null, error: null },
+    });
+
+    render(<NetworkChooserScreen />);
+    await waitFor(() => {
+      expect(screen.getByTestId("advanced-settings-toggle")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("advanced-settings-toggle"));
+    fireEvent.click(screen.getByTestId("dashqt-browse-button"));
+
+    await waitFor(() => {
+      expect(commands.settingsPickDashQtPath).toHaveBeenCalled();
+    });
+
+    // Should not call settingsUpdateDashCore or show error
+    expect(commands.settingsUpdateDashCore).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("dashqt-path-error")).not.toBeInTheDocument();
+  });
 });

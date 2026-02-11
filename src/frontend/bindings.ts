@@ -2127,6 +2127,20 @@ async settingsGetAutoStartSpv() : Promise<Result<boolean, string>> {
 }
 },
 /**
+ * Open a native file dialog to select the Dash-Qt executable.
+ *
+ * Performs platform-specific validation:
+ * - **macOS:** Accepts `.app` bundles (resolves to `Contents/MacOS/Dash-Qt`) or `Dash-Qt` binary
+ * - **Windows:** Requires `dash-qt.exe`
+ * - **Linux:** Requires `dash-qt` binary
+ *
+ * Returns the resolved path on success, or an error message for invalid selections.
+ * Returns `path: None, error: None` if the user cancelled the dialog.
+ */
+async settingsPickDashQtPath() : Promise<PickDashQtPathResult> {
+    return await TAURI_INVOKE("settings_pick_dash_qt_path");
+},
+/**
  * Check if developer mode is enabled.
  */
 async contextIsDeveloperMode() : Promise<boolean> {
@@ -3245,6 +3259,18 @@ groupInfo: JsonValue | null }
  * A payment recipient.
  */
 export type PaymentRecipientDto = { address: string; amount: number }
+/**
+ * Result of picking a Dash-Qt executable via native file dialog.
+ */
+export type PickDashQtPathResult = {
+/**
+ * The resolved path to the Dash-Qt executable, if valid.
+ */
+path: string | null;
+/**
+ * Error message if the selected file was invalid.
+ */
+error: string | null }
 /**
  * A platform address amount pair for transfer inputs/outputs.
  */

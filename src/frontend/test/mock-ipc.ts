@@ -245,6 +245,7 @@ export type CommandName =
   | "settingsUpdateCloseDashQtOnExit"
   | "settingsUpdateAutoStartSpv"
   | "settingsGetAutoStartSpv"
+  | "settingsPickDashQtPath"
   // Context
   | "contextIsDeveloperMode"
   | "contextEnableDeveloperMode"
@@ -584,6 +585,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     settingsUpdateCloseDashQtOnExit: resolvesOk("settingsUpdateCloseDashQtOnExit", null),
     settingsUpdateAutoStartSpv: resolvesOk("settingsUpdateAutoStartSpv", null),
     settingsGetAutoStartSpv: resolvesOk("settingsGetAutoStartSpv", false),
+    settingsPickDashQtPath: resolvesOk("settingsPickDashQtPath", { path: null, error: null }),
 
     // -- Context --
     contextIsDeveloperMode: resolves("contextIsDeveloperMode", false),

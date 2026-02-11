@@ -256,6 +256,89 @@ pub fn settings_get_auto_start_spv(state: tauri::State<'_, Arc<AppState>>) -> Re
         .map_err(|e| format!("Failed to get auto-start SPV setting: {e}"))
 }
 
+/// Result of picking a Dash-Qt executable via native file dialog.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PickDashQtPathResult {
+    /// The resolved path to the Dash-Qt executable, if valid.
+    pub path: Option<String>,
+    /// Error message if the selected file was invalid.
+    pub error: Option<String>,
+}
+
+/// Open a native file dialog to select the Dash-Qt executable.
+///
+/// Performs platform-specific validation:
+/// - **macOS:** Accepts `.app` bundles (resolves to `Contents/MacOS/Dash-Qt`) or `Dash-Qt` binary
+/// - **Windows:** Requires `dash-qt.exe`
+/// - **Linux:** Requires `dash-qt` binary
+///
+/// Returns the resolved path on success, or an error message for invalid selections.
+/// Returns `path: None, error: None` if the user cancelled the dialog.
+#[tauri::command]
+#[specta::specta]
+pub async fn settings_pick_dash_qt_path() -> PickDashQtPathResult {
+    let file = rfd::AsyncFileDialog::new().pick_file().await;
+
+    let file = match file {
+        Some(f) => f,
+        None => {
+            return PickDashQtPathResult {
+                path: None,
+                error: None,
+            }
+        }
+    };
+
+    let path = file.path().to_path_buf();
+    let file_name = match path.file_name().and_then(|f| f.to_str()) {
+        Some(name) => name.to_string(),
+        None => {
+            return PickDashQtPathResult {
+                path: None,
+                error: Some("Could not read file name".into()),
+            }
+        }
+    };
+
+    // Handle macOS .app bundles
+    let resolved_path =
+        if cfg!(target_os = "macos") && path.extension().and_then(|s| s.to_str()) == Some("app") {
+            path.join("Contents").join("MacOS").join("Dash-Qt")
+        } else {
+            path.clone()
+        };
+
+    // Platform-specific validation
+    let is_valid = if cfg!(target_os = "windows") {
+        file_name.to_ascii_lowercase().ends_with("dash-qt.exe")
+    } else if cfg!(target_os = "macos") {
+        file_name.eq_ignore_ascii_case("dash-qt")
+            || (file_name.to_ascii_lowercase().ends_with(".app") && resolved_path.exists())
+    } else {
+        file_name.eq_ignore_ascii_case("dash-qt")
+    };
+
+    if is_valid {
+        PickDashQtPathResult {
+            path: Some(resolved_path.to_string_lossy().to_string()),
+            error: None,
+        }
+    } else {
+        let required = if cfg!(target_os = "windows") {
+            "dash-qt.exe"
+        } else if cfg!(target_os = "macos") {
+            "Dash-Qt or Dash-Qt.app"
+        } else {
+            "dash-qt"
+        };
+        PickDashQtPathResult {
+            path: None,
+            error: Some(format!("Invalid file: Please select a valid '{required}'.")),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Context commands
 // ---------------------------------------------------------------------------
@@ -445,5 +528,38 @@ mod tests {
 
         let rpc: CoreBackendModeDto = serde_json::from_str("\"rpc\"").unwrap();
         assert!(matches!(rpc, CoreBackendModeDto::Rpc));
+    }
+
+    #[test]
+    fn pick_dash_qt_path_result_serializes_with_path() {
+        let result = PickDashQtPathResult {
+            path: Some("/usr/bin/dash-qt".into()),
+            error: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"path\":\"/usr/bin/dash-qt\""));
+        assert!(json.contains("\"error\":null"));
+    }
+
+    #[test]
+    fn pick_dash_qt_path_result_serializes_with_error() {
+        let result = PickDashQtPathResult {
+            path: None,
+            error: Some("Invalid file: Please select a valid 'dash-qt'.".into()),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"path\":null"));
+        assert!(json.contains("\"error\":\"Invalid file"));
+    }
+
+    #[test]
+    fn pick_dash_qt_path_result_serializes_cancelled() {
+        let result = PickDashQtPathResult {
+            path: None,
+            error: None,
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"path\":null"));
+        assert!(json.contains("\"error\":null"));
     }
 }

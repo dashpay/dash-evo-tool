@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 188 — 2026-02-11
+**Task:** 10.1g, 10.1h, 10.1i — DPNS filter substitution, vote highlighting, Network Chooser file picker
+**What was done:** Verified that tasks 10.1g (DPNS confusable character filter o→0, l→1) and 10.1h (locked votes green bold highlighting when exceeding max contestant votes) were already fully implemented during Phase 5. For 10.1i, added a native file picker for the Dash-Qt executable path: new `settings_pick_dash_qt_path` Tauri command using `rfd::AsyncFileDialog` with platform-specific validation (macOS .app bundle resolution, Windows .exe check, Linux binary check), error display with dismiss button, and auto-save on valid selection. Updated mock IPC infrastructure.
+**Files changed:** src-tauri/src/commands/settings.rs, src-tauri/src/main.rs, src/frontend/screens/NetworkChooserScreen.tsx, src/frontend/screens/NetworkChooserScreen.test.tsx, src/frontend/test/mock-ipc.ts, src/frontend/bindings.ts
+**Tests added:** 5 frontend tests (Browse button rendering, valid path auto-save, error display, dismiss, cancel handling), 3 Rust tests (PickDashQtPathResult serialization)
+**Sub-tasks created:** 0
+
 ## Run 187 — 2026-02-11
 **Task:** 10.1d, 10.1e, 10.1f — YAML toggle verification, field selection verification, and Create/Load Identity buttons
 **What was done:** Verified that tasks 10.1d (YAML display mode toggle) and 10.1e (document field selection dropdown) were already fully implemented with tests — checked them off. For 10.1f, added Create Identity (+) and Load Identity (search) icon buttons to the IdentityListPanel header so they remain visible and discoverable even when identities already exist. Previously these buttons only appeared in the empty state. Added 6 new tests verifying button rendering and click behavior.

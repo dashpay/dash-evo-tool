@@ -1090,9 +1090,9 @@
 
   **Sub-tasks produced (P2 fixes):**
   - [x] **10.1f** Add Create/Load Identity buttons to main toolbar for discoverability
-  - [ ] **10.1g** Add DPNS filter character substitution (o→0, l→1) for confusable characters
-  - [ ] **10.1h** Add visual highlighting in DPNS active contests when locked votes exceed max contestant votes
-  - [ ] **10.1i** Verify Network Chooser: Core status indicators and custom Dash-Qt path selector
+  - [x] **10.1g** Add DPNS filter character substitution (o→0, l→1) for confusable characters
+  - [x] **10.1h** Add visual highlighting in DPNS active contests when locked votes exceed max contestant votes
+  - [x] **10.1i** Verify Network Chooser: Core status indicators and custom Dash-Qt path selector
 
 - [ ] **10.2 Implement drag-and-drop reordering** (P2)
   Add drag-and-drop for lists that support reordering:
@@ -1162,7 +1162,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 191 |
+| Completed | 194 |
 | Remaining | 5 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

@@ -88,6 +88,7 @@ export function NetworkChooserScreen() {
   const [dbClearFeedback, setDbClearFeedback] =
     useState<FeedbackMessage | null>(null);
   const [connectLoading, setConnectLoading] = useState(false);
+  const [dashQtPathError, setDashQtPathError] = useState<string | null>(null);
 
   // Polling ref
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -666,17 +667,49 @@ export function NetworkChooserScreen() {
                     onChange={(e) => {
                       const newPath = e.target.value || null;
                       setDashQtPath(newPath);
+                      setDashQtPathError(null);
                     }}
                     placeholder="Path to Dash-Qt executable"
                     className="max-w-md"
                     data-testid="dashqt-path-input"
                   />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const result =
+                          await commands.settingsPickDashQtPath();
+                        if (result.status === "ok") {
+                          const { path, error } = result.data;
+                          if (path) {
+                            setDashQtPath(path);
+                            setDashQtPathError(null);
+                            await commands.settingsUpdateDashCore({
+                              customDashQtPath: path,
+                              overwriteDashConf,
+                            });
+                            toast.success("Dash-Qt path saved");
+                          } else if (error) {
+                            setDashQtPathError(error);
+                          }
+                          // If both null, user cancelled — do nothing
+                        }
+                      } catch {
+                        // Backend not available
+                      }
+                    }}
+                    data-testid="dashqt-browse-button"
+                  >
+                    Browse
+                  </Button>
                   {dashQtPath && (
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => {
                         setDashQtPath(null);
+                        setDashQtPathError(null);
                         commands
                           .settingsUpdateDashCore({
                             customDashQtPath: null,
@@ -714,6 +747,25 @@ export function NetworkChooserScreen() {
                   <p className="mt-1 text-xs text-success italic">
                     Path: {dashQtPath}
                   </p>
+                )}
+                {dashQtPathError && (
+                  <div
+                    className="mt-2 flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2"
+                    data-testid="dashqt-path-error"
+                  >
+                    <AlertTriangle className="h-4 w-4 text-destructive" />
+                    <span className="text-sm text-destructive">
+                      {dashQtPathError}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="ml-auto h-6 px-2"
+                      onClick={() => setDashQtPathError(null)}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>

@@ -337,6 +337,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::settings::settings_update_close_dash_qt_on_exit,
             commands::settings::settings_update_auto_start_spv,
             commands::settings::settings_get_auto_start_spv,
+            commands::settings::settings_pick_dash_qt_path,
             // Context commands
             commands::settings::context_is_developer_mode,
             commands::settings::context_enable_developer_mode,

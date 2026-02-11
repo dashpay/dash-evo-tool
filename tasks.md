@@ -1045,7 +1045,7 @@
 
   - [x] **9.1g** Implement Transition Visualizer screen. `HexInput` for state transition data. Parsing via new Tauri command (`parse_state_transition`) returning JSON + detected contract IDs. Features: contract ID detection with clickable links, fetch-contract confirmation dialog, broadcast button with `broadcastStateTransition` IPC, elapsed time display, success/error toasts with 8-second fade. Reference: `transition_visualizer_screen.rs`. Write component tests + Tauri command.
 
-  - [ ] **9.1h** Add proof log Tauri IPC command. Create `commands/proof_log.rs` wrapping `db.get_proof_log_items(show_errors_only, range)`. Returns paginated, sorted `Vec<ProofLogItemDto>` with fields: request_type, height, time_ms, error, proof_bytes_hex, verification_path_query_hex. Register in `main.rs`. Write Rust tests.
+  - [x] **9.1h** Add proof log Tauri IPC command. Create `commands/proof_log.rs` wrapping `db.get_proof_log_items(show_errors_only, range)`. Returns paginated, sorted `Vec<ProofLogItemDto>` with fields: request_type, height, time_ms, error, proof_bytes_hex, verification_path_query_hex. Register in `main.rs`. Write Rust tests.
 
   - [ ] **9.1i** Implement Proof Log screen. Full-width data table using `@tanstack/react-table` with columns: Request Type, Height, Time, Error. Sortable columns (click header toggles asc/desc). Paginated (100 items/page with Previous/Next). Row selection opens detail panel on right side. Detail panel has display mode tabs (Hex / JSON / PathQuery) — JSON and PathQuery modes use new Tauri parse commands. Gold hash highlighting for 64-char hex in error messages. Reference: `proof_log_screen.rs`. Write component tests.
 
@@ -1145,7 +1145,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 177 |
-| Remaining | 19 |
+| Completed | 178 |
+| Remaining | 18 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

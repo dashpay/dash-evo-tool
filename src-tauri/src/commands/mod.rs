@@ -11,6 +11,7 @@ pub mod dashpay;
 pub mod document;
 pub mod identity;
 pub mod platform_info;
+pub mod proof_log;
 pub mod settings;
 pub mod system;
 pub mod token;

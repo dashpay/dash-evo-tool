@@ -1815,6 +1815,20 @@ async parseStateTransition(input: ParseStateTransitionInput) : Promise<Result<Pa
 }
 },
 /**
+ * Get a paginated page of proof log items from the database.
+ *
+ * Items are sorted by `time_ms DESC` (newest first). Optionally filter
+ * to only items that have a verification error.
+ */
+async proofLogGetItems(input: ProofLogQueryInput) : Promise<Result<ProofLogPageDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("proof_log_get_items", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Fetch current epoch info from Platform.
  */
 async platformCurrentEpochInfo() : Promise<DispatchTaskResponse> {
@@ -3196,6 +3210,33 @@ nonce: number }
  */
 export type PlatformSyncModeDto = "auto" | "forceFull" | "terminalOnly"
 /**
+ * A single proof log entry for the frontend.
+ *
+ * Binary fields (request_bytes, proof_bytes, verification_path_query_bytes)
+ * are hex-encoded so they serialize cleanly to JSON.
+ */
+export type ProofLogItemDto = { requestType: RequestTypeDto; requestBytesHex: string; verificationPathQueryHex: string; height: number; timeMs: number; proofBytesHex: string; error: string | null }
+/**
+ * Paginated response for proof log queries.
+ */
+export type ProofLogPageDto = { items: ProofLogItemDto[]; page: number; itemsPerPage: number }
+/**
+ * Input for paginated proof log queries.
+ */
+export type ProofLogQueryInput = {
+/**
+ * If true, only return items that have a non-null error.
+ */
+onlyErrored: boolean;
+/**
+ * Zero-based page number.
+ */
+page: number;
+/**
+ * Number of items per page.
+ */
+itemsPerPage: number }
+/**
  * Input for purchasing a document.
  */
 export type PurchaseDocumentInput = {
@@ -3593,6 +3634,10 @@ newSecurityLevel: string;
  * New private key as hex string (32 bytes).
  */
 newPrivateKeyHex: string }
+/**
+ * Serializable representation of a `RequestType` enum variant.
+ */
+export type RequestTypeDto = "broadcastStateTransition" | "getIdentity" | "getIdentityKeys" | "getIdentitiesContractKeys" | "getIdentityNonce" | "getIdentityContractNonce" | "getIdentityBalance" | "getIdentitiesBalances" | "getIdentityBalanceAndRevision" | "getEvonodesProposedEpochBlocksByIds" | "getEvonodesProposedEpochBlocksByRange" | "getProofs" | "getDataContract" | "getDataContractHistory" | "getDataContracts" | "getDocuments" | "getIdentityByPublicKeyHash" | "waitForStateTransitionResult" | "getConsensusParams" | "getProtocolVersionUpgradeState" | "getProtocolVersionUpgradeVoteStatus" | "getEpochsInfo" | "getContestedResources" | "getContestedResourceVoteState" | "getContestedResourceVotersForIdentity" | "getContestedResourceIdentityVotes" | "getVotePollsByEndDate" | "getPrefundedSpecializedBalance" | "getTotalCreditsInPlatform" | "getPathElements" | "getStatus" | "getCurrentQuorumsInfo"
 /**
  * Input for resuming tokens.
  */

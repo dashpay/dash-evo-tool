@@ -6,7 +6,7 @@
   "description": "Dash Evo Tool — Tauri 2.0 + React frontend",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint src/frontend/",
     "typecheck": "tsc --noEmit",

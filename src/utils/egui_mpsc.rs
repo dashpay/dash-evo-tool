@@ -35,10 +35,10 @@ impl<T> SenderAsync<T> {
     /// Send a message and trigger a repaint (if an egui context is present).
     pub async fn send(&self, value: T) -> Result<(), mpsc::error::SendError<T>> {
         let result = self.sender.send(value).await;
-        if result.is_ok() {
-            if let Some(ctx) = &self.ctx {
-                ctx.request_repaint();
-            }
+        if result.is_ok()
+            && let Some(ctx) = &self.ctx
+        {
+            ctx.request_repaint();
         }
         result
     }
@@ -47,10 +47,10 @@ impl<T> SenderAsync<T> {
     /// egui context is present).
     pub fn try_send(&self, value: T) -> Result<(), mpsc::error::TrySendError<T>> {
         let result = self.sender.try_send(value);
-        if result.is_ok() {
-            if let Some(ctx) = &self.ctx {
-                ctx.request_repaint();
-            }
+        if result.is_ok()
+            && let Some(ctx) = &self.ctx
+        {
+            ctx.request_repaint();
         }
         result
     }

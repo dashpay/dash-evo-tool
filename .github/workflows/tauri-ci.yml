@@ -238,6 +238,36 @@ jobs:
       - name: Build Tauri app (debug)
         run: npx tauri build --debug 2>&1 | tail -20
 
+  # ── Tauri build verification (macOS) ───────────────────────────────
+  tauri-build-macos:
+    name: Tauri build (macOS)
+    runs-on: macos-latest
+    needs: [frontend]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install protoc
+        run: brew install protobuf
+
+      - name: Build Tauri app (debug)
+        run: npx tauri build --debug 2>&1 | tail -20
+
   # ── Full E2E tests (real Tauri backend, WebdriverIO + tauri-driver) ─
   test-e2e-full:
     name: Full E2E (WebdriverIO)

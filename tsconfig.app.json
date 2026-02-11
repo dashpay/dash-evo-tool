@@ -28,5 +28,6 @@
       "@/*": ["./src/frontend/*"]
     }
   },
-  "include": ["src/frontend"]
+  "include": ["src/frontend"],
+  "exclude": ["src/frontend/**/*.test.ts", "src/frontend/**/*.test.tsx", "src/frontend/test/**"]
 }

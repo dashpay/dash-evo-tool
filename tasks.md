@@ -889,7 +889,7 @@
     Reference: `dashpay_screen.rs`, `mod.rs` (render_no_identities_card)
     Write component tests for layout rendering and tab switching.
 
-  - [ ] **8.2c Implement ProfileScreen with view/edit modes** (P2)
+  - [x] **8.2c Implement ProfileScreen with view/edit modes** (P2)
     Build the DashPay profile management screen:
     - View mode: avatar image (with async loading, center-crop to square, placeholder icon), display name, DPNS username, identity ID, bio
     - Click avatar → dialog with larger image + copy URL
@@ -904,7 +904,7 @@
     Reference: `profile_screen.rs` (1553 lines)
     Write component tests. Write Playwright E2E test for profile create flow.
 
-  - [ ] **8.2d Implement ContactsList with search, filter, sort** (P2)
+  - [x] **8.2d Implement ContactsList with search, filter, sort** (P2)
     Build the contacts list tab:
     - Two sub-tabs: My Contacts / Requests (with badge count for pending requests)
     - Search input filtering across username, display name, nickname, bio, identity ID
@@ -1141,7 +1141,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 167 |
-| Remaining | 29 |
+| Completed | 168 |
+| Remaining | 28 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

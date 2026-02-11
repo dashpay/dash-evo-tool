@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 164 — 2026-02-10
+**Task:** 8.2d Implement ContactsList with search, filter, sort
+**What was done:** Created `ContactsListScreen.tsx` with full contacts list implementation: two sub-tabs (My Contacts / Requests with pending count badge), search input filtering across username, display name, public message, and identity ID (case-insensitive), filter dropdown (All, With usernames, No usernames, With bio, Recent 7d, Hidden, Visible), sort dropdown (Name, Username, Date Added, Account), Show hidden checkbox, contact cards with avatar/name/username/bio/action buttons (Hide/Unhide, Pay, View Profile), hidden contact [Hidden] prefix display, empty states (no contacts, no search matches), loading state, error banner, Refresh and Add Contact header buttons. Created Requests sub-tab showing incoming and outgoing contact requests with status badges. Updated routes.tsx to replace DashPay contacts placeholder with ContactsListScreen. Updated phase8-dashpay E2E test to check for "Contacts" heading instead of placeholder text. Wrote 60 component tests covering all features.
+**Files changed:** src/frontend/screens/ContactsListScreen.tsx (new), src/frontend/screens/ContactsListScreen.test.tsx (new), src/frontend/routes.tsx (updated), tests/e2e-integration/phase8-dashpay.spec.ts (updated), tasks.md, activity.md
+**Tests added:** 60 component tests — no identity state (2), loading (1), empty contacts (3), header (4), tabs (3), contact card rendering (10), multiple contacts (2), search (7), filter (5), sort (2), show hidden toggle (3), error state (1), requests tab (6), hide/unhide action (2), refresh action (1), accessibility (4)
+**Sub-tasks created:** 0
+
 ## Run 162 — 2026-02-10
 **Task:** 8.2b Implement DashPay layout shell with subscreen navigation
 **What was done:** Created `DashPayScreen.tsx` with vertical sidebar navigation (4 tabs: My Profile, Contacts, Payment History, Search Profiles), identity selector shared across all tabs, and "No Identities Loaded" empty state with "Load Identity" button. Updated routes.tsx to use DashPayScreen as the layout component for `/dashpay/*` routes with automatic redirect from `/dashpay` to `/dashpay/profile`. Sub-routes render placeholder content inside Islands. Wrote 18 component tests covering empty state, navigation, tab highlighting, identity auto-selection, and layout structure.

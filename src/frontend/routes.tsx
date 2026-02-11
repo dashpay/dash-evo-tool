@@ -52,6 +52,8 @@ import { TokenSetPriceScreen } from "@/screens/TokenSetPriceScreen";
 import { TokenPurchaseScreen } from "@/screens/TokenPurchaseScreen";
 import { TokenUpdateConfigScreen } from "@/screens/TokenUpdateConfigScreen";
 import { DashPayScreen } from "@/screens/DashPayScreen";
+import { ProfileScreen } from "@/screens/ProfileScreen";
+import { ContactsListScreen } from "@/screens/ContactsListScreen";
 import { Island } from "@/components/layout/Island";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -142,13 +144,13 @@ const dashpayIndexRoute = createRoute({
 const dashpayProfileRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/profile",
-  component: () => <DashPayPlaceholder title="My Profile" />,
+  component: ProfileScreen,
 });
 
 const dashpayContactsRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/contacts",
-  component: () => <DashPayPlaceholder title="Contacts" />,
+  component: ContactsListScreen,
 });
 
 const dashpayPaymentsRoute = createRoute({

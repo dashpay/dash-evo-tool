@@ -2495,9 +2495,13 @@ mod tests {
 
     /// Helper: create a test address on Testnet
     fn test_address(index: u8) -> Address {
-        let mut key_bytes = [2u8; 33]; // compressed pubkey prefix
-        key_bytes[32] = index;
-        let pubkey = PublicKey::from_slice(&key_bytes).expect("valid pubkey");
+        use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
+        let secp = Secp256k1::new();
+        let mut sk_bytes = [0u8; 32];
+        sk_bytes[0] = if index == 0 { 1 } else { index };
+        let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
+        let inner = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+        let pubkey = PublicKey::from_slice(&inner.serialize()).expect("valid pubkey");
         Address::p2pkh(&pubkey, Network::Testnet)
     }
 

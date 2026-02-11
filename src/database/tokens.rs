@@ -112,8 +112,10 @@ impl Database {
         let data_contract_bytes = data_contract_id.to_vec();
 
         // Collect identities before acquiring the connection lock for the transaction
-        let wallets = app_context.wallets.read().unwrap();
-        let identities = self.get_local_qualified_identities(app_context, &wallets)?;
+        let identities = {
+            let wallets = app_context.wallets.read().unwrap();
+            self.get_local_qualified_identities(app_context, &wallets)?
+        };
 
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;

@@ -58,6 +58,7 @@ import { ContactsListScreen } from "@/screens/ContactsListScreen";
 import { AddContactScreen } from "@/screens/AddContactScreen";
 import { ContactDetailsScreen } from "@/screens/ContactDetailsScreen";
 import { ContactProfileViewer } from "@/screens/ContactProfileViewer";
+import { ContactInfoEditorScreen } from "@/screens/ContactInfoEditorScreen";
 import { Island } from "@/components/layout/Island";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -195,6 +196,17 @@ const dashpayContactProfileRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/contact-profile/$contactId",
   component: ContactProfileViewerWrapper,
+});
+
+function ContactInfoEditorWrapper() {
+  const { contactId } = useParams({ strict: false }) as { contactId: string };
+  return <ContactInfoEditorScreen contactId={contactId} />;
+}
+
+const dashpayContactInfoEditorRoute = createRoute({
+  getParentRoute: () => dashpayRoute,
+  path: "/contact-info-editor/$contactId",
+  component: ContactInfoEditorWrapper,
 });
 
 const identitiesRoute = createRoute({
@@ -547,6 +559,7 @@ const routeTree = rootRoute.addChildren([
       dashpayAddContactRoute,
       dashpayContactDetailsRoute,
       dashpayContactProfileRoute,
+      dashpayContactInfoEditorRoute,
     ]),
     identitiesRoute,
     contractsRoute.addChildren([

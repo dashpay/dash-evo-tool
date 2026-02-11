@@ -376,6 +376,21 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
           <Separator />
 
           {/* Private Contact Information */}
+          <div className="flex items-center justify-end">
+            <Button
+              variant="link"
+              size="sm"
+              className="text-xs text-muted-foreground"
+              onClick={() =>
+                navigate({
+                  to: "/dashpay/contact-info-editor/$contactId",
+                  params: { contactId },
+                })
+              }
+            >
+              Advanced Edit (account indices)
+            </Button>
+          </div>
           <PrivateInfoSection
             privateInfo={privateInfo}
             editing={editing}

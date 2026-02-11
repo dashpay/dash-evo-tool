@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout";
 import { AmountInput, formatAmount } from "@/components/shared/AmountInput";
+import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import { FeeConfirmationDialog } from "@/components/shared/FeeConfirmationDialog";
 import type { FeeConfirmationResult } from "@/components/shared/FeeConfirmationDialog";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
@@ -192,6 +193,9 @@ export function SingleKeySendScreen() {
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [walletUnlocked, setWalletUnlocked] = useState(false);
+
+  // Send confirmation dialog state
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
   // Fee confirmation dialog state
   const [feeDialogOpen, setFeeDialogOpen] = useState(false);
@@ -411,6 +415,29 @@ export function SingleKeySendScreen() {
   );
 
   // ─── Send ─────────────────────────────────────────────────────────
+
+  const handleSendClick = useCallback(() => {
+    if (!wallet || !canSend) return;
+    setShowConfirmDialog(true);
+  }, [wallet, canSend]);
+
+  const confirmMessage = useMemo(() => {
+    const validRecipients = recipients.filter(
+      (r) => r.address.trim() && r.amount.trim() && parseFloat(r.amount) > 0,
+    );
+    if (validRecipients.length === 1 && validRecipients[0]) {
+      const r = validRecipients[0];
+      const addrShort = r.address.length > 16
+        ? `${r.address.slice(0, 8)}...${r.address.slice(-8)}`
+        : r.address;
+      return `Send ${r.amount} DASH to ${addrShort}?${txEstimation ? `\n\nEstimated fee: ${(txEstimation.fee / DUFFS_PER_DASH).toFixed(8)} DASH` : ""}\n\nThis transaction cannot be reversed.`;
+    }
+    const totalDash = validRecipients.reduce(
+      (sum, r) => sum + (parseFloat(r.amount) || 0),
+      0,
+    );
+    return `Send ${totalDash.toFixed(8)} DASH to ${validRecipients.length} recipients?${txEstimation ? `\n\nEstimated fee: ${(txEstimation.fee / DUFFS_PER_DASH).toFixed(8)} DASH` : ""}\n\nThis transaction cannot be reversed.`;
+  }, [recipients, txEstimation]);
 
   const handleSend = useCallback(async () => {
     if (!wallet || !canSend) return;
@@ -840,7 +867,7 @@ export function SingleKeySendScreen() {
                 Cancel
               </Button>
               <Button
-                onClick={handleSend}
+                onClick={handleSendClick}
                 disabled={!canSend}
                 className="min-w-[160px]"
               >
@@ -860,6 +887,21 @@ export function SingleKeySendScreen() {
         passwordHint={null}
         error={unlockError}
         onResult={handleUnlockResult}
+      />
+
+      {/* Send confirmation dialog */}
+      <ConfirmationDialog
+        open={showConfirmDialog}
+        onOpenChange={setShowConfirmDialog}
+        title="Confirm Transaction"
+        message={confirmMessage}
+        confirmText="Send"
+        cancelText="Cancel"
+        onResult={(status) => {
+          if (status === "confirmed") {
+            handleSend();
+          }
+        }}
       />
 
       {/* Fee confirmation dialog */}

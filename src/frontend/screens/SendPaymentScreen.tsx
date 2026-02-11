@@ -15,6 +15,7 @@ import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { AmountInput, useAmountInput, formatAmount } from "@/components/shared/AmountInput";
 import { WalletUnlockDialog } from "@/components/shared";
+import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -76,6 +77,7 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentAmount, setSentAmount] = useState<string>("");
   const [sentAddress, setSentAddress] = useState<string>("");
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
 
   const { value: amountValue, setValue: setAmountValue, parsedAmount, isValid: isAmountValid } =
     useAmountInput(8);
@@ -154,10 +156,9 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
     }
   }, [walletBalance, setAmountValue]);
 
-  const handleSend = useCallback(async () => {
+  const handleSendClick = useCallback(() => {
     if (!selectedIdentityId || !canSend || parsedAmount === null) return;
 
-    // Validate
     if (parsedAmount <= 0) {
       setSendError("Please enter an amount");
       return;
@@ -168,10 +169,16 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
       return;
     }
 
+    setSendError(null);
+    setShowConfirmDialog(true);
+  }, [selectedIdentityId, canSend, parsedAmount, memo]);
+
+  const handleConfirmSend = useCallback(async () => {
+    if (!selectedIdentityId || parsedAmount === null) return;
+
     // Convert from duffs to DASH
     const amountDash = parsedAmount / 100_000_000;
 
-    setSendError(null);
     setScreenState("sending");
     setSentAmount(formatAmount(parsedAmount, 8));
 
@@ -181,10 +188,6 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
         amountDash,
         memo: memo.trim() || null,
       });
-      // If sendPayment completes without error, the task was dispatched.
-      // Wait for the async task result event to confirm success.
-      // For now, treat dispatch success as payment success since
-      // the store will reload payments on the task result event.
       setSentAddress(`Sent to ${contactDisplayName}`);
       setScreenState("success");
     } catch (e) {
@@ -193,7 +196,6 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
     }
   }, [
     selectedIdentityId,
-    canSend,
     parsedAmount,
     memo,
     contactId,
@@ -416,7 +418,7 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
               Cancel
             </Button>
             <Button
-              onClick={handleSend}
+              onClick={handleSendClick}
               disabled={!canSend || !associatedWallet}
             >
               {screenState === "sending" ? (
@@ -464,6 +466,21 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
           onResult={handleWalletUnlockResult}
         />
       )}
+
+      {/* Send confirmation dialog */}
+      <ConfirmationDialog
+        open={showConfirmDialog}
+        onOpenChange={setShowConfirmDialog}
+        title="Confirm Payment"
+        message={`Send ${parsedAmount ? formatAmount(parsedAmount, 8) : "0"} DASH to ${contactDisplayName}?\n\nPayments cannot be reversed once sent.`}
+        confirmText="Send Payment"
+        cancelText="Cancel"
+        onResult={(status) => {
+          if (status === "confirmed") {
+            handleConfirmSend();
+          }
+        }}
+      />
     </>
   );
 }

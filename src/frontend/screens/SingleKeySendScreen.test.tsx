@@ -213,7 +213,19 @@ describe("SingleKeySendScreen", () => {
   });
 
   describe("send flow", () => {
-    it("dispatches coreSendSingleKeyWalletPayment", async () => {
+    it("shows confirmation dialog before sending", async () => {
+      const user = userEvent.setup();
+      setupWallet();
+      render(<SingleKeySendScreen />);
+      await user.type(screen.getByLabelText("Destination address"), "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L");
+      await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
+      await user.click(screen.getByText("Send").closest("button")!);
+
+      expect(screen.getByText("Confirm Transaction")).toBeInTheDocument();
+      expect(commands.coreSendSingleKeyWalletPayment).not.toHaveBeenCalled();
+    });
+
+    it("dispatches coreSendSingleKeyWalletPayment after confirmation", async () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
@@ -224,6 +236,11 @@ describe("SingleKeySendScreen", () => {
       await user.type(screen.getByLabelText("Destination address"), "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L");
       await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
       await user.click(screen.getByText("Send").closest("button")!);
+      // Confirm in dialog — the dialog has a "Send" confirm button
+      const dialogSendBtn = screen.getAllByRole("button", { name: "Send" }).find(
+        (btn) => btn.closest("[role='dialog']"),
+      );
+      await user.click(dialogSendBtn!);
 
       await waitFor(() => {
         expect(commands.coreSendSingleKeyWalletPayment).toHaveBeenCalledWith({
@@ -236,7 +253,7 @@ describe("SingleKeySendScreen", () => {
       });
     });
 
-    it("shows sending state", async () => {
+    it("shows sending state after confirmation", async () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
@@ -247,13 +264,17 @@ describe("SingleKeySendScreen", () => {
       await user.type(screen.getByLabelText("Destination address"), "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L");
       await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
       await user.click(screen.getByText("Send").closest("button")!);
+      const dialogSendBtn = screen.getAllByRole("button", { name: "Send" }).find(
+        (btn) => btn.closest("[role='dialog']"),
+      );
+      await user.click(dialogSendBtn!);
 
       await waitFor(() => {
         expect(screen.getByText("Sending...")).toBeInTheDocument();
       });
     });
 
-    it("shows error when send fails", async () => {
+    it("shows error when send fails after confirmation", async () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
@@ -264,13 +285,17 @@ describe("SingleKeySendScreen", () => {
       await user.type(screen.getByLabelText("Destination address"), "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L");
       await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
       await user.click(screen.getByText("Send").closest("button")!);
+      const dialogSendBtn = screen.getAllByRole("button", { name: "Send" }).find(
+        (btn) => btn.closest("[role='dialog']"),
+      );
+      await user.click(dialogSendBtn!);
 
       await waitFor(() => {
         expect(screen.getByText("Insufficient funds")).toBeInTheDocument();
       });
     });
 
-    it("passes subtract fee flag", async () => {
+    it("passes subtract fee flag after confirmation", async () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.coreSendSingleKeyWalletPayment).mockResolvedValue({
@@ -282,6 +307,10 @@ describe("SingleKeySendScreen", () => {
       await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
       await user.click(screen.getByText("Subtract fee from amount").closest("label")!);
       await user.click(screen.getByText("Send").closest("button")!);
+      const dialogSendBtn = screen.getAllByRole("button", { name: "Send" }).find(
+        (btn) => btn.closest("[role='dialog']"),
+      );
+      await user.click(dialogSendBtn!);
 
       await waitFor(() => {
         expect(commands.coreSendSingleKeyWalletPayment).toHaveBeenCalledWith(
@@ -290,13 +319,17 @@ describe("SingleKeySendScreen", () => {
       });
     });
 
-    it("shows insufficient balance error", async () => {
+    it("shows insufficient balance error after confirmation", async () => {
       const user = userEvent.setup();
       setupWallet({ totalBalance: 100 });
       render(<SingleKeySendScreen />);
       await user.type(screen.getByLabelText("Destination address"), "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L");
       await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
       await user.click(screen.getByText("Send").closest("button")!);
+      const dialogSendBtn = screen.getAllByRole("button", { name: "Send" }).find(
+        (btn) => btn.closest("[role='dialog']"),
+      );
+      await user.click(dialogSendBtn!);
 
       await waitFor(() => {
         expect(screen.getByText(/Insufficient balance/)).toBeInTheDocument();
@@ -367,6 +400,10 @@ describe("SingleKeySendScreen", () => {
       await user.type(screen.getByLabelText("Destination address"), "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L");
       await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
       await user.click(screen.getByText("Send").closest("button")!);
+      const dialogSendBtn = screen.getAllByRole("button", { name: "Send" }).find(
+        (btn) => btn.closest("[role='dialog']"),
+      );
+      await user.click(dialogSendBtn!);
 
       await waitFor(() => { expect(screen.getByText(/Insufficient balance/)).toBeInTheDocument(); });
       await user.click(screen.getByLabelText("Dismiss error"));
@@ -401,6 +438,11 @@ describe("SingleKeySendScreen", () => {
       );
       await user.type(screen.getByPlaceholderText("Enter amount"), "1.0");
       await user.click(screen.getByText("Send").closest("button")!);
+      // Confirm in the pre-send confirmation dialog
+      const dialogSendBtn = screen.getAllByRole("button", { name: "Send" }).find(
+        (btn) => btn.closest("[role='dialog']"),
+      );
+      await user.click(dialogSendBtn!);
       await waitFor(() => {
         expect(screen.getByText("Sending...")).toBeInTheDocument();
       });

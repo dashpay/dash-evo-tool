@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout";
 import { AmountInput, formatAmount } from "@/components/shared/AmountInput";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
+import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -191,6 +192,10 @@ export function SendScreen() {
   ]);
   const [advFeeStrategy, setAdvFeeStrategy] =
     useState<FeeStrategy>("deductFromFirstInput");
+
+  // Confirmation dialog state
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [pendingSendMode, setPendingSendMode] = useState<"simple" | "advanced" | null>(null);
 
   // Elapsed time for sending state
   const [elapsed, setElapsed] = useState(0);
@@ -401,6 +406,12 @@ export function SendScreen() {
 
   // ─── Simple mode send ──────────────────────────────────────────
 
+  const handleSendClick = useCallback(() => {
+    if (!source || !canSend) return;
+    setPendingSendMode("simple");
+    setShowConfirmDialog(true);
+  }, [source, canSend]);
+
   const handleSend = useCallback(async () => {
     if (!source || !canSend) return;
     if (!wallet && !singleKeyWallet && source.type !== "identity") return;
@@ -568,6 +579,11 @@ export function SendScreen() {
 
   // ─── Advanced mode send ────────────────────────────────────────
 
+  const handleAdvancedSendClick = useCallback(() => {
+    setPendingSendMode("advanced");
+    setShowConfirmDialog(true);
+  }, []);
+
   const handleAdvancedSend = useCallback(async () => {
     if (!wallet) return;
     const seedHash = wallet.seedHash;
@@ -713,6 +729,35 @@ export function SendScreen() {
       });
     }
   }, [wallet, advSourceType, advInputs, advOutputs, advFeeStrategy]);
+
+  // ─── Confirmation dialog ────────────────────────────────────────
+
+  const confirmMessage = useMemo(() => {
+    if (pendingSendMode === "advanced") {
+      const totalDash = advOutputs.reduce((sum, o) => {
+        const v = parseFloat(o.amount);
+        return sum + (isNaN(v) ? 0 : v);
+      }, 0);
+      const destCount = advOutputs.filter((o) => o.address.trim()).length;
+      return `Send ${totalDash.toFixed(8)} DASH to ${destCount} recipient${destCount !== 1 ? "s" : ""}?\n\nThis transaction cannot be reversed.`;
+    }
+    // Simple mode
+    const addrShort = destinationAddress.trim().length > 16
+      ? `${destinationAddress.trim().slice(0, 8)}...${destinationAddress.trim().slice(-8)}`
+      : destinationAddress.trim();
+    return `Send ${amountValue || "0"} DASH to ${addrShort}?\n\nTransaction type: ${txTypeDesc}. This cannot be reversed.`;
+  }, [pendingSendMode, advOutputs, destinationAddress, amountValue, txTypeDesc]);
+
+  const handleConfirmResult = useCallback((status: "confirmed" | "canceled") => {
+    if (status === "confirmed") {
+      if (pendingSendMode === "advanced") {
+        handleAdvancedSend();
+      } else {
+        handleSend();
+      }
+    }
+    setPendingSendMode(null);
+  }, [pendingSendMode, handleAdvancedSend, handleSend]);
 
   // ─── Advanced input management ─────────────────────────────────
 
@@ -1198,7 +1243,7 @@ export function SendScreen() {
                   Cancel
                 </Button>
                 <Button
-                  onClick={handleAdvancedSend}
+                  onClick={handleAdvancedSendClick}
                   disabled={
                     !walletUnlocked ||
                     advInputs.length === 0 ||
@@ -1498,7 +1543,7 @@ export function SendScreen() {
               Cancel
             </Button>
             <Button
-              onClick={handleSend}
+              onClick={handleSendClick}
               disabled={!canSend}
               className="min-w-[160px]"
             >
@@ -1520,6 +1565,17 @@ export function SendScreen() {
           onResult={handleUnlockResult}
         />
       )}
+
+      {/* Send confirmation dialog */}
+      <ConfirmationDialog
+        open={showConfirmDialog}
+        onOpenChange={setShowConfirmDialog}
+        title="Confirm Transaction"
+        message={confirmMessage}
+        confirmText="Send"
+        cancelText="Cancel"
+        onResult={handleConfirmResult}
+      />
     </Island>
   );
 }

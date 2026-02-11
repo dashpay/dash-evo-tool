@@ -270,21 +270,39 @@ describe("SendScreen", () => {
 
   // ─── Core → Core send flow ────────────────────────────────────
 
-  it("dispatches Core→Core send with correct params", async () => {
+  it("shows confirmation dialog before sending", async () => {
     const user = userEvent.setup();
     render(<SendScreen />);
 
-    // Enter destination
     const destInput = screen.getByLabelText("Destination address");
     await user.type(destInput, "XpYv3N7gTGBL4fE3b1Y5eZ8kMqP9oQ2rU1");
 
-    // Enter amount
     const amountInput = screen.getByPlaceholderText("Enter amount");
     await user.type(amountInput, "1.5");
 
-    // Click send
     const sendBtn = screen.getByRole("button", { name: /Core Transaction/i });
     await user.click(sendBtn);
+
+    // Confirmation dialog should appear
+    expect(screen.getByText("Confirm Transaction")).toBeInTheDocument();
+    expect(commands.coreSendWalletPayment).not.toHaveBeenCalled();
+  });
+
+  it("dispatches Core→Core send with correct params after confirmation", async () => {
+    const user = userEvent.setup();
+    render(<SendScreen />);
+
+    const destInput = screen.getByLabelText("Destination address");
+    await user.type(destInput, "XpYv3N7gTGBL4fE3b1Y5eZ8kMqP9oQ2rU1");
+
+    const amountInput = screen.getByPlaceholderText("Enter amount");
+    await user.type(amountInput, "1.5");
+
+    const sendBtn = screen.getByRole("button", { name: /Core Transaction/i });
+    await user.click(sendBtn);
+
+    // Confirm in dialog
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(commands.coreSendWalletPayment).toHaveBeenCalledWith({
@@ -299,7 +317,7 @@ describe("SendScreen", () => {
     });
   });
 
-  it("shows sending state after dispatch", async () => {
+  it("shows sending state after confirmation", async () => {
     const user = userEvent.setup();
     render(<SendScreen />);
 
@@ -311,6 +329,7 @@ describe("SendScreen", () => {
 
     const sendBtn = screen.getByRole("button", { name: /Core Transaction/i });
     await user.click(sendBtn);
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(screen.getByText("Sending...")).toBeInTheDocument();
@@ -319,7 +338,7 @@ describe("SendScreen", () => {
 
   // ─── Core → Platform send flow ────────────────────────────────
 
-  it("dispatches Core→Platform fund with correct params", async () => {
+  it("dispatches Core→Platform fund with correct params after confirmation", async () => {
     const user = userEvent.setup();
     render(<SendScreen />);
 
@@ -336,6 +355,9 @@ describe("SendScreen", () => {
       name: /Fund Platform Address/i,
     });
     await user.click(sendBtn);
+
+    // Confirm in dialog
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(commands.walletFundPlatformAddressFromUtxos).toHaveBeenCalledWith({
@@ -367,6 +389,7 @@ describe("SendScreen", () => {
 
     const sendBtn = screen.getByRole("button", { name: /Core Transaction/i });
     await user.click(sendBtn);
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(screen.getByRole("alert")).toBeInTheDocument();
@@ -391,6 +414,7 @@ describe("SendScreen", () => {
 
     const sendBtn = screen.getByRole("button", { name: /Core Transaction/i });
     await user.click(sendBtn);
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(screen.getByText("Some error")).toBeInTheDocument();
@@ -667,6 +691,7 @@ describe("SendScreen", () => {
     await user.click(
       screen.getByRole("button", { name: /Core Transaction/i }),
     );
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(screen.getByRole("alert")).toBeInTheDocument();

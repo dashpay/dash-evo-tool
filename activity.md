@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 161 — 2026-02-11
+**Task:** 10.6a Add confirmation dialogs to SendPaymentScreen, SendScreen, and SingleKeySendScreen
+**What was done:** Added pre-send confirmation dialogs to all 3 send screens using the existing `ConfirmationDialog` component. Each screen now shows a confirmation dialog with recipient, amount, transaction type, and irreversibility warning before executing the transaction. Updated all 3 test files to handle the new confirmation step, adding 4 new test cases for confirmation behavior (show dialog, cancel doesn't send, etc.). All 4477 tests pass.
+**Files changed:** src/frontend/screens/SendPaymentScreen.tsx, src/frontend/screens/SendScreen.tsx, src/frontend/screens/SingleKeySendScreen.tsx, src/frontend/screens/SendPaymentScreen.test.tsx, src/frontend/screens/SendScreen.test.tsx, src/frontend/screens/SingleKeySendScreen.test.tsx
+**Tests added:** 4 new tests (confirmation dialog display, cancel behavior) + 25 existing tests updated to handle confirmation step
+**Sub-tasks created:** 0
+
 ## Run 160 — 2026-02-11
 **Task:** 10.6 [META] Final UX polish and edge case review
 **What was done:** Comprehensive audit of all ~57 screens across 7 dimensions: loading states, error handling, empty states, destructive action confirmations, form validation, responsive design, and animations. Used 6 parallel exploration agents to audit the entire codebase. Grade: B+. Core screens (Wallets, Identities, Contacts, DPNS) are production-quality. Main gaps: 3 send screens lack confirmation dialogs (P0), no React Error Boundary (P1), ~12 token screens lack loading spinners (P1), ~25 screens have minimal error handling (P2). Wrote detailed findings document and produced 5 actionable fix sub-tasks.

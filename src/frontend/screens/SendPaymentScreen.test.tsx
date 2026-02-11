@@ -406,7 +406,26 @@ describe("SendPaymentScreen", () => {
   // ── Send flow ──
 
   describe("send flow", () => {
-    it("dispatches sendPayment with correct arguments", async () => {
+    it("shows confirmation dialog before sending", async () => {
+      const user = userEvent.setup();
+      const sendPaymentMock = vi.fn().mockResolvedValue(undefined);
+      setupWithIdentity();
+      useDashPayStore.setState({ sendPayment: sendPaymentMock });
+      renderScreen();
+
+      const input = screen.getByPlaceholderText("Enter amount in Dash");
+      await user.type(input, "2.5");
+
+      await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+
+      // Confirmation dialog should appear
+      expect(screen.getByText("Confirm Payment")).toBeInTheDocument();
+      expect(screen.getByText(/2\.50000000 DASH/)).toBeInTheDocument();
+      // Should NOT have dispatched yet
+      expect(sendPaymentMock).not.toHaveBeenCalled();
+    });
+
+    it("dispatches sendPayment with correct arguments after confirmation", async () => {
       const user = userEvent.setup();
       const sendPaymentMock = vi.fn().mockResolvedValue(undefined);
       setupWithIdentity();
@@ -420,6 +439,8 @@ describe("SendPaymentScreen", () => {
       await user.type(memo, "Thanks!");
 
       await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+      // Confirm in the dialog
+      await user.click(screen.getByRole("button", { name: "Send Payment" }));
 
       expect(sendPaymentMock).toHaveBeenCalledWith({
         contactId: CONTACT_ID,
@@ -439,12 +460,30 @@ describe("SendPaymentScreen", () => {
       await user.type(input, "1.0");
 
       await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+      await user.click(screen.getByRole("button", { name: "Send Payment" }));
 
       expect(sendPaymentMock).toHaveBeenCalledWith({
         contactId: CONTACT_ID,
         amountDash: 1,
         memo: null,
       });
+    });
+
+    it("does not send when confirmation is cancelled", async () => {
+      const user = userEvent.setup();
+      const sendPaymentMock = vi.fn().mockResolvedValue(undefined);
+      setupWithIdentity();
+      useDashPayStore.setState({ sendPayment: sendPaymentMock });
+      renderScreen();
+
+      const input = screen.getByPlaceholderText("Enter amount in Dash");
+      await user.type(input, "1.0");
+
+      await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+      // Cancel the confirmation
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+      expect(sendPaymentMock).not.toHaveBeenCalled();
     });
 
     it("shows sending state with spinner", async () => {
@@ -460,6 +499,7 @@ describe("SendPaymentScreen", () => {
       const input = screen.getByPlaceholderText("Enter amount in Dash");
       await user.type(input, "1.0");
       await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+      await user.click(screen.getByRole("button", { name: "Send Payment" }));
 
       expect(screen.getByText("Sending...")).toBeInTheDocument();
 
@@ -477,6 +517,7 @@ describe("SendPaymentScreen", () => {
       const input = screen.getByPlaceholderText("Enter amount in Dash");
       await user.type(input, "1.5");
       await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+      await user.click(screen.getByRole("button", { name: "Send Payment" }));
 
       await waitFor(() => {
         expect(screen.getByText("Payment Sent!")).toBeInTheDocument();
@@ -494,6 +535,7 @@ describe("SendPaymentScreen", () => {
       const input = screen.getByPlaceholderText("Enter amount in Dash");
       await user.type(input, "1.0");
       await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+      await user.click(screen.getByRole("button", { name: "Send Payment" }));
 
       await waitFor(() => {
         expect(screen.getByText("Network error")).toBeInTheDocument();
@@ -514,6 +556,8 @@ describe("SendPaymentScreen", () => {
       const input = screen.getByPlaceholderText("Enter amount in Dash");
       await user.type(input, "3.0");
       await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+      // Confirm in dialog
+      await user.click(screen.getByRole("button", { name: "Send Payment" }));
 
       await waitFor(() => {
         expect(screen.getByText("Payment Sent!")).toBeInTheDocument();

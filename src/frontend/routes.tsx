@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import {
   createRootRoute,
   createRoute,
@@ -8,67 +8,319 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { AppLayout } from "./AppLayout";
-import { WelcomeScreen } from "@/screens/WelcomeScreen";
-import { NetworkChooserScreen } from "@/screens/NetworkChooserScreen";
-import { WalletsScreen } from "@/screens/WalletsScreen";
-import { CreateWalletScreen } from "@/screens/CreateWalletScreen";
-import { ImportWalletScreen } from "@/screens/ImportWalletScreen";
-import { SendScreen } from "@/screens/SendScreen";
-import { SingleKeySendScreen } from "@/screens/SingleKeySendScreen";
-import { CreateAssetLockScreen } from "@/screens/CreateAssetLockScreen";
-import { AssetLockDetailScreen } from "@/screens/AssetLockDetailScreen";
-import { IdentitiesScreen } from "@/screens/IdentitiesScreen";
 import { commands } from "@/bindings";
-import { DpnsActiveContestsScreen } from "@/screens/DpnsActiveContestsScreen";
-import { DpnsPastContestsScreen } from "@/screens/DpnsPastContestsScreen";
-import { DpnsOwnedNamesScreen } from "@/screens/DpnsOwnedNamesScreen";
-import { DpnsScheduledVotesScreen } from "@/screens/DpnsScheduledVotesScreen";
-import { DpnsRegisterNameScreen } from "@/screens/DpnsRegisterNameScreen";
-import { ToolsScreen } from "@/screens/ToolsScreen";
-import { PlatformInfoScreen } from "@/screens/PlatformInfoScreen";
-import { AddressBalanceScreen } from "@/screens/AddressBalanceScreen";
-import { ContractVisualizerScreen } from "@/screens/ContractVisualizerScreen";
-import { DocumentVisualizerScreen } from "@/screens/DocumentVisualizerScreen";
-import { ProofVisualizerScreen } from "@/screens/ProofVisualizerScreen";
-import { TransitionVisualizerScreen } from "@/screens/TransitionVisualizerScreen";
-import { ProofLogScreen } from "@/screens/ProofLogScreen";
-import { DocumentQueryScreen } from "@/screens/DocumentQueryScreen";
-import { AddContractsScreen } from "@/screens/AddContractsScreen";
-import { RegisterContractScreen } from "@/screens/RegisterContractScreen";
-import { UpdateContractScreen } from "@/screens/UpdateContractScreen";
-import { DocumentActionScreen } from "@/screens/DocumentActionScreen";
-import { GroupActionsScreen } from "@/screens/GroupActionsScreen";
-import { TokenMyTokensScreen } from "@/screens/TokenMyTokensScreen";
-import { TokenSearchScreen } from "@/screens/TokenSearchScreen";
-import { TokenAddByIdScreen } from "@/screens/TokenAddByIdScreen";
-import { TokenCreatorScreen } from "@/screens/TokenCreatorScreen";
-import { TokenTransferScreen } from "@/screens/TokenTransferScreen";
-import { TokenMintScreen } from "@/screens/TokenMintScreen";
-import { TokenBurnScreen } from "@/screens/TokenBurnScreen";
-import { TokenFreezeScreen } from "@/screens/TokenFreezeScreen";
-import { TokenUnfreezeScreen } from "@/screens/TokenUnfreezeScreen";
-import { TokenDestroyFrozenFundsScreen } from "@/screens/TokenDestroyFrozenFundsScreen";
-import { TokenPauseScreen } from "@/screens/TokenPauseScreen";
-import { TokenResumeScreen } from "@/screens/TokenResumeScreen";
-import { TokenClaimScreen } from "@/screens/TokenClaimScreen";
-import { TokenViewClaimsScreen } from "@/screens/TokenViewClaimsScreen";
-import { TokenSetPriceScreen } from "@/screens/TokenSetPriceScreen";
-import { TokenPurchaseScreen } from "@/screens/TokenPurchaseScreen";
-import { TokenUpdateConfigScreen } from "@/screens/TokenUpdateConfigScreen";
-import { DashPayScreen } from "@/screens/DashPayScreen";
-import { ProfileScreen } from "@/screens/ProfileScreen";
-import { ContactsListScreen } from "@/screens/ContactsListScreen";
-import { AddContactScreen } from "@/screens/AddContactScreen";
-import { ContactDetailsScreen } from "@/screens/ContactDetailsScreen";
-import { ContactProfileViewer } from "@/screens/ContactProfileViewer";
-import { ContactInfoEditorScreen } from "@/screens/ContactInfoEditorScreen";
-import { SendPaymentScreen } from "@/screens/SendPaymentScreen";
-import { PaymentHistoryScreen } from "@/screens/PaymentHistoryScreen";
-import { ProfileSearchScreen } from "@/screens/ProfileSearchScreen";
-import { QRCodeGeneratorScreen } from "@/screens/QRCodeGeneratorScreen";
-import { QRScannerScreen } from "@/screens/QRScannerScreen";
-import { GroveSTARKScreen } from "@/screens/GroveSTARKScreen";
-import { MasternodeListDiffScreen } from "@/screens/MasternodeListDiffScreen";
+import { LoadingSpinner } from "@/components/feedback";
+
+// Lazy-loaded screen components — each becomes its own chunk
+const WelcomeScreen = lazy(() =>
+  import("@/screens/WelcomeScreen").then((m) => ({ default: m.WelcomeScreen })),
+);
+const NetworkChooserScreen = lazy(() =>
+  import("@/screens/NetworkChooserScreen").then((m) => ({
+    default: m.NetworkChooserScreen,
+  })),
+);
+const WalletsScreen = lazy(() =>
+  import("@/screens/WalletsScreen").then((m) => ({
+    default: m.WalletsScreen,
+  })),
+);
+const CreateWalletScreen = lazy(() =>
+  import("@/screens/CreateWalletScreen").then((m) => ({
+    default: m.CreateWalletScreen,
+  })),
+);
+const ImportWalletScreen = lazy(() =>
+  import("@/screens/ImportWalletScreen").then((m) => ({
+    default: m.ImportWalletScreen,
+  })),
+);
+const SendScreen = lazy(() =>
+  import("@/screens/SendScreen").then((m) => ({ default: m.SendScreen })),
+);
+const SingleKeySendScreen = lazy(() =>
+  import("@/screens/SingleKeySendScreen").then((m) => ({
+    default: m.SingleKeySendScreen,
+  })),
+);
+const CreateAssetLockScreen = lazy(() =>
+  import("@/screens/CreateAssetLockScreen").then((m) => ({
+    default: m.CreateAssetLockScreen,
+  })),
+);
+const AssetLockDetailScreen = lazy(() =>
+  import("@/screens/AssetLockDetailScreen").then((m) => ({
+    default: m.AssetLockDetailScreen,
+  })),
+);
+const IdentitiesScreen = lazy(() =>
+  import("@/screens/IdentitiesScreen").then((m) => ({
+    default: m.IdentitiesScreen,
+  })),
+);
+const DpnsActiveContestsScreen = lazy(() =>
+  import("@/screens/DpnsActiveContestsScreen").then((m) => ({
+    default: m.DpnsActiveContestsScreen,
+  })),
+);
+const DpnsPastContestsScreen = lazy(() =>
+  import("@/screens/DpnsPastContestsScreen").then((m) => ({
+    default: m.DpnsPastContestsScreen,
+  })),
+);
+const DpnsOwnedNamesScreen = lazy(() =>
+  import("@/screens/DpnsOwnedNamesScreen").then((m) => ({
+    default: m.DpnsOwnedNamesScreen,
+  })),
+);
+const DpnsScheduledVotesScreen = lazy(() =>
+  import("@/screens/DpnsScheduledVotesScreen").then((m) => ({
+    default: m.DpnsScheduledVotesScreen,
+  })),
+);
+const DpnsRegisterNameScreen = lazy(() =>
+  import("@/screens/DpnsRegisterNameScreen").then((m) => ({
+    default: m.DpnsRegisterNameScreen,
+  })),
+);
+const ToolsScreen = lazy(() =>
+  import("@/screens/ToolsScreen").then((m) => ({ default: m.ToolsScreen })),
+);
+const PlatformInfoScreen = lazy(() =>
+  import("@/screens/PlatformInfoScreen").then((m) => ({
+    default: m.PlatformInfoScreen,
+  })),
+);
+const AddressBalanceScreen = lazy(() =>
+  import("@/screens/AddressBalanceScreen").then((m) => ({
+    default: m.AddressBalanceScreen,
+  })),
+);
+const ContractVisualizerScreen = lazy(() =>
+  import("@/screens/ContractVisualizerScreen").then((m) => ({
+    default: m.ContractVisualizerScreen,
+  })),
+);
+const DocumentVisualizerScreen = lazy(() =>
+  import("@/screens/DocumentVisualizerScreen").then((m) => ({
+    default: m.DocumentVisualizerScreen,
+  })),
+);
+const ProofVisualizerScreen = lazy(() =>
+  import("@/screens/ProofVisualizerScreen").then((m) => ({
+    default: m.ProofVisualizerScreen,
+  })),
+);
+const TransitionVisualizerScreen = lazy(() =>
+  import("@/screens/TransitionVisualizerScreen").then((m) => ({
+    default: m.TransitionVisualizerScreen,
+  })),
+);
+const ProofLogScreen = lazy(() =>
+  import("@/screens/ProofLogScreen").then((m) => ({
+    default: m.ProofLogScreen,
+  })),
+);
+const DocumentQueryScreen = lazy(() =>
+  import("@/screens/DocumentQueryScreen").then((m) => ({
+    default: m.DocumentQueryScreen,
+  })),
+);
+const AddContractsScreen = lazy(() =>
+  import("@/screens/AddContractsScreen").then((m) => ({
+    default: m.AddContractsScreen,
+  })),
+);
+const RegisterContractScreen = lazy(() =>
+  import("@/screens/RegisterContractScreen").then((m) => ({
+    default: m.RegisterContractScreen,
+  })),
+);
+const UpdateContractScreen = lazy(() =>
+  import("@/screens/UpdateContractScreen").then((m) => ({
+    default: m.UpdateContractScreen,
+  })),
+);
+const DocumentActionScreen = lazy(() =>
+  import("@/screens/DocumentActionScreen").then((m) => ({
+    default: m.DocumentActionScreen,
+  })),
+);
+const GroupActionsScreen = lazy(() =>
+  import("@/screens/GroupActionsScreen").then((m) => ({
+    default: m.GroupActionsScreen,
+  })),
+);
+const TokenMyTokensScreen = lazy(() =>
+  import("@/screens/TokenMyTokensScreen").then((m) => ({
+    default: m.TokenMyTokensScreen,
+  })),
+);
+const TokenSearchScreen = lazy(() =>
+  import("@/screens/TokenSearchScreen").then((m) => ({
+    default: m.TokenSearchScreen,
+  })),
+);
+const TokenAddByIdScreen = lazy(() =>
+  import("@/screens/TokenAddByIdScreen").then((m) => ({
+    default: m.TokenAddByIdScreen,
+  })),
+);
+const TokenCreatorScreen = lazy(() =>
+  import("@/screens/TokenCreatorScreen").then((m) => ({
+    default: m.TokenCreatorScreen,
+  })),
+);
+const TokenTransferScreen = lazy(() =>
+  import("@/screens/TokenTransferScreen").then((m) => ({
+    default: m.TokenTransferScreen,
+  })),
+);
+const TokenMintScreen = lazy(() =>
+  import("@/screens/TokenMintScreen").then((m) => ({
+    default: m.TokenMintScreen,
+  })),
+);
+const TokenBurnScreen = lazy(() =>
+  import("@/screens/TokenBurnScreen").then((m) => ({
+    default: m.TokenBurnScreen,
+  })),
+);
+const TokenFreezeScreen = lazy(() =>
+  import("@/screens/TokenFreezeScreen").then((m) => ({
+    default: m.TokenFreezeScreen,
+  })),
+);
+const TokenUnfreezeScreen = lazy(() =>
+  import("@/screens/TokenUnfreezeScreen").then((m) => ({
+    default: m.TokenUnfreezeScreen,
+  })),
+);
+const TokenDestroyFrozenFundsScreen = lazy(() =>
+  import("@/screens/TokenDestroyFrozenFundsScreen").then((m) => ({
+    default: m.TokenDestroyFrozenFundsScreen,
+  })),
+);
+const TokenPauseScreen = lazy(() =>
+  import("@/screens/TokenPauseScreen").then((m) => ({
+    default: m.TokenPauseScreen,
+  })),
+);
+const TokenResumeScreen = lazy(() =>
+  import("@/screens/TokenResumeScreen").then((m) => ({
+    default: m.TokenResumeScreen,
+  })),
+);
+const TokenClaimScreen = lazy(() =>
+  import("@/screens/TokenClaimScreen").then((m) => ({
+    default: m.TokenClaimScreen,
+  })),
+);
+const TokenViewClaimsScreen = lazy(() =>
+  import("@/screens/TokenViewClaimsScreen").then((m) => ({
+    default: m.TokenViewClaimsScreen,
+  })),
+);
+const TokenSetPriceScreen = lazy(() =>
+  import("@/screens/TokenSetPriceScreen").then((m) => ({
+    default: m.TokenSetPriceScreen,
+  })),
+);
+const TokenPurchaseScreen = lazy(() =>
+  import("@/screens/TokenPurchaseScreen").then((m) => ({
+    default: m.TokenPurchaseScreen,
+  })),
+);
+const TokenUpdateConfigScreen = lazy(() =>
+  import("@/screens/TokenUpdateConfigScreen").then((m) => ({
+    default: m.TokenUpdateConfigScreen,
+  })),
+);
+const DashPayScreen = lazy(() =>
+  import("@/screens/DashPayScreen").then((m) => ({
+    default: m.DashPayScreen,
+  })),
+);
+const ProfileScreen = lazy(() =>
+  import("@/screens/ProfileScreen").then((m) => ({
+    default: m.ProfileScreen,
+  })),
+);
+const ContactsListScreen = lazy(() =>
+  import("@/screens/ContactsListScreen").then((m) => ({
+    default: m.ContactsListScreen,
+  })),
+);
+const AddContactScreen = lazy(() =>
+  import("@/screens/AddContactScreen").then((m) => ({
+    default: m.AddContactScreen,
+  })),
+);
+const ContactDetailsScreen = lazy(() =>
+  import("@/screens/ContactDetailsScreen").then((m) => ({
+    default: m.ContactDetailsScreen,
+  })),
+);
+const ContactProfileViewer = lazy(() =>
+  import("@/screens/ContactProfileViewer").then((m) => ({
+    default: m.ContactProfileViewer,
+  })),
+);
+const ContactInfoEditorScreen = lazy(() =>
+  import("@/screens/ContactInfoEditorScreen").then((m) => ({
+    default: m.ContactInfoEditorScreen,
+  })),
+);
+const SendPaymentScreen = lazy(() =>
+  import("@/screens/SendPaymentScreen").then((m) => ({
+    default: m.SendPaymentScreen,
+  })),
+);
+const PaymentHistoryScreen = lazy(() =>
+  import("@/screens/PaymentHistoryScreen").then((m) => ({
+    default: m.PaymentHistoryScreen,
+  })),
+);
+const ProfileSearchScreen = lazy(() =>
+  import("@/screens/ProfileSearchScreen").then((m) => ({
+    default: m.ProfileSearchScreen,
+  })),
+);
+const QRCodeGeneratorScreen = lazy(() =>
+  import("@/screens/QRCodeGeneratorScreen").then((m) => ({
+    default: m.QRCodeGeneratorScreen,
+  })),
+);
+const QRScannerScreen = lazy(() =>
+  import("@/screens/QRScannerScreen").then((m) => ({
+    default: m.QRScannerScreen,
+  })),
+);
+const GroveSTARKScreen = lazy(() =>
+  import("@/screens/GroveSTARKScreen").then((m) => ({
+    default: m.GroveSTARKScreen,
+  })),
+);
+const MasternodeListDiffScreen = lazy(() =>
+  import("@/screens/MasternodeListDiffScreen").then((m) => ({
+    default: m.MasternodeListDiffScreen,
+  })),
+);
+
+/** Suspense wrapper for lazy-loaded screen components */
+function LazyScreen({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center">
+          <LoadingSpinner size="lg" />
+        </div>
+      }
+    >
+      {children}
+    </Suspense>
+  );
+}
 
 // Root route — just renders children (either welcome or app shell)
 const rootRoute = createRootRoute({
@@ -79,7 +331,11 @@ const rootRoute = createRootRoute({
 const welcomeRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/welcome",
-  component: WelcomeScreen,
+  component: () => (
+    <LazyScreen>
+      <WelcomeScreen />
+    </LazyScreen>
+  ),
 });
 
 // App layout route — wraps all authenticated/main routes with sidebar + top bar
@@ -123,7 +379,11 @@ const indexRoute = createRoute({
 const dashpayRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/dashpay",
-  component: DashPayScreen,
+  component: () => (
+    <LazyScreen>
+      <DashPayScreen />
+    </LazyScreen>
+  ),
 });
 
 const dashpayIndexRoute = createRoute({
@@ -136,36 +396,62 @@ const dashpayIndexRoute = createRoute({
 const dashpayProfileRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/profile",
-  component: ProfileScreen,
+  component: () => (
+    <LazyScreen>
+      <ProfileScreen />
+    </LazyScreen>
+  ),
 });
 
 const dashpayContactsRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/contacts",
-  component: ContactsListScreen,
+  component: () => (
+    <LazyScreen>
+      <ContactsListScreen />
+    </LazyScreen>
+  ),
 });
 
 const dashpayPaymentsRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/payments",
-  component: PaymentHistoryScreen,
+  component: () => (
+    <LazyScreen>
+      <PaymentHistoryScreen />
+    </LazyScreen>
+  ),
 });
 
 const dashpaySearchRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/search",
-  component: ProfileSearchScreen,
+  component: () => (
+    <LazyScreen>
+      <ProfileSearchScreen />
+    </LazyScreen>
+  ),
 });
 
 const dashpayAddContactRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/add-contact",
-  component: AddContactScreen,
+  component: () => (
+    <LazyScreen>
+      <AddContactScreen />
+    </LazyScreen>
+  ),
 });
 
 function ContactDetailsWrapper() {
-  const { contactId } = useParams({ strict: false }) as { contactId: string };
-  return <ContactDetailsScreen contactId={contactId} />;
+  const { contactId } = useParams({ strict: false }) as {
+    contactId: string;
+  };
+  return (
+    <LazyScreen>
+      <ContactDetailsScreen contactId={contactId} />
+    </LazyScreen>
+  );
 }
 
 const dashpayContactDetailsRoute = createRoute({
@@ -175,8 +461,14 @@ const dashpayContactDetailsRoute = createRoute({
 });
 
 function ContactProfileViewerWrapper() {
-  const { contactId } = useParams({ strict: false }) as { contactId: string };
-  return <ContactProfileViewer contactId={contactId} />;
+  const { contactId } = useParams({ strict: false }) as {
+    contactId: string;
+  };
+  return (
+    <LazyScreen>
+      <ContactProfileViewer contactId={contactId} />
+    </LazyScreen>
+  );
 }
 
 const dashpayContactProfileRoute = createRoute({
@@ -186,8 +478,14 @@ const dashpayContactProfileRoute = createRoute({
 });
 
 function ContactInfoEditorWrapper() {
-  const { contactId } = useParams({ strict: false }) as { contactId: string };
-  return <ContactInfoEditorScreen contactId={contactId} />;
+  const { contactId } = useParams({ strict: false }) as {
+    contactId: string;
+  };
+  return (
+    <LazyScreen>
+      <ContactInfoEditorScreen contactId={contactId} />
+    </LazyScreen>
+  );
 }
 
 const dashpayContactInfoEditorRoute = createRoute({
@@ -197,8 +495,14 @@ const dashpayContactInfoEditorRoute = createRoute({
 });
 
 function SendPaymentWrapper() {
-  const { contactId } = useParams({ strict: false }) as { contactId: string };
-  return <SendPaymentScreen contactId={contactId} />;
+  const { contactId } = useParams({ strict: false }) as {
+    contactId: string;
+  };
+  return (
+    <LazyScreen>
+      <SendPaymentScreen contactId={contactId} />
+    </LazyScreen>
+  );
 }
 
 const dashpaySendPaymentRoute = createRoute({
@@ -210,19 +514,31 @@ const dashpaySendPaymentRoute = createRoute({
 const dashpayQrGeneratorRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/qr-generator",
-  component: QRCodeGeneratorScreen,
+  component: () => (
+    <LazyScreen>
+      <QRCodeGeneratorScreen />
+    </LazyScreen>
+  ),
 });
 
 const dashpayQrScannerRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/qr-scanner",
-  component: QRScannerScreen,
+  component: () => (
+    <LazyScreen>
+      <QRScannerScreen />
+    </LazyScreen>
+  ),
 });
 
 const identitiesRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/identities",
-  component: IdentitiesScreen,
+  component: () => (
+    <LazyScreen>
+      <IdentitiesScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsRoute = createRoute({
@@ -234,97 +550,161 @@ const contractsRoute = createRoute({
 const contractsIndexRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/",
-  component: DocumentQueryScreen,
+  component: () => (
+    <LazyScreen>
+      <DocumentQueryScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsAddRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/add-contracts",
-  component: AddContractsScreen,
+  component: () => (
+    <LazyScreen>
+      <AddContractsScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsRegisterRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/register",
-  component: RegisterContractScreen,
+  component: () => (
+    <LazyScreen>
+      <RegisterContractScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsUpdateRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/update-contract",
-  component: UpdateContractScreen,
+  component: () => (
+    <LazyScreen>
+      <UpdateContractScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsCreateDocumentRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/create-document",
-  component: () => <DocumentActionScreen actionType="create" />,
+  component: () => (
+    <LazyScreen>
+      <DocumentActionScreen actionType="create" />
+    </LazyScreen>
+  ),
 });
 
 const contractsDeleteDocumentRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/delete-document",
-  component: () => <DocumentActionScreen actionType="delete" />,
+  component: () => (
+    <LazyScreen>
+      <DocumentActionScreen actionType="delete" />
+    </LazyScreen>
+  ),
 });
 
 const contractsReplaceDocumentRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/replace-document",
-  component: () => <DocumentActionScreen actionType="replace" />,
+  component: () => (
+    <LazyScreen>
+      <DocumentActionScreen actionType="replace" />
+    </LazyScreen>
+  ),
 });
 
 const contractsTransferDocumentRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/transfer-document",
-  component: () => <DocumentActionScreen actionType="transfer" />,
+  component: () => (
+    <LazyScreen>
+      <DocumentActionScreen actionType="transfer" />
+    </LazyScreen>
+  ),
 });
 
 const contractsPurchaseDocumentRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/purchase-document",
-  component: () => <DocumentActionScreen actionType="purchase" />,
+  component: () => (
+    <LazyScreen>
+      <DocumentActionScreen actionType="purchase" />
+    </LazyScreen>
+  ),
 });
 
 const contractsSetDocumentPriceRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/set-document-price",
-  component: () => <DocumentActionScreen actionType="setPrice" />,
+  component: () => (
+    <LazyScreen>
+      <DocumentActionScreen actionType="setPrice" />
+    </LazyScreen>
+  ),
 });
 
 const contractsGroupActionsRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/group-actions",
-  component: GroupActionsScreen,
+  component: () => (
+    <LazyScreen>
+      <GroupActionsScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsDpnsActiveRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-active",
-  component: DpnsActiveContestsScreen,
+  component: () => (
+    <LazyScreen>
+      <DpnsActiveContestsScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsDpnsPastRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-past",
-  component: DpnsPastContestsScreen,
+  component: () => (
+    <LazyScreen>
+      <DpnsPastContestsScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsDpnsOwnedRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-owned",
-  component: DpnsOwnedNamesScreen,
+  component: () => (
+    <LazyScreen>
+      <DpnsOwnedNamesScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsDpnsScheduledRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-scheduled",
-  component: DpnsScheduledVotesScreen,
+  component: () => (
+    <LazyScreen>
+      <DpnsScheduledVotesScreen />
+    </LazyScreen>
+  ),
 });
 
 const contractsDpnsRegisterRoute = createRoute({
   getParentRoute: () => contractsRoute,
   path: "/dpns-register",
-  component: DpnsRegisterNameScreen,
+  component: () => (
+    <LazyScreen>
+      <DpnsRegisterNameScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensRoute = createRoute({
@@ -336,103 +716,171 @@ const tokensRoute = createRoute({
 const tokensIndexRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/",
-  component: TokenMyTokensScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenMyTokensScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensSearchRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/search",
-  component: TokenSearchScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenSearchScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensCreatorRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/creator",
-  component: TokenCreatorScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenCreatorScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensAddByIdRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/add-by-id",
-  component: TokenAddByIdScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenAddByIdScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensTransferRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/transfer",
-  component: TokenTransferScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenTransferScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensMintRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/mint",
-  component: TokenMintScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenMintScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensBurnRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/burn",
-  component: TokenBurnScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenBurnScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensFreezeRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/freeze",
-  component: TokenFreezeScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenFreezeScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensUnfreezeRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/unfreeze",
-  component: TokenUnfreezeScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenUnfreezeScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensDestroyFrozenRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/destroy-frozen",
-  component: TokenDestroyFrozenFundsScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenDestroyFrozenFundsScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensPauseRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/pause",
-  component: TokenPauseScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenPauseScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensResumeRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/resume",
-  component: TokenResumeScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenResumeScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensClaimRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/claim",
-  component: TokenClaimScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenClaimScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensViewClaimsRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/view-claims",
-  component: TokenViewClaimsScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenViewClaimsScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensSetPriceRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/set-price",
-  component: TokenSetPriceScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenSetPriceScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensPurchaseRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/purchase",
-  component: TokenPurchaseScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenPurchaseScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensUpdateConfigRoute = createRoute({
   getParentRoute: () => tokensRoute,
   path: "/update-config",
-  component: TokenUpdateConfigScreen,
+  component: () => (
+    <LazyScreen>
+      <TokenUpdateConfigScreen />
+    </LazyScreen>
+  ),
 });
 
 const walletsRoute = createRoute({
@@ -444,43 +892,71 @@ const walletsRoute = createRoute({
 const walletsIndexRoute = createRoute({
   getParentRoute: () => walletsRoute,
   path: "/",
-  component: WalletsScreen,
+  component: () => (
+    <LazyScreen>
+      <WalletsScreen />
+    </LazyScreen>
+  ),
 });
 
 const walletsCreateRoute = createRoute({
   getParentRoute: () => walletsRoute,
   path: "/create",
-  component: CreateWalletScreen,
+  component: () => (
+    <LazyScreen>
+      <CreateWalletScreen />
+    </LazyScreen>
+  ),
 });
 
 const walletsImportRoute = createRoute({
   getParentRoute: () => walletsRoute,
   path: "/import",
-  component: ImportWalletScreen,
+  component: () => (
+    <LazyScreen>
+      <ImportWalletScreen />
+    </LazyScreen>
+  ),
 });
 
 const walletsSendRoute = createRoute({
   getParentRoute: () => walletsRoute,
   path: "/send/$type",
-  component: SendScreen,
+  component: () => (
+    <LazyScreen>
+      <SendScreen />
+    </LazyScreen>
+  ),
 });
 
 const walletsSingleKeySendRoute = createRoute({
   getParentRoute: () => walletsRoute,
   path: "/send-single-key",
-  component: SingleKeySendScreen,
+  component: () => (
+    <LazyScreen>
+      <SingleKeySendScreen />
+    </LazyScreen>
+  ),
 });
 
 const walletsCreateAssetLockRoute = createRoute({
   getParentRoute: () => walletsRoute,
   path: "/asset-locks/create",
-  component: CreateAssetLockScreen,
+  component: () => (
+    <LazyScreen>
+      <CreateAssetLockScreen />
+    </LazyScreen>
+  ),
 });
 
 const walletsAssetLockDetailRoute = createRoute({
   getParentRoute: () => walletsRoute,
   path: "/asset-locks/$txid",
-  component: AssetLockDetailScreen,
+  component: () => (
+    <LazyScreen>
+      <AssetLockDetailScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsRoute = createRoute({
@@ -492,67 +968,111 @@ const toolsRoute = createRoute({
 const toolsIndexRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/",
-  component: ToolsScreen,
+  component: () => (
+    <LazyScreen>
+      <ToolsScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsPlatformInfoRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/platform-info",
-  component: PlatformInfoScreen,
+  component: () => (
+    <LazyScreen>
+      <PlatformInfoScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsProofLogRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/proof-log",
-  component: ProofLogScreen,
+  component: () => (
+    <LazyScreen>
+      <ProofLogScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsTransitionRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/transition-visualizer",
-  component: TransitionVisualizerScreen,
+  component: () => (
+    <LazyScreen>
+      <TransitionVisualizerScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsDocumentRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/document-visualizer",
-  component: DocumentVisualizerScreen,
+  component: () => (
+    <LazyScreen>
+      <DocumentVisualizerScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsProofVisualizerRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/proof-visualizer",
-  component: ProofVisualizerScreen,
+  component: () => (
+    <LazyScreen>
+      <ProofVisualizerScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsMnListRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/masternode-list",
-  component: MasternodeListDiffScreen,
+  component: () => (
+    <LazyScreen>
+      <MasternodeListDiffScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsContractRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/contract-visualizer",
-  component: ContractVisualizerScreen,
+  component: () => (
+    <LazyScreen>
+      <ContractVisualizerScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsGroveStarkRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/grovestark",
-  component: GroveSTARKScreen,
+  component: () => (
+    <LazyScreen>
+      <GroveSTARKScreen />
+    </LazyScreen>
+  ),
 });
 
 const toolsAddressBalanceRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/address-balance",
-  component: AddressBalanceScreen,
+  component: () => (
+    <LazyScreen>
+      <AddressBalanceScreen />
+    </LazyScreen>
+  ),
 });
 
 const settingsRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/settings",
-  component: NetworkChooserScreen,
+  component: () => (
+    <LazyScreen>
+      <NetworkChooserScreen />
+    </LazyScreen>
+  ),
 });
 
 // Build the route tree

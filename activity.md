@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 190 — 2026-02-11
+**Task:** 10.4b Add frontend code splitting to reduce main bundle size below 500 KB
+**What was done:** Added route-level code splitting using `React.lazy()` with `Suspense` for all 60+ screen components in `routes.tsx`, and vendor chunk splitting via `manualChunks` in `vite.config.ts` (separating react, router/zustand, radix-ui, tanstack-table, dnd-kit, qrcode/json-viewer, tauri-api into dedicated chunks). Main JS chunk reduced from 1,550 KB to 287 KB (81% reduction). No chunk exceeds 500 KB. All screens load on-demand with a loading spinner fallback. Total JS is still ~1,550 KB but distributed across 80+ chunks loaded only when needed. Build time unchanged at ~2.2s. All 4,473 component tests pass, lint/typecheck clean, 448/450 E2E integration tests pass (2 pre-existing failures).
+**Files changed:** vite.config.ts, src/frontend/routes.tsx, tasks.md, activity.md
+**Tests added:** 0 (existing tests verify lazy loading works correctly)
+**Sub-tasks created:** 0
+
 ## Run 168 — 2026-02-11
 **Task:** 10.4a Fix 132 TypeScript strict-mode type errors
 **What was done:** Fixed all 132 TypeScript strict-mode errors across 52 files, reducing error count to 0. Errors were primarily `noUncheckedIndexedAccess` (array/object indexing returns `T | undefined`), missing required properties (`publicNote` on `TokenOperationInput`), type mismatches (`WalletUnlockResult` callback, `PickDashQtPathResult` shape), invalid route paths, and `unknown` to typed value casts. Updated `npm run typecheck` from `tsc --noEmit` (no-op on root tsconfig) to `tsc -p tsconfig.app.json --noEmit` for project-aware strict checking. Fixed 15 test failures caused by the type fixes (mock return shapes, expected parameters, route paths). All 4473 tests pass, lint clean, typecheck clean.

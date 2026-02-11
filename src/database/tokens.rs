@@ -145,8 +145,7 @@ impl Database {
                 "INSERT INTO identity_token_balances
                   (token_id, identity_id, balance, network)
             VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(token_id, identity_id, network) DO UPDATE SET
-                  balance = excluded.balance",
+            ON CONFLICT(token_id, identity_id, network) DO NOTHING",
                 params![token_id_bytes, identity_id_bytes, 0u64, network],
             )?;
         }
@@ -419,7 +418,10 @@ impl Database {
                 ))
             })?;
             let token_config = token_config.map(|(cfg, _)| cfg).map_err(|e| {
-                rusqlite::Error::InvalidParameterName(format!("Missing token_config: {}", e))
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to decode token_config: {}",
+                    e
+                ))
             })?;
             let identity_id = identity_id_res.map_err(|e| {
                 rusqlite::Error::InvalidParameterName(format!("Failed to parse identity_id: {}", e))

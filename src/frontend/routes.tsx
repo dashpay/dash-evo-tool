@@ -51,6 +51,8 @@ import { TokenViewClaimsScreen } from "@/screens/TokenViewClaimsScreen";
 import { TokenSetPriceScreen } from "@/screens/TokenSetPriceScreen";
 import { TokenPurchaseScreen } from "@/screens/TokenPurchaseScreen";
 import { TokenUpdateConfigScreen } from "@/screens/TokenUpdateConfigScreen";
+import { DashPayScreen } from "@/screens/DashPayScreen";
+import { Island } from "@/components/layout/Island";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -62,6 +64,15 @@ function PlaceholderScreen({ title }: { title: string }) {
         <p className="mt-2 text-sm">This screen will be implemented in a future phase.</p>
       </div>
     </div>
+  );
+}
+
+/** Placeholder used inside the DashPay layout (wraps in an Island). */
+function DashPayPlaceholder({ title }: { title: string }) {
+  return (
+    <Island className="flex-1">
+      <PlaceholderScreen title={title} />
+    </Island>
   );
 }
 
@@ -118,37 +129,38 @@ const indexRoute = createRoute({
 const dashpayRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/dashpay",
-  component: () => <Outlet />,
+  component: DashPayScreen,
 });
 
 const dashpayIndexRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/",
-  component: () => <PlaceholderScreen title="DashPay" />,
+  // DashPayScreen redirects /dashpay → /dashpay/profile
+  component: () => null,
 });
 
 const dashpayProfileRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/profile",
-  component: () => <PlaceholderScreen title="DashPay Profile" />,
+  component: () => <DashPayPlaceholder title="My Profile" />,
 });
 
 const dashpayContactsRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/contacts",
-  component: () => <PlaceholderScreen title="DashPay Contacts" />,
+  component: () => <DashPayPlaceholder title="Contacts" />,
 });
 
 const dashpayPaymentsRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/payments",
-  component: () => <PlaceholderScreen title="DashPay Payments" />,
+  component: () => <DashPayPlaceholder title="Payment History" />,
 });
 
 const dashpaySearchRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/search",
-  component: () => <PlaceholderScreen title="Profile Search" />,
+  component: () => <DashPayPlaceholder title="Search Profiles" />,
 });
 
 const identitiesRoute = createRoute({

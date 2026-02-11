@@ -879,7 +879,7 @@
     - Wire to IPC commands from `src/frontend/bindings.ts`
     Write unit tests for store actions and state transitions.
 
-  - [ ] **8.2b Implement DashPay layout shell with subscreen navigation** (P2)
+  - [x] **8.2b Implement DashPay layout shell with subscreen navigation** (P2)
     Create DashPay screen layout with 4-tab subscreen navigation:
     - `src/frontend/screens/DashPayScreen.tsx` — top-level layout with sidebar tab nav
     - Tab items: Contacts, Profile, Payments, Search Profiles
@@ -1141,7 +1141,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 122 |
-| Remaining | 8 |
+| Completed | 167 |
+| Remaining | 29 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

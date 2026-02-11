@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 162 — 2026-02-10
+**Task:** 8.2b Implement DashPay layout shell with subscreen navigation
+**What was done:** Created `DashPayScreen.tsx` with vertical sidebar navigation (4 tabs: My Profile, Contacts, Payment History, Search Profiles), identity selector shared across all tabs, and "No Identities Loaded" empty state with "Load Identity" button. Updated routes.tsx to use DashPayScreen as the layout component for `/dashpay/*` routes with automatic redirect from `/dashpay` to `/dashpay/profile`. Sub-routes render placeholder content inside Islands. Wrote 18 component tests covering empty state, navigation, tab highlighting, identity auto-selection, and layout structure.
+**Files changed:** src/frontend/screens/DashPayScreen.tsx (new), src/frontend/screens/DashPayScreen.test.tsx (new), src/frontend/routes.tsx (updated)
+**Tests added:** 18 tests — no-identities state (4), tab rendering and navigation (8), identity selector (2), redirect behavior (2), layout structure (2)
+**Sub-tasks created:** 0
+
 ## Run 161 — 2026-02-10
 **Task:** 7.5.4c Add IPC assertion tests for 14 commonly-used but untested commands
 **What was done:** Created two test files covering all 14 untested IPC commands. `ipc-commands-coverage.test.ts` (56 tests) provides direct unit tests for all 14 commands: identity search ops (identitySearchFromWallet, identitySearchUpToIndex, identitySearchByDpnsName), identity sign (identitySignMessage), wallet platform ops (walletFetchPlatformAddressBalances, walletBootstrapAddresses, walletStartSpv), core chain ops (coreGetBestChainLock, coreGetBestChainLocks, coreRecoverAssetLocks), settings mutations (settingsUpdatePassword, settingsUpdateAutoStartSpv), and context ops (contextGetFeeMultiplier, contextSetFeeMultiplier). Tests cover success paths, error handling, argument shapes, and edge cases. `ipc-screen-integration.test.tsx` (8 tests) provides screen-level integration tests verifying commands are wired correctly in LoadIdentityScreen (search from wallet, search by DPNS name, batch search), NetworkChooserScreen (coreGetBestChainLocks polling, settingsUpdateAutoStartSpv), WalletsScreen (coreRecoverAssetLocks), and KeyInfoScreen (identitySignMessage). All 3774 tests pass, lint clean, typecheck clean.

@@ -708,7 +708,7 @@ describe("TokenOperationForm — submit and broadcast", () => {
       .mockResolvedValue({ status: "ok", data: { taskId: "task-xyz" } });
     const { user } = setup({ onSubmit, actionName: "Mint" });
     await user.click(screen.getByTestId("operation-submit"));
-    expect(screen.getByText("Mint...")).toBeInTheDocument();
+    expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
   });
 
   it("shows Signing prefix in broadcasting for group action signing", async () => {
@@ -725,7 +725,8 @@ describe("TokenOperationForm — submit and broadcast", () => {
       },
     });
     await user.click(screen.getByTestId("operation-submit"));
-    expect(screen.getByText("Signing Mint...")).toBeInTheDocument();
+    const banner = screen.getByTestId("operation-broadcasting");
+    expect(within(banner).getByText("Signing Mint...")).toBeInTheDocument();
   });
 
   it("transitions to error state on IPC error result", async () => {

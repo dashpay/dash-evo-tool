@@ -539,7 +539,7 @@ describe("TokenSetPriceScreen", () => {
       });
       await user.click(confirmButton);
 
-      expect(screen.getByText("Set Price...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
 
     it("shows destructive confirmation dialog for remove pricing", async () => {

@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 163 — 2026-02-11
+**Task:** 10.6c Add loading spinners to TokenOperationForm-based screens
+**What was done:** Replaced the standalone full-page broadcasting screen with an inline broadcasting banner and submit button spinner in `TokenOperationForm`. When submitting, all form inputs (identity selector, key selector, amount, recipient, public note) are now disabled, the submit button shows a `Loader2` spinner with "ActionName..." text, and a broadcasting status banner appears at the top of the form with elapsed time. The "Back to Tokens" button is also disabled during submission. This automatically applies to all 12 token operation screens (Transfer, Mint, Burn, Freeze, Unfreeze, Destroy Frozen Funds, Pause, Resume, Claim, Set Price, Purchase, Update Config). Updated 12 test files to use `getByTestId("operation-broadcasting")` instead of text matching which now returns multiple elements.
+**Files changed:** src/frontend/components/token/TokenOperationForm.tsx, src/frontend/components/token/TokenOperationForm.test.tsx, src/frontend/screens/TokenBurnScreen.test.tsx, src/frontend/screens/TokenClaimScreen.test.tsx, src/frontend/screens/TokenDestroyFrozenFundsScreen.test.tsx, src/frontend/screens/TokenFreezeScreen.test.tsx, src/frontend/screens/TokenMintScreen.test.tsx, src/frontend/screens/TokenPauseScreen.test.tsx, src/frontend/screens/TokenPurchaseScreen.test.tsx, src/frontend/screens/TokenResumeScreen.test.tsx, src/frontend/screens/TokenSetPriceScreen.test.tsx, src/frontend/screens/TokenTransferScreen.test.tsx, src/frontend/screens/TokenUpdateConfigScreen.test.tsx
+**Tests added:** 0 new tests, 12 existing tests updated to match new inline broadcasting UI
+**Sub-tasks created:** 0
+
 ## Run 162 — 2026-02-11
 **Task:** 10.6b Add React Error Boundary component wrapping the route outlet
 **What was done:** Created `ErrorBoundary` class component in `src/frontend/components/feedback/` that catches render errors in child components and displays a user-friendly fallback UI with error message, "Try Again" button (resets error state), and "Reload App" button. Wrapped the `<Outlet />` in `AppLayout.tsx` with `<ErrorBoundary>` so any screen render crash shows the fallback instead of a white screen. Supports custom fallback via prop. Exported from feedback barrel.

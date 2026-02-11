@@ -465,7 +465,7 @@ describe("TokenPurchaseScreen", () => {
       });
       await user.click(confirmButton);
 
-      expect(screen.getByText("Purchase...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
   });
 

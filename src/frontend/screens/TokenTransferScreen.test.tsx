@@ -270,7 +270,7 @@ describe("TokenTransferScreen", () => {
       const confirmBtn = within(dialog).getByRole("button", { name: /transfer/i });
       await user.click(confirmBtn);
 
-      expect(screen.getByText("Transfer...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
   });
 

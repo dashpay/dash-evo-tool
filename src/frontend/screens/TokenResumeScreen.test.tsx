@@ -209,7 +209,7 @@ describe("TokenResumeScreen", () => {
       });
       await user.click(confirmButton);
 
-      expect(screen.getByText("Resume...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
   });
 

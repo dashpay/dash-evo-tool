@@ -218,7 +218,7 @@ describe("TokenPauseScreen", () => {
       });
       await user.click(confirmButton);
 
-      expect(screen.getByText("Pause...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
   });
 

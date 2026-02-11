@@ -414,7 +414,7 @@ describe("TokenDestroyFrozenFundsScreen", () => {
       await user.click(confirmButton);
 
       expect(
-        screen.getByText("Destroy Frozen Funds..."),
+        screen.getByTestId("operation-broadcasting"),
       ).toBeInTheDocument();
     });
   });

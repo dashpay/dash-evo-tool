@@ -376,12 +376,14 @@ export function TokenOperationForm({
     [tokenContext.balance, tokenContext.decimals],
   );
 
+  const isSubmitting = status.type === "broadcasting";
+
   const canSubmit =
     !!selectedIdentity &&
     selectedKeyId !== null &&
     !walletLocked &&
     isValid &&
-    status.type === "idle";
+    !isSubmitting;
 
   // ── Load data on mount ───────────────────────────────────────────────
   useEffect(() => {
@@ -594,35 +596,33 @@ export function TokenOperationForm({
   }
 
   // ════════════════════════════════════════════════════════════════════
-  // Render: Broadcasting screen
-  // ════════════════════════════════════════════════════════════════════
-  if (status.type === "broadcasting") {
-    return (
-      <div
-        className="flex flex-col items-center justify-center gap-6 py-12"
-        data-testid="operation-broadcasting"
-      >
-        <Loader2 className="h-10 w-10 animate-spin text-primary" />
-        <h2 className="text-xl font-semibold">
-          {groupAction?.groupActionId
-            ? `Signing ${actionName}...`
-            : `${buttonLabel}...`}
-        </h2>
-        <p className="text-muted-foreground">
-          Broadcasting to Dash Platform. This may take a moment.
-        </p>
-        <span className="text-sm text-muted-foreground tabular-nums">
-          {(elapsedMs / 1000).toFixed(1)}s elapsed
-        </span>
-      </div>
-    );
-  }
-
-  // ════════════════════════════════════════════════════════════════════
-  // Render: Main form
+  // Render: Main form (also handles broadcasting state inline)
   // ════════════════════════════════════════════════════════════════════
   return (
     <div className="space-y-6" data-testid="operation-form">
+      {/* ── Broadcasting banner ────────────────────────────────────────── */}
+      {isSubmitting && (
+        <div
+          className="flex items-center gap-3 rounded-lg border border-primary/30 bg-primary/5 p-4"
+          data-testid="operation-broadcasting"
+        >
+          <Loader2 className="h-5 w-5 animate-spin text-primary shrink-0" />
+          <div className="flex-1">
+            <p className="font-medium text-sm">
+              {groupAction?.groupActionId
+                ? `Signing ${actionName}...`
+                : `${buttonLabel}...`}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Broadcasting to Dash Platform. This may take a moment.
+            </p>
+          </div>
+          <span className="text-sm text-muted-foreground tabular-nums shrink-0">
+            {(elapsedMs / 1000).toFixed(1)}s
+          </span>
+        </div>
+      )}
+
       {/* ── Token context header ──────────────────────────────────────── */}
       <div
         className="flex items-start justify-between rounded-lg border bg-muted/30 p-4"
@@ -709,6 +709,7 @@ export function TokenOperationForm({
             <Select
               value={rawIdentityId || selectedIdentity?.id || ""}
               onValueChange={setRawIdentityId}
+              disabled={isSubmitting}
             >
               <SelectTrigger data-testid="operation-identity-select">
                 <SelectValue placeholder="Select identity..." />
@@ -733,6 +734,7 @@ export function TokenOperationForm({
                 (selectedKeyId !== null ? String(selectedKeyId) : "")
               }
               onValueChange={setRawKeyId}
+              disabled={isSubmitting}
             >
               <SelectTrigger data-testid="operation-key-select">
                 <SelectValue placeholder="Auto-selected" />
@@ -798,6 +800,7 @@ export function TokenOperationForm({
               value={amount}
               onChange={(e) => onAmountChange?.(e.target.value)}
               placeholder={amountPlaceholder}
+              disabled={isSubmitting}
               data-testid="operation-amount-input"
               className="font-mono"
             />
@@ -806,6 +809,7 @@ export function TokenOperationForm({
                 variant="outline"
                 size="sm"
                 onClick={() => onAmountChange?.(maxAmount)}
+                disabled={isSubmitting}
                 data-testid="operation-max-button"
               >
                 Max
@@ -836,6 +840,7 @@ export function TokenOperationForm({
             value={recipientId}
             onChange={(e) => onRecipientChange?.(e.target.value)}
             placeholder={recipientPlaceholder}
+            disabled={isSubmitting}
             data-testid="operation-recipient-input"
             className="font-mono"
           />
@@ -868,7 +873,7 @@ export function TokenOperationForm({
                 value={publicNote}
                 onChange={(e) => setPublicNote(e.target.value)}
                 placeholder="A note about the transaction visible to the public..."
-                disabled={!!groupAction?.groupActionId}
+                disabled={isSubmitting || !!groupAction?.groupActionId}
                 data-testid="operation-public-note"
               />
               {groupAction?.groupActionId && (
@@ -928,19 +933,30 @@ export function TokenOperationForm({
         <Button
           variant="ghost"
           onClick={handleBackToTokens}
+          disabled={isSubmitting}
           data-testid="operation-cancel"
         >
           <ArrowLeft className="h-4 w-4 mr-1" />
           Back to Tokens
         </Button>
-        <Button
-          onClick={handleActionClick}
-          disabled={!canSubmit}
-          data-testid="operation-submit"
-          variant={confirmation?.destructive ? "destructive" : "default"}
-        >
-          {buttonLabel}
-        </Button>
+        <div className="flex items-center gap-3">
+          {isSubmitting && (
+            <span className="text-sm text-muted-foreground tabular-nums">
+              {(elapsedMs / 1000).toFixed(1)}s
+            </span>
+          )}
+          <Button
+            onClick={handleActionClick}
+            disabled={!canSubmit}
+            data-testid="operation-submit"
+            variant={confirmation?.destructive ? "destructive" : "default"}
+          >
+            {isSubmitting && (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            )}
+            {isSubmitting ? `${buttonLabel}...` : buttonLabel}
+          </Button>
+        </div>
       </div>
 
       {/* ── Confirmation dialog ───────────────────────────────────────── */}

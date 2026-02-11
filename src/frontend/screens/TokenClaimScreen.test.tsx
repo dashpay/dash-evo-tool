@@ -383,7 +383,7 @@ describe("TokenClaimScreen", () => {
       });
       await user.click(confirmBtn);
 
-      expect(screen.getByText("Claim...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
   });
 

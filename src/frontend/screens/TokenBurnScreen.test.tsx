@@ -259,7 +259,7 @@ describe("TokenBurnScreen", () => {
       const confirmBtn = within(dialog).getByRole("button", { name: /burn/i });
       await user.click(confirmBtn);
 
-      expect(screen.getByText("Burn...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
   });
 

@@ -302,7 +302,7 @@ describe("TokenMintScreen", () => {
       const confirmBtn = within(dialog).getByRole("button", { name: /mint/i });
       await user.click(confirmBtn);
 
-      expect(screen.getByText("Mint...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
   });
 

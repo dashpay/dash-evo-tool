@@ -230,7 +230,7 @@ describe("TokenFreezeScreen", () => {
       });
       await user.click(confirmButton);
 
-      expect(screen.getByText("Freeze...")).toBeInTheDocument();
+      expect(screen.getByTestId("operation-broadcasting")).toBeInTheDocument();
     });
   });
 

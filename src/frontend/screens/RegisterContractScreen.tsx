@@ -303,14 +303,14 @@ export function RegisterContractScreen() {
   const navigate = useNavigate();
 
   // Stores
-  const {
-    identities,
-    loading: identitiesLoading,
-    loadIdentities,
-    subscribeToUpdates: subscribeIdentityUpdates,
-  } = useIdentityStore();
+  const identities = useIdentityStore((s) => s.identities);
+  const identitiesLoading = useIdentityStore((s) => s.loading);
+  const loadIdentities = useIdentityStore((s) => s.loadIdentities);
+  const subscribeIdentityUpdates = useIdentityStore((s) => s.subscribeToUpdates);
   const { loadContracts } = useContractStore();
-  const { hdWallets, singleKeyWallets, loadWallets } = useWalletStore();
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const singleKeyWallets = useWalletStore((s) => s.singleKeyWallets);
+  const loadWallets = useWalletStore((s) => s.loadWallets);
 
   // Form state — raw selection (empty string = "auto-select first")
   const [rawIdentityId, setRawIdentityId] = useState<string>("");

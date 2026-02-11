@@ -247,8 +247,11 @@ export function ReviewStep({
   simpleMode = false,
 }: ReviewStepProps) {
   // ── Store state ──────────────────────────────────────────────────────
-  const { identities, loadIdentities } = useIdentityStore();
-  const { hdWallets, singleKeyWallets, loadWallets } = useWalletStore();
+  const identities = useIdentityStore((s) => s.identities);
+  const loadIdentities = useIdentityStore((s) => s.loadIdentities);
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const singleKeyWallets = useWalletStore((s) => s.singleKeyWallets);
+  const loadWallets = useWalletStore((s) => s.loadWallets);
   const { loadMyTokenBalances } = useTokenStore();
 
   // ── Identity & key selection ─────────────────────────────────────────

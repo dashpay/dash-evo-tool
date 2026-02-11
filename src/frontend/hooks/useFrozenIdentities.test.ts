@@ -54,9 +54,12 @@ const mockIdentities = [
 ];
 
 vi.mock("@/stores/identityStore", () => ({
-  useIdentityStore: () => ({
-    identities: mockIdentities,
-  }),
+  useIdentityStore: (sel?: (s: Record<string, unknown>) => unknown) => {
+    const s = {
+      identities: mockIdentities,
+    };
+    return sel ? sel(s) : s;
+  },
 }));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────

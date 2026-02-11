@@ -33,46 +33,52 @@ vi.mock("@/bindings", async () => {
 });
 
 vi.mock("@/stores/identityStore", () => ({
-  useIdentityStore: () => ({
-    identities: [
-      {
-        id: "id-abc123",
-        alias: "TestIdentity",
-        balance: 1000000000,
-        keys: [
-          {
-            keyId: 1,
-            purpose: "AUTHENTICATION",
-            securityLevel: "HIGH",
-            keyType: "ECDSA_SECP256K1",
-            isDisabled: false,
-          },
-        ],
-        associatedWalletHashes: ["seed-hash-1"],
-        dpnsNames: [],
-        identityType: "User",
-        walletIndex: 0,
-        topUps: [],
-        status: "NotInPlatform",
-      },
-    ],
-    loadIdentities: vi.fn(),
-  }),
+  useIdentityStore: (sel?: (s: Record<string, unknown>) => unknown) => {
+    const s = {
+      identities: [
+        {
+          id: "id-abc123",
+          alias: "TestIdentity",
+          balance: 1000000000,
+          keys: [
+            {
+              keyId: 1,
+              purpose: "AUTHENTICATION",
+              securityLevel: "HIGH",
+              keyType: "ECDSA_SECP256K1",
+              isDisabled: false,
+            },
+          ],
+          associatedWalletHashes: ["seed-hash-1"],
+          dpnsNames: [],
+          identityType: "User",
+          walletIndex: 0,
+          topUps: [],
+          status: "NotInPlatform",
+        },
+      ],
+      loadIdentities: vi.fn(),
+    };
+    return sel ? sel(s) : s;
+  },
 }));
 
 vi.mock("@/stores/walletStore", () => ({
-  useWalletStore: () => ({
-    hdWallets: [
-      {
-        seedHash: "seed-hash-1",
-        alias: "TestWallet",
-        usesPassword: false,
-        passwordHint: null,
-      },
-    ],
-    singleKeyWallets: [],
-    loadWallets: vi.fn(),
-  }),
+  useWalletStore: (sel?: (s: Record<string, unknown>) => unknown) => {
+    const s = {
+      hdWallets: [
+        {
+          seedHash: "seed-hash-1",
+          alias: "TestWallet",
+          usesPassword: false,
+          passwordHint: null,
+        },
+      ],
+      singleKeyWallets: [],
+      loadWallets: vi.fn(),
+    };
+    return sel ? sel(s) : s;
+  },
 }));
 
 vi.mock("@/stores/tokenStore", () => ({

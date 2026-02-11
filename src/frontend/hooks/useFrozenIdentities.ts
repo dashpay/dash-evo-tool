@@ -27,7 +27,7 @@ export interface UseFrozenIdentitiesResult {
  * are actually frozen. Returns the filtered list as dropdown-ready options.
  */
 export function useFrozenIdentities(tokenId: string): UseFrozenIdentitiesResult {
-  const { identities } = useIdentityStore();
+  const identities = useIdentityStore((s) => s.identities);
   const [frozenIdentities, setFrozenIdentities] = useState<FrozenIdentity[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

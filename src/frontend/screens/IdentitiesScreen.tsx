@@ -93,7 +93,9 @@ export function IdentitiesScreen() {
   } = useIdentityStore();
 
   // Wallet store (for wallet name resolution)
-  const { hdWallets, singleKeyWallets, loadWallets } = useWalletStore();
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const singleKeyWallets = useWalletStore((s) => s.singleKeyWallets);
+  const loadWallets = useWalletStore((s) => s.loadWallets);
 
   // Sub-view navigation
   const [subView, setSubView] = useState<SubView>({ type: "detail" });

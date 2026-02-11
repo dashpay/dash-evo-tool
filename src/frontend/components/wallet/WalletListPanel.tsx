@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, memo } from "react";
 import {
   Wallet,
   KeyRound,
@@ -162,7 +162,7 @@ interface HdWalletCardProps {
   onLock?: () => void;
 }
 
-function HdWalletCard({
+const HdWalletCard = memo(function HdWalletCard({
   wallet,
   isSelected,
   onSelect,
@@ -263,7 +263,7 @@ function HdWalletCard({
       </div>
     </button>
   );
-}
+});
 
 // ─── Single-Key Wallet Card ────────────────────────────────────────
 
@@ -275,7 +275,7 @@ interface SingleKeyWalletCardProps {
   onRemove: () => void;
 }
 
-function SingleKeyWalletCard({
+const SingleKeyWalletCard = memo(function SingleKeyWalletCard({
   wallet,
   isSelected,
   onSelect,
@@ -365,7 +365,7 @@ function SingleKeyWalletCard({
       </div>
     </button>
   );
-}
+});
 
 // ─── WalletListPanel ───────────────────────────────────────────────
 

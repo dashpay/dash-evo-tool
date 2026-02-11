@@ -164,7 +164,8 @@ export function SingleKeySendScreen() {
   const navigate = useNavigate();
 
   // Get wallet data from store
-  const { singleKeyWallets, selectedWallet } = useWalletStore();
+  const singleKeyWallets = useWalletStore((s) => s.singleKeyWallets);
+  const selectedWallet = useWalletStore((s) => s.selectedWallet);
 
   const wallet: SingleKeyWalletDto | null =
     selectedWallet?.type === "singleKey"

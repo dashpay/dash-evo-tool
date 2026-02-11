@@ -61,25 +61,31 @@ const mockIdentities = [
 ];
 
 vi.mock("@/stores/identityStore", () => ({
-  useIdentityStore: () => ({
-    identities: mockIdentities,
-    loadIdentities: vi.fn().mockResolvedValue(null),
-  }),
+  useIdentityStore: (sel?: (s: Record<string, unknown>) => unknown) => {
+    const s = {
+      identities: mockIdentities,
+      loadIdentities: vi.fn().mockResolvedValue(null),
+    };
+    return sel ? sel(s) : s;
+  },
 }));
 
 vi.mock("@/stores/walletStore", () => ({
-  useWalletStore: () => ({
-    hdWallets: [
-      {
-        seedHash: "seed-hash-purchase",
-        alias: "BuyerWallet",
-        usesPassword: false,
-        passwordHint: null,
-      },
-    ],
-    singleKeyWallets: [],
-    loadWallets: vi.fn().mockResolvedValue(null),
-  }),
+  useWalletStore: (sel?: (s: Record<string, unknown>) => unknown) => {
+    const s = {
+      hdWallets: [
+        {
+          seedHash: "seed-hash-purchase",
+          alias: "BuyerWallet",
+          usesPassword: false,
+          passwordHint: null,
+        },
+      ],
+      singleKeyWallets: [],
+      loadWallets: vi.fn().mockResolvedValue(null),
+    };
+    return sel ? sel(s) : s;
+  },
 }));
 
 vi.mock("@/stores/tokenStore", () => ({

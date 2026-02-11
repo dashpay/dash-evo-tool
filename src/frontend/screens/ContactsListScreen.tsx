@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, memo } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   Search,
@@ -10,6 +10,8 @@ import {
   ChevronDown,
   Loader2,
   RefreshCw,
+  QrCode,
+  ScanLine,
 } from "lucide-react";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
@@ -158,7 +160,7 @@ interface ContactCardProps {
   onToggleHidden: (contactId: string, isHidden: boolean) => void;
 }
 
-function ContactCard({
+const ContactCard = memo(function ContactCard({
   contact,
   onViewProfile,
   onPay,
@@ -246,7 +248,7 @@ function ContactCard({
       </div>
     </div>
   );
-}
+});
 
 // ─── Re-export ContactRequests (inline) ──────────────────────────────
 // The full ContactRequests component is in components/dashpay/ContactRequests.tsx
@@ -375,6 +377,22 @@ export function ContactsListScreen() {
               <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
             )}
             Refresh
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate({ to: "/dashpay/qr-generator" })}
+          >
+            <QrCode className="mr-1.5 h-3.5 w-3.5" />
+            Generate QR
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate({ to: "/dashpay/qr-scanner" })}
+          >
+            <ScanLine className="mr-1.5 h-3.5 w-3.5" />
+            Scan QR
           </Button>
           <Button size="sm" onClick={handleAddContact}>
             <UserPlus className="mr-1.5 h-3.5 w-3.5" />

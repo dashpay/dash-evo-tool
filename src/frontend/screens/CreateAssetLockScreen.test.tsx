@@ -22,7 +22,7 @@ import { commands } from "@/bindings";
 
 let walletStoreState: Record<string, unknown> = {};
 vi.mock("@/stores/walletStore", () => ({
-  useWalletStore: () => walletStoreState,
+  useWalletStore: (selector?: (s: Record<string, unknown>) => unknown) => selector ? selector(walletStoreState) : walletStoreState,
 }));
 
 // ─── Helpers ────────────────────────────────────────────────────────

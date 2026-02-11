@@ -110,11 +110,9 @@ export function GroupActionsScreen() {
   const navigate = useNavigate();
 
   // ── Stores ──────────────────────────────────────────────────────────
-  const {
-    identities,
-    loading: identitiesLoading,
-    loadIdentities,
-  } = useIdentityStore();
+  const identities = useIdentityStore((s) => s.identities);
+  const identitiesLoading = useIdentityStore((s) => s.loading);
+  const loadIdentities = useIdentityStore((s) => s.loadIdentities);
   const {
     contracts,
     loading: contractsLoading,

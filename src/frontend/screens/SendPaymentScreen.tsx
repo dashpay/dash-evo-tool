@@ -66,7 +66,7 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
     loadContacts,
   } = useDashPayStore();
   const identities = useIdentityStore((s) => s.identities);
-  const { hdWallets } = useWalletStore();
+  const hdWallets = useWalletStore((s) => s.hdWallets);
 
   // ── Local state ──
   const [screenState, setScreenState] = useState<ScreenState>("form");

@@ -144,7 +144,8 @@ export function AssetLockDetailScreen() {
   const navigate = useNavigate();
   const { txid } = useParams({ strict: false }) as { txid?: string };
 
-  const { hdWallets, selectedWallet } = useWalletStore();
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const selectedWallet = useWalletStore((s) => s.selectedWallet);
 
   // Find selected HD wallet
   const wallet: WalletDto | null =

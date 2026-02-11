@@ -19,19 +19,19 @@ export function DpnsRegisterNameScreen() {
   const navigate = useNavigate();
 
   // Identity store
-  const {
-    identities,
-    loading: identitiesLoading,
-    loadIdentities,
-    reloadIdentity,
-    subscribeToUpdates: subscribeIdentityUpdates,
-  } = useIdentityStore();
+  const identities = useIdentityStore((s) => s.identities);
+  const identitiesLoading = useIdentityStore((s) => s.loading);
+  const loadIdentities = useIdentityStore((s) => s.loadIdentities);
+  const reloadIdentity = useIdentityStore((s) => s.reloadIdentity);
+  const subscribeIdentityUpdates = useIdentityStore((s) => s.subscribeToUpdates);
 
   // Contest store — for refreshing DPNS names after registration
   const { refreshDpnsNames } = useContestStore();
 
   // Wallet store — for wallet lock state
-  const { hdWallets, singleKeyWallets, loadWallets } = useWalletStore();
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const singleKeyWallets = useWalletStore((s) => s.singleKeyWallets);
+  const loadWallets = useWalletStore((s) => s.loadWallets);
 
   // Registration status
   const [status, setStatus] = useState<RegisterDpnsNameStatus>({

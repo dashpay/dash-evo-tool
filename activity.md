@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 152 — 2026-02-11
+**Task:** 10.5 Performance optimization and bundle size
+**What was done:** Measured bundle (2.0MB JS, within 2MB target). Added virtual scrolling via @tanstack/react-virtual to address and transaction tables in HdWalletDetail (activates for lists >50 items, falls back to standard rendering for smaller lists to maintain jsdom testability). Wrapped 4 key list item components with React.memo (HdWalletCard, SingleKeyWalletCard, ContactCard, IdentityCard). Converted 20 full Zustand store subscriptions to individual selectors across 15 production files (walletStore + identityStore), reducing unnecessary re-renders when unrelated store fields change. Updated 20 test files to support the selector-based mock pattern.
+**Files changed:** src/frontend/components/wallet/HdWalletDetail.tsx, src/frontend/components/wallet/WalletListPanel.tsx, src/frontend/screens/ContactsListScreen.tsx, src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/screens/CreateAssetLockScreen.tsx, src/frontend/screens/SendPaymentScreen.tsx, src/frontend/screens/AssetLockDetailScreen.tsx, src/frontend/screens/SingleKeySendScreen.tsx, src/frontend/screens/SendScreen.tsx, src/frontend/screens/RegisterContractScreen.tsx, src/frontend/screens/DpnsRegisterNameScreen.tsx, src/frontend/screens/UpdateContractScreen.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/components/token/TokenOperationForm.tsx, src/frontend/components/token/ReviewStep.tsx, src/frontend/hooks/useFrozenIdentities.ts, src/frontend/screens/GroupActionsScreen.tsx, + 20 test files
+**Tests added:** 0 new tests (all 4473 existing tests pass after mock updates)
+**Sub-tasks created:** 0
+
 ## Run 190 — 2026-02-11
 **Task:** 10.4b Add frontend code splitting to reduce main bundle size below 500 KB
 **What was done:** Added route-level code splitting using `React.lazy()` with `Suspense` for all 60+ screen components in `routes.tsx`, and vendor chunk splitting via `manualChunks` in `vite.config.ts` (separating react, router/zustand, radix-ui, tanstack-table, dnd-kit, qrcode/json-viewer, tauri-api into dedicated chunks). Main JS chunk reduced from 1,550 KB to 287 KB (81% reduction). No chunk exceeds 500 KB. All screens load on-demand with a loading spinner fallback. Total JS is still ~1,550 KB but distributed across 80+ chunks loaded only when needed. Build time unchanged at ~2.2s. All 4,473 component tests pass, lint/typecheck clean, 448/450 E2E integration tests pass (2 pre-existing failures).

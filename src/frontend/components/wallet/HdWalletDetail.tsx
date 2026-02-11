@@ -1,4 +1,5 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Send,
   Download,
@@ -270,6 +271,11 @@ function SortableHeader({
   );
 }
 
+const VIRTUAL_ROW_HEIGHT = 40;
+const VIRTUAL_OVERSCAN = 10;
+const VIRTUAL_MAX_HEIGHT = 600;
+const VIRTUAL_THRESHOLD = 50;
+
 function AddressTable({
   addresses,
   platformAddresses,
@@ -279,6 +285,8 @@ function AddressTable({
   onSort,
   onViewKey,
 }: AddressTableProps) {
+  const parentRef = useRef<HTMLDivElement>(null);
+
   // Build a lookup for platform address balances
   const platformBalanceMap = useMemo(() => {
     const map = new Map<string, number>();
@@ -339,6 +347,16 @@ function AddressTable({
     platformBalanceMap,
   ]);
 
+  const useVirtual = sortedAddresses.length > VIRTUAL_THRESHOLD;
+
+  const virtualizer = useVirtualizer({
+    count: sortedAddresses.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => VIRTUAL_ROW_HEIGHT,
+    overscan: VIRTUAL_OVERSCAN,
+    enabled: useVirtual,
+  });
+
   if (sortedAddresses.length === 0) {
     return (
       <EmptyState
@@ -352,122 +370,159 @@ function AddressTable({
     );
   }
 
-  return (
-    <div className="overflow-auto">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <SortableHeader
-              column="address"
-              currentColumn={sortColumn}
-              currentOrder={sortOrder}
-              onSort={onSort}
-            >
-              Address
-            </SortableHeader>
-            <SortableHeader
-              column="balance"
-              currentColumn={sortColumn}
-              currentOrder={sortOrder}
-              onSort={onSort}
-              className="text-right"
-            >
-              Balance (DASH)
-            </SortableHeader>
-            <SortableHeader
-              column="totalReceived"
-              currentColumn={sortColumn}
-              currentOrder={sortOrder}
-              onSort={onSort}
-              className="text-right"
-            >
-              Total Received
-            </SortableHeader>
-            <SortableHeader
-              column="type"
-              currentColumn={sortColumn}
-              currentOrder={sortOrder}
-              onSort={onSort}
-            >
-              Type
-            </SortableHeader>
-            <SortableHeader
-              column="index"
-              currentColumn={sortColumn}
-              currentOrder={sortOrder}
-              onSort={onSort}
-              className="text-right"
-            >
-              Index
-            </SortableHeader>
-            <SortableHeader
-              column="path"
-              currentColumn={sortColumn}
-              currentOrder={sortOrder}
-              onSort={onSort}
-            >
-              Path
-            </SortableHeader>
-            <TableHead className="w-[80px]">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {sortedAddresses.map((addr) => {
-            const category = categorizeAddress(addr.derivationPath);
-            const isPlatform = category === "platform";
-            const platformCredits = platformBalanceMap.get(addr.address);
-            const displayBalance = isPlatform && platformCredits != null
-              ? formatCreditsAsDash(platformCredits)
-              : formatDash(addr.balance);
-            const displayReceived = isPlatform ? "N/A" : formatDash(addr.totalReceived);
+  function renderAddressRow(addr: WalletAddressDto) {
+    const category = categorizeAddress(addr.derivationPath);
+    const isPlatform = category === "platform";
+    const platformCredits = platformBalanceMap.get(addr.address);
+    const displayBalance = isPlatform && platformCredits != null
+      ? formatCreditsAsDash(platformCredits)
+      : formatDash(addr.balance);
+    const displayReceived = isPlatform ? "N/A" : formatDash(addr.totalReceived);
 
-            return (
-              <TableRow key={`${addr.address}-${addr.derivationPath}`}>
-                <TableCell className="font-mono text-xs max-w-[200px]">
-                  <div className="flex items-center gap-1">
-                    <span className="truncate" title={addr.address}>
-                      {addr.address}
-                    </span>
-                    <CopyButton value={addr.address} />
-                  </div>
-                </TableCell>
-                <TableCell className="text-right font-mono text-xs">
-                  {displayBalance}
-                </TableCell>
-                <TableCell className="text-right font-mono text-xs">
-                  {displayReceived}
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline" className="text-xs">
-                    {categoryLabel(category)}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-right text-xs">
-                  {extractIndex(addr.derivationPath)}
-                </TableCell>
-                <TableCell className="font-mono text-xs max-w-[160px]">
-                  <span className="truncate block" title={addr.derivationPath}>
-                    {addr.derivationPath}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  {onViewKey && (
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      onClick={() =>
-                        onViewKey(addr.address, addr.derivationPath)
-                      }
-                      aria-label={`View key for ${addr.address}`}
-                    >
-                      <Eye className="size-3" />
-                      Key
-                    </Button>
-                  )}
-                </TableCell>
-              </TableRow>
-            );
-          })}
+    return (
+      <TableRow key={`${addr.address}-${addr.derivationPath}`}>
+        <TableCell className="font-mono text-xs max-w-[200px]">
+          <div className="flex items-center gap-1">
+            <span className="truncate" title={addr.address}>
+              {addr.address}
+            </span>
+            <CopyButton value={addr.address} />
+          </div>
+        </TableCell>
+        <TableCell className="text-right font-mono text-xs">
+          {displayBalance}
+        </TableCell>
+        <TableCell className="text-right font-mono text-xs">
+          {displayReceived}
+        </TableCell>
+        <TableCell>
+          <Badge variant="outline" className="text-xs">
+            {categoryLabel(category)}
+          </Badge>
+        </TableCell>
+        <TableCell className="text-right text-xs">
+          {extractIndex(addr.derivationPath)}
+        </TableCell>
+        <TableCell className="font-mono text-xs max-w-[160px]">
+          <span className="truncate block" title={addr.derivationPath}>
+            {addr.derivationPath}
+          </span>
+        </TableCell>
+        <TableCell>
+          {onViewKey && (
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={() =>
+                onViewKey(addr.address, addr.derivationPath)
+              }
+              aria-label={`View key for ${addr.address}`}
+            >
+              <Eye className="size-3" />
+              Key
+            </Button>
+          )}
+        </TableCell>
+      </TableRow>
+    );
+  }
+
+  const tableHeader = (
+    <TableHeader>
+      <TableRow>
+        <SortableHeader
+          column="address"
+          currentColumn={sortColumn}
+          currentOrder={sortOrder}
+          onSort={onSort}
+        >
+          Address
+        </SortableHeader>
+        <SortableHeader
+          column="balance"
+          currentColumn={sortColumn}
+          currentOrder={sortOrder}
+          onSort={onSort}
+          className="text-right"
+        >
+          Balance (DASH)
+        </SortableHeader>
+        <SortableHeader
+          column="totalReceived"
+          currentColumn={sortColumn}
+          currentOrder={sortOrder}
+          onSort={onSort}
+          className="text-right"
+        >
+          Total Received
+        </SortableHeader>
+        <SortableHeader
+          column="type"
+          currentColumn={sortColumn}
+          currentOrder={sortOrder}
+          onSort={onSort}
+        >
+          Type
+        </SortableHeader>
+        <SortableHeader
+          column="index"
+          currentColumn={sortColumn}
+          currentOrder={sortOrder}
+          onSort={onSort}
+          className="text-right"
+        >
+          Index
+        </SortableHeader>
+        <SortableHeader
+          column="path"
+          currentColumn={sortColumn}
+          currentOrder={sortOrder}
+          onSort={onSort}
+        >
+          Path
+        </SortableHeader>
+        <TableHead className="w-[80px]">Actions</TableHead>
+      </TableRow>
+    </TableHeader>
+  );
+
+  if (!useVirtual) {
+    return (
+      <div className="overflow-auto">
+        <Table>
+          {tableHeader}
+          <TableBody>
+            {sortedAddresses.map((addr) => renderAddressRow(addr))}
+          </TableBody>
+        </Table>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={parentRef}
+      className="overflow-auto"
+      style={{ maxHeight: VIRTUAL_MAX_HEIGHT }}
+    >
+      <Table>
+        {tableHeader}
+        <TableBody>
+          {virtualizer.getVirtualItems().length > 0 && (
+            <tr style={{ height: virtualizer.getVirtualItems()[0]!.start }} />
+          )}
+          {virtualizer.getVirtualItems().map((virtualRow) =>
+            renderAddressRow(sortedAddresses[virtualRow.index]!),
+          )}
+          {virtualizer.getVirtualItems().length > 0 && (
+            <tr
+              style={{
+                height:
+                  virtualizer.getTotalSize() -
+                  (virtualizer.getVirtualItems()[virtualizer.getVirtualItems().length - 1]?.end ?? 0),
+              }}
+            />
+          )}
         </TableBody>
       </Table>
     </div>
@@ -499,11 +554,23 @@ function formatTimestamp(timestamp: number): string {
 }
 
 function TransactionTable({ transactions }: TransactionTableProps) {
+  const parentRef = useRef<HTMLDivElement>(null);
+
   const sorted = useMemo(() => {
     return [...transactions].sort((a, b) => {
       return b.timestamp - a.timestamp || a.txid.localeCompare(b.txid);
     });
   }, [transactions]);
+
+  const useVirtual = sorted.length > VIRTUAL_THRESHOLD;
+
+  const virtualizer = useVirtualizer({
+    count: sorted.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => VIRTUAL_ROW_HEIGHT,
+    overscan: VIRTUAL_OVERSCAN,
+    enabled: useVirtual,
+  });
 
   if (sorted.length === 0) {
     return (
@@ -514,61 +581,98 @@ function TransactionTable({ transactions }: TransactionTableProps) {
     );
   }
 
-  return (
-    <div className="overflow-auto">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Date</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead className="text-right">Amount</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>TxID</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {sorted.map((tx) => {
-            const direction = transactionDirection(tx);
-            const amountAbs = Math.abs(tx.netAmount);
-            const amountPrefix = tx.netAmount > 0 ? "+" : tx.netAmount < 0 ? "-" : "";
-            const status = tx.height
-              ? `Confirmed @${tx.height}`
-              : "Pending";
+  function renderTxRow(tx: WalletTransactionDto) {
+    const direction = transactionDirection(tx);
+    const amountAbs = Math.abs(tx.netAmount);
+    const amountPrefix = tx.netAmount > 0 ? "+" : tx.netAmount < 0 ? "-" : "";
+    const status = tx.height
+      ? `Confirmed @${tx.height}`
+      : "Pending";
 
-            return (
-              <TableRow key={tx.txid}>
-                <TableCell className="text-xs">
-                  {formatTimestamp(tx.timestamp)}
-                </TableCell>
-                <TableCell className="text-xs">{direction}</TableCell>
-                <TableCell
-                  className={cn(
-                    "text-right font-mono text-xs font-semibold",
-                    transactionAmountClass(tx),
-                  )}
-                >
-                  {amountPrefix}
-                  {formatDash(amountAbs)}
-                </TableCell>
-                <TableCell>
-                  <Badge
-                    variant={tx.height ? "secondary" : "outline"}
-                    className="text-xs"
-                  >
-                    {status}
-                  </Badge>
-                </TableCell>
-                <TableCell className="font-mono text-xs max-w-[200px]">
-                  <div className="flex items-center gap-1">
-                    <span className="truncate" title={tx.txid}>
-                      {tx.txid}
-                    </span>
-                    <CopyButton value={tx.txid} />
-                  </div>
-                </TableCell>
-              </TableRow>
-            );
-          })}
+    return (
+      <TableRow key={tx.txid}>
+        <TableCell className="text-xs">
+          {formatTimestamp(tx.timestamp)}
+        </TableCell>
+        <TableCell className="text-xs">{direction}</TableCell>
+        <TableCell
+          className={cn(
+            "text-right font-mono text-xs font-semibold",
+            transactionAmountClass(tx),
+          )}
+        >
+          {amountPrefix}
+          {formatDash(amountAbs)}
+        </TableCell>
+        <TableCell>
+          <Badge
+            variant={tx.height ? "secondary" : "outline"}
+            className="text-xs"
+          >
+            {status}
+          </Badge>
+        </TableCell>
+        <TableCell className="font-mono text-xs max-w-[200px]">
+          <div className="flex items-center gap-1">
+            <span className="truncate" title={tx.txid}>
+              {tx.txid}
+            </span>
+            <CopyButton value={tx.txid} />
+          </div>
+        </TableCell>
+      </TableRow>
+    );
+  }
+
+  const tableHeader = (
+    <TableHeader>
+      <TableRow>
+        <TableHead>Date</TableHead>
+        <TableHead>Type</TableHead>
+        <TableHead className="text-right">Amount</TableHead>
+        <TableHead>Status</TableHead>
+        <TableHead>TxID</TableHead>
+      </TableRow>
+    </TableHeader>
+  );
+
+  if (!useVirtual) {
+    return (
+      <div className="overflow-auto">
+        <Table>
+          {tableHeader}
+          <TableBody>
+            {sorted.map((tx) => renderTxRow(tx))}
+          </TableBody>
+        </Table>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={parentRef}
+      className="overflow-auto"
+      style={{ maxHeight: VIRTUAL_MAX_HEIGHT }}
+    >
+      <Table>
+        {tableHeader}
+        <TableBody>
+          {virtualizer.getVirtualItems().length > 0 && (
+            <tr style={{ height: virtualizer.getVirtualItems()[0]!.start }} />
+          )}
+          {virtualizer.getVirtualItems().map((virtualRow) =>
+            renderTxRow(sorted[virtualRow.index]!),
+          )}
+          {virtualizer.getVirtualItems().length > 0 && (
+            <tr
+              style={{
+                height:
+                  virtualizer.getTotalSize() -
+                  (virtualizer.getVirtualItems()[virtualizer.getVirtualItems().length - 1]?.end ?? 0),
+              }}
+            />
+          )}
         </TableBody>
       </Table>
     </div>

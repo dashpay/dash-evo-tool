@@ -324,7 +324,7 @@ interface IdentityCardInternalProps extends IdentityCardProps {
   isDragging?: boolean;
 }
 
-const IdentityCard = React.forwardRef<HTMLDivElement, IdentityCardInternalProps>(
+const IdentityCard = React.memo(React.forwardRef<HTMLDivElement, IdentityCardInternalProps>(
   function IdentityCard(
     {
       identity,
@@ -602,7 +602,7 @@ const IdentityCard = React.forwardRef<HTMLDivElement, IdentityCardInternalProps>
       </div>
     </div>
   );
-});
+}));
 
 // ─── IdentityListPanel ────────────────────────────────────────────
 

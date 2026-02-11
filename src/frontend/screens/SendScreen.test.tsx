@@ -63,17 +63,21 @@ const mockPasswordWallet = {
   passwordHint: "My hint",
 };
 
+let mockHdWallets = [mockHdWallet];
 let mockSelectedWallet: { type: string; seedHash?: string; keyHash?: string } | null = {
   type: "hd",
   seedHash: "abc123",
 };
 
 vi.mock("@/stores/walletStore", () => ({
-  useWalletStore: vi.fn(() => ({
-    hdWallets: [mockHdWallet],
-    singleKeyWallets: [],
-    selectedWallet: mockSelectedWallet,
-  })),
+  useWalletStore: vi.fn((sel?: (s: Record<string, unknown>) => unknown) => {
+    const s = {
+      hdWallets: mockHdWallets,
+      singleKeyWallets: [],
+      selectedWallet: mockSelectedWallet,
+    };
+    return sel ? sel(s) : s;
+  }),
 }));
 
 // ─── Sonner mock ────────────────────────────────────────────────────
@@ -91,6 +95,7 @@ vi.mock("sonner", () => ({
 describe("SendScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockHdWallets = [mockHdWallet];
     mockSelectedWallet = { type: "hd", seedHash: "abc123" };
   });
 
@@ -590,12 +595,8 @@ describe("SendScreen", () => {
 
   it("shows unlock gate for password-protected wallets", async () => {
     // Override wallet store to return password wallet
-    const { useWalletStore } = await import("@/stores/walletStore");
-    vi.mocked(useWalletStore).mockReturnValueOnce({
-      hdWallets: [mockPasswordWallet],
-      singleKeyWallets: [],
-      selectedWallet: { type: "hd", seedHash: "pass123" },
-    } as ReturnType<typeof useWalletStore>);
+    mockHdWallets = [mockPasswordWallet];
+    mockSelectedWallet = { type: "hd", seedHash: "pass123" };
 
     render(<SendScreen />);
     expect(

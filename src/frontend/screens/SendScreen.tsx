@@ -147,7 +147,9 @@ export function SendScreen() {
   const navigate = useNavigate();
 
   // Get wallet data from store
-  const { hdWallets, singleKeyWallets, selectedWallet } = useWalletStore();
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const singleKeyWallets = useWalletStore((s) => s.singleKeyWallets);
+  const selectedWallet = useWalletStore((s) => s.selectedWallet);
 
   // Find the selected HD wallet
   const wallet: WalletDto | null =

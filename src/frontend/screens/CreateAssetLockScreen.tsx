@@ -62,7 +62,8 @@ function formatDash(duffs: number): string {
 
 export function CreateAssetLockScreen() {
   const navigate = useNavigate();
-  const { hdWallets, selectedWallet } = useWalletStore();
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const selectedWallet = useWalletStore((s) => s.selectedWallet);
 
   // Find selected HD wallet
   const wallet: WalletDto | null =

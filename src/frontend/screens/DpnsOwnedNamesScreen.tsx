@@ -6,6 +6,7 @@ import { LoadingSpinner } from "@/components/feedback";
 import { OwnedNamesPanel } from "@/components/dpns/OwnedNamesPanel";
 import { useContestStore } from "@/stores/contestStore";
 import { commands } from "@/bindings";
+import { useIdentityStore } from "@/stores/identityStore";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toastError";
 
@@ -61,6 +62,13 @@ export function DpnsOwnedNamesScreen() {
           alias,
         });
         if (result.status === "ok") {
+          // Also update the identity store's in-memory state so the alias
+          // is immediately visible in the Identities screen without refresh.
+          useIdentityStore.setState((state) => ({
+            identities: state.identities.map((i) =>
+              i.id === identityId ? { ...i, alias } : i,
+            ),
+          }));
           toast.success(`Alias set to "${alias}"`);
         } else {
           toastError(result.error);

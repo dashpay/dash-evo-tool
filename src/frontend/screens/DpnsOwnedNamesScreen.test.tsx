@@ -2,7 +2,9 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DpnsOwnedNamesScreen } from "./DpnsOwnedNamesScreen";
 import { useContestStore } from "@/stores/contestStore";
+import { useIdentityStore } from "@/stores/identityStore";
 import { renderWithProviders } from "@/test/router-utils";
+import { createMockIdentity } from "@/test/fixtures";
 import type { DpnsNameEntryDto } from "@/bindings";
 
 // ─── Centralized mock bindings ───────────────────────────────────
@@ -268,6 +270,38 @@ describe("DpnsOwnedNamesScreen — set alias", () => {
       expect(mockToast.success).toHaveBeenCalledWith(
         'Alias set to "alice.dash"',
       );
+    });
+  });
+
+  it("updates identity store state on successful alias set", async () => {
+    vi.mocked(commands.identitySetAlias).mockResolvedValue({ status: "ok", data: null });
+    // Pre-populate the identity store with an identity matching the owned name
+    useIdentityStore.setState({
+      identities: [
+        createMockIdentity({
+          id: "abcdef1234567890abcdef1234567890",
+          alias: null,
+        }),
+      ],
+    });
+    setupWithNames();
+    const { user } = setup();
+
+    await waitFor(() => {
+      expect(screen.getByText("alice.dash")).toBeInTheDocument();
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: /set alias for alice.dash/i }),
+    );
+
+    await waitFor(() => {
+      const identity = useIdentityStore
+        .getState()
+        .identities.find(
+          (i) => i.id === "abcdef1234567890abcdef1234567890",
+        );
+      expect(identity?.alias).toBe("alice.dash");
     });
   });
 

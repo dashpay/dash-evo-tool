@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 186 — 2026-02-11
+**Task:** 10.1c Verify and fix DPNS Owned Names "Set Alias" action
+**What was done:** Verified the Set Alias button in OwnedNamesPanel correctly calls the `identitySetAlias` IPC command with `.dash` suffix. Fixed a state sync issue: after setting an alias from the DPNS Owned Names screen, the identity store's in-memory state was not updated, meaning the Identities screen would show stale alias data. Added `useIdentityStore.setState()` call on successful alias set to update the identity list immediately. Added a new test verifying the identity store is updated on success.
+**Files changed:** src/frontend/screens/DpnsOwnedNamesScreen.tsx, src/frontend/screens/DpnsOwnedNamesScreen.test.tsx
+**Tests added:** 1 new test (identity store state updated on successful alias set)
+**Sub-tasks created:** 0
+
 ## Run 185 — 2026-02-11
 **Task:** 10.1b Add direct key viewing from identity detail panel
 **What was done:** Added origin tracking to KeyInfoScreen navigation so clicking a key in the detail panel opens KeyInfoScreen with a Back button that returns to the detail panel (not KeyManagementScreen). When navigating from KeyManagementScreen, Back still returns to keys. Added `from` field to the `keyInfo` SubView type, dynamic `backLabel` prop to KeyInfoScreen for accessible aria-labels ("Back to identity" vs "Back to keys"). Updated existing test that relied on old aria-label.

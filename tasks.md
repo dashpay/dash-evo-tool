@@ -945,7 +945,7 @@
     Reference: `add_contact_screen.rs` (697 lines)
     Write component tests. Write Playwright E2E test for add contact flow.
 
-  - [ ] **8.3a Implement ContactDetailsScreen and ContactProfileViewer** (P2)
+  - [x] **8.3a Implement ContactDetailsScreen and ContactProfileViewer** (P2)
     Build the two contact detail/profile viewing screens:
     - **ContactDetailsScreen:** profile header (avatar, name, username, bio, ID), Send Payment button (dev mode), Private Contact Info section (nickname, note, hidden toggle with edit/save/cancel), Payment History section (per-contact), Actions section
     - **ContactProfileViewer:** public profile (avatar with async load, display name, identity ID, public message), avatar verification (hash, fingerprint), Refresh/Pay buttons, embedded Private Contact Info section (edit/save/cancel)
@@ -1141,7 +1141,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 168 |
-| Remaining | 28 |
+| Completed | 169 |
+| Remaining | 27 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

@@ -304,18 +304,16 @@ export function ContactsListScreen() {
   // Handlers
   const handleViewProfile = useCallback(
     (contactId: string) => {
-      // Will be wired to ContactProfileViewer screen when implemented
-      void contactId;
+      navigate({ to: "/dashpay/contact-profile/$contactId", params: { contactId } });
     },
-    [],
+    [navigate],
   );
 
   const handlePay = useCallback(
     (contactId: string) => {
-      // Will be wired to SendPayment screen when implemented
-      void contactId;
+      navigate({ to: "/dashpay/contact-details/$contactId", params: { contactId } });
     },
-    [],
+    [navigate],
   );
 
   const handleToggleHidden = useCallback(

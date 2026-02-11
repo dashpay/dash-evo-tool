@@ -5,6 +5,7 @@ import {
   createRouter,
   Outlet,
   useNavigate,
+  useParams,
 } from "@tanstack/react-router";
 import { AppLayout } from "./AppLayout";
 import { WelcomeScreen } from "@/screens/WelcomeScreen";
@@ -55,6 +56,8 @@ import { DashPayScreen } from "@/screens/DashPayScreen";
 import { ProfileScreen } from "@/screens/ProfileScreen";
 import { ContactsListScreen } from "@/screens/ContactsListScreen";
 import { AddContactScreen } from "@/screens/AddContactScreen";
+import { ContactDetailsScreen } from "@/screens/ContactDetailsScreen";
+import { ContactProfileViewer } from "@/screens/ContactProfileViewer";
 import { Island } from "@/components/layout/Island";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -170,6 +173,28 @@ const dashpayAddContactRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/add-contact",
   component: AddContactScreen,
+});
+
+function ContactDetailsWrapper() {
+  const { contactId } = useParams({ strict: false }) as { contactId: string };
+  return <ContactDetailsScreen contactId={contactId} />;
+}
+
+const dashpayContactDetailsRoute = createRoute({
+  getParentRoute: () => dashpayRoute,
+  path: "/contact-details/$contactId",
+  component: ContactDetailsWrapper,
+});
+
+function ContactProfileViewerWrapper() {
+  const { contactId } = useParams({ strict: false }) as { contactId: string };
+  return <ContactProfileViewer contactId={contactId} />;
+}
+
+const dashpayContactProfileRoute = createRoute({
+  getParentRoute: () => dashpayRoute,
+  path: "/contact-profile/$contactId",
+  component: ContactProfileViewerWrapper,
 });
 
 const identitiesRoute = createRoute({
@@ -520,6 +545,8 @@ const routeTree = rootRoute.addChildren([
       dashpayPaymentsRoute,
       dashpaySearchRoute,
       dashpayAddContactRoute,
+      dashpayContactDetailsRoute,
+      dashpayContactProfileRoute,
     ]),
     identitiesRoute,
     contractsRoute.addChildren([

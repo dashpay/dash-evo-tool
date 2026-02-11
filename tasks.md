@@ -1059,7 +1059,9 @@
 
   - [x] **9.1n** Implement Masternode List Diff screen — main layout and Quorum Viewer tab. Tab layout with 3 tabs (Core Items / QR Info / Quorum Viewer). Input fields for base/end block height. Fetch buttons dispatch `mnlistFetchDiff`, `mnlistFetchQrInfoWithDmls`, `mnlistFetchChainLocks`, `mnlistFetchDiffsChain`. Quorum Viewer: left panel for LLMQ type selection, middle for quorum entries, right for detailed quorum info with BLS verification status. Reference: `masternode_list_diff_screen/mod.rs`, `quorum_viewer_tab.rs`. Write component tests.
 
-  - [ ] **9.1o** Write Playwright E2E tests for tools screens. Test critical flows: Platform Info query + result display, Address Balance lookup, Contract Visualizer parse, Transition Visualizer parse + broadcast, Proof Log table interaction, GroveSTARK mode switching. At minimum 1 E2E test per tool screen verifying render and basic interaction.
+  - [x] **9.1o** Write Playwright E2E tests for tools screens. Test critical flows: Platform Info query + result display, Address Balance lookup, Contract Visualizer parse, Transition Visualizer parse + broadcast, Proof Log table interaction, GroveSTARK mode switching. At minimum 1 E2E test per tool screen verifying render and basic interaction.
+
+  > **Completed (Run 183):** Fixed 4 failing E2E tests in phase9-tools.spec.ts and 1 screen bug (TransitionVisualizer reading wrong field name). All 86 tests now pass. Tests cover all 9 tools screens + landing page.
 
 - [x] **9.5 [REVIEW] Tools screens functionality parity** (P2)
   Verify all tools work correctly. The masternode list diff screen is particularly complex — verify all 3 tabs. Verify all ~85 user actions catalogued in 9.1. Create fix tasks.
@@ -1160,7 +1162,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 184 |
-| Remaining | 12 |
+| Completed | 185 |
+| Remaining | 11 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

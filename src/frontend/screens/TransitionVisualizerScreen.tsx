@@ -123,7 +123,7 @@ export function TransitionVisualizerScreen() {
           activeTaskIdRef.current = null;
           setBroadcastStatus({
             type: "error",
-            message: event.payload.error,
+            message: event.payload.message,
             timestamp: Date.now(),
           });
         },

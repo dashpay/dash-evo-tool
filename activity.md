@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 183 — 2026-02-11
+**Task:** 9.1o Write Playwright E2E tests for tools screens
+**What was done:** Fixed 4 failing E2E tests in phase9-tools.spec.ts and 1 screen bug. The TransitionVisualizerScreen was reading `event.payload.error` instead of `event.payload.message` for TaskErrorEvent, causing broadcast error messages to never display. Three MasternodeListDiff tests failed due to: strict mode selector matching 2 elements (fixed with `.first()`), incorrect diff payload shape (test used `addedMNs`/`addedQuorums` instead of `newMasternodes`/`newQuorums`), and timing issues (added pending indicator wait). All 86 E2E tests now pass across all 9 tools screens.
+**Files changed:** src/frontend/screens/TransitionVisualizerScreen.tsx, tests/e2e-integration/phase9-tools.spec.ts, tasks.md, activity.md
+**Tests added:** 0 new tests (fixed 4 existing failing tests)
+**Sub-tasks created:** 0
+
 ## Run 182 — 2026-02-10
 **Task:** 10.1 [META] Full functionality audit — complete action inventory comparison
 **What was done:** Systematically audited every screen in the egui version against the Tauri frontend, comparing all user actions across Identities, Wallets, DPNS, Tokens, Contracts/Documents, DashPay, Tools, and Settings screens. Found ~90% feature parity with all 58+ screens implemented. Identified 9 specific gaps (5 P1, 4 P2) and produced sub-tasks. Major findings: "In Wallet" column missing from identity list, key access requires extra navigation, DPNS filter character substitution missing, YAML display mode may be absent from document query screen.

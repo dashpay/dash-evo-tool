@@ -208,6 +208,9 @@ export type CommandName =
   | "parseDocument"
   | "parseGrovedbProof"
   | "parseStateTransition"
+  | "parsePathQuery"
+  // Proof Log
+  | "proofLogGetItems"
   // Platform Info
   | "platformCurrentEpochInfo"
   | "platformTotalCredits"
@@ -528,6 +531,10 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     parseDocument: resolvesOk("parseDocument", { json: "{}" }),
     parseGrovedbProof: resolvesOk("parseGrovedbProof", { text: "" }),
     parseStateTransition: resolvesOk("parseStateTransition", { json: "{}", detectedContractIds: [] }),
+    parsePathQuery: resolvesOk("parsePathQuery", { text: "" }),
+
+    // -- Proof Log --
+    proofLogGetItems: resolvesOk("proofLogGetItems", { items: [], page: 0, itemsPerPage: 100 }),
 
     // -- Platform Info --
     platformCurrentEpochInfo: resolves("platformCurrentEpochInfo", { taskId: "mock-task-id" }),

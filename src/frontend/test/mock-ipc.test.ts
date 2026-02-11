@@ -15,9 +15,9 @@ describe("mock-ipc", () => {
   // ─── createMockBindings ──────────────────────────────────────────
 
   describe("createMockBindings", () => {
-    it("provides a commands object with all 185 command names", () => {
+    it("provides a commands object with all 187 command names", () => {
       const names = Object.keys(mocks.commands);
-      expect(names.length).toBe(185);
+      expect(names.length).toBe(187);
     });
 
     it("provides an events object with all 8 event names", () => {
@@ -293,7 +293,7 @@ describe("mock-ipc", () => {
       const module = mockBindingsModule(mocks);
       expect(module).toHaveProperty("commands");
       expect(module).toHaveProperty("events");
-      expect(Object.keys(module.commands).length).toBe(185);
+      expect(Object.keys(module.commands).length).toBe(187);
       expect(Object.keys(module.events).length).toBe(8);
     });
   });

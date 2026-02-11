@@ -296,6 +296,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::visualizer::parse_data_contract,
             commands::visualizer::parse_document,
             commands::visualizer::parse_grovedb_proof,
+            commands::visualizer::parse_path_query,
             commands::visualizer::parse_state_transition,
             // Proof log commands
             commands::proof_log::proof_log_get_items,

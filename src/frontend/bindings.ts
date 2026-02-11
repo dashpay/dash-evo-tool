@@ -1799,6 +1799,20 @@ async parseGrovedbProof(input: ParseGrovedbProofInput) : Promise<Result<ParseGro
 }
 },
 /**
+ * Parse hex-encoded bytes into a PathQuery and return its string representation.
+ *
+ * Uses bincode deserialization with standard config (matching how path queries
+ * are encoded in the backend).
+ */
+async parsePathQuery(input: ParsePathQueryInput) : Promise<Result<ParsePathQueryOutput, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("parse_path_query", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Parse hex-encoded bytes into a StateTransition and return pretty-printed JSON
  * plus any detected contract IDs.
  *
@@ -3123,6 +3137,22 @@ hexData: string }
 export type ParseGrovedbProofOutput = {
 /**
  * Human-readable string representation of the proof structure.
+ */
+text: string }
+/**
+ * Input for parsing a serialized PathQuery (verification path query).
+ */
+export type ParsePathQueryInput = {
+/**
+ * Hex-encoded PathQuery bytes (bincode-encoded).
+ */
+hexData: string }
+/**
+ * Output from successfully parsing a PathQuery.
+ */
+export type ParsePathQueryOutput = {
+/**
+ * Human-readable string representation of the path query.
  */
 text: string }
 /**

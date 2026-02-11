@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 176 — 2026-02-10
+**Task:** 9.1i Implement Proof Log screen
+**What was done:** Built the full ProofLogScreen component with: sortable data table (Request Type, Height, Time, Error columns with click-to-sort headers), client-side sorting, paginated data fetching (100 items/page with Previous/Next), row selection with detail panel, three display modes (Hex/JSON/PathQuery) with radio toggle, gold hash highlighting for 64-char hex strings from error messages in Hex and JSON modes. Added `parse_path_query` Tauri IPC command to visualizer.rs for PathQuery display mode (bincode deserialization of PathQuery struct). Detail panel shows metadata (request type, height, time, error) plus parsed proof content with copy button. Wired route in routes.tsx replacing PlaceholderScreen. Updated mock-ipc.ts with proofLogGetItems and parsePathQuery handlers. All 4343 frontend tests pass (32 new), 270 Rust tests pass (7 new), lint + typecheck + clippy clean.
+**Files changed:** src/frontend/screens/ProofLogScreen.tsx (new), src/frontend/screens/ProofLogScreen.test.tsx (new), src/frontend/routes.tsx, src-tauri/src/commands/visualizer.rs, src-tauri/src/main.rs, src/frontend/bindings.ts (auto-generated), src/frontend/test/mock-ipc.ts, src/frontend/test/mock-ipc.test.ts, src/frontend/bindings.test.ts
+**Tests added:** 32 component tests + 7 Rust tests = 39 tests
+**Sub-tasks created:** 0
+
 ## Run 175 — 2026-02-10
 **Task:** 9.1h Add proof log Tauri IPC command
 **What was done:** Created `src-tauri/src/commands/proof_log.rs` with a synchronous Tauri IPC command `proof_log_get_items` that wraps `db.get_proof_log_items()`. The command accepts paginated query input (onlyErrored, page, itemsPerPage) and returns a `ProofLogPageDto` containing `Vec<ProofLogItemDto>` with all fields: requestType (camelCase enum), requestBytesHex, verificationPathQueryHex, height, timeMs, proofBytesHex, error. Created `RequestTypeDto` enum mirroring all 32 backend `RequestType` variants with full from_backend conversion. Binary fields are hex-encoded for JSON transport. Registered module in `commands/mod.rs` and command in specta builder in `main.rs`. TypeScript bindings auto-generated with `ProofLogItemDto`, `ProofLogPageDto`, `ProofLogQueryInput`, and `RequestTypeDto` types. All 263 Rust tests pass (8 new), clippy clean, TypeScript typecheck clean.

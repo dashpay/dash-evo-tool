@@ -31,6 +31,7 @@ import { ContractVisualizerScreen } from "@/screens/ContractVisualizerScreen";
 import { DocumentVisualizerScreen } from "@/screens/DocumentVisualizerScreen";
 import { ProofVisualizerScreen } from "@/screens/ProofVisualizerScreen";
 import { TransitionVisualizerScreen } from "@/screens/TransitionVisualizerScreen";
+import { ProofLogScreen } from "@/screens/ProofLogScreen";
 import { DocumentQueryScreen } from "@/screens/DocumentQueryScreen";
 import { AddContractsScreen } from "@/screens/AddContractsScreen";
 import { RegisterContractScreen } from "@/screens/RegisterContractScreen";
@@ -514,7 +515,7 @@ const toolsPlatformInfoRoute = createRoute({
 const toolsProofLogRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/proof-log",
-  component: () => <PlaceholderScreen title="Proof Log" />,
+  component: ProofLogScreen,
 });
 
 const toolsTransitionRoute = createRoute({

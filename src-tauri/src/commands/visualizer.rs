@@ -11,6 +11,7 @@ use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMet
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
+use dash_sdk::drive::query::PathQuery;
 use dash_sdk::platform::{DataContract, Document, Identifier};
 
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,22 @@ pub struct ParseGrovedbProofInput {
 #[serde(rename_all = "camelCase")]
 pub struct ParseGrovedbProofOutput {
     /// Human-readable string representation of the proof structure.
+    pub text: String,
+}
+
+/// Input for parsing a serialized PathQuery (verification path query).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsePathQueryInput {
+    /// Hex-encoded PathQuery bytes (bincode-encoded).
+    pub hex_data: String,
+}
+
+/// Output from successfully parsing a PathQuery.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsePathQueryOutput {
+    /// Human-readable string representation of the path query.
     pub text: String,
 }
 
@@ -200,6 +217,29 @@ pub fn parse_grovedb_proof(
 
     Ok(ParseGrovedbProofOutput {
         text: proof.to_string(),
+    })
+}
+
+/// Parse hex-encoded bytes into a PathQuery and return its string representation.
+///
+/// Uses bincode deserialization with standard config (matching how path queries
+/// are encoded in the backend).
+#[tauri::command]
+#[specta::specta]
+pub fn parse_path_query(input: ParsePathQueryInput) -> Result<ParsePathQueryOutput, String> {
+    let bytes = hex::decode(&input.hex_data).map_err(|e| format!("Invalid hex data: {e}"))?;
+
+    if bytes.is_empty() {
+        return Err("No data provided".into());
+    }
+
+    let config = bincode::config::standard();
+
+    let (path_query, _): (PathQuery, _) = bincode::decode_from_slice(&bytes, config)
+        .map_err(|e| format!("Deserialization error: {e}"))?;
+
+    Ok(ParsePathQueryOutput {
+        text: format!("{}", path_query),
     })
 }
 
@@ -512,5 +552,66 @@ mod tests {
         let mut ids = Vec::new();
         extract_contract_ids(&json, &mut ids);
         assert!(ids.is_empty());
+    }
+
+    // --- PathQuery ---
+
+    #[test]
+    fn parse_path_query_input_serializes() {
+        let input = ParsePathQueryInput {
+            hex_data: "deadbeef".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"hexData\":\"deadbeef\""));
+    }
+
+    #[test]
+    fn parse_path_query_input_deserializes() {
+        let json = r#"{"hexData":"aabb"}"#;
+        let input: ParsePathQueryInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.hex_data, "aabb");
+    }
+
+    #[test]
+    fn parse_path_query_output_serializes() {
+        let output = ParsePathQueryOutput {
+            text: "PathQuery { ... }".into(),
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("\"text\":\"PathQuery { ... }\""));
+    }
+
+    #[test]
+    fn parse_path_query_output_deserializes() {
+        let json = r#"{"text":"some path query text"}"#;
+        let output: ParsePathQueryOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.text, "some path query text");
+    }
+
+    #[test]
+    fn parse_path_query_rejects_empty() {
+        let result = parse_path_query(ParsePathQueryInput {
+            hex_data: String::new(),
+        });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "No data provided");
+    }
+
+    #[test]
+    fn parse_path_query_rejects_invalid_hex() {
+        let result = parse_path_query(ParsePathQueryInput {
+            hex_data: "xyz".into(),
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid hex data"));
+    }
+
+    #[test]
+    fn parse_path_query_rejects_invalid_bincode() {
+        let result = parse_path_query(ParsePathQueryInput {
+            hex_data: "deadbeef".into(),
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Deserialization error"));
     }
 }

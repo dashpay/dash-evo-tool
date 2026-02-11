@@ -6,6 +6,8 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::wallet_unlock_popup::{
@@ -21,7 +23,7 @@ use std::sync::{Arc, RwLock};
 const PROFILE_GUIDELINES_INFO_TEXT: &str = "Profile Guidelines:\n\n\
     Display names can include any UTF-8 characters (emojis, symbols, etc.).\n\n\
     Display names are limited to 25 characters.\n\n\
-    Bios are limited to 250 characters.\n\n\
+    Bios are limited to 140 characters.\n\n\
     Avatar URLs should point to publicly accessible images (max 500 chars).\n\n\
     Profiles are public and visible to all DashPay users.";
 
@@ -101,6 +103,7 @@ pub struct ProfileScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     show_success: bool,
     was_creating_new: bool, // Track if we were creating vs updating
+    confirmation_dialog: Option<ConfirmationDialog>,
 }
 
 impl ProfileScreen {
@@ -133,6 +136,7 @@ impl ProfileScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_success: false,
             was_creating_new: false,
+            confirmation_dialog: None,
         };
 
         // Auto-select identity on creation - prefer one with a profile
@@ -896,7 +900,19 @@ impl ProfileScreen {
                                     ui.add_space(8.0);
                                     ui.horizontal(|ui| {
                                         if ui.button("Cancel").clicked() {
-                                            self.cancel_editing();
+                                            if self.has_unsaved_changes {
+                                                self.confirmation_dialog = Some(
+                                                    ConfirmationDialog::new(
+                                                        "Discard Changes?",
+                                                        "You have unsaved profile changes. Are you sure you want to discard them?",
+                                                    )
+                                                    .confirm_text(Some("Discard"))
+                                                    .cancel_text(Some("Keep Editing"))
+                                                    .danger_mode(true),
+                                                );
+                                            } else {
+                                                self.cancel_editing();
+                                            }
                                         }
                                         ui.add_space(10.0);
                                         if ui.button("Unlock Wallet").clicked() {
@@ -944,10 +960,16 @@ impl ProfileScreen {
                                     // Action buttons
                                     ui.horizontal(|ui| {
                                         if ui.button("Cancel").clicked() {
-                                            // Show confirmation if there are unsaved changes
                                             if self.has_unsaved_changes {
-                                                // TODO: Add confirmation dialog
-                                                self.cancel_editing();
+                                                self.confirmation_dialog = Some(
+                                                    ConfirmationDialog::new(
+                                                        "Discard Changes?",
+                                                        "You have unsaved profile changes. Are you sure you want to discard them?",
+                                                    )
+                                                    .confirm_text(Some("Discard"))
+                                                    .cancel_text(Some("Keep Editing"))
+                                                    .danger_mode(true),
+                                                );
                                             } else {
                                                 self.cancel_editing();
                                             }
@@ -1339,6 +1361,20 @@ impl ProfileScreen {
                     });
             } else {
                 self.show_avatar_url_popup = false;
+            }
+        }
+
+        // Show confirmation dialog for discarding unsaved changes
+        if let Some(dialog) = self.confirmation_dialog.as_mut() {
+            match dialog.show(ui).inner.dialog_response {
+                Some(ConfirmationStatus::Confirmed) => {
+                    self.confirmation_dialog = None;
+                    self.cancel_editing();
+                }
+                Some(ConfirmationStatus::Canceled) => {
+                    self.confirmation_dialog = None;
+                }
+                None => {}
             }
         }
 

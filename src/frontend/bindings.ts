@@ -1953,6 +1953,34 @@ async mnlistFetchDiffsChain(input: FetchDiffsChainInput) : Promise<Result<Dispat
 }
 },
 /**
+ * Open a native file dialog and load a QRInfo `.dat` file.
+ *
+ * Attempts consensus decode first, then falls back to bincode.
+ * Returns the parsed QRInfo as a DTO.
+ */
+async qrinfoLoadFile() : Promise<Result<QrInfoDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("qrinfo_load_file") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Open a native save dialog and save QRInfo data as a `.dat` file.
+ *
+ * Accepts a serialized QRInfo DTO key (tip block hash) and raw bytes to write.
+ * The caller provides the raw bytes from a previously loaded file.
+ */
+async qrinfoSaveFile(defaultFilename: string, dataHex: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("qrinfo_save_file", { defaultFilename, dataHex }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Generate a GroveSTARK proof.
  *
  * Resolves the private and public keys from the identity on the backend,
@@ -2317,6 +2345,10 @@ groupInfo: JsonValue | null }
  */
 export type CastScheduledVoteInput = { vote: ScheduledVoteDto }
 /**
+ * A chainlock signature entry from MnListDiff.
+ */
+export type ChainLockSigEntryDto = { signature: string; indexSet: number[] }
+/**
  * Input for claiming tokens.
  */
 export type ClaimTokensInput = {
@@ -2503,6 +2535,10 @@ identityId: string }
  * Input for deleting a single scheduled vote.
  */
 export type DeleteScheduledVoteInput = { voterId: string; contestedName: string }
+/**
+ * Deleted quorum entry (type + hash only).
+ */
+export type DeletedQuorumDto = { llmqType: number; quorumHash: string }
 /**
  * Input for destroying frozen funds.
  */
@@ -3024,6 +3060,10 @@ export type LoadPaymentHistoryInput = { identityId: string }
  */
 export type LoadProfileInput = { identityId: string }
 /**
+ * A masternode list entry.
+ */
+export type MasternodeEntryDto = { proRegTxHash: string; address: string }
+/**
  * Input for minting tokens.
  */
 export type MintTokensInput = {
@@ -3057,6 +3097,10 @@ allowChoosingDestination: boolean;
  * When set and allow_choosing_destination is false, tokens always go to this identity.
  */
 defaultDestinationIdentityId: string | null }
+/**
+ * Serializable representation of a MnListDiff.
+ */
+export type MnListDiffDto = { version: number; baseBlockHash: string; blockHash: string; totalTransactions: number; merkleHashes: string[]; merkleFlagsLen: number; coinbaseTxid: string; coinbaseSize: number; newMasternodes: MasternodeEntryDto[]; deletedMasternodes: string[]; newQuorums: SimpleQuorumEntryDto[]; deletedQuorums: DeletedQuorumDto[]; chainlockSigCount: number; chainlockSignatures: ChainLockSigEntryDto[] }
 /**
  * Network identifier matching Dash SDK's Network enum.
  */
@@ -3321,6 +3365,30 @@ amount: string;
  */
 totalAgreedPrice: number }
 /**
+ * Serializable representation of a loaded QRInfo file.
+ */
+export type QrInfoDto = {
+/**
+ * Block hash used as the key for this QRInfo.
+ */
+tipBlockHash: string;
+/**
+ * Named snapshots at specific heights relative to head.
+ */
+snapshotHMinusC: QuorumSnapshotDto; snapshotHMinus2C: QuorumSnapshotDto; snapshotHMinus3C: QuorumSnapshotDto; snapshotHMinus4C: QuorumSnapshotDto | null;
+/**
+ * Named diffs at specific heights.
+ */
+diffHMinus3C: MnListDiffDto; diffHMinus2C: MnListDiffDto; diffHMinusC: MnListDiffDto; diffH: MnListDiffDto; diffTip: MnListDiffDto; diffHMinus4C: MnListDiffDto | null;
+/**
+ * Rotated quorum commitments (unqualified — from raw QRInfo).
+ */
+lastCommitments: SimpleQuorumEntryDto[];
+/**
+ * Additional snapshot and diff lists.
+ */
+quorumSnapshotList: QuorumSnapshotDto[]; mnListDiffList: MnListDiffDto[] }
+/**
  * Serializable version of `QualifiedIdentity`.
  * This is the primary identity DTO sent to the frontend for display and selection.
  */
@@ -3433,6 +3501,10 @@ export type QueryTokenPricingInput = {
  * Token ID (hex).
  */
 tokenId: string }
+/**
+ * Serializable representation of a QuorumSnapshot.
+ */
+export type QuorumSnapshotDto = { skipListMode: number; activeQuorumMembers: boolean[]; skipList: number[] }
 /**
  * Input for recovering asset locks from a wallet.
  */
@@ -3990,6 +4062,10 @@ keyId: number;
  * The message text to sign.
  */
 message: string }
+/**
+ * Serializable quorum entry from MnListDiff (unqualified — no verification status).
+ */
+export type SimpleQuorumEntryDto = { version: number; llmqType: number; quorumHash: string; quorumIndex: number | null; signers: boolean[]; validMembers: boolean[]; quorumPublicKey: string; quorumVvecHash: string; thresholdSig: string; allCommitmentAggregatedSignature: string }
 /**
  * Serializable summary of a single-key wallet.
  * Replaces `SingleKeyWallet` for IPC. Does NOT include private key material.

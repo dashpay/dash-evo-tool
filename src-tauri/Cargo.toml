@@ -35,6 +35,7 @@ bincode = { version = "=2.0.1", features = ["serde"] }
 bip39 = { version = "2.2.0", features = ["all-languages", "rand"] }
 base64 = "0.22"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rfd = "0.15.4"
 
 [lints.clippy]
 uninlined_format_args = "allow"

@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 181 — 2026-02-10
+**Task:** 9.1m — Implement Masternode List Diff screen — QR Info tab
+**What was done:** Built the QR Info tab for the Masternode List Diff screen with a three-panel layout matching the egui implementation. Created two new Tauri IPC commands (`qrinfo_load_file` and `qrinfo_save_file`) using `rfd` for native file dialogs, with dual-format support (consensus decode + bincode fallback). Created comprehensive DTOs: `QrInfoDto`, `QuorumSnapshotDto`, `MnListDiffDto`, `SimpleQuorumEntryDto`, `QuorumEntryDto`, `DeletedQuorumDto`, `MasternodeEntryDto`, `ChainLockSigEntryDto`. Frontend features: 5 selectable QRInfo fields (Quorum Snapshots, MnListDiffs, Rotated Quorums, Quorum Snapshot List, MN List Diff List), detail views for snapshots (active members, skip list), diffs (version, hashes, masternodes, quorums, chainlock sigs), and quorum entries (8-column member grid with signer/valid status, public key, signatures). Added 14 new component tests. Enabled the QR Info tab (previously disabled). All 4,414 frontend tests pass, 270 Rust tests pass.
+**Files changed:** src-tauri/Cargo.toml, src-tauri/src/commands/system.rs, src-tauri/src/main.rs, src/frontend/screens/MasternodeListDiffScreen.tsx, src/frontend/screens/MasternodeListDiffScreen.test.tsx, src/frontend/bindings.ts, src/frontend/bindings.test.ts
+**Tests added:** 14 component tests for QR Info tab (load file, field selection, snapshot/diff/quorum detail views, error handling, cancel handling, field switching)
+**Sub-tasks created:** 0
+
 ## Run 180 — 2026-02-10
 **Task:** 9.1l — Implement Masternode List Diff screen — Core Items tab
 **What was done:** Built the Masternode List Diff screen with Core Items tab featuring a 3-column layout: (1) ChainLocked Blocks list with validation status icons sorted descending by height, (2) Instant Send Transactions list with validation status, (3) Detail panel showing block/transaction metadata, quorum signatures, block transactions, and raw serialized hex data with copy buttons. Enhanced ZMQ events (`ZmqChainLockedBlockEvent` and `ZmqIsLockedTransactionEvent`) to include raw block/chain-lock/instant-lock data, transaction IDs, signatures, and validation status. Regenerated TypeScript bindings. Replaced the placeholder route with the real screen. Added tab structure with disabled QR Info and Quorum Viewer placeholders for future tasks 9.1m/9.1n.

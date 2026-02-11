@@ -125,11 +125,11 @@ describe("MasternodeListDiffScreen", () => {
     expect(screen.getByLabelText("Back to Tools")).toBeInTheDocument();
   });
 
-  it("disables QR Info and Quorum Viewer tabs", () => {
+  it("enables QR Info tab and disables Quorum Viewer tab", () => {
     render(<MasternodeListDiffScreen />);
     const qrInfoTab = screen.getByText("QR Info").closest("button");
     const quorumTab = screen.getByText("Quorum Viewer").closest("button");
-    expect(qrInfoTab).toBeDisabled();
+    expect(qrInfoTab).not.toBeDisabled();
     expect(quorumTab).toBeDisabled();
   });
 
@@ -409,5 +409,317 @@ describe("MasternodeListDiffScreen", () => {
     // Should only have 1 entry, not 2
     const options = within(blockList).getAllByRole("option");
     expect(options).toHaveLength(1);
+  });
+
+  // ─── QR Info Tab ──────────────────────────────────────────────────────
+
+  describe("QR Info Tab", () => {
+    const mockQrInfo = {
+      tipBlockHash: "000000000000000000000000000000000000000000000000000000000000aaaa",
+      snapshotHMinusC: { skipListMode: 0, activeQuorumMembers: [true, false, true], skipList: [10, 20] },
+      snapshotHMinus2C: { skipListMode: 1, activeQuorumMembers: [false, true], skipList: [] },
+      snapshotHMinus3C: { skipListMode: 2, activeQuorumMembers: [true], skipList: [5] },
+      snapshotHMinus4C: null,
+      diffHMinus3C: createMockDiff("diff-h3c"),
+      diffHMinus2C: createMockDiff("diff-h2c"),
+      diffHMinusC: createMockDiff("diff-hc"),
+      diffH: createMockDiff("diff-h"),
+      diffTip: createMockDiff("diff-tip"),
+      diffHMinus4C: null,
+      lastCommitments: [createMockQuorumEntry(0), createMockQuorumEntry(1)],
+      quorumSnapshotList: [
+        { skipListMode: 0, activeQuorumMembers: [true, true], skipList: [1] },
+      ],
+      mnListDiffList: [createMockDiff("list-0")],
+    };
+
+    function createMockDiff(id: string) {
+      return {
+        version: 1,
+        baseBlockHash: `basehash-${id}`,
+        blockHash: `blockhash-${id}`,
+        totalTransactions: 5,
+        merkleHashes: [`merkle1-${id}`],
+        merkleFlagsLen: 2,
+        coinbaseTxid: `cbtxid-${id}`,
+        coinbaseSize: 200,
+        newMasternodes: [{ proRegTxHash: `mn-${id}`, address: "1.2.3.4:9999" }],
+        deletedMasternodes: [],
+        newQuorums: [],
+        deletedQuorums: [],
+        chainlockSigCount: 0,
+        chainlockSignatures: [],
+      };
+    }
+
+    function createMockQuorumEntry(index: number) {
+      return {
+        version: 2,
+        llmqType: 4,
+        quorumHash: `qhash-${index}`,
+        quorumIndex: index,
+        signers: [true, false, true, false, true, false, true, false],
+        validMembers: [true, true, false, false, true, true, false, false],
+        quorumPublicKey: `pubkey-${index}`,
+        quorumVvecHash: `vvechash-${index}`,
+        thresholdSig: `threshsig-${index}`,
+        allCommitmentAggregatedSignature: `aggsig-${index}`,
+      };
+    }
+
+    async function switchToQrInfoTab() {
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+    }
+
+    it("renders QR Info tab with load button", async () => {
+      await switchToQrInfoTab();
+      expect(screen.getByTestId("qr-info-tab")).toBeInTheDocument();
+      expect(screen.getByTestId("load-qrinfo-button")).toBeInTheDocument();
+    });
+
+    it("shows empty state before loading a file", async () => {
+      await switchToQrInfoTab();
+      expect(screen.getByText(/Load a QRInfo .dat file/)).toBeInTheDocument();
+    });
+
+    it("displays QRInfo field list after loading", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+
+      // Wait for the data to be loaded
+      await screen.findByText("Quorum Snapshots");
+      expect(screen.getByText("Masternode List Diffs")).toBeInTheDocument();
+      expect(screen.getByText("Rotated Quorums")).toBeInTheDocument();
+      expect(screen.getByText("Quorum Snapshot List")).toBeInTheDocument();
+      expect(screen.getByText("MN List Diff List")).toBeInTheDocument();
+    });
+
+    it("shows tip block hash after loading", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+
+      await screen.findByText(/Tip:/);
+    });
+
+    it("shows snapshot items when Quorum Snapshots field is selected", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("Quorum Snapshots");
+
+      await user.click(screen.getByText("Quorum Snapshots"));
+      expect(screen.getByText("Snapshot h-c")).toBeInTheDocument();
+      expect(screen.getByText("Snapshot h-2c")).toBeInTheDocument();
+      expect(screen.getByText("Snapshot h-3c")).toBeInTheDocument();
+      // h-4c should not be shown since it's null
+      expect(screen.queryByText("Snapshot h-4c")).not.toBeInTheDocument();
+    });
+
+    it("shows snapshot detail when a snapshot item is clicked", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("Quorum Snapshots");
+
+      await user.click(screen.getByText("Quorum Snapshots"));
+      await user.click(screen.getByText("Snapshot h-c"));
+
+      expect(screen.getByTestId("snapshot-detail")).toBeInTheDocument();
+      expect(screen.getByText("Quorum Snapshot")).toBeInTheDocument();
+      // Check active members count (2 of 3 are active)
+      expect(screen.getByText(/Active Quorum Members \(2\/3\)/)).toBeInTheDocument();
+    });
+
+    it("shows diff items when Masternode List Diffs field is selected", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("Masternode List Diffs");
+
+      await user.click(screen.getByText("Masternode List Diffs"));
+      expect(screen.getByText("MNListDiff h-3c")).toBeInTheDocument();
+      expect(screen.getByText("MNListDiff h-2c")).toBeInTheDocument();
+      expect(screen.getByText("MNListDiff h-c")).toBeInTheDocument();
+      expect(screen.getByText("MNListDiff h")).toBeInTheDocument();
+      expect(screen.getByText("MNListDiff Tip")).toBeInTheDocument();
+    });
+
+    it("shows diff detail when a diff item is clicked", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("Masternode List Diffs");
+
+      await user.click(screen.getByText("Masternode List Diffs"));
+      await user.click(screen.getByText("MNListDiff h-3c"));
+
+      expect(screen.getByTestId("mnlistdiff-detail")).toBeInTheDocument();
+      expect(screen.getByText("MnListDiff")).toBeInTheDocument();
+      expect(screen.getByText("basehash-diff-h3c")).toBeInTheDocument();
+    });
+
+    it("shows quorum entry items when Rotated Quorums field is selected", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("Rotated Quorums");
+
+      await user.click(screen.getByText("Rotated Quorums"));
+      expect(screen.getByText("Quorum at Index 0")).toBeInTheDocument();
+      expect(screen.getByText("Quorum at Index 1")).toBeInTheDocument();
+    });
+
+    it("shows quorum entry detail with members grid", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("Rotated Quorums");
+
+      await user.click(screen.getByText("Rotated Quorums"));
+      await user.click(screen.getByText("Quorum at Index 0"));
+
+      expect(screen.getByTestId("quorum-entry-detail")).toBeInTheDocument();
+      expect(screen.getByTestId("members-grid")).toBeInTheDocument();
+      // Check signers/valid counts: 4 signers out of 8, 4 valid out of 8
+      const counts = screen.getAllByText("4 / 8");
+      expect(counts.length).toBe(2); // Total Signers + Valid Members
+    });
+
+    it("shows error when file load fails", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "error",
+        error: "Failed to decode QRInfo file: invalid data",
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+
+      await screen.findByText(/Failed to decode/);
+    });
+
+    it("does not show error when file selection is cancelled", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "error",
+        error: "File selection cancelled",
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+
+      // Wait a tick then verify no error shown
+      await act(async () => {});
+      expect(screen.queryByText(/File selection cancelled/)).not.toBeInTheDocument();
+    });
+
+    it("clears selection when switching fields", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("Quorum Snapshots");
+
+      // Select a snapshot
+      await user.click(screen.getByText("Quorum Snapshots"));
+      await user.click(screen.getByText("Snapshot h-c"));
+      expect(screen.getByTestId("snapshot-detail")).toBeInTheDocument();
+
+      // Switch to a different field
+      await user.click(screen.getByText("Rotated Quorums"));
+      expect(screen.queryByTestId("snapshot-detail")).not.toBeInTheDocument();
+      expect(screen.getByText("Select an item to view details.")).toBeInTheDocument();
+    });
+
+    it("shows Quorum Snapshot List items", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("Quorum Snapshot List");
+
+      await user.click(screen.getByText("Quorum Snapshot List"));
+      expect(screen.getByText("Snapshot 0")).toBeInTheDocument();
+    });
+
+    it("shows MN List Diff List items", async () => {
+      mocks.commands.qrinfoLoadFile = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: mockQrInfo,
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("QR Info"));
+      await user.click(screen.getByTestId("load-qrinfo-button"));
+      await screen.findByText("MN List Diff List");
+
+      await user.click(screen.getByText("MN List Diff List"));
+      expect(screen.getByText("MNListDiff 0")).toBeInTheDocument();
+    });
   });
 });

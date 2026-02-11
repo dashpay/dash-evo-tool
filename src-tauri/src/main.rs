@@ -318,6 +318,9 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::system::mnlist_fetch_qr_info_with_dmls,
             commands::system::mnlist_fetch_chain_locks,
             commands::system::mnlist_fetch_diffs_chain,
+            // QRInfo commands
+            commands::system::qrinfo_load_file,
+            commands::system::qrinfo_save_file,
             // GroveSTARK commands
             commands::system::grovestark_generate_proof,
             commands::system::grovestark_verify_proof,

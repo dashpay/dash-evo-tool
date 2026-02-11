@@ -1,10 +1,28 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  restrictToVerticalAxis,
+  restrictToParentElement,
+} from "@dnd-kit/modifiers";
 import {
   User,
   Shield,
   Server,
-  ChevronUp,
-  ChevronDown,
+  GripVertical,
   MoreVertical,
   Pencil,
   Trash2,
@@ -71,10 +89,8 @@ export interface IdentityListPanelProps {
   onSelectIdentity: (identityId: string | null) => void;
   /** Called to set/clear an alias. */
   onSetAlias: (identityId: string, alias: string | null) => Promise<void>;
-  /** Called to move an identity up. */
-  onReorderUp: (identityId: string) => Promise<void>;
-  /** Called to move an identity down. */
-  onReorderDown: (identityId: string) => Promise<void>;
+  /** Called when an identity is drag-and-dropped to a new position. */
+  onReorder?: (activeId: string, overId: string) => Promise<void>;
   /** Called to remove an identity. */
   onRemoveIdentity: (identityId: string) => Promise<void>;
   /** Called to refresh a single identity. */
@@ -258,13 +274,9 @@ interface IdentityCardProps {
   identity: QualifiedIdentityDto;
   isSelected: boolean;
   isRefreshing: boolean;
-  isFirst: boolean;
-  isLast: boolean;
   walletNames?: Record<string, string>;
   onSelect: () => void;
   onSetAlias: (alias: string | null) => void;
-  onReorderUp: () => void;
-  onReorderDown: () => void;
   onRemove: () => void;
   onRefresh: () => void;
   onViewKeys?: () => void;
@@ -274,25 +286,67 @@ interface IdentityCardProps {
   onTransfer?: () => void;
 }
 
-function IdentityCard({
-  identity,
-  isSelected,
-  isRefreshing,
-  isFirst,
-  isLast,
-  walletNames,
-  onSelect,
-  onSetAlias,
-  onReorderUp,
-  onReorderDown,
-  onRemove,
-  onRefresh,
-  onViewKeys,
-  onRegisterDpns,
-  onTopUp,
-  onWithdraw,
-  onTransfer,
-}: IdentityCardProps) {
+function SortableIdentityCard(props: IdentityCardProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: props.identity.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : undefined,
+    zIndex: isDragging ? 10 : undefined,
+    position: (isDragging ? "relative" : undefined) as "relative" | undefined,
+  };
+
+  return (
+    <IdentityCard
+      {...props}
+      ref={setNodeRef}
+      style={style}
+      dragHandleRef={setActivatorNodeRef}
+      dragHandleProps={{ ...attributes, ...listeners }}
+      isDragging={isDragging}
+    />
+  );
+}
+
+interface IdentityCardInternalProps extends IdentityCardProps {
+  style?: React.CSSProperties;
+  dragHandleRef?: (node: HTMLElement | null) => void;
+  dragHandleProps?: Record<string, unknown>;
+  isDragging?: boolean;
+}
+
+const IdentityCard = React.forwardRef<HTMLDivElement, IdentityCardInternalProps>(
+  function IdentityCard(
+    {
+      identity,
+      isSelected,
+      isRefreshing,
+      walletNames,
+      onSelect,
+      onSetAlias,
+      onRemove,
+      onRefresh,
+      onViewKeys,
+      onRegisterDpns,
+      onTopUp,
+      onWithdraw,
+      onTransfer,
+      style,
+      dragHandleRef,
+      dragHandleProps,
+      isDragging,
+    },
+    ref,
+  ) {
   const [isRenaming, setIsRenaming] = useState(false);
   const displayName = getIdentityDisplayName(identity);
   const balance = formatCreditsBalance(identity.balance);
@@ -320,13 +374,16 @@ function IdentityCard({
 
   return (
     <div
+      ref={ref}
       role="option"
       tabIndex={0}
       className={cn(
         "w-full text-left rounded-md px-3 py-2.5 transition-colors cursor-pointer",
         "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         isSelected && "bg-accent border-l-2 border-l-primary",
+        isDragging && "shadow-lg bg-accent/80",
       )}
+      style={style}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (
@@ -341,6 +398,17 @@ function IdentityCard({
       data-identity-id={identity.id}
     >
       <div className="flex items-start justify-between gap-2">
+        {/* Drag handle */}
+        <div
+          ref={dragHandleRef}
+          {...(dragHandleProps as React.HTMLAttributes<HTMLDivElement>)}
+          className="flex items-center shrink-0 cursor-grab active:cursor-grabbing pt-0.5 touch-none"
+          aria-label="Drag to reorder"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <GripVertical className="h-4 w-4 text-muted-foreground/50 hover:text-muted-foreground" />
+        </div>
+
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <IdentityTypeIcon
             type={identity.identityType}
@@ -448,46 +516,8 @@ function IdentityCard({
           </div>
         </div>
 
-        {/* Action area: reorder + context menu */}
+        {/* Action area: context menu */}
         <div className="flex items-center gap-0.5 shrink-0">
-          {/* Reorder buttons */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="h-5 w-5"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onReorderUp();
-                }}
-                disabled={isFirst}
-                aria-label="Move up"
-              >
-                <ChevronUp className="h-3 w-3" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Move up</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="h-5 w-5"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onReorderDown();
-                }}
-                disabled={isLast}
-                aria-label="Move down"
-              >
-                <ChevronDown className="h-3 w-3" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Move down</TooltipContent>
-          </Tooltip>
-
           {/* Context menu */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -572,7 +602,7 @@ function IdentityCard({
       </div>
     </div>
   );
-}
+});
 
 // ─── IdentityListPanel ────────────────────────────────────────────
 
@@ -583,8 +613,7 @@ export function IdentityListPanel({
   refreshingAll,
   onSelectIdentity,
   onSetAlias,
-  onReorderUp,
-  onReorderDown,
+  onReorder,
   onRemoveIdentity,
   onRefreshIdentity,
   onRefreshAll,
@@ -615,6 +644,30 @@ export function IdentityListPanel({
     await onRemoveIdentity(removeTarget.id);
     setRemoveTarget(null);
   }, [removeTarget, onRemoveIdentity]);
+
+  // DnD sensors — require 8px movement to start drag (avoids conflicts with click)
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(KeyboardSensor),
+  );
+
+  const identityIds = useMemo(
+    () => identities.map((i) => i.id),
+    [identities],
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      if (onReorder) {
+        onReorder(String(active.id), String(over.id));
+      }
+    },
+    [onReorder],
+  );
 
   if (!hasIdentities) {
     return (
@@ -766,51 +819,56 @@ export function IdentityListPanel({
         </div>
       </div>
 
-      {/* Identity list */}
-      <div
-        className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5"
-        role="listbox"
-        aria-label="Identities"
+      {/* Identity list with drag-and-drop */}
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+        onDragEnd={handleDragEnd}
       >
-        {identities.map((identity, index) => (
-          <IdentityCard
-            key={identity.id}
-            identity={identity}
-            isSelected={selectedIdentityId === identity.id}
-            isRefreshing={refreshingIds.has(identity.id)}
-            isFirst={index === 0}
-            isLast={index === identities.length - 1}
-            walletNames={walletNames}
-            onSelect={() => onSelectIdentity(identity.id)}
-            onSetAlias={(alias) => onSetAlias(identity.id, alias)}
-            onReorderUp={() => onReorderUp(identity.id)}
-            onReorderDown={() => onReorderDown(identity.id)}
-            onRemove={() =>
-              setRemoveTarget({
-                id: identity.id,
-                displayName: getIdentityDisplayName(identity),
-                type: identity.identityType,
-              })
-            }
-            onRefresh={() => onRefreshIdentity(identity.id)}
-            onViewKeys={
-              onViewKeys && identity.keys.length > 0
-                ? () => onViewKeys(identity.id)
-                : undefined
-            }
-            onRegisterDpns={
-              onRegisterDpns ? () => onRegisterDpns(identity.id) : undefined
-            }
-            onTopUp={onTopUp ? () => onTopUp(identity.id) : undefined}
-            onWithdraw={
-              onWithdraw ? () => onWithdraw(identity.id) : undefined
-            }
-            onTransfer={
-              onTransfer ? () => onTransfer(identity.id) : undefined
-            }
-          />
-        ))}
-      </div>
+        <SortableContext items={identityIds} strategy={verticalListSortingStrategy}>
+          <div
+            className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5"
+            role="listbox"
+            aria-label="Identities"
+          >
+            {identities.map((identity) => (
+              <SortableIdentityCard
+                key={identity.id}
+                identity={identity}
+                isSelected={selectedIdentityId === identity.id}
+                isRefreshing={refreshingIds.has(identity.id)}
+                walletNames={walletNames}
+                onSelect={() => onSelectIdentity(identity.id)}
+                onSetAlias={(alias) => onSetAlias(identity.id, alias)}
+                onRemove={() =>
+                  setRemoveTarget({
+                    id: identity.id,
+                    displayName: getIdentityDisplayName(identity),
+                    type: identity.identityType,
+                  })
+                }
+                onRefresh={() => onRefreshIdentity(identity.id)}
+                onViewKeys={
+                  onViewKeys && identity.keys.length > 0
+                    ? () => onViewKeys(identity.id)
+                    : undefined
+                }
+                onRegisterDpns={
+                  onRegisterDpns ? () => onRegisterDpns(identity.id) : undefined
+                }
+                onTopUp={onTopUp ? () => onTopUp(identity.id) : undefined}
+                onWithdraw={
+                  onWithdraw ? () => onWithdraw(identity.id) : undefined
+                }
+                onTransfer={
+                  onTransfer ? () => onTransfer(identity.id) : undefined
+                }
+              />
+            ))}
+          </div>
+        </SortableContext>
+      </DndContext>
 
       {/* Remove Confirmation Dialog */}
       <ConfirmationDialog

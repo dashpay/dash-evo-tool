@@ -472,6 +472,89 @@ describe("identityStore", () => {
     });
   });
 
+  describe("reorderIdentities (drag-and-drop)", () => {
+    it("moves identity from one position to another", async () => {
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
+      const id3 = mi({ id: "ccc", alias: "Third" });
+      useIdentityStore.setState({ identities: [id1, id2, id3] });
+      (commands.identitySaveOrder as Mock).mockResolvedValue({
+        status: "ok",
+        data: null,
+      });
+
+      await useIdentityStore.getState().reorderIdentities("ccc", "aaa");
+
+      const ids = useIdentityStore.getState().identities.map((i) => i.id);
+      expect(ids).toEqual(["ccc", "aaa", "bbb"]);
+      expect(useIdentityStore.getState().useCustomOrder).toBe(true);
+    });
+
+    it("persists the new order after drag-and-drop", async () => {
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
+      useIdentityStore.setState({ identities: [id1, id2] });
+      (commands.identitySaveOrder as Mock).mockResolvedValue({
+        status: "ok",
+        data: null,
+      });
+
+      await useIdentityStore.getState().reorderIdentities("bbb", "aaa");
+
+      expect(commands.identitySaveOrder).toHaveBeenCalledWith({
+        identityIds: ["bbb", "aaa"],
+      });
+    });
+
+    it("does nothing when activeId equals overId", async () => {
+      useIdentityStore.setState({ identities: [mi({ id: "aaa" })] });
+
+      await useIdentityStore.getState().reorderIdentities("aaa", "aaa");
+
+      expect(commands.identitySaveOrder).not.toHaveBeenCalled();
+    });
+
+    it("does nothing when activeId is not found", async () => {
+      useIdentityStore.setState({ identities: [mi({ id: "aaa" })] });
+
+      await useIdentityStore.getState().reorderIdentities("unknown", "aaa");
+
+      expect(commands.identitySaveOrder).not.toHaveBeenCalled();
+    });
+
+    it("moves last to first position", async () => {
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
+      const id3 = mi({ id: "ccc", alias: "Third" });
+      useIdentityStore.setState({ identities: [id1, id2, id3] });
+      (commands.identitySaveOrder as Mock).mockResolvedValue({
+        status: "ok",
+        data: null,
+      });
+
+      await useIdentityStore.getState().reorderIdentities("ccc", "aaa");
+
+      const ids = useIdentityStore.getState().identities.map((i) => i.id);
+      expect(ids).toEqual(["ccc", "aaa", "bbb"]);
+    });
+
+    it("moves first to last position", async () => {
+      const id1 = mi({ id: "aaa" });
+      const id2 = mi2({ id: "bbb" });
+      const id3 = mi({ id: "ccc", alias: "Third" });
+      useIdentityStore.setState({ identities: [id1, id2, id3] });
+      (commands.identitySaveOrder as Mock).mockResolvedValue({
+        status: "ok",
+        data: null,
+      });
+
+      await useIdentityStore.getState().reorderIdentities("aaa", "ccc");
+
+      const ids = useIdentityStore.getState().identities.map((i) => i.id);
+      expect(ids).toEqual(["bbb", "ccc", "aaa"]);
+    });
+  });
+
   describe("removeIdentity", () => {
     it("removes an identity from the store", async () => {
       useIdentityStore.setState({

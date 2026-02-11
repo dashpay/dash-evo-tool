@@ -46,8 +46,7 @@ const defaultProps = {
   refreshingAll: false,
   onSelectIdentity: vi.fn(),
   onSetAlias: vi.fn().mockResolvedValue(undefined),
-  onReorderUp: vi.fn().mockResolvedValue(undefined),
-  onReorderDown: vi.fn().mockResolvedValue(undefined),
+  onReorder: vi.fn().mockResolvedValue(undefined),
   onRemoveIdentity: vi.fn().mockResolvedValue(undefined),
   onRefreshIdentity: vi.fn().mockResolvedValue(undefined),
   onRefreshAll: vi.fn().mockResolvedValue(undefined),
@@ -610,50 +609,54 @@ describe("IdentityListPanel — context menu actions", () => {
 // ─── Reorder ──────────────────────────────────────────────────────
 
 describe("IdentityListPanel — reorder", () => {
-  it("calls onReorderUp when up button clicked", async () => {
-    const onReorderUp = vi.fn().mockResolvedValue(undefined);
-    const { user } = setup({
+  it("renders drag handles for each identity", () => {
+    setup({
       identities: [
         makeIdentity({ id: "a", alias: "First" }),
         makeIdentity({ id: "b", alias: "Second" }),
       ],
-      onReorderUp,
     });
-    // Get the second identity's up button
-    const upButtons = screen.getAllByLabelText("Move up");
-    await user.click(upButtons[1]); // second identity's up button
-    expect(onReorderUp).toHaveBeenCalledWith("b");
+    const handles = screen.getAllByLabelText("Drag to reorder");
+    expect(handles).toHaveLength(2);
   });
 
-  it("calls onReorderDown when down button clicked", async () => {
-    const onReorderDown = vi.fn().mockResolvedValue(undefined);
-    const { user } = setup({
+  it("passes onReorder callback for drag-and-drop", () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined);
+    setup({
       identities: [
         makeIdentity({ id: "a", alias: "First" }),
         makeIdentity({ id: "b", alias: "Second" }),
       ],
-      onReorderDown,
+      onReorder,
     });
-    // Get the first identity's down button
-    const downButtons = screen.getAllByLabelText("Move down");
-    await user.click(downButtons[0]); // first identity's down button
-    expect(onReorderDown).toHaveBeenCalledWith("a");
+    // Drag handles are present and accessible
+    const handles = screen.getAllByLabelText("Drag to reorder");
+    expect(handles).toHaveLength(2);
   });
 
-  it("disables up button for first identity", () => {
+  it("renders drag handles with grab cursor styling", () => {
     setup({
-      identities: [makeIdentity({ id: "first" })],
+      identities: [makeIdentity({ id: "a", alias: "First" })],
     });
-    const upButton = screen.getByLabelText("Move up");
-    expect(upButton).toBeDisabled();
+    const handle = screen.getByLabelText("Drag to reorder");
+    expect(handle).toHaveClass("cursor-grab");
   });
 
-  it("disables down button for last identity", () => {
+  it("renders one drag handle per identity", () => {
     setup({
-      identities: [makeIdentity({ id: "last" })],
+      identities: [
+        makeIdentity({ id: "a", alias: "First" }),
+        makeIdentity({ id: "b", alias: "Second" }),
+        makeIdentity({ id: "c", alias: "Third" }),
+      ],
     });
-    const downButton = screen.getByLabelText("Move down");
-    expect(downButton).toBeDisabled();
+    const handles = screen.getAllByLabelText("Drag to reorder");
+    expect(handles).toHaveLength(3);
+  });
+
+  it("does not render drag handles for empty list", () => {
+    setup({ identities: [] });
+    expect(screen.queryAllByLabelText("Drag to reorder")).toHaveLength(0);
   });
 });
 
@@ -815,8 +818,7 @@ describe("IdentityListPanel — accessibility", () => {
   it("identity action buttons have aria labels", () => {
     setup({ identities: [makeIdentity()] });
     expect(screen.getByLabelText("Identity actions")).toBeInTheDocument();
-    expect(screen.getByLabelText("Move up")).toBeInTheDocument();
-    expect(screen.getByLabelText("Move down")).toBeInTheDocument();
+    expect(screen.getByLabelText("Drag to reorder")).toBeInTheDocument();
   });
 
   it("accepts custom className", () => {

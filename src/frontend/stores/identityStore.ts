@@ -71,6 +71,9 @@ interface IdentityActions {
   /** Move an identity down in the custom order. */
   reorderIdentityDown: (identityId: string) => Promise<void>;
 
+  /** Reorder identities by moving an item from one position to another (drag-and-drop). */
+  reorderIdentities: (activeId: string, overId: string) => Promise<void>;
+
   /** Remove an identity from the store and database. */
   removeIdentity: (identityId: string) => Promise<void>;
 
@@ -316,6 +319,28 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
     set({ identities: reordered, useCustomOrder: true });
 
     // Persist the new order
+    try {
+      await commands.identitySaveOrder({
+        identityIds: reordered.map((i) => i.id),
+      });
+    } catch {
+      // Best effort
+    }
+  },
+
+  reorderIdentities: async (activeId, overId) => {
+    if (activeId === overId) return;
+    const { identities } = get();
+    const oldIndex = identities.findIndex((i) => i.id === activeId);
+    const newIndex = identities.findIndex((i) => i.id === overId);
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const reordered = [...identities];
+    const [moved] = reordered.splice(oldIndex, 1);
+    reordered.splice(newIndex, 0, moved);
+
+    set({ identities: reordered, useCustomOrder: true });
+
     try {
       await commands.identitySaveOrder({
         identityIds: reordered.map((i) => i.id),

@@ -1,9 +1,29 @@
-import { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback } from "react";
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
+  restrictToVerticalAxis,
+  restrictToParentElement,
+} from "@dnd-kit/modifiers";
 import {
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
   ArrowLeft,
+  GripVertical,
   MoreVertical,
   Send,
   Coins,
@@ -118,6 +138,8 @@ export interface MyTokensTableProps {
   estimatingRewards?: Set<string>;
   /** Called to estimate rewards for a specific identity+token. */
   onEstimateRewards?: (identityId: string, tokenId: string) => void;
+  /** Called when a token is drag-and-dropped to a new position in the Level 1 list. */
+  onReorder?: (activeTokenId: string, overTokenId: string) => Promise<void>;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -227,6 +249,7 @@ export function MyTokensTable({
   rewardEstimates,
   estimatingRewards,
   onEstimateRewards,
+  onReorder,
 }: MyTokensTableProps) {
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
   const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
@@ -344,6 +367,7 @@ export function MyTokensTable({
           summaries={tokenSummaries}
           onDrillDown={handleDrillDown}
           onAction={handleTokenLevelAction}
+          onReorder={onReorder}
         />
       )}
 
@@ -379,44 +403,81 @@ function TokenListView({
   summaries,
   onDrillDown,
   onAction,
+  onReorder,
 }: {
   summaries: TokenSummary[];
   onDrillDown: (tokenId: string) => void;
   onAction: (summary: TokenSummary, action: "moreInfo" | "remove") => void;
+  onReorder?: (activeTokenId: string, overTokenId: string) => Promise<void>;
 }) {
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(KeyboardSensor),
+  );
+
+  const tokenIds = useMemo(
+    () => summaries.map((s) => s.tokenId),
+    [summaries],
+  );
+
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      if (onReorder) {
+        onReorder(String(active.id), String(over.id));
+      }
+    },
+    [onReorder],
+  );
+
   return (
     <div className="w-full">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Token Name</TableHead>
-            <TableHead className="w-[200px]">
-              <span className="text-sm font-semibold">Token ID</span>
-            </TableHead>
-            <TableHead className="w-[100px] text-right">
-              <span className="text-sm font-semibold">Identities</span>
-            </TableHead>
-            <TableHead className="w-[100px]">
-              <span className="sr-only">Actions</span>
-            </TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {summaries.map((summary) => (
-            <TokenSummaryRow
-              key={summary.tokenId}
-              summary={summary}
-              onDrillDown={onDrillDown}
-              onAction={onAction}
-            />
-          ))}
-        </TableBody>
-      </Table>
+      <DndContext
+        sensors={sensors}
+        collisionDetection={closestCenter}
+        modifiers={[restrictToVerticalAxis, restrictToParentElement]}
+        onDragEnd={handleDragEnd}
+      >
+        <SortableContext items={tokenIds} strategy={verticalListSortingStrategy}>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[40px]">
+                  <span className="sr-only">Reorder</span>
+                </TableHead>
+                <TableHead>Token Name</TableHead>
+                <TableHead className="w-[200px]">
+                  <span className="text-sm font-semibold">Token ID</span>
+                </TableHead>
+                <TableHead className="w-[100px] text-right">
+                  <span className="text-sm font-semibold">Identities</span>
+                </TableHead>
+                <TableHead className="w-[100px]">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {summaries.map((summary) => (
+                <SortableTokenRow
+                  key={summary.tokenId}
+                  summary={summary}
+                  onDrillDown={onDrillDown}
+                  onAction={onAction}
+                />
+              ))}
+            </TableBody>
+          </Table>
+        </SortableContext>
+      </DndContext>
     </div>
   );
 }
 
-function TokenSummaryRow({
+function SortableTokenRow({
   summary,
   onDrillDown,
   onAction,
@@ -425,10 +486,41 @@ function TokenSummaryRow({
   onDrillDown: (tokenId: string) => void;
   onAction: (summary: TokenSummary, action: "moreInfo" | "remove") => void;
 }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: summary.tokenId });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : undefined,
+    zIndex: isDragging ? 10 : undefined,
+    position: isDragging ? "relative" : undefined,
+  };
+
   const displayName = summary.name ?? "Unnamed Token";
 
   return (
-    <TableRow>
+    <TableRow ref={setNodeRef} style={style} className={isDragging ? "shadow-lg" : undefined}>
+      {/* Drag handle */}
+      <TableCell className="w-[40px] px-2">
+        <div
+          ref={setActivatorNodeRef}
+          {...attributes}
+          {...listeners}
+          className="cursor-grab active:cursor-grabbing touch-none"
+          aria-label="Drag to reorder"
+        >
+          <GripVertical className="h-4 w-4 text-muted-foreground/50 hover:text-muted-foreground" />
+        </div>
+      </TableCell>
+
       {/* Token Name (clickable → drill down) */}
       <TableCell>
         <Button

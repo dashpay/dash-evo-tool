@@ -993,3 +993,38 @@ test.describe("Context Menu Actions", () => {
     ).toBeVisible();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Drag-and-drop reordering
+// ---------------------------------------------------------------------------
+
+test("identity list shows drag handles for reordering", async ({
+  page,
+  mockIPC,
+}) => {
+  await mockIPC.navigateWithHandlers("/identities", identityListHandlers());
+
+  // Wait for identities to render
+  await expect(page.getByText("Test Identity").first()).toBeVisible({
+    timeout: 10000,
+  });
+
+  // Should show drag handles for each identity
+  const handles = page.getByLabel("Drag to reorder");
+  await expect(handles).toHaveCount(2);
+});
+
+test("drag handles have grab cursor styling", async ({
+  page,
+  mockIPC,
+}) => {
+  await mockIPC.navigateWithHandlers("/identities", identityListHandlers());
+
+  await expect(page.getByText("Test Identity").first()).toBeVisible({
+    timeout: 10000,
+  });
+
+  const handle = page.getByLabel("Drag to reorder").first();
+  await expect(handle).toBeVisible();
+  await expect(handle).toHaveClass(/cursor-grab/);
+});

@@ -120,6 +120,9 @@ interface TokenActions {
   /** Save custom token ordering. */
   saveTokenOrder: (tokenIds: IdentityTokenIdentifierDto[]) => Promise<void>;
 
+  /** Reorder tokens by moving a token from one position to another (drag-and-drop). */
+  reorderTokens: (activeTokenId: string, overTokenId: string) => Promise<void>;
+
   /** Sort by column (toggles direction if same column). */
   setSortColumn: (column: TokenSortColumn) => void;
 
@@ -417,6 +420,52 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
       }
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  reorderTokens: async (activeTokenId, overTokenId) => {
+    if (activeTokenId === overTokenId) return;
+    const { tokens } = get();
+
+    // Group by tokenId to get unique token ordering
+    const tokenIds: string[] = [];
+    for (const t of tokens) {
+      if (!tokenIds.includes(t.tokenId)) tokenIds.push(t.tokenId);
+    }
+
+    const oldIndex = tokenIds.indexOf(activeTokenId);
+    const newIndex = tokenIds.indexOf(overTokenId);
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    // Reorder the tokenId list
+    const reorderedIds = [...tokenIds];
+    const [moved] = reorderedIds.splice(oldIndex, 1);
+    reorderedIds.splice(newIndex, 0, moved);
+
+    // Rebuild token entries array in new group order
+    const byTokenId = new Map<string, TokenEntry[]>();
+    for (const t of tokens) {
+      const arr = byTokenId.get(t.tokenId) || [];
+      arr.push(t);
+      byTokenId.set(t.tokenId, arr);
+    }
+    const reordered: TokenEntry[] = [];
+    for (const id of reorderedIds) {
+      const entries = byTokenId.get(id);
+      if (entries) reordered.push(...entries);
+    }
+
+    set({ tokens: reordered });
+
+    // Persist — build IdentityTokenIdentifierDto list
+    const dtos: IdentityTokenIdentifierDto[] = reordered.map((t) => ({
+      identityId: t.identityId,
+      tokenId: t.tokenId,
+    }));
+    try {
+      await commands.tokenSaveOrder({ tokenIds: dtos });
+    } catch {
+      // Best effort
     }
   },
 

@@ -84,8 +84,7 @@ export function IdentitiesScreen() {
     refreshIdentity,
     refreshAllIdentities,
     setAlias,
-    reorderIdentityUp,
-    reorderIdentityDown,
+    reorderIdentities,
     removeIdentity,
     reloadIdentity,
     setSortColumn,
@@ -909,8 +908,7 @@ export function IdentitiesScreen() {
           walletNames={walletNames}
           onSelectIdentity={selectIdentity}
           onSetAlias={setAlias}
-          onReorderUp={reorderIdentityUp}
-          onReorderDown={reorderIdentityDown}
+          onReorder={reorderIdentities}
           onRemoveIdentity={removeIdentity}
           onRefreshIdentity={refreshIdentity}
           onRefreshAll={refreshAllIdentities}

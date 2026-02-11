@@ -1094,7 +1094,7 @@
   - [x] **10.1h** Add visual highlighting in DPNS active contests when locked votes exceed max contestant votes
   - [x] **10.1i** Verify Network Chooser: Core status indicators and custom Dash-Qt path selector
 
-- [ ] **10.2 Implement drag-and-drop reordering** (P2)
+- [x] **10.2 Implement drag-and-drop reordering** (P2)
   Add drag-and-drop for lists that support reordering:
   - Identity list reordering (persisted to database)
   - Token list reordering (persisted to database)
@@ -1162,7 +1162,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 194 |
-| Remaining | 5 |
+| Completed | 195 |
+| Remaining | 4 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

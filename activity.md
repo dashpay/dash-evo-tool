@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 189 — 2026-02-11
+**Task:** 10.2 Implement drag-and-drop reordering
+**What was done:** Replaced button-based up/down identity reordering with @dnd-kit drag-and-drop for both the identity list and token list. Installed @dnd-kit/modifiers and @dnd-kit/utilities packages. Added `reorderIdentities` action to identityStore and `reorderTokens` action to tokenStore for arbitrary position moves (vs the existing swap-adjacent methods). IdentityListPanel now uses DndContext + SortableContext with drag handle (GripVertical icon) per card. MyTokensTable Level 1 view now has a drag handle column with SortableContext. Both use pointer sensor with 8px activation constraint and vertical axis restriction. All ordering persists to backend via existing `identitySaveOrder` and `tokenSaveOrder` IPC commands.
+**Files changed:** src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/components/token/MyTokensTable.tsx, src/frontend/stores/identityStore.ts, src/frontend/stores/tokenStore.ts, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/TokenMyTokensScreen.tsx, src/frontend/components/identity/IdentityListPanel.test.tsx, src/frontend/components/token/MyTokensTable.test.tsx, src/frontend/stores/identityStore.test.ts, src/frontend/stores/tokenStore.test.ts, src/frontend/screens/IdentitiesScreen.test.tsx, src/frontend/bindings.test.ts, src/frontend/test/mock-ipc.test.ts, tests/e2e-integration/phase4-identities.spec.ts, tests/e2e-integration/phase7-tokens.spec.ts, package.json, package-lock.json
+**Tests added:** 17 new component tests (6 identity reorder store, 4 token reorder store, 3 identity DnD panel, 4 token DnD table) + 4 Playwright E2E tests (2 identity, 2 token). Also updated 5 existing tests to match new DnD UI and 3 pre-existing count assertions.
+**Sub-tasks created:** 0
+
 ## Run 188 — 2026-02-11
 **Task:** 10.1g, 10.1h, 10.1i — DPNS filter substitution, vote highlighting, Network Chooser file picker
 **What was done:** Verified that tasks 10.1g (DPNS confusable character filter o→0, l→1) and 10.1h (locked votes green bold highlighting when exceeding max contestant votes) were already fully implemented during Phase 5. For 10.1i, added a native file picker for the Dash-Qt executable path: new `settings_pick_dash_qt_path` Tauri command using `rfd::AsyncFileDialog` with platform-specific validation (macOS .app bundle resolution, Windows .exe check, Linux binary check), error display with dismiss button, and auto-save on valid selection. Updated mock IPC infrastructure.

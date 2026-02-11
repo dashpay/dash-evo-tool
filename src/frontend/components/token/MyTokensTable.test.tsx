@@ -651,3 +651,50 @@ describe("MyTokensTable — Rewards column", () => {
     expect(estimateButtons).toHaveLength(2);
   });
 });
+
+// ─── Drag-and-drop reordering ──────────────────────────────────────
+
+describe("MyTokensTable — drag-and-drop", () => {
+  it("renders drag handles for each token in Level 1 list", () => {
+    const tokens = [
+      makeToken({
+        tokenId: "token_aaa_" + "0".repeat(54),
+        name: "AlphaToken",
+      }),
+      makeToken({
+        tokenId: "token_bbb_" + "0".repeat(54),
+        name: "BetaToken",
+      }),
+    ];
+    setup({ tokens });
+    const handles = screen.getAllByLabelText("Drag to reorder");
+    expect(handles).toHaveLength(2);
+  });
+
+  it("renders Reorder column header in Level 1 table", () => {
+    setup();
+    // The drag handle column has a sr-only header "Reorder"
+    expect(screen.getByText("Reorder")).toBeInTheDocument();
+  });
+
+  it("accepts onReorder callback", () => {
+    const onReorder = vi.fn().mockResolvedValue(undefined);
+    setup({ onReorder });
+    // Drag handles should be present
+    const handles = screen.getAllByLabelText("Drag to reorder");
+    expect(handles).toHaveLength(1);
+  });
+
+  it("does not show drag handles in Level 2 detail view", async () => {
+    const tokens = [
+      makeToken({ name: "TestToken" }),
+    ];
+    const { user } = setup({ tokens });
+
+    // Drill into Level 2
+    await user.click(screen.getByRole("button", { name: "TestToken" }));
+
+    // Level 2 should not have drag handles
+    expect(screen.queryAllByLabelText("Drag to reorder")).toHaveLength(0);
+  });
+});

@@ -354,8 +354,7 @@ describe("IdentitiesScreen", () => {
   });
 
   describe("reordering", () => {
-    it("moves an identity up when up arrow is clicked", async () => {
-      const user = userEvent.setup();
+    it("renders drag handles for identity reordering", async () => {
       const id1 = makeIdentity({
         id: "aa".repeat(32),
         alias: "First",
@@ -372,14 +371,9 @@ describe("IdentitiesScreen", () => {
         expect(screen.getByText("Second")).toBeInTheDocument();
       });
 
-      // Find the "Move up" button on the second identity card
-      const moveUpButtons = screen.getAllByLabelText("Move up");
-      // The second one corresponds to the second identity
-      await user.click(moveUpButtons[1]);
-
-      await waitFor(() => {
-        expect(vi.mocked(commands.identitySaveOrder)).toHaveBeenCalled();
-      });
+      // Verify drag handles are rendered for reordering
+      const handles = screen.getAllByLabelText("Drag to reorder");
+      expect(handles).toHaveLength(2);
     });
   });
 

@@ -465,6 +465,71 @@ describe("tokenStore", () => {
     });
   });
 
+  // ─── reorderTokens (drag-and-drop) ─────────────────────────
+
+  describe("reorderTokens", () => {
+    it("reorders token groups by moving a token to a new position", async () => {
+      const t1 = makeToken({ tokenId: "token_a", name: "Alpha", identityId: "id1" });
+      const t2 = makeToken({ tokenId: "token_b", name: "Beta", identityId: "id1" });
+      const t3 = makeToken({ tokenId: "token_c", name: "Gamma", identityId: "id1" });
+      useTokenStore.setState({ tokens: [t1, t2, t3] });
+      (commands.tokenSaveOrder as Mock).mockResolvedValue({
+        status: "ok",
+        data: null,
+      });
+
+      await useTokenStore.getState().reorderTokens("token_c", "token_a");
+
+      const tokenIds = useTokenStore.getState().tokens.map((t) => t.tokenId);
+      expect(tokenIds).toEqual(["token_c", "token_a", "token_b"]);
+    });
+
+    it("does nothing when activeId equals overId", async () => {
+      const t1 = makeToken({ tokenId: "token_a" });
+      useTokenStore.setState({ tokens: [t1] });
+
+      await useTokenStore.getState().reorderTokens("token_a", "token_a");
+
+      expect(commands.tokenSaveOrder).not.toHaveBeenCalled();
+    });
+
+    it("persists the new token order", async () => {
+      const t1 = makeToken({ tokenId: "token_a", identityId: "id1" });
+      const t2 = makeToken({ tokenId: "token_b", identityId: "id2" });
+      useTokenStore.setState({ tokens: [t1, t2] });
+      (commands.tokenSaveOrder as Mock).mockResolvedValue({
+        status: "ok",
+        data: null,
+      });
+
+      await useTokenStore.getState().reorderTokens("token_b", "token_a");
+
+      expect(commands.tokenSaveOrder).toHaveBeenCalledWith({
+        tokenIds: [
+          { identityId: "id2", tokenId: "token_b" },
+          { identityId: "id1", tokenId: "token_a" },
+        ],
+      });
+    });
+
+    it("preserves multiple entries per token group", async () => {
+      const t1a = makeToken({ tokenId: "token_a", identityId: "id1", name: "Alpha" });
+      const t1b = makeToken({ tokenId: "token_a", identityId: "id2", name: "Alpha" });
+      const t2 = makeToken({ tokenId: "token_b", identityId: "id1", name: "Beta" });
+      useTokenStore.setState({ tokens: [t1a, t1b, t2] });
+      (commands.tokenSaveOrder as Mock).mockResolvedValue({
+        status: "ok",
+        data: null,
+      });
+
+      await useTokenStore.getState().reorderTokens("token_b", "token_a");
+
+      const state = useTokenStore.getState();
+      expect(state.tokens.map((t) => t.tokenId)).toEqual(["token_b", "token_a", "token_a"]);
+      expect(state.tokens.map((t) => t.identityId)).toEqual(["id1", "id1", "id2"]);
+    });
+  });
+
   // ─── setSortColumn ──────────────────────────────────────────
 
   describe("setSortColumn", () => {

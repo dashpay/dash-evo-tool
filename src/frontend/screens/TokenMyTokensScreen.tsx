@@ -83,6 +83,7 @@ export function TokenMyTokensScreen() {
     loadMyTokenBalances,
     setSortColumn,
     removeToken,
+    reorderTokens,
     subscribeToUpdates,
     clearError,
   } = useTokenStore();
@@ -349,6 +350,7 @@ export function TokenMyTokensScreen() {
             rewardEstimates={rewardEstimates}
             estimatingRewards={estimatingRewards}
             onEstimateRewards={handleEstimateRewards}
+            onReorder={reorderTokens}
           />
         )}
       </Island>

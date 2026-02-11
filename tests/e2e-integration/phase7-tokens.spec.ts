@@ -967,3 +967,60 @@ test.describe("Token Update Config Screen", () => {
     ).toBeVisible({ timeout: 10000 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Drag-and-drop reordering
+// ---------------------------------------------------------------------------
+
+test.describe("Token List — drag-and-drop", () => {
+  test("shows drag handles for each token in Level 1 list", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers("/tokens", tokenHandlers());
+
+    await expect(page.getByText("My Tokens").first()).toBeVisible({
+      timeout: 10000,
+    });
+
+    // Emit token data
+    await mockIPC.emitEvent("task-result-event", {
+      taskId: "mock-token-task",
+      resultType: "Token",
+      payload: [createTokenEntry(), createSecondToken()],
+    });
+
+    // Wait for tokens to render
+    await expect(page.getByText("TestToken").first()).toBeVisible({
+      timeout: 5000,
+    });
+
+    // Drag handles should be visible
+    const handles = page.getByLabel("Drag to reorder");
+    await expect(handles).toHaveCount(2);
+  });
+
+  test("drag handles have Reorder column header", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers("/tokens", tokenHandlers());
+
+    await expect(page.getByText("My Tokens").first()).toBeVisible({
+      timeout: 10000,
+    });
+
+    await mockIPC.emitEvent("task-result-event", {
+      taskId: "mock-token-task",
+      resultType: "Token",
+      payload: [createTokenEntry()],
+    });
+
+    await expect(page.getByText("TestToken").first()).toBeVisible({
+      timeout: 5000,
+    });
+
+    // sr-only header for accessibility
+    await expect(page.getByText("Reorder")).toBeAttached();
+  });
+});

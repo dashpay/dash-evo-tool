@@ -179,8 +179,8 @@ impl Database {
         let mut identities = Vec::new();
         for row in identity_iter {
             let (data, alias, wallet_index, status) = row?;
-            let mut identity = QualifiedIdentity::from_bytes(&data)
-                .map_err(super::CorruptedBlobError)?;
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
             identity.alias = alias;
             identity.wallet_index = wallet_index;
 
@@ -242,8 +242,8 @@ impl Database {
         let mut identities = Vec::new();
         for row in identity_iter {
             let (data, alias, wallet_index) = row?;
-            let mut identity = QualifiedIdentity::from_bytes(&data)
-                .map_err(super::CorruptedBlobError)?;
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
             identity.alias = alias;
             identity.wallet_index = wallet_index;
             identity.network = app_context.network;
@@ -303,8 +303,8 @@ impl Database {
 
         if let Some(row) = identity_iter.next() {
             let (data, alias, wallet_index) = row?;
-            let mut identity = QualifiedIdentity::from_bytes(&data)
-                .map_err(super::CorruptedBlobError)?;
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
             identity.alias = alias;
             identity.wallet_index = wallet_index;
             identity.network = app_context.network;
@@ -352,8 +352,8 @@ impl Database {
         let mut identities = Vec::new();
         for row in identity_iter {
             let data = row?;
-            let mut identity = QualifiedIdentity::from_bytes(&data)
-                .map_err(super::CorruptedBlobError)?;
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
             identity.network = app_context.network;
             identities.push(identity);
         }
@@ -383,8 +383,8 @@ impl Database {
         let mut identities = Vec::new();
         for row in row_iter {
             let (data, wallet_id) = row?;
-            let mut identity = QualifiedIdentity::from_bytes(&data)
-                .map_err(super::CorruptedBlobError)?;
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
             identity.network = app_context.network;
             identities.push((identity, wallet_id));
         }

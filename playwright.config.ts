@@ -37,6 +37,7 @@ export default defineConfig({
     url: "http://localhost:1420",
     reuseExistingServer: !process.env.CI,
     env: {
+      ...process.env,
       VITE_E2E_MOCK: process.env.VITE_E2E_MOCK ?? "",
     },
   },

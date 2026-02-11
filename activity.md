@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 177 — 2026-02-10
+**Task:** Fix Playwright E2E mock IPC initialization failure (critical)
+**What was done:** Fixed root cause of ALL Playwright E2E integration tests failing with `waitForInit` timeout. The `webServer.env` in `playwright.config.ts` was set without spreading `process.env`, so the Vite dev server child process lost all parent environment variables (PATH, HOME, etc.) and the `VITE_E2E_MOCK=true` value. Fix: added `...process.env` spread to the `env` object. Also fixed one E2E test (`shows no-identity empty state`) that expected "No Identity Selected" from the search screen but the DashPay layout blocks child routes when no identities exist, showing "No Identities Loaded" instead. Result: 384 E2E integration tests pass (0 failures), 4343 component tests pass.
+**Files changed:** playwright.config.ts, tests/e2e-integration/phase8-dashpay.spec.ts
+**Tests added:** 0 (fixed infrastructure + 1 test assertion)
+**Sub-tasks created:** 0
+
 ## Run 176 — 2026-02-10
 **Task:** 9.1i Implement Proof Log screen
 **What was done:** Built the full ProofLogScreen component with: sortable data table (Request Type, Height, Time, Error columns with click-to-sort headers), client-side sorting, paginated data fetching (100 items/page with Previous/Next), row selection with detail panel, three display modes (Hex/JSON/PathQuery) with radio toggle, gold hash highlighting for 64-char hex strings from error messages in Hex and JSON modes. Added `parse_path_query` Tauri IPC command to visualizer.rs for PathQuery display mode (bincode deserialization of PathQuery struct). Detail panel shows metadata (request type, height, time, error) plus parsed proof content with copy button. Wired route in routes.tsx replacing PlaceholderScreen. Updated mock-ipc.ts with proofLogGetItems and parsePathQuery handlers. All 4343 frontend tests pass (32 new), 270 Rust tests pass (7 new), lint + typecheck + clippy clean.

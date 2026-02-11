@@ -388,7 +388,7 @@ test.describe("DashPay Search Route", () => {
     ).toBeEnabled({ timeout: 5000 });
   });
 
-  test("shows no-identity empty state when no identity selected", async ({
+  test("shows no-identities state when no identities loaded", async ({
     page,
     mockIPC,
   }) => {
@@ -397,8 +397,9 @@ test.describe("DashPay Search Route", () => {
       dashpayHandlers(),
     );
 
+    // DashPay layout blocks child routes when no identities exist
     await expect(
-      page.getByText("No Identity Selected"),
+      page.getByText("No Identities Loaded"),
     ).toBeVisible({ timeout: 10000 });
   });
 

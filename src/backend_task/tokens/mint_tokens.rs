@@ -96,23 +96,16 @@ impl AppContext {
                 MintResult::HistoricalDocument(document) => {
                     if let (Some(recipient_value), Some(amount_value)) =
                         (document.get("recipientId"), document.get("amount"))
-                    {
-                        if let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
+                        && let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
                             (recipient_value, amount_value)
-                        {
-                            if let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes) {
-                                if let Err(e) = self.insert_token_identity_balance(
-                                    &token_id,
-                                    &recipient_id,
-                                    *amount,
-                                ) {
-                                    eprintln!(
-                                        "Failed to update token balance from historical document: {}",
-                                        e
-                                    );
-                                }
-                            }
-                        }
+                        && let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &recipient_id, *amount)
+                    {
+                        eprintln!(
+                            "Failed to update token balance from historical document: {}",
+                            e
+                        );
                     }
                 }
 
@@ -120,23 +113,16 @@ impl AppContext {
                 MintResult::GroupActionWithDocument(_, Some(document)) => {
                     if let (Some(recipient_value), Some(amount_value)) =
                         (document.get("recipientId"), document.get("amount"))
-                    {
-                        if let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
+                        && let (Value::Identifier(recipient_bytes), Value::U64(amount)) =
                             (recipient_value, amount_value)
-                        {
-                            if let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes) {
-                                if let Err(e) = self.insert_token_identity_balance(
-                                    &token_id,
-                                    &recipient_id,
-                                    *amount,
-                                ) {
-                                    eprintln!(
-                                        "Failed to update token balance from group action document: {}",
-                                        e
-                                    );
-                                }
-                            }
-                        }
+                        && let Ok(recipient_id) = Identifier::from_bytes(recipient_bytes)
+                        && let Err(e) =
+                            self.insert_token_identity_balance(&token_id, &recipient_id, *amount)
+                    {
+                        eprintln!(
+                            "Failed to update token balance from group action document: {}",
+                            e
+                        );
                     }
                 }
 
@@ -159,7 +145,11 @@ impl AppContext {
             }
         }
 
-        // Return success
-        Ok(BackendTaskSuccessResult::Message("MintTokens".to_string()))
+        // Return success with fee result
+        use crate::backend_task::FeeResult;
+        use crate::model::fee_estimation::PlatformFeeEstimator;
+        let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
+        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        Ok(BackendTaskSuccessResult::MintedTokens(fee_result))
     }
 }

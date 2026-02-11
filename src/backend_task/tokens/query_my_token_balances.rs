@@ -85,9 +85,7 @@ impl AppContext {
             }
         }
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully fetched token balances".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
     pub async fn query_token_balance(
@@ -135,8 +133,6 @@ impl AppContext {
             }
         }
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully fetched token balances".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 }

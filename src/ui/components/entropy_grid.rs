@@ -1,3 +1,4 @@
+use crate::ui::theme::DashColors;
 use bip39::rand::{self, Rng};
 use egui::{Button, Color32, Grid, Ui, Vec2};
 
@@ -27,7 +28,7 @@ impl U256EntropyGrid {
 
     /// Render the UI and allow users to modify bits
     pub fn ui(&mut self, ui: &mut Ui) -> [u8; 32] {
-        ui.heading("1. Hover over this view to create extra randomness for the seed phrase.");
+        ui.heading("1. Move your cursor over this grid to create extra randomness for your wallet's seed phrase.");
 
         // Add padding around the grid
         ui.add_space(10.0); // Top padding
@@ -58,13 +59,24 @@ impl U256EntropyGrid {
                             let byte_index = (bit_position / 8) as usize;
                             let bit_in_byte = (bit_position % 8) as usize;
 
-                            // Determine the bit value (1 = Black, 0 = White).
+                            // Determine the bit value and colors based on theme
                             let bit_value =
                                 (self.random_number[byte_index] >> bit_in_byte) & 1 == 1;
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             let color = if bit_value {
-                                Color32::BLACK
+                                // On squares: Deep Blue in light mode, muted Dash Blue in dark mode
+                                if dark_mode {
+                                    DashColors::DASH_BLUE.gamma_multiply(0.85)
+                                } else {
+                                    DashColors::DEEP_BLUE
+                                }
                             } else {
-                                Color32::WHITE
+                                // Off squares: gray in dark mode, white in light mode
+                                if dark_mode {
+                                    Color32::from_rgb(80, 80, 80)
+                                } else {
+                                    Color32::WHITE
+                                }
                             };
 
                             // Create a button with the appropriate size and color.
@@ -85,14 +97,6 @@ impl U256EntropyGrid {
 
             ui.add_space(10.0); // Right padding
         });
-
-        ui.add_space(10.0); // Bottom padding
-
-        // Display the current random number in hex.
-        ui.label(format!(
-            "User number is [{}], this will be added to a random number to add extra entropy and ensure security.",
-            hex::encode(self.random_number)
-        ));
 
         self.random_number
     }

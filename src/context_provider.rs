@@ -27,17 +27,19 @@ impl Provider {
         network: Network,
         config: &NetworkConfig,
     ) -> Result<Self, String> {
-        let cookie_path =
-            core_cookie_path(network, &config.devnet_name).expect("Failed to get core cookie path");
+        let cookie_path = core_cookie_path(network, &config.devnet_name)
+            .map_err(|e| format!("Failed to get core cookie path: {}", e))?;
 
         // Read the cookie from disk
         let cookie = std::fs::read_to_string(cookie_path);
         let (user, pass) = if let Ok(cookie) = cookie {
+            let cookie = cookie.trim();
             // split the cookie at ":", first part is user (__cookie__), second part is password
-            let cookie_parts: Vec<&str> = cookie.split(':').collect();
-            let user = cookie_parts[0];
-            let password = cookie_parts[1];
-            (user.to_string(), password.to_string())
+            if let Some((user, password)) = cookie.split_once(':') {
+                (user.to_string(), password.to_string())
+            } else {
+                return Err("Malformed cookie file: expected 'user:password' format".to_string());
+            }
         } else {
             // Fall back to the pre-set user / pass if needed
             (
@@ -56,15 +58,24 @@ impl Provider {
         })
     }
     /// Set app context to the provider.
-    pub fn bind_app_context(&self, app_context: Arc<AppContext>) {
+    ///
+    /// Returns an error if any lock is poisoned (indicates a prior panic).
+    pub fn bind_app_context(&self, app_context: Arc<AppContext>) -> Result<(), String> {
         // order matters - can cause deadlock
         let cloned = app_context.clone();
-        let mut ac = self.app_context.lock().expect("lock poisoned");
+        let mut ac = self
+            .app_context
+            .lock()
+            .map_err(|_| "Provider app_context lock poisoned".to_string())?;
         ac.replace(cloned);
         drop(ac);
 
-        let sdk = app_context.sdk.write().expect("lock poisoned");
+        let sdk = app_context
+            .sdk
+            .write()
+            .map_err(|_| "SDK lock poisoned".to_string())?;
         sdk.set_context_provider(self.clone());
+        Ok(())
     }
 }
 
@@ -74,13 +85,18 @@ impl ContextProvider for Provider {
         data_contract_id: &dash_sdk::platform::Identifier,
         _platform_version: &PlatformVersion,
     ) -> Result<Option<Arc<DataContract>>, dash_sdk::error::ContextProviderError> {
-        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx_guard = self
+            .app_context
+            .lock()
+            .map_err(|_| ContextProviderError::Config("Provider lock poisoned".to_string()))?;
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
 
         if data_contract_id == &app_ctx.dpns_contract.id() {
             Ok(Some(app_ctx.dpns_contract.clone()))
+        } else if data_contract_id == &app_ctx.dashpay_contract.id() {
+            Ok(Some(app_ctx.dashpay_contract.clone()))
         } else if data_contract_id == &app_ctx.token_history_contract.id() {
             Ok(Some(app_ctx.token_history_contract.clone()))
         } else if data_contract_id == &app_ctx.withdraws_contract.id() {
@@ -104,7 +120,10 @@ impl ContextProvider for Provider {
         token_id: &dash_sdk::platform::Identifier,
     ) -> Result<Option<dash_sdk::dpp::data_contract::TokenConfiguration>, ContextProviderError>
     {
-        let app_ctx_guard = self.app_context.lock().expect("lock poisoned");
+        let app_ctx_guard = self
+            .app_context
+            .lock()
+            .map_err(|_| ContextProviderError::Config("Provider lock poisoned".to_string()))?;
         let app_ctx = app_ctx_guard
             .as_ref()
             .ok_or(ContextProviderError::Config("no app context".to_string()))?;
@@ -117,12 +136,12 @@ impl ContextProvider for Provider {
     fn get_quorum_public_key(
         &self,
         quorum_type: u32,
-        quorum_hash: [u8; 32], // quorum hash is 32 bytes
+        quorum_hash: [u8; 32],
         _core_chain_locked_height: u32,
-    ) -> std::result::Result<[u8; 48], dash_sdk::error::ContextProviderError> {
-        let key = self.core.get_quorum_public_key(quorum_type, quorum_hash)?;
-
-        Ok(key)
+    ) -> std::result::Result<[u8; 48], ContextProviderError> {
+        self.core
+            .get_quorum_public_key(quorum_type, quorum_hash)
+            .map_err(|e| ContextProviderError::Generic(e.to_string()))
     }
 
     fn get_platform_activation_height(
@@ -137,11 +156,26 @@ impl ContextProvider for Provider {
 
 impl Clone for Provider {
     fn clone(&self) -> Self {
-        let app_guard = self.app_context.lock().expect("lock poisoned");
+        // Clone trait doesn't allow returning Result, so we use a fallback
+        // If the lock is poisoned, clone with None app_context (will require rebinding)
+        let app_context_clone = self
+            .app_context
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| {
+                tracing::warn!("Provider lock poisoned during clone, using fallback");
+                poisoned.into_inner().clone()
+            });
         Self {
             core: self.core.clone(),
             db: self.db.clone(),
-            app_context: Mutex::new(app_guard.clone()),
+            app_context: Mutex::new(app_context_clone),
         }
+    }
+}
+
+impl std::fmt::Debug for Provider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Provider").finish()
     }
 }

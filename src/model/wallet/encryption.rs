@@ -30,6 +30,7 @@ pub fn derive_password_key(password: &str, salt: &[u8]) -> Result<Vec<u8>, Strin
 
 /// Encrypt the seed using AES-256-GCM.
 #[allow(clippy::type_complexity)]
+#[allow(deprecated)]
 pub fn encrypt_message(
     message: &[u8],
     password: &str,
@@ -49,8 +50,9 @@ pub fn encrypt_message(
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
 
     // Encrypt the seed
+    let nonce_arr = Nonce::from_slice(&nonce);
     let encrypted_seed = cipher
-        .encrypt(Nonce::from_slice(&nonce), message)
+        .encrypt(nonce_arr, message)
         .map_err(|e| e.to_string())?;
 
     Ok((encrypted_seed, salt, nonce))
@@ -76,6 +78,7 @@ impl ClosedKeyItem {
     }
 
     /// Decrypt the seed using AES-256-GCM.
+    #[allow(deprecated)]
     pub fn decrypt_seed(&self, password: &str) -> Result<[u8; 64], String> {
         // Derive the key
         let key = derive_password_key(password, &self.salt)?;
@@ -84,11 +87,9 @@ impl ClosedKeyItem {
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
 
         // Decrypt the seed
+        let nonce_arr = Nonce::from_slice(&self.nonce);
         let seed = cipher
-            .decrypt(
-                Nonce::from_slice(&self.nonce),
-                self.encrypted_seed.as_slice(),
-            )
+            .decrypt(nonce_arr, self.encrypted_seed.as_slice())
             .map_err(|e| e.to_string())?;
 
         let sized_seed = seed.try_into().map_err(|e: Vec<u8>| {

@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, ContractSearchStatus, TokensScreen,
 };
@@ -9,8 +10,16 @@ use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
 use eframe::epaint::Color32;
-use egui::Ui;
+use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
+
+const KEYWORD_SEARCH_INFO_TEXT: &str = "Keyword Search allows you to find tokens by searching their associated keywords.\n\n\
+    When token creators register tokens on Dash Platform, they can add searchable keywords \
+    to make their tokens discoverable.\n\n\
+    Tips:\n\n\
+    - Try common terms like 'game', 'music', 'art', etc.\n\n\
+    - Keywords are case-insensitive.\n\n\
+    - Each keyword costs 0.1 Dash to register, so creators choose them carefully.";
 
 impl TokensScreen {
     pub(super) fn render_keyword_search(&mut self, ui: &mut Ui) -> AppAction {
@@ -19,8 +28,13 @@ impl TokensScreen {
 
         let mut action = AppAction::None;
 
-        // 1) Input & “Go” button
-        ui.heading("Search Tokens by Keyword");
+        // 1) Input & "Go" button
+        ui.horizontal(|ui| {
+            ui.heading("Search Tokens by Keyword");
+            if crate::ui::helpers::info_icon_button(ui, KEYWORD_SEARCH_INFO_TEXT).clicked() {
+                self.show_pop_up_info = Some(KEYWORD_SEARCH_INFO_TEXT.to_string());
+            }
+        });
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
@@ -95,7 +109,7 @@ impl TokensScreen {
                 let elapsed = now - start_time;
                 ui.horizontal(|ui| {
                     ui.label(format!("Searching... {} seconds", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 });
             }
             ContractSearchStatus::Complete => {
@@ -105,27 +119,43 @@ impl TokensScreen {
                     ui.label("No tokens match your keyword.");
                 } else {
                     action |= self.render_search_results_table(ui, &results);
+                    // Pagination controls
+                    if self.search_has_next_page || self.search_current_page > 1 {
+                        ui.horizontal(|ui| {
+                            if self.search_current_page > 1 && ui.button("Previous").clicked() {
+                                // Go to previous page
+                                action |= self.goto_previous_search_page();
+                            }
+
+                            if !(self.next_cursors.is_empty() && self.previous_cursors.is_empty()) {
+                                ui.label(format!("Page {}", self.search_current_page));
+                            }
+
+                            if self.search_has_next_page && ui.button("Next").clicked() {
+                                // Go to next page
+                                action |= self.goto_next_search_page();
+                            }
+                        });
+                    }
                 }
-
-                // Pagination controls
-                ui.horizontal(|ui| {
-                    if self.search_current_page > 1 && ui.button("Previous").clicked() {
-                        // Go to previous page
-                        action = self.goto_previous_search_page();
-                    }
-
-                    if !(self.next_cursors.is_empty() && self.previous_cursors.is_empty()) {
-                        ui.label(format!("Page {}", self.search_current_page));
-                    }
-
-                    if self.search_has_next_page && ui.button("Next").clicked() {
-                        // Go to next page
-                        action = self.goto_next_search_page();
-                    }
-                });
             }
             ContractSearchStatus::ErrorMessage(e) => {
-                ui.colored_label(Color32::RED, format!("Error: {}", e));
+                let error_color = Color32::from_rgb(255, 100, 100);
+                let msg = e.clone();
+                Frame::new()
+                    .fill(error_color.gamma_multiply(0.1))
+                    .inner_margin(Margin::symmetric(10, 8))
+                    .corner_radius(5.0)
+                    .stroke(egui::Stroke::new(1.0, error_color))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                            ui.add_space(10.0);
+                            if ui.small_button("Dismiss").clicked() {
+                                self.contract_search_status = ContractSearchStatus::NotStarted;
+                            }
+                        });
+                    });
             }
         }
 
@@ -138,6 +168,8 @@ impl TokensScreen {
         search_results: &[ContractDescriptionInfo],
     ) -> AppAction {
         let mut action = AppAction::None;
+
+        let dark_mode = ui.visuals().dark_mode;
 
         egui::ScrollArea::both().show(ui, |ui| {
             ui.set_min_width(ui.available_width());
@@ -152,13 +184,28 @@ impl TokensScreen {
                 .column(Column::initial(80.0).resizable(true)) // Action
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        ui.label("Contract ID");
+                        ui.label(
+                            RichText::new("Contract ID")
+                                .strong()
+                                .size(14.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                     header.col(|ui| {
-                        ui.label("Contract Description");
+                        ui.label(
+                            RichText::new("Contract Description")
+                                .strong()
+                                .size(14.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                     header.col(|ui| {
-                        ui.label("Action");
+                        ui.label(
+                            RichText::new("Action")
+                                .strong()
+                                .size(14.0)
+                                .color(DashColors::text_primary(dark_mode)),
+                        );
                     });
                 })
                 .body(|mut body| {
@@ -168,7 +215,13 @@ impl TokensScreen {
                                 ui.label(contract.data_contract_id.to_string(Encoding::Base58));
                             });
                             row.col(|ui| {
-                                ui.label(contract.description.clone());
+                                let description = if contract.description.trim().is_empty() {
+                                    "None".to_string()
+                                } else {
+                                    contract.description.clone()
+                                };
+
+                                ui.label(description);
                             });
                             row.col(|ui| {
                                 // Example "Add" button

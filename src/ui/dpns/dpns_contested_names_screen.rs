@@ -19,8 +19,10 @@ use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{StyledButton, island_central_panel};
+use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
@@ -304,7 +306,7 @@ impl DPNSScreen {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.label(RichText::new("Please check back later or try refreshing the list.").color(DashColors::text_primary(dark_mode)));
                 ui.add_space(20.0);
-                if ui.button("Refresh").clicked() {
+                if StyledButton::primary("Refresh").show(ui).clicked() {
                     if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
                         app_action = AppAction::None;
                     } else {
@@ -383,15 +385,15 @@ impl DPNSScreen {
                 .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(200.0).resizable(true)) // Contested Name
-                .column(Column::initial(100.0).resizable(true)) // Locked
-                .column(Column::initial(100.0).resizable(true)) // Abstain
-                .column(Column::initial(200.0).resizable(true)) // Ending Time
-                .column(Column::initial(200.0).resizable(true)) // Last Updated
-                .column(Column::remainder()) // Contestants
+                .column(Column::auto().resizable(true)) // Contested Name
+                .column(Column::auto().resizable(true)) // Locked
+                .column(Column::auto().resizable(true)) // Abstain
+                .column(Column::auto().resizable(true)) // Ending Time
+                .column(Column::auto().resizable(true)) // Last Updated
+                .column(Column::auto().resizable(true)) // Contestants
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        if ui.button("Contested Name").clicked() {
+                        if ui.button("Name").clicked() {
                             self.toggle_sort(SortColumn::ContestedName);
                         }
                     });
@@ -491,10 +493,13 @@ impl DPNSScreen {
                             // LOCK button
                             row.col(|ui| {
                                 let label_text = format!("{}", locked_votes);
+                                let dark_green = Color32::from_rgb(0, 100, 0);
+                                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                let normal_color = DashColors::text_primary(dark_mode);
                                 let text_widget = if is_locked_votes_bold {
-                                    RichText::new(label_text).strong()
+                                    RichText::new(label_text).strong().color(dark_green)
                                 } else {
-                                    RichText::new(label_text)
+                                    RichText::new(label_text).color(normal_color)
                                 };
 
                                 // See if this (LOCK) is selected
@@ -708,13 +713,13 @@ impl DPNSScreen {
                 .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(200.0).resizable(true)) // Name
-                .column(Column::initial(200.0).resizable(true)) // Ended Time
-                .column(Column::initial(200.0).resizable(true)) // Last Updated
-                .column(Column::initial(200.0).resizable(true)) // Awarded To
+                .column(Column::auto().resizable(true)) // Name
+                .column(Column::auto().resizable(true)) // Ended Time
+                .column(Column::auto().resizable(true)) // Last Updated
+                .column(Column::auto().resizable(true)) // Awarded To
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        if ui.button("Contested Name").clicked() {
+                        if ui.button("Name").clicked() {
                             self.toggle_sort(SortColumn::ContestedName);
                         }
                     });
@@ -895,9 +900,10 @@ impl DPNSScreen {
                 .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(200.0).resizable(true)) // DPNS Name
-                .column(Column::initial(400.0).resizable(true)) // Owner ID
-                .column(Column::initial(300.0).resizable(true)) // Acquired At
+                .column(Column::auto().resizable(true)) // DPNS Name
+                .column(Column::auto().resizable(true)) // Owner ID
+                .column(Column::auto().resizable(true)) // Acquired At
+                .column(Column::auto().resizable(true)) // Actions
                 .header(30.0, |mut header| {
                     header.col(|ui| {
                         if ui.button("Name").clicked() {
@@ -914,14 +920,27 @@ impl DPNSScreen {
                             self.toggle_sort(SortColumn::EndingTime);
                         }
                     });
+                    header.col(|ui| {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        ui.label(
+                            RichText::new("Actions").color(DashColors::text_primary(dark_mode)),
+                        );
+                    });
                 })
                 .body(|mut body| {
                     for (identifier, dpns_info) in filtered_names {
+                        let name_for_alias = dpns_info.name.clone();
+                        // Display name with .dash suffix
+                        let display_name = if name_for_alias.ends_with(".dash") {
+                            name_for_alias.clone()
+                        } else {
+                            format!("{}.dash", name_for_alias)
+                        };
                         body.row(25.0, |mut row| {
                             row.col(|ui| {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                                 ui.label(
-                                    RichText::new(dpns_info.name)
+                                    RichText::new(&display_name)
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
                             });
@@ -943,6 +962,35 @@ impl DPNSScreen {
                                 ui.label(
                                     RichText::new(dt).color(DashColors::text_primary(dark_mode)),
                                 );
+                            });
+                            row.col(|ui| {
+                                if ui.small_button("Set Alias").clicked() {
+                                    // Append .dash suffix for DPNS names
+                                    let alias_with_suffix = if name_for_alias.ends_with(".dash") {
+                                        name_for_alias.clone()
+                                    } else {
+                                        format!("{}.dash", name_for_alias)
+                                    };
+                                    if let Err(e) = self
+                                        .app_context
+                                        .db
+                                        .set_identity_alias(&identifier, Some(&alias_with_suffix))
+                                    {
+                                        self.display_message(
+                                            &format!("Failed to set alias: {}", e),
+                                            MessageType::Error,
+                                        );
+                                    } else {
+                                        self.display_message(
+                                            &format!(
+                                                "Alias set to '{}' for identity {}",
+                                                alias_with_suffix,
+                                                identifier.to_string(Encoding::Base58)
+                                            ),
+                                            MessageType::Success,
+                                        );
+                                    }
+                                }
                             });
                         });
                     }
@@ -972,15 +1020,15 @@ impl DPNSScreen {
                 .striped(false)
                 .resizable(true)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::initial(100.0).resizable(true)) // ContestedName
-                .column(Column::initial(200.0).resizable(true)) // Voter
-                .column(Column::initial(200.0).resizable(true)) // Choice
-                .column(Column::initial(200.0).resizable(true)) // Time
-                .column(Column::initial(100.0).resizable(true)) // Status
-                .column(Column::initial(100.0).resizable(true)) // Actions
+                .column(Column::auto().resizable(true)) // ContestedName
+                .column(Column::auto().resizable(true)) // Voter
+                .column(Column::auto().resizable(true)) // Choice
+                .column(Column::auto().resizable(true)) // Time
+                .column(Column::auto().resizable(true)) // Status
+                .column(Column::auto().resizable(true)) // Actions
                 .header(30.0, |mut header| {
                     header.col(|ui| {
-                        if ui.button("Contested Name").clicked() {
+                        if ui.button("Name").clicked() {
                             self.toggle_sort(SortColumn::ContestedName);
                         }
                     });
@@ -1117,13 +1165,13 @@ impl DPNSScreen {
                                     vote.1 = ScheduledVoteCastingStatus::InProgress;
 
                                     // Mark in our Arc as well
-                                    if let Ok(mut sched_guard) = self.scheduled_votes.lock() {
-                                        if let Some(t) = sched_guard.iter_mut().find(|(sv, _)| {
+                                    if let Ok(mut sched_guard) = self.scheduled_votes.lock()
+                                        && let Some(t) = sched_guard.iter_mut().find(|(sv, _)| {
                                             sv.voter_id == vote.0.voter_id
                                                 && sv.contested_name == vote.0.contested_name
-                                        }) {
-                                            t.1 = ScheduledVoteCastingStatus::InProgress;
-                                        }
+                                        })
+                                    {
+                                        t.1 = ScheduledVoteCastingStatus::InProgress;
                                     }
                                     // dispatch the actual cast
                                     let local_ids =
@@ -1802,23 +1850,6 @@ impl ScreenLike for DPNSScreen {
                 }
             }
         }
-        if message.contains("Successfully cast scheduled vote") {
-            self.scheduled_vote_cast_in_progress = false;
-        }
-        // If it's from a DPNS query or identity refresh, remove refreshing state
-        if message.contains("Successfully refreshed DPNS contests")
-            || message.contains("Successfully refreshed loaded identities dpns names")
-            || message.contains("Contested resource query failed")
-            || message.contains("Error refreshing owned DPNS names")
-        {
-            self.refreshing_status = RefreshingStatus::NotRefreshing;
-        }
-
-        if message.contains("Votes scheduled")
-            && self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes
-        {
-            self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
-        }
 
         // Save into general error_message for top-of-screen
         self.message = Some((message.to_string(), message_type, Utc::now()));
@@ -1866,23 +1897,26 @@ impl ScreenLike for DPNSScreen {
                 self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
             }
             // If scheduling succeeded
-            BackendTaskSuccessResult::Message(msg) => {
-                if msg.contains("Votes scheduled") {
-                    if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
-                        self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
-                    }
-                    self.bulk_schedule_message =
-                        Some((MessageType::Success, "Votes scheduled".to_string()));
+            BackendTaskSuccessResult::ScheduledVotes => {
+                if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
+                    self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
                 }
+                self.bulk_schedule_message =
+                    Some((MessageType::Success, "Votes scheduled".to_string()));
             }
             BackendTaskSuccessResult::CastScheduledVote(vote) => {
-                if let Ok(mut guard) = self.scheduled_votes.lock() {
-                    if let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
+                self.scheduled_vote_cast_in_progress = false;
+                if let Ok(mut guard) = self.scheduled_votes.lock()
+                    && let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
                         v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
-                    }) {
-                        *status = ScheduledVoteCastingStatus::Completed;
-                    }
+                    })
+                {
+                    *status = ScheduledVoteCastingStatus::Completed;
                 }
+            }
+            BackendTaskSuccessResult::RefreshedDpnsContests
+            | BackendTaskSuccessResult::RefreshedOwnedDpnsNames => {
+                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
         }
@@ -1963,7 +1997,9 @@ impl ScreenLike for DPNSScreen {
                 0,
                 (
                     "Register Name",
-                    DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName)),
+                    DesiredAppAction::AddScreenType(Box::new(ScreenType::RegisterDpnsName(
+                        RegisterDpnsNameSource::Dpns,
+                    ))),
                 ),
             );
         }
@@ -1983,38 +2019,16 @@ impl ScreenLike for DPNSScreen {
         }
 
         // Left panel
-        match self.dpns_subscreen {
-            DPNSSubscreen::Active => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenDPNSActiveContests,
-                );
-            }
-            DPNSSubscreen::Past => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenDPNSPastContests,
-                );
-            }
-            DPNSSubscreen::Owned => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenDPNSOwnedNames,
-                );
-            }
-            DPNSSubscreen::ScheduledVotes => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenDPNSScheduledVotes,
-                );
-            }
-        }
+        action |= add_left_panel(
+            ctx,
+            &self.app_context,
+            RootScreenType::RootScreenToolsPlatformInfoScreen,
+        );
 
-        // Subscreen chooser
+        // Tools area chooser
+        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+
+        // DPNS subscreen chooser
         action |= add_dpns_subscreen_chooser_panel(ctx, self.app_context.as_ref());
 
         // Main panel
@@ -2091,7 +2105,7 @@ impl ScreenLike for DPNSScreen {
                         RichText::new(format!("Refreshing... Time taken so far: {}", elapsed))
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    ui.add(egui::widgets::Spinner::default().color(Color32::from_rgb(0, 128, 255)));
+                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 });
                 ui.add_space(2.0); // Space below
             } else if let Some((msg, msg_type, timestamp)) = self.message.clone() {
@@ -2144,10 +2158,10 @@ impl ScreenLike for DPNSScreen {
         }
 
         // If we have a pending backend task from scheduling (e.g. after immediate votes)
-        if action == AppAction::None {
-            if let Some(bt) = self.pending_backend_task.take() {
-                action = AppAction::BackendTask(bt);
-            }
+        if action == AppAction::None
+            && let Some(bt) = self.pending_backend_task.take()
+        {
+            action = AppAction::BackendTask(bt);
         }
         action
     }

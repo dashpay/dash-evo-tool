@@ -2,108 +2,143 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
+## Branching
 
-Dash Evo Tool is a cross-platform GUI application built with Rust and egui for interacting with Dash Evolution. It supports identity management, DPNS username registration and voting, token operations, and state transition visualization across multiple networks (Mainnet, Testnet, Devnet, Regtest).
+- `master` is a **release-only** branch, updated every few months. Do not use it as a base for diffs or PRs during active development.
+- `v1.0-dev` is the current active development branch. Use it as the base for general diffs, comparisons, and new feature branches.
 
-## Build and Development Commands
+## Build Commands
 
 ```bash
-# Development build and run
-cargo run
-
-# Production build
-cargo build --release
-
-# Run linting (used in CI)
-cargo clippy --all-features --all-targets -- -D warnings
-
-# Build for specific target (cross-compilation)
-cross build --target x86_64-pc-windows-gnu --release
+cargo build                    # Debug build
+cargo build --release          # Release build
+cargo run                      # Run application
+cargo fmt --all                # Format code
+cargo clippy --all-features --all-targets -- -D warnings  # Lint (warnings as errors)
 ```
+
+## Testing
+
+```bash
+cargo test --all-features --workspace              # All tests
+cargo test --doc --all-features --workspace        # Doc tests only
+cargo test <test_name> --all-features              # Single test
+cargo test --test kittest --all-features           # UI integration tests (egui_kittest)
+cargo test --test e2e --all-features               # End-to-end tests
+```
+
+Test locations:
+- Unit tests: inline in source files (`#[test]`)
+- UI integration: `tests/kittest/`
+- E2E: `tests/e2e/`
 
 ## Architecture Overview
 
-### Core Application Structure
-- **Entry Point**: `src/main.rs` - Sets up Tokio runtime (40 worker threads), loads fonts, and launches egui app
-- **App State Manager**: `src/app.rs` - Central state with screen management, network switching, and backend task coordination  
-- **Context System**: `src/context.rs` and `src/context_provider.rs` - Network-specific app contexts with SDK integration
-- **Configuration**: `src/config.rs` - Environment and network configuration management
+**Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.
 
-### Module Organization
-- `backend_task/` - Async task handlers organized by domain (identity, contracts, tokens, core, contested_names)
-- `ui/` - Screen components organized by feature (identities, tokens, tools, wallets, contracts_documents, dpns)
-- `database/` - SQLite persistence layer with tables for each domain
-- `model/` - Data structures, including qualified identities with encrypted key storage
-- `components/` - Shared components including ZMQ core listeners
-- `utils/` - Parsers and helper functions
+### Core Module Structure
 
-### Key Design Patterns
-- **Screen-based Navigation**: Stack-based screen management with `ScreenType` enum
-- **Async Backend Tasks**: Communication via crossbeam channels with result handling
-- **Network Isolation**: Separate app contexts per network with independent databases
-- **Real-time Updates**: ZMQ listeners for core blockchain events on network-specific ports
+- **app.rs** - `AppState`: owns all screens, polls task results each frame, dispatches to visible screen
+- **ui/** - Screens and reusable components (`ui/components/`)
+- **backend_task/** - Async business logic, one submodule per domain (identity, wallet, contract, etc.)
+- **model/** - Data types (amounts, fees, settings, wallet/identity models)
+- **database/** - SQLite persistence (rusqlite), one module per domain
+- **context/** - `AppContext`: network config, SDK client, database, wallets, settings cache (split into submodules: `identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.)
+- **spv/** - Simplified Payment Verification for light wallet support
+- **components/core_zmq_listener** - Real-time Dash Core event listening via ZMQ
 
-### Critical Dependencies
-- **dash-sdk**: Core Dash Platform SDK (git dependency, specific revision)
-- **egui/eframe**: GUI framework with persistence features
-- **tokio**: Full-featured async runtime
-- **rusqlite**: SQLite with bundled libsqlite3
-- **zmq/zeromq**: Platform-specific ZMQ implementations (Unix vs Windows)
+### Key Dependencies
 
-## Development Environment Setup
+- `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)
+- `egui/eframe 0.33` - Immediate mode GUI framework
+- `tokio` - Async runtime (12 worker threads)
+- `rusqlite` - SQLite with bundled library
+- Rust edition 2024, minimum rust-version 1.92
 
-### Prerequisites
-1. **Rust**: Version 1.88+ (enforced by rust-toolchain.toml)
-2. **System Dependencies** (Ubuntu): `build-essential libssl-dev pkg-config unzip`
-3. **Protocol Buffers**: protoc v25.2+ required for dash-sdk
-4. **Dash Core Wallet**: Must be synced for full functionality
+### Configuration
 
-### Application Data Locations
-- **macOS**: `~/Library/Application Support/Dash-Evo-Tool/`
-- **Windows**: `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config`
-- **Linux**: `/home/<user>/.config/dash-evo-tool/`
+Environment config via `.env` in app directory:
+- macOS: `~/Library/Application Support/Dash-Evo-Tool/.env`
+- Linux: `~/.config/dash-evo-tool/.env`
+- Windows: `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config\.env`
 
-Configuration loaded from `.env` file in application directory (created from `.env.example` on first run).
+See `.env.example` for network configuration options.
 
-## Key Implementation Details
+## App Task System (Critical Pattern)
 
-### Multi-Network Support
-- Each network maintains separate SQLite databases
-- ZMQ listeners on different ports per network (Core integration)
-- Network switching preserves state and loaded identities
-- Core wallet auto-startup with network-specific configurations
+The UI and async backend communicate through an action/channel pattern:
 
-### Security Architecture
-- Identity private keys encrypted with Argon2 + AES-256-GCM
-- Password-protected storage with zxcvbn strength validation
-- Secure memory handling with zeroize for sensitive data
-- CPU compatibility checking on x86 platforms
+1. **Screens return `AppAction`** from their `ui()` method (e.g., `AppAction::BackendTask(task)`)
+2. **`AppState` spawns a tokio task** that calls `app_context.run_backend_task(task, sender)`
+3. **`AppContext::run_backend_task()`** matches on the `BackendTask` enum and dispatches to domain-specific async methods
+4. **Results come back** via tokio MPSC channel as `TaskResult` (Success/Error/Refresh)
+5. **Main `update()` loop** polls `task_result_receiver.try_recv()` each frame and routes results to the visible screen's `display_task_result()`
 
-### Performance Considerations
-- 40-thread Tokio runtime for heavy blockchain operations
-- Font loading optimized for international scripts (CJK, Arabic, Hebrew, etc.)
-- SQLite connection pooling and prepared statements
-- Efficient state updates via targeted screen refreshes
+```
+Screen::ui() → AppAction::BackendTask(task)
+    → tokio::spawn → AppContext::run_backend_task()
+    → sender.send(TaskResult::Success(result))
+    → AppState::update() polls receiver → Screen::display_task_result()
+```
 
-### Cross-Platform Specifics
-- Different ZMQ implementations (zmq vs zeromq for Windows)
-- Platform-specific file dialogs and CPU detection
-- Cross-compilation support via Cross.toml configuration
-- Font rendering optimized per platform
+**Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
-## Testing and CI
+## Screen Pattern
 
-- **Clippy**: Runs on push to main/v*-dev branches and PRs with strict warning enforcement
-- **Release**: Multi-platform builds (Linux, macOS, Windows) with attestation
-- No dedicated test suite currently - integration testing via manual workflows
+All screens implement the `ScreenLike` trait:
+- `ui(&mut self, ctx: &Context) -> AppAction` - Render UI, return actions
+- `display_task_result(&mut self, result: BackendTaskSuccessResult)` - Handle async results
+- `display_message(&mut self, msg: &str, type: MessageType)` - Show user feedback
+- `refresh(&mut self)` / `refresh_on_arrival(&mut self)` - Re-fetch data
+- `change_context(&mut self, app_context: &Arc<AppContext>)` - Handle network switch
 
-## Common Development Patterns
+**Screen types**:
+- **Root screens**: Stored in `AppState.main_screens` (BTreeMap by `RootScreenType`), persist across navigation
+- **Modal/detail screens**: Pushed onto `AppState.screen_stack`, popped when dismissed
 
-When working with this codebase:
-- Follow the modular organization: backend tasks in `backend_task/`, UI in `ui/`
-- Use the context system for SDK operations rather than direct SDK calls
-- Implement async operations as backend tasks with channel communication
-- Screen transitions should update the screen stack in `app.rs`
-- Database operations should follow the established schema patterns in `database/`
-- Error handling uses `thiserror` for structured error types
+Screens hold `Arc<AppContext>` and manage their own UI state.
+
+## AppContext
+
+`AppContext` (~50 fields) is `Arc`-wrapped and shared across all screens and async tasks. Key contents:
+- `sdk: RwLock<Sdk>` - Dash SDK (clone for async use to avoid holding lock across await)
+- `db: Arc<Database>` - SQLite persistence
+- `wallets: RwLock<BTreeMap<...>>` - Loaded wallets
+- Cached system contracts (DPNS, DashPay, withdrawals, tokens, keyword search)
+- `connection_status`, `developer_mode`, `fee_multiplier_permille`
+- Per-network instances (mainnet always present, others created on demand)
+
+## UI Component Pattern
+
+Components follow a lazy initialization pattern (see `doc/COMPONENT_DESIGN_PATTERN.md`):
+
+```rust
+struct MyScreen {
+    amount: Option<Amount>,              // Domain data
+    amount_widget: Option<AmountInput>,  // UI component (lazy)
+}
+
+// In show():
+let widget = self.amount_widget.get_or_insert_with(|| AmountInput::new(type));
+let response = widget.show(ui);
+response.inner.update(&mut self.amount);
+```
+
+**Requirements:**
+- Private fields only
+- Builder methods for configuration (`with_label()`, etc.)
+- Response struct with `ComponentResponse` trait (`has_changed()`, `is_valid()`, `changed_value()`)
+- Self-contained validation and error handling
+- Support both light and dark mode via `ComponentStyles`
+
+**Anti-patterns:** public mutable fields, eager initialization, not clearing invalid data
+
+## Database
+
+Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors are `Result<T, String>` — string errors display directly to users.
+
+## Platform Targets
+
+Linux (x86_64/aarch64), Windows (x86_64), macOS (x86_64/aarch64 with code signing)
+
+Requires protoc v25.2+ for protocol buffer compilation. Different ZMQ libraries for Windows (`zeromq`) vs Unix (`zmq`).

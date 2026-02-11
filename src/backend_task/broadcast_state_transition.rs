@@ -14,9 +14,7 @@ impl AppContext {
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
         match state_transition.broadcast(sdk, None).await {
-            Ok(_) => Ok(BackendTaskSuccessResult::Message(
-                "State transition broadcasted successfully".to_string(),
-            )),
+            Ok(_) => Ok(BackendTaskSuccessResult::BroadcastedStateTransition),
             Err(e) => Err(format!("Error broadcasting state transition: {}", e)),
         }
     }

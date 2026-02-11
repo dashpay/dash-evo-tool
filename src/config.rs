@@ -1,4 +1,3 @@
-use std::fs::File;
 use std::io::Write;
 use std::str::FromStr;
 
@@ -7,6 +6,7 @@ use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::sdk::Uri;
 use serde::Deserialize;
+use tempfile::NamedTempFile;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -28,7 +28,7 @@ pub enum ConfigError {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct NetworkConfig {
-    /// Hostname of the Dash Platform node to connect to
+    /// Hostname of Dash Platform node to connect to
     pub dapi_addresses: String,
     /// Host of the Dash Core RPC interface
     pub core_host: String,
@@ -40,6 +40,8 @@ pub struct NetworkConfig {
     pub core_rpc_password: String,
     /// URL of the Insight API
     pub insight_api_url: String,
+    /// ZMQ endpoint for Core blockchain events (e.g., tcp://127.0.0.1:23708)
+    pub core_zmq_endpoint: Option<String>,
     /// Devnet network name if one exists
     pub devnet_name: Option<String>,
     /// Optional wallet private key to instantiate the wallet
@@ -61,13 +63,23 @@ impl Config {
 
     /// Write the current configuration back to the `.env` file so that
     /// subsequent calls to `Config::load()` will reflect changes.
+    ///
+    /// Uses atomic write (write to temp file, then rename) to prevent
+    /// config corruption if a write fails partway through.
     pub fn save(&self) -> Result<(), ConfigError> {
         let env_file_path =
             app_user_data_file_path(".env").map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
-        // Create / truncate the `.env` file
+        // Write to a temporary file in the same directory first, then
+        // atomically replace. This prevents corruption if the write fails
+        // partway through. NamedTempFile::persist() closes the handle before
+        // renaming and uses MoveFileEx with MOVEFILE_REPLACE_EXISTING on
+        // Windows for atomic replacement.
+        let parent_dir = env_file_path.parent().ok_or_else(|| {
+            ConfigError::LoadError("Config file path has no parent directory".to_string())
+        })?;
         let mut env_file =
-            File::create(&env_file_path).map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            NamedTempFile::new_in(parent_dir).map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
         // Helper function to write a single network config to the `.env` file
         let mut write_network_config = |prefix: &str, config: &NetworkConfig| {
@@ -102,6 +114,15 @@ impl Config {
                 prefix, config.insight_api_url
             )
             .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+
+            if let Some(core_zmq_endpoint) = &config.core_zmq_endpoint {
+                writeln!(
+                    env_file,
+                    "{}core_zmq_endpoint={}",
+                    prefix, core_zmq_endpoint
+                )
+                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            }
 
             if let Some(devnet_name) = &config.devnet_name {
                 // Only write devnet name if it exists
@@ -154,6 +175,19 @@ impl Config {
             writeln!(env_file, "DEVELOPER_MODE={}", developer_mode)
                 .map_err(|e| ConfigError::LoadError(e.to_string()))?;
         }
+
+        // Sync all data to disk before renaming to ensure crash-safety
+        env_file
+            .as_file()
+            .sync_all()
+            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+
+        // Atomically replace the old config with the new one.
+        // persist() closes the file handle and uses platform-safe rename
+        // (MoveFileEx with MOVEFILE_REPLACE_EXISTING on Windows).
+        env_file.persist(&env_file_path).map_err(|e| {
+            ConfigError::LoadError(format!("Failed to persist temp config file: {}", e))
+        })?;
 
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
         Ok(())

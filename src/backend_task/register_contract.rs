@@ -7,8 +7,9 @@ use dash_sdk::{
 };
 use tokio::time::sleep;
 
-use super::BackendTaskSuccessResult;
+use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::update_data_contract::extract_contract_id_from_error;
+use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{
     app::TaskResult,
     context::AppContext,
@@ -29,6 +30,9 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
+        // Estimate fee for contract creation
+        let estimated_fee = PlatformFeeEstimator::new().estimate_contract_create_base();
+
         match data_contract
             .put_to_platform_and_wait_for_response(sdk, signing_key.clone(), &identity, None)
             .await
@@ -46,65 +50,12 @@ impl AppContext {
                         self,
                     )
                     .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
-                Ok(BackendTaskSuccessResult::Message(
-                    "DataContract successfully registered".to_string(),
-                ))
+                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+                Ok(BackendTaskSuccessResult::RegisteredContract(fee_result))
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    sender
-                        .send(TaskResult::Success(Box::new(
-                            BackendTaskSuccessResult::Message(
-                                "Transaction returned proof error".to_string(),
-                            ),
-                        )))
-                        .await
-                        .map_err(|e| format!("Failed to send message: {}", e))?;
-                    match self.network {
-                        Network::Regtest => sleep(Duration::from_secs(3)).await,
-                        _ => sleep(Duration::from_secs(10)).await,
-                    }
-                    let id = match extract_contract_id_from_error(proof_error.to_string().as_str())
-                    {
-                        Ok(id) => id,
-                        Err(e) => {
-                            return Err(format!("Failed to extract id from error message: {}", e));
-                        }
-                    };
-                    let maybe_contract = match DataContract::fetch(sdk, id).await {
-                        Ok(contract) => contract,
-                        Err(e) => {
-                            return Err(format!(
-                                "Failed to fetch contract from Platform state: {}",
-                                e
-                            ));
-                        }
-                    };
-                    if let Some(contract) = maybe_contract {
-                        let optional_alias = self
-                            .get_contract_by_id(&contract.id())
-                            .map(|contract| {
-                                if let Some(contract) = contract {
-                                    contract.alias
-                                } else {
-                                    None
-                                }
-                            })
-                            .map_err(|e| {
-                                format!("Failed to get contract by ID from database: {}", e)
-                            })?;
-
-                        self.db
-                            .insert_contract_if_not_exists(
-                                &contract,
-                                optional_alias.as_deref(),
-                                AllTokensShouldBeAdded,
-                                self,
-                            )
-                            .map_err(|e| {
-                                format!("Error inserting contract into the database: {}", e)
-                            })?;
-                    }
+                    // Log the proof error first, before any other operations
                     self.db
                         .insert_proof_log_item(ProofLogItem {
                             request_type: RequestType::BroadcastStateTransition,
@@ -116,8 +67,47 @@ impl AppContext {
                             error: Some(proof_error.to_string()),
                         })
                         .ok();
+
+                    sender
+                        .send(TaskResult::Success(Box::new(
+                            BackendTaskSuccessResult::ProofErrorLogged,
+                        )))
+                        .await
+                        .map_err(|e| format!("Failed to send message: {}", e))?;
+
+                    // Try to extract contract ID and fetch the contract if it exists
+                    // This handles the case where the contract was actually created despite the proof error
+                    if let Ok(id) = extract_contract_id_from_error(proof_error.to_string().as_str())
+                    {
+                        match self.network {
+                            Network::Regtest => sleep(Duration::from_secs(3)).await,
+                            _ => sleep(Duration::from_secs(10)).await,
+                        }
+                        if let Ok(Some(contract)) = DataContract::fetch(sdk, id).await {
+                            let optional_alias = self
+                                .get_contract_by_id(&contract.id())
+                                .ok()
+                                .flatten()
+                                .and_then(|c| c.alias);
+
+                            self.db
+                                .insert_contract_if_not_exists(
+                                    &contract,
+                                    optional_alias.as_deref(),
+                                    AllTokensShouldBeAdded,
+                                    self,
+                                )
+                                .ok();
+
+                            return Err(format!(
+                                "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",
+                                proof_error
+                            ));
+                        }
+                    }
+
                     Err(format!(
-                        "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",
+                        "Error broadcasting Register Contract transition: {}, proof error logged",
                         proof_error
                     ))
                 }

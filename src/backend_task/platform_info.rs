@@ -20,11 +20,13 @@ use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::withdrawal::daily_withdrawal_limit::daily_withdrawal_limit;
 use dash_sdk::dpp::{dash_to_credits, version::ProtocolVersionVoteCount};
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
+use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::{DocumentQuery, FetchMany, FetchUnproved};
 use dash_sdk::query_types::{
     CurrentQuorumsInfo, NoParamQuery, ProtocolVersionUpgrades, TotalCreditsInPlatform,
 };
+use dash_sdk::query_types::AddressInfo;
 use itertools::Itertools;
 use std::sync::Arc;
 use chrono::{prelude::*, LocalResult};
@@ -39,6 +41,7 @@ pub enum PlatformInfoTaskRequestType {
     CurrentWithdrawalsInQueue,
     RecentlyCompletedWithdrawals,
     BasicPlatformInfo,
+    FetchAddressBalance(String),
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +52,11 @@ pub enum PlatformInfoTaskResult {
         network: dash_sdk::dpp::dashcore::Network,
     },
     TextResult(String),
+    AddressBalance {
+        address: String,
+        balance: u64,
+        nonce: u32,
+    },
 }
 
 impl PartialEq for PlatformInfoTaskResult {
@@ -70,6 +78,18 @@ impl PartialEq for PlatformInfoTaskResult {
                 PlatformInfoTaskResult::TextResult(text1),
                 PlatformInfoTaskResult::TextResult(text2),
             ) => text1 == text2,
+            (
+                PlatformInfoTaskResult::AddressBalance {
+                    address: addr1,
+                    balance: bal1,
+                    nonce: n1,
+                },
+                PlatformInfoTaskResult::AddressBalance {
+                    address: addr2,
+                    balance: bal2,
+                    nonce: n2,
+                },
+            ) => addr1 == addr2 && bal1 == bal2 && n1 == n2,
             _ => false,
         }
     }
@@ -347,7 +367,16 @@ impl AppContext {
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
                 match ExtendedEpochInfo::fetch_current(&sdk).await {
                     Ok(epoch_info) => {
-                        let formatted = format_extended_epoch_info(epoch_info, self.network, true);
+                        // Cache the fee multiplier for UI fee estimation
+                        let fee_multiplier = epoch_info.fee_multiplier_permille();
+                        self.set_fee_multiplier_permille(fee_multiplier);
+
+                        let mut formatted =
+                            format_extended_epoch_info(epoch_info, self.network, true);
+                        formatted.push_str(&format!(
+                            "\n\n(Fee multiplier cache updated: {}x)",
+                            fee_multiplier as f64 / 1000.0
+                        ));
                         Ok(BackendTaskSuccessResult::PlatformInfo(
                             PlatformInfoTaskResult::TextResult(formatted),
                         ))
@@ -593,6 +622,42 @@ impl AppContext {
                         "Failed to fetch completed withdrawal documents: {}",
                         e
                     )),
+                }
+            }
+            PlatformInfoTaskRequestType::FetchAddressBalance(address_string) => {
+                // Parse the address string into a PlatformAddress
+                let platform_address: PlatformAddress = address_string
+                    .parse()
+                    .map_err(|e| format!("Invalid Platform address '{}': {}", address_string, e))?;
+
+                // Fetch the address info using FetchMany with BTreeSet
+                let mut addresses = std::collections::BTreeSet::new();
+                addresses.insert(platform_address);
+                match AddressInfo::fetch_many(&sdk, addresses).await {
+                    Ok(address_infos) => {
+                        // The result is a map of PlatformAddress -> Option<AddressInfo>
+                        let result: Option<&Option<AddressInfo>> =
+                            address_infos.get(&platform_address);
+                        if let Some(Some(info)) = result {
+                            Ok(BackendTaskSuccessResult::PlatformInfo(
+                                PlatformInfoTaskResult::AddressBalance {
+                                    address: address_string,
+                                    balance: info.balance,
+                                    nonce: info.nonce,
+                                },
+                            ))
+                        } else {
+                            // Address not found on Platform (zero balance)
+                            Ok(BackendTaskSuccessResult::PlatformInfo(
+                                PlatformInfoTaskResult::AddressBalance {
+                                    address: address_string,
+                                    balance: 0,
+                                    nonce: 0,
+                                },
+                            ))
+                        }
+                    }
+                    Err(e) => Err(format!("Failed to fetch address balance: {}", e)),
                 }
             }
         }

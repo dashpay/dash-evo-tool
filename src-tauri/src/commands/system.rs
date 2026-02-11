@@ -444,7 +444,7 @@ fn convert_simple_quorum_entry(
     }
 }
 
-fn convert_mn_list_diff(
+pub fn convert_mn_list_diff(
     diff: &dash_sdk::dpp::dashcore::network::message_sml::MnListDiff,
 ) -> MnListDiffDto {
     let new_masternodes = diff
@@ -507,7 +507,7 @@ fn convert_mn_list_diff(
     }
 }
 
-fn convert_qr_info(
+pub fn convert_qr_info(
     qr_info: &dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo,
 ) -> QrInfoDto {
     let (snapshot_h_minus_4c, diff_h_minus_4c) =

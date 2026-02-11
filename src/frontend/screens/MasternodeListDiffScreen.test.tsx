@@ -125,12 +125,12 @@ describe("MasternodeListDiffScreen", () => {
     expect(screen.getByLabelText("Back to Tools")).toBeInTheDocument();
   });
 
-  it("enables QR Info tab and disables Quorum Viewer tab", () => {
+  it("enables all three tabs", () => {
     render(<MasternodeListDiffScreen />);
     const qrInfoTab = screen.getByText("QR Info").closest("button");
     const quorumTab = screen.getByText("Quorum Viewer").closest("button");
     expect(qrInfoTab).not.toBeDisabled();
-    expect(quorumTab).toBeDisabled();
+    expect(quorumTab).not.toBeDisabled();
   });
 
   // ─── ZMQ Chain Locked Block Events ──────────────────────────────────────
@@ -720,6 +720,266 @@ describe("MasternodeListDiffScreen", () => {
 
       await user.click(screen.getByText("MN List Diff List"));
       expect(screen.getByText("MNListDiff 0")).toBeInTheDocument();
+    });
+  });
+
+  // ─── Input Area ─────────────────────────────────────────────────────────────
+
+  describe("Input Area", () => {
+    it("renders base height and end height inputs", () => {
+      render(<MasternodeListDiffScreen />);
+      expect(screen.getByTestId("base-height-input")).toBeInTheDocument();
+      expect(screen.getByTestId("end-height-input")).toBeInTheDocument();
+    });
+
+    it("renders all action buttons", () => {
+      render(<MasternodeListDiffScreen />);
+      expect(screen.getByTestId("fetch-diff-button")).toBeInTheDocument();
+      expect(screen.getByTestId("fetch-qrinfo-button")).toBeInTheDocument();
+      expect(screen.getByTestId("fetch-dmls-no-rotation-button")).toBeInTheDocument();
+      expect(screen.getByTestId("fetch-dmls-with-rotation-button")).toBeInTheDocument();
+      expect(screen.getByTestId("fetch-chain-locks-button")).toBeInTheDocument();
+      expect(screen.getByTestId("clear-button")).toBeInTheDocument();
+    });
+
+    it("shows error for invalid base height", async () => {
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      const baseInput = screen.getByTestId("base-height-input");
+      await user.type(baseInput, "abc");
+      await user.click(screen.getByTestId("fetch-diff-button"));
+      await screen.findByText("Invalid base block height");
+    });
+
+    it("shows clear success message when Clear is clicked", async () => {
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByTestId("clear-button"));
+      await screen.findByText("Cleared all data");
+    });
+
+    it("dismisses message when X is clicked", async () => {
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByTestId("clear-button"));
+      await screen.findByText("Cleared all data");
+      await user.click(screen.getByLabelText("Dismiss message"));
+      expect(screen.queryByText("Cleared all data")).not.toBeInTheDocument();
+    });
+
+    it("calls mnlistFetchDiff when fetch diff button is clicked", async () => {
+      mocks.commands.mnlistFetchDiff = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-1" },
+      });
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      const baseInput = screen.getByTestId("base-height-input");
+      const endInput = screen.getByTestId("end-height-input");
+      await user.type(baseInput, "100");
+      await user.type(endInput, "200");
+      await user.click(screen.getByTestId("fetch-diff-button"));
+      expect(mocks.commands.mnlistFetchDiff).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseBlockHeight: 100,
+          blockHeight: 200,
+          validateQuorums: false,
+        }),
+      );
+    });
+
+    it("calls mnlistFetchChainLocks when chain locks button is clicked", async () => {
+      mocks.commands.mnlistFetchChainLocks = vi.fn().mockResolvedValue({
+        taskId: "task-2",
+      });
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      const baseInput = screen.getByTestId("base-height-input");
+      const endInput = screen.getByTestId("end-height-input");
+      await user.type(baseInput, "50");
+      await user.type(endInput, "100");
+      await user.click(screen.getByTestId("fetch-chain-locks-button"));
+      expect(mocks.commands.mnlistFetchChainLocks).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseBlockHeight: 50,
+          blockHeight: 100,
+        }),
+      );
+    });
+
+    it("shows pending indicator during fetch", async () => {
+      mocks.commands.mnlistFetchDiff = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-3" },
+      });
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByTestId("fetch-diff-button"));
+      expect(screen.getByTestId("pending-indicator")).toBeInTheDocument();
+      expect(screen.getByText("Fetching DML diff…")).toBeInTheDocument();
+    });
+
+    it("disables buttons while pending", async () => {
+      mocks.commands.mnlistFetchDiff = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-4" },
+      });
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByTestId("fetch-diff-button"));
+      expect(screen.getByTestId("fetch-qrinfo-button")).toBeDisabled();
+      expect(screen.getByTestId("fetch-chain-locks-button")).toBeDisabled();
+    });
+  });
+
+  // ─── Quorum Viewer Tab ──────────────────────────────────────────────────────
+
+  describe("Quorum Viewer Tab", () => {
+    it("shows empty state when no quorum data is available", async () => {
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("Quorum Viewer"));
+      expect(screen.getByTestId("quorum-viewer-tab")).toBeInTheDocument();
+      expect(screen.getByText("No quorum data available.")).toBeInTheDocument();
+    });
+
+    it("shows quorum data from task result events", async () => {
+      // First setup a fetch diff command
+      mocks.commands.mnlistFetchDiff = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-10" },
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await flushMicrotasks();
+
+      // Trigger a fetch
+      await user.click(screen.getByTestId("fetch-diff-button"));
+
+      // Simulate task result with diff containing quorums
+      act(() => {
+        mocks.emitMockEvent("taskResultEvent", {
+          taskId: "task-10",
+          resultType: "MnList",
+          payload: {
+            type: "FetchedDiff",
+            baseHeight: 0,
+            height: 100,
+            diff: {
+              version: 1,
+              baseBlockHash: "0".repeat(64),
+              blockHash: "1".repeat(64),
+              totalTransactions: 1,
+              merkleHashes: [],
+              merkleFlagsLen: 0,
+              coinbaseTxid: "a".repeat(64),
+              coinbaseSize: 100,
+              newMasternodes: [],
+              deletedMasternodes: [],
+              newQuorums: [
+                {
+                  version: 1,
+                  llmqType: 4,
+                  quorumHash: "abcd".repeat(16),
+                  quorumIndex: null,
+                  signers: [true, true, false, false],
+                  validMembers: [true, true, true, false],
+                  quorumPublicKey: "pk123",
+                  quorumVvecHash: "vvec123",
+                  thresholdSig: "sig123",
+                  allCommitmentAggregatedSignature: "agg123",
+                },
+              ],
+              deletedQuorums: [],
+              chainlockSigCount: 0,
+              chainlockSignatures: [],
+            },
+          },
+        });
+      });
+
+      // Navigate to Quorum Viewer tab
+      await user.click(screen.getByText("Quorum Viewer"));
+      expect(screen.getByTestId("quorum-viewer-tab")).toBeInTheDocument();
+
+      // Should show the LLMQ type button
+      expect(screen.getByTestId("quorum-type-4")).toBeInTheDocument();
+      expect(screen.getByText("LLMQ_100_67")).toBeInTheDocument();
+    });
+
+    it("shows quorum details when a quorum hash is selected", async () => {
+      mocks.commands.mnlistFetchDiff = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-11" },
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await flushMicrotasks();
+
+      await user.click(screen.getByTestId("fetch-diff-button"));
+
+      // Simulate task result
+      act(() => {
+        mocks.emitMockEvent("taskResultEvent", {
+          taskId: "task-11",
+          resultType: "MnList",
+          payload: {
+            type: "FetchedDiff",
+            baseHeight: 0,
+            height: 200,
+            diff: {
+              version: 1,
+              baseBlockHash: "0".repeat(64),
+              blockHash: "2".repeat(64),
+              totalTransactions: 1,
+              merkleHashes: [],
+              merkleFlagsLen: 0,
+              coinbaseTxid: "b".repeat(64),
+              coinbaseSize: 100,
+              newMasternodes: [],
+              deletedMasternodes: [],
+              newQuorums: [
+                {
+                  version: 1,
+                  llmqType: 6,
+                  quorumHash: "ef01".repeat(16),
+                  quorumIndex: 2,
+                  signers: [true, true, true, false, false],
+                  validMembers: [true, true, false, false, false],
+                  quorumPublicKey: "pubkey-test-1234",
+                  quorumVvecHash: "vvec456",
+                  thresholdSig: "tsig456",
+                  allCommitmentAggregatedSignature: "agg456",
+                },
+              ],
+              deletedQuorums: [],
+              chainlockSigCount: 0,
+              chainlockSignatures: [],
+            },
+          },
+        });
+      });
+
+      // Navigate to Quorum Viewer tab
+      await user.click(screen.getByText("Quorum Viewer"));
+
+      // Click on the quorum type
+      await user.click(screen.getByTestId("quorum-type-6"));
+
+      // Click on the quorum hash entry
+      const quorumList = screen.getByRole("listbox", { name: "Quorum Hashes" });
+      const options = within(quorumList).getAllByRole("option");
+      expect(options).toHaveLength(1);
+      await user.click(options[0]);
+
+      // Check detail panel shows the details
+      expect(screen.getByText("Quorum Details")).toBeInTheDocument();
+      expect(screen.getByText("pubkey-test-1234")).toBeInTheDocument();
+      expect(screen.getByText("3 / 5")).toBeInTheDocument(); // signers
+      expect(screen.getByText("2 / 5")).toBeInTheDocument(); // valid
+      expect(screen.getByText("Height: 200")).toBeInTheDocument();
     });
   });
 });

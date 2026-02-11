@@ -244,3 +244,10 @@
 **Files changed:** src/frontend/screens/AddContactScreen.tsx (new), src/frontend/screens/AddContactScreen.test.tsx (new), src/frontend/screens/ContactsListScreen.tsx (wired navigation), src/frontend/routes.tsx (added route), tests/e2e-integration/phase8-dashpay.spec.ts (10 new E2E tests)
 **Tests added:** 37 component tests + 10 Playwright E2E tests = 47 tests
 **Sub-tasks created:** 0
+
+## Run 151 — 2026-02-10
+**Task:** 9.1n Implement Masternode List Diff screen — main layout and Quorum Viewer tab
+**What was done:** Added the main input area with base/end block height inputs and 6 action buttons (Get single end DML diff, Get single end QR info, Get DMLs w/o rotation, Get DMLs w/ rotation, Get chain locks, Clear) with pending state indicators, success/error message banners. Implemented Quorum Viewer tab with LLMQ type selector buttons, two-column layout (quorum hash list with signer/valid counts, quorum details panel with public key + heights). Serialized MnList task results (FetchedDiff, FetchedQrInfo, ChainLockSigs, FetchedDiffs) in the Tauri task_dispatcher so the frontend receives the data. Made `convert_mn_list_diff` and `convert_qr_info` public in system.rs for reuse. Updated existing test that expected Quorum Viewer tab to be disabled. Added 15 new tests covering input area rendering, validation, IPC dispatch, pending state, and quorum viewer with mock task result events.
+**Files changed:** src-tauri/src/task_dispatcher.rs, src-tauri/src/commands/system.rs, src/frontend/screens/MasternodeListDiffScreen.tsx, src/frontend/screens/MasternodeListDiffScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 15 new component tests (52 total in file, up from 47)
+**Sub-tasks created:** 0

@@ -18,6 +18,7 @@
 //! 3. **Polling events:** ZMQ messages, SPV status, and scheduled votes are
 //!    forwarded as Tauri events from background loops.
 
+use crate::commands::system::{convert_mn_list_diff, convert_qr_info};
 use crate::dto::NetworkDto;
 use crate::events::{
     ScheduledVoteExecutedEvent, SpvStatusDto, SpvStatusEvent, TaskErrorEvent, TaskResultEvent,
@@ -26,6 +27,7 @@ use crate::events::{
 use crate::state::AppState;
 use dash_evo_tool::app::TaskResult;
 use dash_evo_tool::backend_task::dashpay::DashPayResult;
+use dash_evo_tool::backend_task::mnlist::MnListResult;
 use dash_evo_tool::backend_task::platform_info::{PlatformInfoTaskResult, PlatformResult};
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::BackendTaskSuccessResult;
@@ -162,7 +164,10 @@ fn classify_success_result(
             ("DashPay".to_string(), payload)
         }
         BackendTaskSuccessResult::GroveSTARK(_) => ("GroveSTARK".to_string(), None),
-        BackendTaskSuccessResult::MnList(_) => ("MnList".to_string(), None),
+        BackendTaskSuccessResult::MnList(mnlist_result) => {
+            let payload = classify_mnlist_result(mnlist_result);
+            ("MnList".to_string(), Some(payload))
+        }
         BackendTaskSuccessResult::Token(_) => ("Token".to_string(), None),
         BackendTaskSuccessResult::BroadcastedStateTransition => {
             ("BroadcastedStateTransition".to_string(), None)
@@ -292,6 +297,65 @@ fn classify_platform_result(result: &PlatformResult) -> serde_json::Value {
                 })
             }
         },
+    }
+}
+
+/// Serialize a `MnListResult` into a JSON payload for the event system.
+fn classify_mnlist_result(result: &MnListResult) -> serde_json::Value {
+    match result {
+        MnListResult::FetchedDiff {
+            base_height,
+            height,
+            diff,
+        } => {
+            let diff_dto = convert_mn_list_diff(diff);
+            serde_json::json!({
+                "type": "FetchedDiff",
+                "baseHeight": base_height,
+                "height": height,
+                "diff": serde_json::to_value(&diff_dto).unwrap_or_default()
+            })
+        }
+        MnListResult::FetchedQrInfo { qr_info } => {
+            let qr_info_dto = convert_qr_info(qr_info);
+            serde_json::json!({
+                "type": "FetchedQrInfo",
+                "qrInfo": serde_json::to_value(&qr_info_dto).unwrap_or_default()
+            })
+        }
+        MnListResult::ChainLockSigs { entries } => {
+            let items: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|((height, hash), sig)| {
+                    serde_json::json!({
+                        "height": height,
+                        "blockHash": hash.to_string(),
+                        "signature": sig.as_ref().map(|s| hex::encode(s.as_bytes()))
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "type": "ChainLockSigs",
+                "entries": items
+            })
+        }
+        MnListResult::FetchedDiffs { items } => {
+            let diffs: Vec<serde_json::Value> = items
+                .iter()
+                .map(|((base_h, h), diff)| {
+                    let diff_dto = convert_mn_list_diff(diff);
+                    serde_json::json!({
+                        "baseHeight": base_h,
+                        "height": h,
+                        "diff": serde_json::to_value(&diff_dto).unwrap_or_default()
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "type": "FetchedDiffs",
+                "diffs": diffs
+            })
+        }
     }
 }
 

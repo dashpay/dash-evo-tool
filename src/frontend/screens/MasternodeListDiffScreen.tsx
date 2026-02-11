@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, useRef } from "react";
 import { useEffect } from "react";
 import { commands, events } from "@/bindings";
 import type {
@@ -8,11 +8,13 @@ import type {
   SimpleQuorumEntryDto,
   ZmqChainLockedBlockEvent,
   ZmqIsLockedTransactionEvent,
+  TaskResultEvent,
 } from "@/bindings";
 import { ToolPageLayout } from "@/components/tools/ToolPageLayout";
 import { CopyButton } from "@/components/shared/CopyButton";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   CheckCircle2,
@@ -22,6 +24,10 @@ import {
   Radio,
   Upload,
   FolderOpen,
+  Loader2,
+  AlertCircle,
+  X,
+  Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -63,6 +69,66 @@ type QrSelectedDetail =
   | { type: "snapshot"; label: string; data: QuorumSnapshotDto }
   | { type: "diff"; label: string; data: MnListDiffDto }
   | { type: "quorum"; label: string; data: SimpleQuorumEntryDto };
+
+// MnList result payload types (from task_dispatcher serialization)
+interface MnListFetchedDiffPayload {
+  type: "FetchedDiff";
+  baseHeight: number;
+  height: number;
+  diff: MnListDiffDto;
+}
+
+interface MnListFetchedQrInfoPayload {
+  type: "FetchedQrInfo";
+  qrInfo: QrInfoDto;
+}
+
+interface ChainLockSigEntry {
+  height: number;
+  blockHash: string;
+  signature: string | null;
+}
+
+interface MnListChainLockSigsPayload {
+  type: "ChainLockSigs";
+  entries: ChainLockSigEntry[];
+}
+
+interface MnListFetchedDiffsPayload {
+  type: "FetchedDiffs";
+  diffs: Array<{
+    baseHeight: number;
+    height: number;
+    diff: MnListDiffDto;
+  }>;
+}
+
+type MnListPayload =
+  | MnListFetchedDiffPayload
+  | MnListFetchedQrInfoPayload
+  | MnListChainLockSigsPayload
+  | MnListFetchedDiffsPayload;
+
+// Quorum viewer: aggregated quorum data by LLMQ type
+interface QuorumViewerEntry {
+  quorumHash: string;
+  llmqType: number;
+  signerCount: number;
+  validMemberCount: number;
+  totalMembers: number;
+  quorumPublicKey: string;
+  quorumIndex: number | null;
+  sourceHeight: number;
+}
+
+// Pending operation type for the input area
+type PendingOp =
+  | "fetchDiff"
+  | "fetchQrInfo"
+  | "fetchDmlsNoRotation"
+  | "fetchDmlsWithRotation"
+  | "fetchChainLocks"
+  | null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -921,31 +987,653 @@ function QrInfoTab() {
 }
 
 // ---------------------------------------------------------------------------
+// LLMQ type labels
+// ---------------------------------------------------------------------------
+
+const LLMQ_TYPE_LABELS: Record<number, string> = {
+  1: "LLMQ_50_60",
+  2: "LLMQ_400_60",
+  3: "LLMQ_400_85",
+  4: "LLMQ_100_67",
+  5: "LLMQ_60_75",
+  6: "LLMQ_25_67",
+  100: "LLMQ_TEST",
+  101: "LLMQ_DEVNET",
+  102: "LLMQ_TEST_V17",
+  103: "LLMQ_TEST_DIP0024",
+  104: "LLMQ_TEST_INSTANTSEND",
+  105: "LLMQ_DEVNET_DIP0024",
+  106: "LLMQ_TEST_PLATFORM",
+  107: "LLMQ_DEVNET_PLATFORM",
+};
+
+function llmqTypeLabel(llmqType: number): string {
+  return LLMQ_TYPE_LABELS[llmqType] ?? `Type ${llmqType}`;
+}
+
+// ---------------------------------------------------------------------------
+// Quorum Viewer Tab
+// ---------------------------------------------------------------------------
+
+function QuorumViewerTab({
+  quorumEntries,
+}: {
+  quorumEntries: QuorumViewerEntry[];
+}) {
+  const [selectedType, setSelectedType] = useState<number | null>(null);
+  const [selectedHash, setSelectedHash] = useState<string | null>(null);
+
+  // Group entries by LLMQ type
+  const typeMap = new Map<number, QuorumViewerEntry[]>();
+  for (const entry of quorumEntries) {
+    const existing = typeMap.get(entry.llmqType) ?? [];
+    existing.push(entry);
+    typeMap.set(entry.llmqType, existing);
+  }
+  const sortedTypes = Array.from(typeMap.keys()).sort((a, b) => a - b);
+
+  // Auto-select first type if none selected
+  const activeType = selectedType ?? sortedTypes[0] ?? null;
+  const activeEntries = activeType !== null ? typeMap.get(activeType) ?? [] : [];
+
+  // Deduplicate quorum hashes (same quorum may appear in multiple diffs)
+  const seenHashes = new Map<string, QuorumViewerEntry>();
+  for (const e of activeEntries) {
+    if (!seenHashes.has(e.quorumHash)) {
+      seenHashes.set(e.quorumHash, e);
+    }
+  }
+  const uniqueEntries = Array.from(seenHashes.values());
+
+  const selectedEntry = selectedHash ? seenHashes.get(selectedHash) : null;
+
+  // Find all heights where the selected quorum appears
+  const selectedHeights = selectedHash
+    ? activeEntries
+        .filter((e) => e.quorumHash === selectedHash)
+        .map((e) => e.sourceHeight)
+        .sort((a, b) => a - b)
+    : [];
+
+  if (quorumEntries.length === 0) {
+    return (
+      <div
+        className="flex-1 flex items-center justify-center text-sm text-muted-foreground"
+        data-testid="quorum-viewer-tab"
+      >
+        <div className="text-center">
+          <Shield className="size-8 mx-auto mb-3 opacity-30" />
+          <p>No quorum data available.</p>
+          <p className="text-xs mt-1">
+            Fetch MnList diffs using the controls above to populate quorum data.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3 min-h-0 flex-1" data-testid="quorum-viewer-tab">
+      {/* Quorum Type selector bar */}
+      <div className="flex items-center gap-1 flex-wrap">
+        {sortedTypes.map((llmqType) => (
+          <Button
+            key={llmqType}
+            variant={activeType === llmqType ? "default" : "outline"}
+            size="sm"
+            onClick={() => {
+              setSelectedType(llmqType);
+              setSelectedHash(null);
+            }}
+            className="text-xs h-7"
+            data-testid={`quorum-type-${llmqType}`}
+          >
+            {llmqTypeLabel(llmqType)}
+            <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">
+              {(typeMap.get(llmqType) ?? []).length}
+            </Badge>
+          </Button>
+        ))}
+      </div>
+
+      {activeType === null ? (
+        <div className="text-sm text-muted-foreground">No quorum types available.</div>
+      ) : (
+        <div className="flex gap-3 min-h-0 flex-1">
+          {/* Left column: Quorum Hashes */}
+          <div className="w-[400px] shrink-0 flex flex-col min-h-0">
+            <h4 className="text-xs font-semibold text-muted-foreground mb-1.5">
+              Quorums of Type: {llmqTypeLabel(activeType)} ({uniqueEntries.length})
+            </h4>
+            <div
+              className="flex-1 overflow-y-auto rounded border bg-card"
+              role="listbox"
+              aria-label="Quorum Hashes"
+            >
+              {/* Header */}
+              <div className="flex items-center gap-2 px-3 py-1.5 text-[10px] text-muted-foreground font-semibold border-b bg-muted/30">
+                <span className="flex-1">Quorum Hash</span>
+                <span className="w-16 text-right">Signers</span>
+                <span className="w-16 text-right">Valid</span>
+              </div>
+              {uniqueEntries.map((entry) => {
+                const isSelected = selectedHash === entry.quorumHash;
+                return (
+                  <button
+                    key={entry.quorumHash}
+                    onClick={() => setSelectedHash(entry.quorumHash)}
+                    className={cn(
+                      "w-full text-left px-3 py-1.5 text-xs border-b last:border-b-0 transition-colors flex items-center gap-2",
+                      "hover:bg-accent/50 focus:bg-accent/50 focus:outline-none",
+                      isSelected && "bg-accent text-accent-foreground font-medium",
+                    )}
+                    aria-selected={isSelected}
+                    role="option"
+                  >
+                    <span className="font-mono truncate flex-1">
+                      {truncateHex(entry.quorumHash, 10)}
+                    </span>
+                    <span className="w-16 text-right font-mono text-muted-foreground">
+                      {entry.signerCount}/{entry.totalMembers}
+                    </span>
+                    <span className="w-16 text-right font-mono text-muted-foreground">
+                      {entry.validMemberCount}/{entry.totalMembers}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Right column: Quorum Details */}
+          <div className="flex-1 min-h-0 overflow-y-auto rounded border bg-card p-4">
+            {!selectedEntry ? (
+              <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                Select a quorum to see its details.
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <h3 className="text-lg font-semibold">Quorum Details</h3>
+                <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+                  <span className="text-muted-foreground">Quorum Type</span>
+                  <span className="font-mono">
+                    {llmqTypeLabel(selectedEntry.llmqType)}
+                  </span>
+
+                  <span className="text-muted-foreground">Quorum Hash</span>
+                  <span className="font-mono break-all">
+                    {selectedEntry.quorumHash}
+                    <CopyButton value={selectedEntry.quorumHash} size="sm" className="ml-1 inline-flex" />
+                  </span>
+
+                  {selectedEntry.quorumIndex !== null && (
+                    <>
+                      <span className="text-muted-foreground">Quorum Index</span>
+                      <span className="font-mono">{selectedEntry.quorumIndex}</span>
+                    </>
+                  )}
+
+                  <span className="text-muted-foreground">Signers</span>
+                  <span className="font-mono">
+                    {selectedEntry.signerCount} / {selectedEntry.totalMembers}
+                  </span>
+
+                  <span className="text-muted-foreground">Valid Members</span>
+                  <span className="font-mono">
+                    {selectedEntry.validMemberCount} / {selectedEntry.totalMembers}
+                  </span>
+                </div>
+
+                <div>
+                  <h4 className="text-sm font-semibold mb-1">Public Key</h4>
+                  <div className="flex items-start gap-2">
+                    <p className="text-xs font-mono break-all bg-muted/30 p-2 rounded border flex-1">
+                      {selectedEntry.quorumPublicKey}
+                    </p>
+                    <CopyButton value={selectedEntry.quorumPublicKey} size="sm" />
+                  </div>
+                </div>
+
+                {selectedHeights.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-semibold mb-1">
+                      Found in Diff Heights ({selectedHeights.length})
+                    </h4>
+                    <div className="max-h-48 overflow-y-auto rounded border bg-muted/30 p-2 text-xs font-mono">
+                      {selectedHeights.map((h) => (
+                        <div key={h} className="py-0.5">
+                          Height: {h}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Input Area (base/end block heights + action buttons)
+// ---------------------------------------------------------------------------
+
+function InputArea({
+  pendingOp,
+  message,
+  error,
+  onDismissMessage,
+  onDismissError,
+  onAction,
+}: {
+  pendingOp: PendingOp;
+  message: { text: string; type: "success" | "info" } | null;
+  error: string | null;
+  onDismissMessage: () => void;
+  onDismissError: () => void;
+  onAction: (
+    action: string,
+    baseHeight: string,
+    endHeight: string,
+  ) => void;
+}) {
+  const [baseHeight, setBaseHeight] = useState("");
+  const [endHeight, setEndHeight] = useState("");
+
+  const handleAction = useCallback(
+    (action: string) => {
+      onAction(action, baseHeight, endHeight);
+    },
+    [baseHeight, endHeight, onAction],
+  );
+
+  const pendingLabel: Record<string, string> = {
+    fetchDiff: "Fetching DML diff…",
+    fetchQrInfo: "Fetching QR info…",
+    fetchDmlsNoRotation: "Fetching DMLs (no rotation)…",
+    fetchDmlsWithRotation: "Fetching QR info + DMLs…",
+    fetchChainLocks: "Fetching chain locks…",
+  };
+
+  return (
+    <div className="flex flex-col gap-2 mb-3" data-testid="input-area">
+      {/* Input row */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">
+            Base Height:
+          </label>
+          <Input
+            type="text"
+            value={baseHeight}
+            onChange={(e) => setBaseHeight(e.target.value)}
+            placeholder="0"
+            className="w-24 h-7 text-xs font-mono"
+            data-testid="base-height-input"
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-muted-foreground whitespace-nowrap">
+            End Height:
+          </label>
+          <Input
+            type="text"
+            value={endHeight}
+            onChange={(e) => setEndHeight(e.target.value)}
+            placeholder="tip"
+            className="w-24 h-7 text-xs font-mono"
+            data-testid="end-height-input"
+          />
+        </div>
+      </div>
+
+      {/* Action buttons row */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => handleAction("fetchDiff")}
+          disabled={pendingOp !== null}
+          data-testid="fetch-diff-button"
+        >
+          Get single end DML diff
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => handleAction("fetchQrInfo")}
+          disabled={pendingOp !== null}
+          data-testid="fetch-qrinfo-button"
+        >
+          Get single end QR info
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => handleAction("fetchDmlsNoRotation")}
+          disabled={pendingOp !== null}
+          data-testid="fetch-dmls-no-rotation-button"
+        >
+          Get DMLs w/o rotation
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => handleAction("fetchDmlsWithRotation")}
+          disabled={pendingOp !== null}
+          data-testid="fetch-dmls-with-rotation-button"
+        >
+          Get DMLs w/ rotation
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => handleAction("fetchChainLocks")}
+          disabled={pendingOp !== null}
+          data-testid="fetch-chain-locks-button"
+        >
+          Get chain locks
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => handleAction("clear")}
+          disabled={pendingOp !== null}
+          data-testid="clear-button"
+        >
+          Clear
+        </Button>
+      </div>
+
+      {/* Pending spinner */}
+      {pendingOp && (
+        <div className="flex items-center gap-2 text-sm" data-testid="pending-indicator">
+          <Loader2 className="size-4 animate-spin text-dash-blue" />
+          <span>{pendingLabel[pendingOp] ?? "Working…"}</span>
+        </div>
+      )}
+
+      {/* Message banner */}
+      {message && (
+        <div
+          className={cn(
+            "flex items-center gap-2 text-sm px-3 py-2 rounded border",
+            message.type === "success" && "bg-green-500/10 border-green-500/20 text-green-700 dark:text-green-400",
+            message.type === "info" && "bg-blue-500/10 border-blue-500/20 text-blue-700 dark:text-blue-400",
+          )}
+          data-testid="message-banner"
+        >
+          <span className="flex-1">{message.text}</span>
+          <button onClick={onDismissMessage} className="shrink-0" aria-label="Dismiss message">
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Error banner */}
+      {error && (
+        <div
+          className="flex items-center gap-2 text-sm px-3 py-2 rounded border bg-destructive/10 border-destructive/20 text-destructive"
+          data-testid="error-banner"
+        >
+          <AlertCircle className="size-4 shrink-0" />
+          <span className="flex-1 break-all">{error}</span>
+          <button onClick={onDismissError} className="shrink-0" aria-label="Dismiss error">
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Screen
 // ---------------------------------------------------------------------------
 
 /**
- * Masternode List Diff screen — Core Items and QR Info tabs.
+ * Masternode List Diff screen — Core Items, QR Info, and Quorum Viewer tabs.
  *
  * Core Items: Real-time chain-locked blocks and instant-send-locked transactions
  * received via ZMQ from Dash Core.
  *
  * QR Info: Load and inspect QRInfo .dat files containing quorum rotation data.
  *
- * Quorum Viewer tab will be added in task 9.1n.
+ * Quorum Viewer: View quorum data extracted from fetched MnList diffs.
  */
 export function MasternodeListDiffScreen() {
+  const [pendingOp, setPendingOp] = useState<PendingOp>(null);
+  const [message, setMessage] = useState<{ text: string; type: "success" | "info" } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [fetchedDiffs, setFetchedDiffs] = useState<
+    Array<{ baseHeight: number; height: number; diff: MnListDiffDto }>
+  >([]);
+  const [_chainLockSigs, setChainLockSigs] = useState<ChainLockSigEntry[]>([]);
+
+  // Track pending task IDs to match results
+  const pendingTaskIds = useRef<Set<string>>(new Set());
+
+  // Build quorum entries from fetched diffs
+  const quorumEntries: QuorumViewerEntry[] = [];
+  for (const item of fetchedDiffs) {
+    for (const q of item.diff.newQuorums) {
+      quorumEntries.push({
+        quorumHash: q.quorumHash,
+        llmqType: q.llmqType,
+        signerCount: q.signers.filter(Boolean).length,
+        validMemberCount: q.validMembers.filter(Boolean).length,
+        totalMembers: Math.max(q.signers.length, q.validMembers.length),
+        quorumPublicKey: q.quorumPublicKey,
+        quorumIndex: q.quorumIndex,
+        sourceHeight: item.height,
+      });
+    }
+  }
+
+  // Listen for MnList task results
+  useEffect(() => {
+    let cleanup: (() => void) | undefined;
+    const subscribe = async () => {
+      cleanup = await events.taskResultEvent.listen(
+        (event: { payload: TaskResultEvent }) => {
+          const { taskId, resultType, payload } = event.payload;
+          if (resultType !== "MnList" || !payload) return;
+          if (!pendingTaskIds.current.has(taskId)) return;
+          pendingTaskIds.current.delete(taskId);
+
+          const data = payload as MnListPayload;
+          switch (data.type) {
+            case "FetchedDiff":
+              setFetchedDiffs((prev) => [
+                ...prev,
+                { baseHeight: data.baseHeight, height: data.height, diff: data.diff },
+              ]);
+              setMessage({ text: `Fetched diff: ${data.baseHeight} → ${data.height}`, type: "success" });
+              break;
+            case "FetchedQrInfo":
+              // Extract diffs from QR info
+              setMessage({ text: "Fetched QR info successfully", type: "success" });
+              break;
+            case "ChainLockSigs":
+              setChainLockSigs((prev) => [...prev, ...data.entries]);
+              setMessage({ text: `Fetched ${data.entries.length} chain lock signatures`, type: "success" });
+              break;
+            case "FetchedDiffs":
+              setFetchedDiffs((prev) => [
+                ...prev,
+                ...data.diffs.map((d) => ({
+                  baseHeight: d.baseHeight,
+                  height: d.height,
+                  diff: d.diff,
+                })),
+              ]);
+              setMessage({ text: `Fetched ${data.diffs.length} diffs`, type: "success" });
+              break;
+          }
+          setPendingOp(null);
+        },
+      );
+    };
+    subscribe().catch(() => {});
+    return () => cleanup?.();
+  }, []);
+
+  // Listen for task errors
+  useEffect(() => {
+    let cleanup: (() => void) | undefined;
+    const subscribe = async () => {
+      cleanup = await events.taskErrorEvent.listen(
+        (event: { payload: { taskId: string; message: string } }) => {
+          const { taskId, message: errMsg } = event.payload;
+          if (pendingTaskIds.current.has(taskId)) {
+            pendingTaskIds.current.delete(taskId);
+            setError(errMsg);
+            setPendingOp(null);
+          }
+        },
+      );
+    };
+    subscribe().catch(() => {});
+    return () => cleanup?.();
+  }, []);
+
+  const handleAction = useCallback(
+    async (action: string, baseHeight: string, endHeight: string) => {
+      setError(null);
+      setMessage(null);
+
+      if (action === "clear") {
+        setFetchedDiffs([]);
+        setChainLockSigs([]);
+        setMessage({ text: "Cleared all data", type: "success" });
+        return;
+      }
+
+      // Parse heights — use "0" as default base, empty end means "tip"
+      const baseH = baseHeight.trim() === "" ? 0 : parseInt(baseHeight.trim(), 10);
+      const endH = endHeight.trim() === "" ? 0 : parseInt(endHeight.trim(), 10);
+
+      if (isNaN(baseH)) {
+        setError("Invalid base block height");
+        return;
+      }
+      if (endHeight.trim() !== "" && isNaN(endH)) {
+        setError("Invalid end block height");
+        return;
+      }
+
+      // For hash-based commands, we use zero-hashes as placeholders.
+      // The backend will resolve them via Core RPC.
+      const zeroHash = "0".repeat(64);
+      const baseHash = zeroHash;
+      const endHash = zeroHash;
+
+      try {
+        let result;
+        switch (action) {
+          case "fetchDiff":
+            setPendingOp("fetchDiff");
+            result = await commands.mnlistFetchDiff({
+              baseBlockHeight: baseH,
+              baseBlockHash: baseHash,
+              blockHeight: endH,
+              blockHash: endHash,
+              validateQuorums: false,
+            });
+            break;
+          case "fetchQrInfo":
+            setPendingOp("fetchQrInfo");
+            result = await commands.mnlistFetchQrInfo({
+              knownBlockHashes: [],
+              blockHash: endHash,
+            });
+            break;
+          case "fetchDmlsNoRotation":
+            setPendingOp("fetchDmlsNoRotation");
+            result = await commands.mnlistFetchDiff({
+              baseBlockHeight: baseH,
+              baseBlockHash: baseHash,
+              blockHeight: endH,
+              blockHash: endHash,
+              validateQuorums: true,
+            });
+            break;
+          case "fetchDmlsWithRotation":
+            setPendingOp("fetchDmlsWithRotation");
+            result = await commands.mnlistFetchQrInfoWithDmls({
+              knownBlockHashes: [],
+              blockHash: endHash,
+            });
+            break;
+          case "fetchChainLocks":
+            setPendingOp("fetchChainLocks");
+            result = await commands.mnlistFetchChainLocks({
+              baseBlockHeight: baseH,
+              blockHeight: endH,
+            });
+            break;
+          default:
+            return;
+        }
+
+        // Track the task ID for result matching
+        if (result) {
+          const taskId =
+            "status" in result
+              ? result.status === "ok"
+                ? result.data.taskId
+                : null
+              : result.taskId;
+          if (taskId) {
+            pendingTaskIds.current.add(taskId);
+          } else if ("status" in result && result.status === "error") {
+            setError(result.error);
+            setPendingOp(null);
+          }
+        }
+      } catch (e) {
+        setError(String(e));
+        setPendingOp(null);
+      }
+    },
+    [],
+  );
+
   return (
     <ToolPageLayout
       title="Masternode List Diff"
       subtitle="Real-time chain locks, instant send transactions, and masternode list data"
     >
+      {/* Input area with action buttons */}
+      <InputArea
+        pendingOp={pendingOp}
+        message={message}
+        error={error}
+        onDismissMessage={() => setMessage(null)}
+        onDismissError={() => setError(null)}
+        onAction={handleAction}
+      />
+
       <Tabs defaultValue="core-items" className="flex flex-col flex-1 min-h-0">
         <TabsList className="w-fit">
           <TabsTrigger value="core-items">Core Items</TabsTrigger>
           <TabsTrigger value="qr-info">QR Info</TabsTrigger>
-          <TabsTrigger value="quorum-viewer" disabled>
+          <TabsTrigger value="quorum-viewer">
             Quorum Viewer
+            {quorumEntries.length > 0 && (
+              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">
+                {quorumEntries.length}
+              </Badge>
+            )}
           </TabsTrigger>
         </TabsList>
         <TabsContent
@@ -959,6 +1647,12 @@ export function MasternodeListDiffScreen() {
           className="flex-1 min-h-0 flex flex-col mt-4"
         >
           <QrInfoTab />
+        </TabsContent>
+        <TabsContent
+          value="quorum-viewer"
+          className="flex-1 min-h-0 flex flex-col mt-4"
+        >
+          <QuorumViewerTab quorumEntries={quorumEntries} />
         </TabsContent>
       </Tabs>
     </ToolPageLayout>

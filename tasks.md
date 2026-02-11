@@ -1057,7 +1057,7 @@
 
   - [x] **9.1m** Implement Masternode List Diff screen — QR Info tab. File open/save via Tauri dialog API for .dat files. Left panel: selectable QRInfo fields list (snapshots, diffs at various heights). Middle panel: items for selected field. Right panel: detail view for selected item (snapshot, diff, or quorum entry). Supports consensus and bincode file formats. Reference: `masternode_list_diff_screen/qr_info_tab.rs`. Write component tests.
 
-  - [ ] **9.1n** Implement Masternode List Diff screen — main layout and Quorum Viewer tab. Tab layout with 3 tabs (Core Items / QR Info / Quorum Viewer). Input fields for base/end block height. Fetch buttons dispatch `mnlistFetchDiff`, `mnlistFetchQrInfoWithDmls`, `mnlistFetchChainLocks`, `mnlistFetchDiffsChain`. Quorum Viewer: left panel for LLMQ type selection, middle for quorum entries, right for detailed quorum info with BLS verification status. Reference: `masternode_list_diff_screen/mod.rs`, `quorum_viewer_tab.rs`. Write component tests.
+  - [x] **9.1n** Implement Masternode List Diff screen — main layout and Quorum Viewer tab. Tab layout with 3 tabs (Core Items / QR Info / Quorum Viewer). Input fields for base/end block height. Fetch buttons dispatch `mnlistFetchDiff`, `mnlistFetchQrInfoWithDmls`, `mnlistFetchChainLocks`, `mnlistFetchDiffsChain`. Quorum Viewer: left panel for LLMQ type selection, middle for quorum entries, right for detailed quorum info with BLS verification status. Reference: `masternode_list_diff_screen/mod.rs`, `quorum_viewer_tab.rs`. Write component tests.
 
   - [ ] **9.1o** Write Playwright E2E tests for tools screens. Test critical flows: Platform Info query + result display, Address Balance lookup, Contract Visualizer parse, Transition Visualizer parse + broadcast, Proof Log table interaction, GroveSTARK mode switching. At minimum 1 E2E test per tool screen verifying render and basic interaction.
 
@@ -1160,7 +1160,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 183 |
-| Remaining | 13 |
+| Completed | 184 |
+| Remaining | 12 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

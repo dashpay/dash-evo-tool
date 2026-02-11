@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 162 — 2026-02-11
+**Task:** 10.6b Add React Error Boundary component wrapping the route outlet
+**What was done:** Created `ErrorBoundary` class component in `src/frontend/components/feedback/` that catches render errors in child components and displays a user-friendly fallback UI with error message, "Try Again" button (resets error state), and "Reload App" button. Wrapped the `<Outlet />` in `AppLayout.tsx` with `<ErrorBoundary>` so any screen render crash shows the fallback instead of a white screen. Supports custom fallback via prop. Exported from feedback barrel.
+**Files changed:** src/frontend/components/feedback/ErrorBoundary.tsx (new), src/frontend/components/feedback/ErrorBoundary.test.tsx (new), src/frontend/components/feedback/index.ts, src/frontend/AppLayout.tsx
+**Tests added:** 10 (renders children normally, shows fallback on error, displays error message, Try Again resets state, Reload calls window.location.reload, custom fallback, console.error logging, alert icon, role="alert")
+**Sub-tasks created:** 0
+
 ## Run 161 — 2026-02-11
 **Task:** 10.6a Add confirmation dialogs to SendPaymentScreen, SendScreen, and SingleKeySendScreen
 **What was done:** Added pre-send confirmation dialogs to all 3 send screens using the existing `ConfirmationDialog` component. Each screen now shows a confirmation dialog with recipient, amount, transaction type, and irreversibility warning before executing the transaction. Updated all 3 test files to handle the new confirmation step, adding 4 new test cases for confirmation behavior (show dialog, cancel doesn't send, etc.). All 4477 tests pass.

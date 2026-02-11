@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { AppShell } from "@/components/layout";
+import { ErrorBoundary } from "@/components/feedback";
 import { Sidebar, TopBar, getActiveSectionFromPath, navItems } from "@/components/navigation";
 import type { BreadcrumbItem } from "@/components/navigation";
 import type { NetworkDto } from "@/bindings";
@@ -156,7 +157,9 @@ export function AppLayout() {
         />
         {/* Main content — scrollable area */}
         <div className="flex min-h-0 flex-1 overflow-auto">
-          <Outlet />
+          <ErrorBoundary>
+            <Outlet />
+          </ErrorBoundary>
         </div>
       </div>
     </AppShell>

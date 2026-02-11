@@ -118,7 +118,9 @@ impl Database {
                 self.initialize_token_table(tx)?;
                 self.drop_identity_token_balances_table(tx)?;
                 self.initialize_identity_token_balances_table(tx)?;
+                tx.execute("DROP TABLE IF EXISTS identity_order", [])?;
                 self.initialize_identity_order_table(tx)?;
+                tx.execute("DROP TABLE IF EXISTS token_order", [])?;
                 self.initialize_token_order_table(tx)?;
             }
             5 => {

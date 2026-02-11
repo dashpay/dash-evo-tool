@@ -429,12 +429,8 @@ impl Database {
         &self,
         conn: &rusqlite::Connection,
     ) -> rusqlite::Result<()> {
-        // Drop the table if it already exists
-        conn.execute("DROP TABLE IF EXISTS identity_order", [])?;
-
-        // Recreate with foreign key enforcement
         conn.execute(
-            "CREATE TABLE identity_order (
+            "CREATE TABLE IF NOT EXISTS identity_order (
             pos INTEGER NOT NULL,
             identity_id BLOB NOT NULL,
             PRIMARY KEY(pos),

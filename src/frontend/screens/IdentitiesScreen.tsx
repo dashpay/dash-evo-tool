@@ -56,7 +56,7 @@ import { toastError } from "@/lib/toastError";
 type SubView =
   | { type: "detail" }
   | { type: "keys" }
-  | { type: "keyInfo"; keyId: number }
+  | { type: "keyInfo"; keyId: number; from: "detail" | "keys" }
   | { type: "addKey" }
   | { type: "withdraw" }
   | { type: "transfer" }
@@ -340,7 +340,7 @@ export function IdentitiesScreen() {
 
   const handleViewKey = useCallback(
     (_identityId: string, keyId: number) => {
-      setSubView({ type: "keyInfo", keyId });
+      setSubView({ type: "keyInfo", keyId, from: "detail" });
       setKeyInfoState({ isSubmitting: false, error: null, success: null });
     },
     [],
@@ -1034,7 +1034,7 @@ export function IdentitiesScreen() {
           <KeyManagementScreen
             identity={selectedIdentity}
             onViewKey={(keyId) =>
-              setSubView({ type: "keyInfo", keyId })
+              setSubView({ type: "keyInfo", keyId, from: "keys" })
             }
             onAddKey={handleAddKey}
             onBack={handleBackToDetail}
@@ -1046,7 +1046,8 @@ export function IdentitiesScreen() {
           <KeyInfoScreen
             identity={selectedIdentity}
             keyData={selectedKey}
-            onBack={handleBackToKeys}
+            onBack={subView.from === "detail" ? handleBackToDetail : handleBackToKeys}
+            backLabel={subView.from === "detail" ? "Back to identity" : "Back to keys"}
             onDisableKey={handleDisableKey}
             onReplaceKey={handleReplaceKey}
             onSignMessage={handleSignMessage}

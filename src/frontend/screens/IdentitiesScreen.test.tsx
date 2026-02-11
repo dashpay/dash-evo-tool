@@ -565,6 +565,114 @@ describe("IdentitiesScreen", () => {
     });
   });
 
+  describe("direct key viewing from detail panel", () => {
+    it("opens key info when clicking a key in detail panel and Back returns to detail", async () => {
+      const user = userEvent.setup();
+      const identity = makeIdentity({
+        alias: "KeyDetail",
+        keys: [
+          makeKey({ keyId: 0, purpose: "AUTHENTICATION", securityLevel: "MASTER" }),
+          makeKey({ keyId: 1, purpose: "TRANSFER", securityLevel: "HIGH" }),
+        ],
+      });
+      setupMocksWithIdentities([identity]);
+      renderWithProviders(<IdentitiesScreen />);
+
+      await waitFor(() => {
+        expect(screen.getByText("KeyDetail")).toBeInTheDocument();
+      });
+
+      // Select the identity
+      await user.click(screen.getByText("KeyDetail"));
+
+      // Wait for detail panel keys section
+      await waitFor(() => {
+        expect(screen.getByText("Keys")).toBeInTheDocument();
+      });
+
+      // Click a key item in the detail panel (key #1 — T — High)
+      const keyButton = screen.getByRole("button", {
+        name: /Key 1: TRANSFER HIGH/i,
+      });
+      await user.click(keyButton);
+
+      // Should show key info screen
+      await waitFor(() => {
+        expect(screen.getByText("Key Info")).toBeInTheDocument();
+        expect(screen.getByText(/Key #1/)).toBeInTheDocument();
+      });
+
+      // Click back — should return to detail panel (not key management)
+      const backButton = screen.getByRole("button", {
+        name: /back to identity/i,
+      });
+      await user.click(backButton);
+
+      // Should be back on detail panel — Keys section visible, no "Identity Keys" heading
+      await waitFor(() => {
+        expect(screen.getByText("Keys")).toBeInTheDocument();
+        expect(screen.queryByText("Identity Keys")).not.toBeInTheDocument();
+      });
+    });
+
+    it("opens key info from key management and Back returns to key management", async () => {
+      const user = userEvent.setup();
+      const identity = makeIdentity({
+        alias: "KeyMgmt",
+        keys: [
+          makeKey({ keyId: 0, purpose: "AUTHENTICATION", securityLevel: "MASTER" }),
+        ],
+      });
+      setupMocksWithIdentities([identity]);
+      renderWithProviders(<IdentitiesScreen />);
+
+      await waitFor(() => {
+        expect(screen.getByText("KeyMgmt")).toBeInTheDocument();
+      });
+
+      // Select the identity
+      await user.click(screen.getByText("KeyMgmt"));
+
+      await waitFor(() => {
+        expect(
+          screen.queryByText("Select an identity to view details"),
+        ).not.toBeInTheDocument();
+      });
+
+      // Navigate to key management via context menu
+      const actionsButton = screen.getByLabelText("Identity actions");
+      await user.click(actionsButton);
+      const viewKeysItem = await screen.findByRole("menuitem", {
+        name: /view keys/i,
+      });
+      await user.click(viewKeysItem);
+
+      await waitFor(() => {
+        expect(screen.getByText("Identity Keys")).toBeInTheDocument();
+      });
+
+      // Click a key row in key management screen
+      const viewButton = screen.getByRole("button", { name: /view/i });
+      await user.click(viewButton);
+
+      // Should show key info
+      await waitFor(() => {
+        expect(screen.getByText("Key Info")).toBeInTheDocument();
+      });
+
+      // Click back — should return to key management (not detail)
+      const backButton = screen.getByRole("button", {
+        name: /back to keys/i,
+      });
+      await user.click(backButton);
+
+      // Should be back on key management screen
+      await waitFor(() => {
+        expect(screen.getByText("Identity Keys")).toBeInTheDocument();
+      });
+    });
+  });
+
   describe("error handling", () => {
     it("shows toast when store has an error", async () => {
       setupMocksWithIdentities([]);

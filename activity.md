@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 185 — 2026-02-11
+**Task:** 10.1b Add direct key viewing from identity detail panel
+**What was done:** Added origin tracking to KeyInfoScreen navigation so clicking a key in the detail panel opens KeyInfoScreen with a Back button that returns to the detail panel (not KeyManagementScreen). When navigating from KeyManagementScreen, Back still returns to keys. Added `from` field to the `keyInfo` SubView type, dynamic `backLabel` prop to KeyInfoScreen for accessible aria-labels ("Back to identity" vs "Back to keys"). Updated existing test that relied on old aria-label.
+**Files changed:** src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/IdentitiesScreen.test.tsx, src/frontend/components/identity/KeyInfoScreen.tsx, src/frontend/components/identity/KeyInfoScreen.test.tsx
+**Tests added:** 2 new tests (direct key view from detail panel with Back to detail, key view from key management with Back to keys)
+**Sub-tasks created:** 0
+
 ## Run 184 — 2026-02-11
 **Task:** 10.1a Add "In Wallet" info to identity list cards
 **What was done:** Added wallet name display to IdentityCard in IdentityListPanel. Each identity card now shows the associated wallet name (resolved from wallet seed hashes) as a small wallet icon + name below the badges row. Added `walletNames` prop to IdentityListPanel and IdentityCard, passed from IdentitiesScreen. Fixed existing test that broke due to duplicate "My Wallet" text (list card + detail panel).

@@ -1083,7 +1083,7 @@
 
   **Sub-tasks produced (P1 fixes):**
   - [x] **10.1a** Add "In Wallet" info to identity list cards — show wallet association without needing to open detail panel
-  - [ ] **10.1b** Add direct key viewing from identity detail panel — allow viewing individual keys without navigating to KeyManagementScreen
+  - [x] **10.1b** Add direct key viewing from identity detail panel — allow viewing individual keys without navigating to KeyManagementScreen
   - [ ] **10.1c** Verify and fix DPNS Owned Names "Set Alias" action — ensure clicking a name sets the identity alias
   - [ ] **10.1d** Add YAML display mode toggle to DocumentQueryScreen — egui supports JSON+YAML, Tauri may only have JSON
   - [ ] **10.1e** Verify and fix document field selection dropdown in DocumentQueryScreen — ensure field selection works
@@ -1162,7 +1162,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 186 |
-| Remaining | 10 |
+| Completed | 187 |
+| Remaining | 9 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

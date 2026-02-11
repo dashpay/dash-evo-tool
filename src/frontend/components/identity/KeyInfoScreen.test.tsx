@@ -93,14 +93,14 @@ describe("KeyInfoScreen — header", () => {
 
   it("calls onBack when back button clicked", async () => {
     const { user, props } = setup();
-    await user.click(screen.getByRole("button", { name: /back to key list/i }));
+    await user.click(screen.getByRole("button", { name: /back/i }));
     expect(props.onBack).toHaveBeenCalledOnce();
   });
 
   it("hides back button when onBack not provided", () => {
     setup({ onBack: undefined });
     expect(
-      screen.queryByRole("button", { name: /back to key list/i }),
+      screen.queryByRole("button", { name: /back/i }),
     ).not.toBeInTheDocument();
   });
 });

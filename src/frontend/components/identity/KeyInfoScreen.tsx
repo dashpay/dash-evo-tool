@@ -75,8 +75,10 @@ export interface KeyInfoScreenProps {
   identity: QualifiedIdentityDto;
   /** The key to display information for. */
   keyData: IdentityKeyDto;
-  /** Called to navigate back to key list. */
+  /** Called to navigate back. */
   onBack?: () => void;
+  /** Label for the back button (for accessibility). Defaults to "Back". */
+  backLabel?: string;
   /** Called to disable this key on platform. */
   onDisableKey?: (keyId: number) => void;
   /** Called to replace the master key. */
@@ -150,6 +152,7 @@ export function KeyInfoScreen({
   identity,
   keyData,
   onBack,
+  backLabel = "Back",
   onDisableKey,
   onReplaceKey,
   onAddPrivateKey,
@@ -268,7 +271,7 @@ export function KeyInfoScreen({
             variant="ghost"
             size="icon-sm"
             onClick={onBack}
-            aria-label="Back to key list"
+            aria-label={backLabel}
           >
             <ArrowLeft className="size-4" />
           </Button>

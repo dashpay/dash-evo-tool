@@ -906,6 +906,7 @@ export function IdentitiesScreen() {
           selectedIdentityId={selectedIdentityId}
           refreshingIds={refreshingIds}
           refreshingAll={refreshingAll}
+          walletNames={walletNames}
           onSelectIdentity={selectIdentity}
           onSetAlias={setAlias}
           onReorderUp={reorderIdentityUp}

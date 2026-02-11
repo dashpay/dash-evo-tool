@@ -246,6 +246,66 @@ describe("IdentityListPanel — identity display", () => {
   });
 });
 
+// ─── Wallet association display ──────────────────────────────────────
+
+describe("IdentityListPanel — wallet name display", () => {
+  const walletNames: Record<string, string> = {
+    seed123: "My HD Wallet",
+    key456: "My Single Key",
+  };
+
+  it("shows wallet name when walletNames provided and identity has associated wallet", () => {
+    setup({
+      identities: [makeIdentity({ associatedWalletHashes: ["seed123"] })],
+      walletNames,
+    });
+    expect(screen.getByTestId("wallet-name")).toHaveTextContent("My HD Wallet");
+  });
+
+  it("does not show wallet info when walletNames not provided", () => {
+    setup({
+      identities: [makeIdentity({ associatedWalletHashes: ["seed123"] })],
+    });
+    expect(screen.queryByTestId("wallet-name")).not.toBeInTheDocument();
+  });
+
+  it("does not show wallet info when identity has no associated wallets", () => {
+    setup({
+      identities: [makeIdentity({ associatedWalletHashes: [] })],
+      walletNames,
+    });
+    expect(screen.queryByTestId("wallet-name")).not.toBeInTheDocument();
+  });
+
+  it("does not show wallet info when wallet hash not found in walletNames", () => {
+    setup({
+      identities: [makeIdentity({ associatedWalletHashes: ["unknown_hash"] })],
+      walletNames,
+    });
+    expect(screen.queryByTestId("wallet-name")).not.toBeInTheDocument();
+  });
+
+  it("shows first matched wallet name when identity has multiple wallet hashes", () => {
+    setup({
+      identities: [
+        makeIdentity({ associatedWalletHashes: ["seed123", "key456"] }),
+      ],
+      walletNames,
+    });
+    expect(screen.getByTestId("wallet-name")).toHaveTextContent("My HD Wallet");
+  });
+
+  it("falls through to second hash if first is not in walletNames", () => {
+    setup({
+      identities: [
+        makeIdentity({ associatedWalletHashes: ["unknown", "key456"] }),
+      ],
+      walletNames,
+    });
+    expect(screen.getByTestId("wallet-name")).toHaveTextContent("My Single Key");
+  });
+});
+
 // ─── Selection ─────────────────────────────────────────────────────
 
 describe("IdentityListPanel — selection", () => {

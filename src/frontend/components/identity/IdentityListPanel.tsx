@@ -18,6 +18,7 @@ import {
   UserPlus,
   Loader2,
   Check,
+  Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -88,6 +89,8 @@ export interface IdentityListPanelProps {
   onWithdraw?: (identityId: string) => void;
   /** Called to navigate to transfer. */
   onTransfer?: (identityId: string) => void;
+  /** Map of wallet seed/key hashes to display names. */
+  walletNames?: Record<string, string>;
   /** Current sort column. */
   sortColumn?: IdentitySortColumn;
   /** Current sort order. */
@@ -255,6 +258,7 @@ interface IdentityCardProps {
   isRefreshing: boolean;
   isFirst: boolean;
   isLast: boolean;
+  walletNames?: Record<string, string>;
   onSelect: () => void;
   onSetAlias: (alias: string | null) => void;
   onReorderUp: () => void;
@@ -274,6 +278,7 @@ function IdentityCard({
   isRefreshing,
   isFirst,
   isLast,
+  walletNames,
   onSelect,
   onSetAlias,
   onReorderUp,
@@ -295,6 +300,16 @@ function IdentityCard({
   const hasPrivateKeys = identity.keys.some((k) => k.hasPrivateKey);
   const canWithdraw = active && identity.balance >= MIN_WITHDRAW_BALANCE;
   const canTransfer = active && identity.balance >= MIN_TRANSFER_BALANCE;
+
+  // Resolve wallet display name from associatedWalletHashes
+  const walletDisplayName = (() => {
+    if (!walletNames || identity.associatedWalletHashes.length === 0) return null;
+    for (const hash of identity.associatedWalletHashes) {
+      const name = walletNames[hash];
+      if (name) return name;
+    }
+    return null;
+  })();
 
   const handleRename = (alias: string | null) => {
     setIsRenaming(false);
@@ -401,6 +416,14 @@ function IdentityCard({
                 />
               )}
             </div>
+            {walletDisplayName && (
+              <div className="flex items-center gap-1 mt-0.5">
+                <Wallet className="h-3 w-3 text-muted-foreground/70 shrink-0" aria-hidden="true" />
+                <span className="text-[10px] text-muted-foreground/70 truncate" data-testid="wallet-name">
+                  {walletDisplayName}
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-1 mt-0.5">
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -568,6 +591,7 @@ export function IdentityListPanel({
   onTopUp,
   onWithdraw,
   onTransfer,
+  walletNames,
   sortColumn = "alias",
   sortOrder = "ascending",
   useCustomOrder = true,
@@ -720,6 +744,7 @@ export function IdentityListPanel({
             isRefreshing={refreshingIds.has(identity.id)}
             isFirst={index === 0}
             isLast={index === identities.length - 1}
+            walletNames={walletNames}
             onSelect={() => onSelectIdentity(identity.id)}
             onSetAlias={(alias) => onSetAlias(identity.id, alias)}
             onReorderUp={() => onReorderUp(identity.id)}

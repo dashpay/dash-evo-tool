@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 184 — 2026-02-11
+**Task:** 10.1a Add "In Wallet" info to identity list cards
+**What was done:** Added wallet name display to IdentityCard in IdentityListPanel. Each identity card now shows the associated wallet name (resolved from wallet seed hashes) as a small wallet icon + name below the badges row. Added `walletNames` prop to IdentityListPanel and IdentityCard, passed from IdentitiesScreen. Fixed existing test that broke due to duplicate "My Wallet" text (list card + detail panel).
+**Files changed:** src/frontend/components/identity/IdentityListPanel.tsx, src/frontend/components/identity/IdentityListPanel.test.tsx, src/frontend/screens/IdentitiesScreen.tsx, src/frontend/screens/IdentitiesScreen.test.tsx
+**Tests added:** 6 new tests for wallet name display (shows name, hides when no walletNames, hides when no associations, hides for unknown hash, first match priority, fallthrough to second hash)
+**Sub-tasks created:** 0
+
 ## Run 183 — 2026-02-11
 **Task:** 9.1o Write Playwright E2E tests for tools screens
 **What was done:** Fixed 4 failing E2E tests in phase9-tools.spec.ts and 1 screen bug. The TransitionVisualizerScreen was reading `event.payload.error` instead of `event.payload.message` for TaskErrorEvent, causing broadcast error messages to never display. Three MasternodeListDiff tests failed due to: strict mode selector matching 2 elements (fixed with `.first()`), incorrect diff payload shape (test used `addedMNs`/`addedQuorums` instead of `newMasternodes`/`newQuorums`), and timing issues (added pending indicator wait). All 86 E2E tests now pass across all 9 tools screens.

@@ -1082,7 +1082,7 @@
   > **Audit Findings (Run 35):** ~90% feature parity achieved. All 58+ screens exist with routes, IPC, and tests. Remaining gaps are minor UX differences and a few missing UI details. Details: [ralph/docs/phase10-functionality-audit.md](ralph/docs/phase10-functionality-audit.md)
 
   **Sub-tasks produced (P1 fixes):**
-  - [ ] **10.1a** Add "In Wallet" info to identity list cards — show wallet association without needing to open detail panel
+  - [x] **10.1a** Add "In Wallet" info to identity list cards — show wallet association without needing to open detail panel
   - [ ] **10.1b** Add direct key viewing from identity detail panel — allow viewing individual keys without navigating to KeyManagementScreen
   - [ ] **10.1c** Verify and fix DPNS Owned Names "Set Alias" action — ensure clicking a name sets the identity alias
   - [ ] **10.1d** Add YAML display mode toggle to DocumentQueryScreen — egui supports JSON+YAML, Tauri may only have JSON
@@ -1162,7 +1162,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 185 |
-| Remaining | 11 |
+| Completed | 186 |
+| Remaining | 10 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

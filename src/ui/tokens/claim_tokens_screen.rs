@@ -277,9 +277,7 @@ impl ScreenLike for ClaimTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
             MessageType::Success => {
-                if message.contains("Claimed") || message == "ClaimTokens" {
-                    self.status = ClaimTokensStatus::Complete;
-                }
+                // no-op, handled in display_task_result
             }
             MessageType::Error => {
                 self.status = ClaimTokensStatus::ErrorMessage(message.to_string());

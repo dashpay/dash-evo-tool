@@ -25,6 +25,7 @@ use crate::events::{
 };
 use crate::state::AppState;
 use dash_evo_tool::app::TaskResult;
+use dash_evo_tool::backend_task::dashpay::DashPayResult;
 use dash_evo_tool::backend_task::platform_info::{PlatformInfoTaskResult, PlatformResult};
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::BackendTaskSuccessResult;
@@ -156,13 +157,69 @@ fn classify_success_result(
             let payload = classify_platform_result(platform_result);
             ("Platform".to_string(), Some(payload))
         }
-        BackendTaskSuccessResult::DashPay(_) => ("DashPay".to_string(), None),
+        BackendTaskSuccessResult::DashPay(dashpay_result) => {
+            let payload = classify_dashpay_result(dashpay_result);
+            ("DashPay".to_string(), payload)
+        }
         BackendTaskSuccessResult::GroveSTARK(_) => ("GroveSTARK".to_string(), None),
         BackendTaskSuccessResult::MnList(_) => ("MnList".to_string(), None),
         BackendTaskSuccessResult::Token(_) => ("Token".to_string(), None),
         BackendTaskSuccessResult::BroadcastedStateTransition => {
             ("BroadcastedStateTransition".to_string(), None)
         }
+    }
+}
+
+/// Classify a `DashPayResult` into an optional JSON payload for the event system.
+///
+/// Most DashPay results trigger a generic reload from the local database.
+/// `ProfileSearchResults` is special — the results are transient (not stored in DB),
+/// so we serialize them here for the frontend to consume directly.
+fn classify_dashpay_result(result: &DashPayResult) -> Option<serde_json::Value> {
+    use dash_sdk::dpp::document::{Document, DocumentV0Getters};
+    match result {
+        DashPayResult::ProfileSearchResults(results) => {
+            let items: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(identity_id, profile_doc, username)| {
+                    let (display_name, public_message, avatar_url) =
+                        if let Some(document) = profile_doc {
+                            let properties = match document {
+                                Document::V0(doc_v0) => doc_v0.properties(),
+                            };
+                            (
+                                properties
+                                    .get("displayName")
+                                    .and_then(|v| v.as_text())
+                                    .map(|s| s.to_string()),
+                                properties
+                                    .get("publicMessage")
+                                    .and_then(|v| v.as_text())
+                                    .map(|s| s.to_string()),
+                                properties
+                                    .get("avatarUrl")
+                                    .and_then(|v| v.as_text())
+                                    .map(|s| s.to_string()),
+                            )
+                        } else {
+                            (None, None, None)
+                        };
+
+                    serde_json::json!({
+                        "identityId": hex::encode(identity_id.to_buffer()),
+                        "username": username,
+                        "displayName": display_name,
+                        "publicMessage": public_message,
+                        "avatarUrl": avatar_url,
+                    })
+                })
+                .collect();
+            Some(serde_json::json!({
+                "type": "ProfileSearchResults",
+                "results": items
+            }))
+        }
+        _ => None,
     }
 }
 

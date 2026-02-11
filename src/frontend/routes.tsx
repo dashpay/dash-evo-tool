@@ -62,7 +62,7 @@ import { ContactProfileViewer } from "@/screens/ContactProfileViewer";
 import { ContactInfoEditorScreen } from "@/screens/ContactInfoEditorScreen";
 import { SendPaymentScreen } from "@/screens/SendPaymentScreen";
 import { PaymentHistoryScreen } from "@/screens/PaymentHistoryScreen";
-import { Island } from "@/components/layout/Island";
+import { ProfileSearchScreen } from "@/screens/ProfileSearchScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -74,15 +74,6 @@ function PlaceholderScreen({ title }: { title: string }) {
         <p className="mt-2 text-sm">This screen will be implemented in a future phase.</p>
       </div>
     </div>
-  );
-}
-
-/** Placeholder used inside the DashPay layout (wraps in an Island). */
-function DashPayPlaceholder({ title }: { title: string }) {
-  return (
-    <Island className="flex-1">
-      <PlaceholderScreen title={title} />
-    </Island>
   );
 }
 
@@ -170,7 +161,7 @@ const dashpayPaymentsRoute = createRoute({
 const dashpaySearchRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/search",
-  component: () => <DashPayPlaceholder title="Search Profiles" />,
+  component: ProfileSearchScreen,
 });
 
 const dashpayAddContactRoute = createRoute({

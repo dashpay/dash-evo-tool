@@ -323,15 +323,103 @@ test.describe("DashPay Payments Route", () => {
 });
 
 test.describe("DashPay Search Route", () => {
-  test("renders Profile Search placeholder", async ({ page, mockIPC }) => {
+  test("renders Profile Search heading", async ({ page, mockIPC }) => {
     await mockIPC.navigateWithHandlers(
       "/dashpay/search",
       dashpayWithIdentityHandlers(),
     );
 
     await expect(
-      page.getByText(/will be implemented/i),
+      page.getByText("Search Public Profiles"),
     ).toBeVisible({ timeout: 10000 });
+  });
+
+  test("shows search input and button", async ({ page, mockIPC }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/search",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(
+      page.getByPlaceholder("Enter DPNS username..."),
+    ).toBeVisible({ timeout: 10000 });
+    await expect(
+      page.getByRole("button", { name: /^search$/i }),
+    ).toBeVisible();
+  });
+
+  test("shows tip text about prefix search", async ({ page, mockIPC }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/search",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(
+      page.getByText(/tip: search by dpns username prefix/i),
+    ).toBeVisible({ timeout: 10000 });
+  });
+
+  test("search button is disabled when input is empty", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/search",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(
+      page.getByRole("button", { name: /^search$/i }),
+    ).toBeDisabled({ timeout: 10000 });
+  });
+
+  test("search button enables when text is entered", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/search",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await page.getByPlaceholder("Enter DPNS username...").fill("alice");
+    await expect(
+      page.getByRole("button", { name: /^search$/i }),
+    ).toBeEnabled({ timeout: 5000 });
+  });
+
+  test("shows no-identity empty state when no identity selected", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/search",
+      dashpayHandlers(),
+    );
+
+    await expect(
+      page.getByText("No Identity Selected"),
+    ).toBeVisible({ timeout: 10000 });
+  });
+
+  test("opens info dialog on info button click", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/search",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await page
+      .getByRole("button", { name: /about profile search/i })
+      .click();
+    await expect(
+      page.getByText("About Profile Search"),
+    ).toBeVisible({ timeout: 5000 });
+    await expect(
+      page.getByText("Add contacts directly from search results."),
+    ).toBeVisible();
   });
 });
 

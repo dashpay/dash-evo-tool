@@ -988,7 +988,7 @@
     Reference: `send_payment.rs` (PaymentHistory, lines 474-892)
     Write component tests.
 
-  - [ ] **8.3e Implement ProfileSearchScreen** (P2)
+  - [x] **8.3e Implement ProfileSearchScreen** (P2)
     Build the profile search screen:
     - Search input for DPNS username prefix with Enter key trigger
     - Search button, Clear Results button (top panel)
@@ -1143,7 +1143,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 173 |
-| Remaining | 23 |
+| Completed | 174 |
+| Remaining | 22 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

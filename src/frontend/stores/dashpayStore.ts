@@ -24,6 +24,15 @@ export type ContactSortField = "name" | "username" | "date" | "account";
 
 export type ContactSortOrder = "ascending" | "descending";
 
+/** A profile search result returned from the backend. */
+export interface ProfileSearchResult {
+  identityId: string;
+  username: string;
+  displayName: string | null;
+  publicMessage: string | null;
+  avatarUrl: string | null;
+}
+
 // ─── Store state ────────────────────────────────────────────────────
 
 interface DashPayState {
@@ -89,7 +98,7 @@ interface DashPayState {
 
   // ── Profile search slice ──
   /** Profile search results. */
-  searchResults: StoredContactDto[];
+  searchResults: ProfileSearchResult[];
   /** Whether a profile search is in progress. */
   searchLoading: boolean;
   /** Profile search error message. */
@@ -735,7 +744,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
   subscribeToUpdates: async () => {
     const unlistenResult = await events.taskResultEvent.listen(
       (event: { payload: TaskResultEvent }) => {
-        const { resultType } = event.payload;
+        const { resultType, payload } = event.payload;
 
         if (resultType !== "DashPay") return;
 
@@ -751,6 +760,20 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
           acceptingIds: new Set(),
           rejectingIds: new Set(),
         });
+
+        // Handle ProfileSearchResults payload from the backend
+        if (
+          payload &&
+          typeof payload === "object" &&
+          "type" in payload &&
+          payload.type === "ProfileSearchResults" &&
+          "results" in payload &&
+          Array.isArray(payload.results)
+        ) {
+          set({
+            searchResults: payload.results as ProfileSearchResult[],
+          });
+        }
 
         // Reload local data from DB for current identity
         if (state.selectedIdentityId) {

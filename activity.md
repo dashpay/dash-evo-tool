@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 151 — 2026-02-10
+**Task:** 9.5 [REVIEW] Tools screens functionality parity
+**What was done:** Audited all implemented tools screens (6 of 10) against egui originals for functionality parity, test coverage, and UI quality. PlatformInfoScreen (7 query types, two-column layout), AddressBalanceScreen (validation, fetch, result display), ContractVisualizerScreen (hex/base64/CSV input, JSON output), DocumentVisualizerScreen (contract/doc type selectors, parsing), ProofVisualizerScreen (proof deserialization), and ToolsScreen landing page (card grid) all have full or enhanced parity. 151 tests across 9 files. No fix tasks needed for implemented screens. 4 screens remain unimplemented (Transition Visualizer, Proof Log, GroveSTARK, Masternode List Diff) — tracked by existing tasks 9.1g–9.1n.
+**Files changed:** ralph/docs/phase9-tools-audit.md (new), tasks.md, activity.md
+**Tests added:** 0 (review task)
+**Sub-tasks created:** 0
+
 ## Run 169 — 2026-02-10
 **Task:** 9.1f Implement Proof Visualizer screen
 **What was done:** Created `ProofVisualizerScreen` component and `parse_grovedb_proof` Tauri IPC command. The Rust command accepts hex-encoded GroveDB proof bytes, deserializes via bincode (big-endian, no-limit config matching the egui implementation), and returns the proof's string representation. The frontend screen follows the same pattern as ContractVisualizerScreen: HexInput with auto-format detection (hex/base64/CSV), debounced parsing (300ms), MonospaceOutput for proof text display, error alert with dismiss button, and ToolPageLayout wrapper. Updated route from placeholder to real component. Added bincode dependency to src-tauri/Cargo.toml. Regenerated TypeScript bindings. Updated mock-ipc and e2e-mock-ipc with new command. Updated bindings test count (181→182).

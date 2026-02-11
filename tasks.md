@@ -1164,7 +1164,7 @@
   - [x] **10.6b** Add React Error Boundary component wrapping the route outlet (P1) — Catch render errors with a user-friendly fallback UI (error message, reload button). Prevents full app crash.
   - [x] **10.6c** Add loading spinners to TokenOperationForm-based screens (P1) — Add `isSubmitting` state to `TokenOperationForm` with `Loader2` spinner in submit button and disabled fields during submission. Affects ~12 token operation screens.
   - [x] **10.6d** Standardize error handling: add `toastError()` to screens with silent failures (P2) — Wrap IPC calls in try/catch with `toastError()` in: AddressBalanceScreen, GroupActionsScreen, ContactDetailsScreen, ContactInfoEditorScreen, ProfileSearchScreen, and remaining tool screens.
-  - [ ] **10.6e** Add empty states to secondary list views (P3) — Ensure TokenViewClaimsScreen, GroupActionsScreen results, and DocumentQueryScreen results show `EmptyState` component when lists are empty.
+  - [x] **10.6e** Add empty states to secondary list views (P3) — Ensure TokenViewClaimsScreen, GroupActionsScreen results, and DocumentQueryScreen results show `EmptyState` component when lists are empty.
 
 - [ ] **10.7 [REVIEW] Final comprehensive review** (P0)
   The ultimate quality gate before considering the migration complete:
@@ -1186,7 +1186,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 205 |
-| Remaining | 2 |
+| Completed | 206 |
+| Remaining | 1 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

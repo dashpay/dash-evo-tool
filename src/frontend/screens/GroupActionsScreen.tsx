@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { EmptyState } from "@/components/feedback";
 import {
   Select,
   SelectContent,
@@ -433,13 +434,11 @@ export function GroupActionsScreen() {
           {status.type === "fetched" && (
             <>
               {status.actions.length === 0 ? (
-                <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
-                  <Users className="h-8 w-8" />
-                  <p className="text-sm">
-                    No active group actions found for this contract and
-                    identity.
-                  </p>
-                </div>
+                <EmptyState
+                  icon={Users}
+                  title="No Group Actions"
+                  description="No active group actions found for this contract and identity."
+                />
               ) : (
                 <>
                   {/* Search filter */}
@@ -518,16 +517,21 @@ export function GroupActionsScreen() {
 
           {/* Idle hint */}
           {status.type === "idle" && canFetch && (
-            <p className="text-sm text-muted-foreground text-center py-4">
-              Select a contract and identity above, then click "Fetch Group
-              Actions" to see pending actions that need your signature.
-            </p>
+            <EmptyState
+              icon={Search}
+              title="Fetch Group Actions"
+              description='Select a contract and identity above, then click "Fetch Group Actions" to see pending actions that need your signature.'
+              className="py-8"
+            />
           )}
 
           {status.type === "idle" && !canFetch && (
-            <p className="text-sm text-muted-foreground text-center py-4">
-              Select a contract with tokens and an identity to get started.
-            </p>
+            <EmptyState
+              icon={Users}
+              title="Group Actions"
+              description="Select a contract with tokens and an identity to get started."
+              className="py-8"
+            />
           )}
         </div>
       </Island>

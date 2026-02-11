@@ -10,6 +10,7 @@ import {
 import { commands, events } from "@/bindings";
 import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/feedback";
 import { formatTokenBalance } from "@/components/token/MyTokensTable";
 import { toastError } from "@/lib/toastError";
 
@@ -373,42 +374,25 @@ export function TokenViewClaimsScreen() {
 
       {/* ── Empty state ───────────────────────────────────────────── */}
       {fetchStatus === "done" && claims.length === 0 && (
-        <div
-          className="flex flex-col items-center justify-center py-12 text-center"
-          data-testid="claims-empty"
-        >
-          <div className="rounded-full bg-muted p-4 mb-4">
-            <Inbox className="h-8 w-8 text-muted-foreground" />
-          </div>
-          <h3 className="text-lg font-medium">No Claims Found</h3>
-          <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-            No token claims have been recorded for this identity and token.
-          </p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="mt-4"
-            onClick={handleClaim}
-          >
-            <Gift className="h-4 w-4 mr-1" />
-            Claim Tokens
-          </Button>
+        <div data-testid="claims-empty">
+          <EmptyState
+            icon={Inbox}
+            title="No Claims Found"
+            description="No token claims have been recorded for this identity and token."
+            actionLabel="Claim Tokens"
+            onAction={handleClaim}
+          />
         </div>
       )}
 
       {/* ── Initial state ─────────────────────────────────────────── */}
       {fetchStatus === "idle" && claims.length === 0 && (
-        <div
-          className="flex flex-col items-center justify-center py-12 text-center"
-          data-testid="claims-initial"
-        >
-          <div className="rounded-full bg-muted p-4 mb-4">
-            <Inbox className="h-8 w-8 text-muted-foreground" />
-          </div>
-          <p className="text-sm text-muted-foreground max-w-sm">
-            Click &ldquo;Fetch Claims&rdquo; to load token claim history
-            from the platform.
-          </p>
+        <div data-testid="claims-initial">
+          <EmptyState
+            icon={Inbox}
+            title="Token Claims"
+            description='Click "Fetch Claims" to load token claim history from the platform.'
+          />
         </div>
       )}
 

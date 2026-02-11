@@ -237,7 +237,7 @@ describe("DocumentQueryScreen", () => {
     });
     renderWithProviders(<DocumentQueryScreen />);
     expect(screen.getByTestId("no-documents")).toBeInTheDocument();
-    expect(screen.getByText("No documents found.")).toBeInTheDocument();
+    expect(screen.getByText("No Documents Found")).toBeInTheDocument();
   });
 
   it("renders document results in JSON mode", () => {

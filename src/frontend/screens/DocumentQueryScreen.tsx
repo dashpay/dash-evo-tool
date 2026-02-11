@@ -15,6 +15,8 @@ import {
   Loader2,
   SlidersHorizontal,
   X,
+  FileQuestion,
+  Filter,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -655,14 +657,24 @@ export function DocumentQueryScreen() {
             )}
 
             {queryStatus === "complete" && documents.length === 0 && (
-              <div className="text-center py-8 text-sm text-muted-foreground" data-testid="no-documents">
-                No documents found.
+              <div data-testid="no-documents">
+                <EmptyState
+                  icon={FileQuestion}
+                  title="No Documents Found"
+                  description="The query returned no results. Try a different document type or query."
+                />
               </div>
             )}
 
             {queryStatus === "complete" && filteredDocuments.length === 0 && documents.length > 0 && (
-              <div className="text-center py-8 text-sm text-muted-foreground" data-testid="no-filtered-documents">
-                No documents match your filter.
+              <div data-testid="no-filtered-documents">
+                <EmptyState
+                  icon={Filter}
+                  title="No Matches"
+                  description="No documents match your filter. Try adjusting the search term."
+                  actionLabel="Clear Filter"
+                  onAction={() => setSearchFilter("")}
+                />
               </div>
             )}
 

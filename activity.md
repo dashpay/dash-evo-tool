@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 152 — 2026-02-11
+**Task:** 10.6e Add empty states to secondary list views
+**What was done:** Replaced custom inline empty state markup with the standardized `EmptyState` component in three screens: TokenViewClaimsScreen (idle + done states), GroupActionsScreen (fetched empty + idle hints), and DocumentQueryScreen (complete empty + filtered no-match). Added contextual icons (Inbox, Users, Search, FileQuestion, Filter) and actionable buttons where appropriate (Claim Tokens, Clear Filter). Updated one test assertion in DocumentQueryScreen.test.tsx to match new title text. All 4487 tests pass, typecheck clean.
+**Files changed:** src/frontend/screens/TokenViewClaimsScreen.tsx, src/frontend/screens/GroupActionsScreen.tsx, src/frontend/screens/DocumentQueryScreen.tsx, src/frontend/screens/DocumentQueryScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 0 new tests (1 test assertion updated)
+**Sub-tasks created:** 0
+
 ## Run 191 — 2026-02-11
 **Task:** 10.6d Standardize error handling: add toastError() to screens with silent failures
 **What was done:** Added `toastError()` calls to 12 screens that previously only displayed errors in inline UI banners without toast notifications. Screens updated: GroupActionsScreen (4 error paths: parse failure, task error event, IPC result error, catch), ContactDetailsScreen (2: save catch, refresh catch), ContactInfoEditorScreen (1: save catch), ProfileSearchScreen (1: useEffect on searchError from store), ContractVisualizerScreen (1: catch), DocumentVisualizerScreen (1: catch), ProofVisualizerScreen (1: catch), TransitionVisualizerScreen (5: parse catch, broadcast event error, broadcast result error, broadcast catch, contract fetch error/catch), ProofLogScreen (3: fetch result error, fetch catch, detail parse catch), GroveSTARKScreen (5: generate result error, generate catch, verify parse catch, verify result error, verify catch), MasternodeListDiffScreen (4: file load error, file load catch, task error event, action result error, action catch). AddressBalanceScreen already had toastError() — no changes needed. All 4487 tests pass, typecheck clean.

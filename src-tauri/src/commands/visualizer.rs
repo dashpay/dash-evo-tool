@@ -9,10 +9,12 @@ use crate::state::AppState;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
+use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use dash_sdk::platform::{DataContract, Document, Identifier};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use specta::Type;
 use std::sync::Arc;
 
@@ -70,6 +72,24 @@ pub struct ParseGrovedbProofInput {
 pub struct ParseGrovedbProofOutput {
     /// Human-readable string representation of the proof structure.
     pub text: String,
+}
+
+/// Input for parsing a serialized state transition.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseStateTransitionInput {
+    /// Hex-encoded state transition bytes.
+    pub hex_data: String,
+}
+
+/// Output from successfully parsing a state transition.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseStateTransitionOutput {
+    /// Pretty-printed JSON representation of the state transition.
+    pub json: String,
+    /// Contract IDs detected in the state transition (Base58-encoded strings).
+    pub detected_contract_ids: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +201,77 @@ pub fn parse_grovedb_proof(
     Ok(ParseGrovedbProofOutput {
         text: proof.to_string(),
     })
+}
+
+/// Parse hex-encoded bytes into a StateTransition and return pretty-printed JSON
+/// plus any detected contract IDs.
+///
+/// Uses the same bincode deserialization as `broadcast_state_transition`.
+/// After deserializing, recursively scans the JSON for objects matching
+/// `{ "type": "singleContract", "id": "<base58>" }` to extract contract references.
+#[tauri::command]
+#[specta::specta]
+pub fn parse_state_transition(
+    input: ParseStateTransitionInput,
+) -> Result<ParseStateTransitionOutput, String> {
+    let bytes = hex::decode(&input.hex_data).map_err(|e| format!("Invalid hex data: {e}"))?;
+
+    if bytes.is_empty() {
+        return Err("No data provided".into());
+    }
+
+    let config = dash_sdk::dpp::bincode::config::standard()
+        .with_big_endian()
+        .with_no_limit();
+
+    let (st, _): (StateTransition, _) =
+        dash_sdk::dpp::bincode::decode_from_slice(&bytes, config)
+            .map_err(|e| format!("Failed to parse state transition: {e}"))?;
+
+    let json = serde_json::to_string_pretty(&st)
+        .map_err(|e| format!("Failed to serialize to JSON: {e}"))?;
+
+    // Extract contract IDs by scanning JSON for { "type": "singleContract", "id": "..." }
+    let detected_contract_ids = match serde_json::from_str::<Value>(&json) {
+        Ok(value) => {
+            let mut ids = Vec::new();
+            extract_contract_ids(&value, &mut ids);
+            ids.dedup();
+            ids
+        }
+        Err(_) => Vec::new(),
+    };
+
+    Ok(ParseStateTransitionOutput {
+        json,
+        detected_contract_ids,
+    })
+}
+
+/// Recursively search a JSON value for contract ID references.
+///
+/// Looks for objects with shape `{ "type": "singleContract", "id": "<base58>" }`.
+fn extract_contract_ids(value: &Value, ids: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            if let (Some(Value::String(type_str)), Some(Value::String(id))) =
+                (map.get("type"), map.get("id"))
+            {
+                if type_str == "singleContract" {
+                    ids.push(id.clone());
+                }
+            }
+            for val in map.values() {
+                extract_contract_ids(val, ids);
+            }
+        }
+        Value::Array(arr) => {
+            for val in arr {
+                extract_contract_ids(val, ids);
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -311,5 +402,115 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Deserialization error"));
+    }
+
+    // --- State transition ---
+
+    #[test]
+    fn parse_state_transition_input_serializes() {
+        let input = ParseStateTransitionInput {
+            hex_data: "cafebabe".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"hexData\":\"cafebabe\""));
+    }
+
+    #[test]
+    fn parse_state_transition_input_deserializes() {
+        let json = r#"{"hexData":"aabb"}"#;
+        let input: ParseStateTransitionInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.hex_data, "aabb");
+    }
+
+    #[test]
+    fn parse_state_transition_output_serializes() {
+        let output = ParseStateTransitionOutput {
+            json: "{\"test\": true}".into(),
+            detected_contract_ids: vec!["abc123".into(), "def456".into()],
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("\"json\""));
+        assert!(json.contains("\"detectedContractIds\""));
+        assert!(json.contains("\"abc123\""));
+        assert!(json.contains("\"def456\""));
+    }
+
+    #[test]
+    fn parse_state_transition_output_deserializes() {
+        let json = r#"{"json":"{\"x\":1}","detectedContractIds":["id1"]}"#;
+        let output: ParseStateTransitionOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.json, "{\"x\":1}");
+        assert_eq!(output.detected_contract_ids, vec!["id1"]);
+    }
+
+    #[test]
+    fn parse_state_transition_rejects_empty() {
+        let result = parse_state_transition(ParseStateTransitionInput {
+            hex_data: String::new(),
+        });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "No data provided");
+    }
+
+    #[test]
+    fn parse_state_transition_rejects_invalid_hex() {
+        let result = parse_state_transition(ParseStateTransitionInput {
+            hex_data: "xyz".into(),
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid hex data"));
+    }
+
+    #[test]
+    fn parse_state_transition_rejects_invalid_bincode() {
+        let result = parse_state_transition(ParseStateTransitionInput {
+            hex_data: "deadbeef".into(),
+        });
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Failed to parse state transition"));
+    }
+
+    // --- extract_contract_ids ---
+
+    #[test]
+    fn extract_contract_ids_finds_single_contract() {
+        let json: Value = serde_json::from_str(
+            r#"{"dataContract": {"contractBounds": {"type": "singleContract", "id": "ABC123"}}}"#,
+        )
+        .unwrap();
+        let mut ids = Vec::new();
+        extract_contract_ids(&json, &mut ids);
+        assert_eq!(ids, vec!["ABC123"]);
+    }
+
+    #[test]
+    fn extract_contract_ids_finds_multiple_contracts() {
+        let json: Value = serde_json::from_str(
+            r#"{"a": {"type": "singleContract", "id": "ID1"}, "b": [{"type": "singleContract", "id": "ID2"}]}"#,
+        )
+        .unwrap();
+        let mut ids = Vec::new();
+        extract_contract_ids(&json, &mut ids);
+        ids.sort();
+        assert_eq!(ids, vec!["ID1", "ID2"]);
+    }
+
+    #[test]
+    fn extract_contract_ids_ignores_non_single_contract() {
+        let json: Value =
+            serde_json::from_str(r#"{"type": "multiContract", "id": "SHOULD_NOT_MATCH"}"#).unwrap();
+        let mut ids = Vec::new();
+        extract_contract_ids(&json, &mut ids);
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn extract_contract_ids_empty_json() {
+        let json: Value = serde_json::from_str("{}").unwrap();
+        let mut ids = Vec::new();
+        extract_contract_ids(&json, &mut ids);
+        assert!(ids.is_empty());
     }
 }

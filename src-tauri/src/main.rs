@@ -281,6 +281,8 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::dashpay::dashpay_db_save_contact_private_info,
             commands::dashpay::dashpay_db_set_contact_hidden,
             commands::dashpay::dashpay_db_save_avatar_bytes,
+            commands::dashpay::dashpay_generate_auto_accept_proof,
+            commands::dashpay::dashpay_parse_auto_accept_proof,
             // Contested resource / DPNS commands
             commands::contested::contested_query_dpns_contests,
             commands::contested::contested_vote_on_dpns_names,
@@ -294,6 +296,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::visualizer::parse_data_contract,
             commands::visualizer::parse_document,
             commands::visualizer::parse_grovedb_proof,
+            commands::visualizer::parse_state_transition,
             // Platform info commands
             commands::platform_info::platform_current_epoch_info,
             commands::platform_info::platform_total_credits,

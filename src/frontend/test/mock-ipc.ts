@@ -177,6 +177,8 @@ export type CommandName =
   | "dashpaySearchProfiles"
   | "dashpaySendContactRequest"
   | "dashpaySendContactRequestWithProof"
+  | "dashpayGenerateAutoAcceptProof"
+  | "dashpayParseAutoAcceptProof"
   | "dashpayAcceptContactRequest"
   | "dashpayRejectContactRequest"
   | "dashpayLoadPaymentHistory"
@@ -205,6 +207,7 @@ export type CommandName =
   | "parseDataContract"
   | "parseDocument"
   | "parseGrovedbProof"
+  | "parseStateTransition"
   // Platform Info
   | "platformCurrentEpochInfo"
   | "platformTotalCredits"
@@ -478,6 +481,18 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     dashpaySearchProfiles: dispatchOk("dashpaySearchProfiles"),
     dashpaySendContactRequest: dispatchOk("dashpaySendContactRequest"),
     dashpaySendContactRequestWithProof: dispatchOk("dashpaySendContactRequestWithProof"),
+    dashpayGenerateAutoAcceptProof: resolvesOk("dashpayGenerateAutoAcceptProof", {
+      qrString: "dash:?di=test&dapk=test",
+      identityId: "test",
+      accountReference: 0,
+      expiresAt: Math.floor(Date.now() / 1000) + 86400,
+    }),
+    dashpayParseAutoAcceptProof: resolvesOk("dashpayParseAutoAcceptProof", {
+      identityId: "test",
+      proofKeyHex: "aa".repeat(32),
+      accountReference: 0,
+      expiresAt: Math.floor(Date.now() / 1000) + 86400,
+    }),
     dashpayAcceptContactRequest: dispatchOk("dashpayAcceptContactRequest"),
     dashpayRejectContactRequest: dispatchOk("dashpayRejectContactRequest"),
     dashpayLoadPaymentHistory: dispatchOk("dashpayLoadPaymentHistory"),
@@ -512,6 +527,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     parseDataContract: resolvesOk("parseDataContract", { json: "{}", id: "" }),
     parseDocument: resolvesOk("parseDocument", { json: "{}" }),
     parseGrovedbProof: resolvesOk("parseGrovedbProof", { text: "" }),
+    parseStateTransition: resolvesOk("parseStateTransition", { json: "{}", detectedContractIds: [] }),
 
     // -- Platform Info --
     platformCurrentEpochInfo: resolves("platformCurrentEpochInfo", { taskId: "mock-task-id" }),

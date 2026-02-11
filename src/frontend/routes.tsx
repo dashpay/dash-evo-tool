@@ -30,6 +30,7 @@ import { AddressBalanceScreen } from "@/screens/AddressBalanceScreen";
 import { ContractVisualizerScreen } from "@/screens/ContractVisualizerScreen";
 import { DocumentVisualizerScreen } from "@/screens/DocumentVisualizerScreen";
 import { ProofVisualizerScreen } from "@/screens/ProofVisualizerScreen";
+import { TransitionVisualizerScreen } from "@/screens/TransitionVisualizerScreen";
 import { DocumentQueryScreen } from "@/screens/DocumentQueryScreen";
 import { AddContractsScreen } from "@/screens/AddContractsScreen";
 import { RegisterContractScreen } from "@/screens/RegisterContractScreen";
@@ -63,6 +64,8 @@ import { ContactInfoEditorScreen } from "@/screens/ContactInfoEditorScreen";
 import { SendPaymentScreen } from "@/screens/SendPaymentScreen";
 import { PaymentHistoryScreen } from "@/screens/PaymentHistoryScreen";
 import { ProfileSearchScreen } from "@/screens/ProfileSearchScreen";
+import { QRCodeGeneratorScreen } from "@/screens/QRCodeGeneratorScreen";
+import { QRScannerScreen } from "@/screens/QRScannerScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -212,6 +215,18 @@ const dashpaySendPaymentRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/send-payment/$contactId",
   component: SendPaymentWrapper,
+});
+
+const dashpayQrGeneratorRoute = createRoute({
+  getParentRoute: () => dashpayRoute,
+  path: "/qr-generator",
+  component: QRCodeGeneratorScreen,
+});
+
+const dashpayQrScannerRoute = createRoute({
+  getParentRoute: () => dashpayRoute,
+  path: "/qr-scanner",
+  component: QRScannerScreen,
 });
 
 const identitiesRoute = createRoute({
@@ -505,7 +520,7 @@ const toolsProofLogRoute = createRoute({
 const toolsTransitionRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/transition-visualizer",
-  component: () => <PlaceholderScreen title="Transition Visualizer" />,
+  component: TransitionVisualizerScreen,
 });
 
 const toolsDocumentRoute = createRoute({
@@ -566,6 +581,8 @@ const routeTree = rootRoute.addChildren([
       dashpayContactProfileRoute,
       dashpayContactInfoEditorRoute,
       dashpaySendPaymentRoute,
+      dashpayQrGeneratorRoute,
+      dashpayQrScannerRoute,
     ]),
     identitiesRoute,
     contractsRoute.addChildren([

@@ -1661,6 +1661,28 @@ async dashpayDbSaveAvatarBytes(identityId: string, avatarBytes: number[] | null)
 }
 },
 /**
+ * Generate a QR auto-accept proof for sharing.
+ */
+async dashpayGenerateAutoAcceptProof(input: GenerateAutoAcceptProofInput) : Promise<Result<AutoAcceptProofResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_generate_auto_accept_proof", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Parse a QR code string into auto-accept proof data.
+ */
+async dashpayParseAutoAcceptProof(input: ParseAutoAcceptProofInput) : Promise<Result<ParsedAutoAcceptProofResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("dashpay_parse_auto_accept_proof", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Query all contested DPNS names and vote contenders.
  */
 async contestedQueryDpnsContests() : Promise<DispatchTaskResponse> {
@@ -1771,6 +1793,22 @@ async parseDocument(input: ParseDocumentInput) : Promise<Result<ParseDocumentOut
 async parseGrovedbProof(input: ParseGrovedbProofInput) : Promise<Result<ParseGrovedbProofOutput, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("parse_grovedb_proof", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Parse hex-encoded bytes into a StateTransition and return pretty-printed JSON
+ * plus any detected contract IDs.
+ *
+ * Uses the same bincode deserialization as `broadcast_state_transition`.
+ * After deserializing, recursively scans the JSON for objects matching
+ * `{ "type": "singleContract", "id": "<base58>" }` to extract contract references.
+ */
+async parseStateTransition(input: ParseStateTransitionInput) : Promise<Result<ParseStateTransitionOutput, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("parse_state_transition", { input }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2187,6 +2225,10 @@ export type AssetLockProofDetailsDto =
  * Chain Lock proof.
  */
 { type: "chainLock"; coreChainLockedHeight: number; outPointTxid: string; outPointVout: number }
+/**
+ * Result of QR auto-accept proof generation.
+ */
+export type AutoAcceptProofResult = { qrString: string; identityId: string; accountReference: number; expiresAt: number }
 /**
  * Input for broadcasting (creating) a document.
  */
@@ -2701,6 +2743,10 @@ destinationAddress: string;
  */
 amount: number | null }
 /**
+ * Input for generating a QR auto-accept proof.
+ */
+export type GenerateAutoAcceptProofInput = { identityId: string; accountIndex: number; validityHours: number }
+/**
  * Input for generating a GroveSTARK proof.
  */
 export type GenerateGroveStarkProofInput = { identityId: string; contractId: string; documentType: string; documentId: string; keyId: number; privateKeyHex: string; publicKeyHex: string }
@@ -3006,6 +3052,10 @@ field: string;
  */
 direction: string }
 /**
+ * Input for parsing a QR code string.
+ */
+export type ParseAutoAcceptProofInput = { qrData: string }
+/**
  * Input for parsing a serialized data contract.
  */
 export type ParseDataContractInput = {
@@ -3061,6 +3111,30 @@ export type ParseGrovedbProofOutput = {
  * Human-readable string representation of the proof structure.
  */
 text: string }
+/**
+ * Input for parsing a serialized state transition.
+ */
+export type ParseStateTransitionInput = {
+/**
+ * Hex-encoded state transition bytes.
+ */
+hexData: string }
+/**
+ * Output from successfully parsing a state transition.
+ */
+export type ParseStateTransitionOutput = {
+/**
+ * Pretty-printed JSON representation of the state transition.
+ */
+json: string;
+/**
+ * Contract IDs detected in the state transition (Base58-encoded strings).
+ */
+detectedContractIds: string[] }
+/**
+ * Parsed QR auto-accept proof data.
+ */
+export type ParsedAutoAcceptProofResult = { identityId: string; proofKeyHex: string; accountReference: number; expiresAt: number }
 /**
  * Input for pausing tokens.
  */

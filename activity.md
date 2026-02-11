@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 160 — 2026-02-11
+**Task:** 10.6 [META] Final UX polish and edge case review
+**What was done:** Comprehensive audit of all ~57 screens across 7 dimensions: loading states, error handling, empty states, destructive action confirmations, form validation, responsive design, and animations. Used 6 parallel exploration agents to audit the entire codebase. Grade: B+. Core screens (Wallets, Identities, Contacts, DPNS) are production-quality. Main gaps: 3 send screens lack confirmation dialogs (P0), no React Error Boundary (P1), ~12 token screens lack loading spinners (P1), ~25 screens have minimal error handling (P2). Wrote detailed findings document and produced 5 actionable fix sub-tasks.
+**Files changed:** ralph/docs/phase10-ux-polish-audit.md (new), tasks.md, activity.md
+**Tests added:** 0 (META task — research only)
+**Sub-tasks created:** 5 (10.6a–10.6e)
+
 ## Run 152 — 2026-02-11
 **Task:** 10.5 Performance optimization and bundle size
 **What was done:** Measured bundle (2.0MB JS, within 2MB target). Added virtual scrolling via @tanstack/react-virtual to address and transaction tables in HdWalletDetail (activates for lists >50 items, falls back to standard rendering for smaller lists to maintain jsdom testability). Wrapped 4 key list item components with React.memo (HdWalletCard, SingleKeyWalletCard, ContactCard, IdentityCard). Converted 20 full Zustand store subscriptions to individual selectors across 15 production files (walletStore + identityStore), reducing unnecessary re-renders when unrelated store fields change. Updated 20 test files to support the selector-based mock pattern.

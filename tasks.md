@@ -1146,7 +1146,7 @@
 
   > **Optimizations (Run 152):** Bundle: 2.0MB JS (within target). Added virtual scrolling (threshold >50 rows) for address/transaction tables in HdWalletDetail. Added React.memo to 4 key list item components (HdWalletCard, SingleKeyWalletCard, ContactCard, IdentityCard). Converted 20 full Zustand store subscriptions to individual selectors across 15 files, reducing unnecessary re-renders. Updated 20 test files to support selector-based mocks.
 
-- [ ] **10.6 [META] Final UX polish and edge case review** (P1)
+- [x] **10.6 [META] Final UX polish and edge case review** (P1)
   Review the complete app for polish:
   - Consistent loading states everywhere
   - Error handling for all failure modes (network down, invalid input, permission denied, etc.)
@@ -1156,6 +1156,15 @@
   - Responsive behavior at common window sizes
   - Animation and transitions (subtle, professional)
   Produce fix/polish tasks.
+
+  > **Audit Findings (Run 160):** Grade B+. Core screens solid. 5 fix tasks produced. Details: [ralph/docs/phase10-ux-polish-audit.md](ralph/docs/phase10-ux-polish-audit.md)
+
+  **Sub-tasks produced:**
+  - [ ] **10.6a** Add confirmation dialogs to SendPaymentScreen, SendScreen, and SingleKeySendScreen (P0) — Show recipient, amount, and estimated fee before broadcasting. Use existing `ConfirmationDialog` component.
+  - [ ] **10.6b** Add React Error Boundary component wrapping the route outlet (P1) — Catch render errors with a user-friendly fallback UI (error message, reload button). Prevents full app crash.
+  - [ ] **10.6c** Add loading spinners to TokenOperationForm-based screens (P1) — Add `isSubmitting` state to `TokenOperationForm` with `Loader2` spinner in submit button and disabled fields during submission. Affects ~12 token operation screens.
+  - [ ] **10.6d** Standardize error handling: add `toastError()` to screens with silent failures (P2) — Wrap IPC calls in try/catch with `toastError()` in: AddressBalanceScreen, GroupActionsScreen, ContactDetailsScreen, ContactInfoEditorScreen, ProfileSearchScreen, and remaining tool screens.
+  - [ ] **10.6e** Add empty states to secondary list views (P3) — Ensure TokenViewClaimsScreen, GroupActionsScreen results, and DocumentQueryScreen results show `EmptyState` component when lists are empty.
 
 - [ ] **10.7 [REVIEW] Final comprehensive review** (P0)
   The ultimate quality gate before considering the migration complete:
@@ -1177,7 +1186,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 200 |
-| Remaining | 2 |
+| Completed | 201 |
+| Remaining | 6 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

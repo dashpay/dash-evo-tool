@@ -599,10 +599,11 @@ describe("ContactsListScreen", () => {
       setupWithContacts();
       renderWithProviders(<ContactsListScreen />);
       await user.click(screen.getByText("Requests"));
-      expect(screen.getByText("No Contact Requests")).toBeInTheDocument();
+      // New ContactRequests component shows Incoming/Outgoing sub-tabs
+      expect(screen.getByText("No Incoming Requests")).toBeInTheDocument();
     });
 
-    it("shows incoming requests", async () => {
+    it("shows incoming request cards", async () => {
       const user = userEvent.setup();
       setupWithContacts();
       useDashPayStore.setState({
@@ -610,10 +611,10 @@ describe("ContactsListScreen", () => {
       });
       renderWithProviders(<ContactsListScreen />);
       await user.click(screen.getByText("Requests"));
-      expect(screen.getByText("Incoming (1)")).toBeInTheDocument();
+      expect(screen.getByTestId("incoming-request-card")).toBeInTheDocument();
     });
 
-    it("shows outgoing requests", async () => {
+    it("shows outgoing request cards via Outgoing sub-tab", async () => {
       const user = userEvent.setup();
       setupWithContacts();
       useDashPayStore.setState({
@@ -629,7 +630,8 @@ describe("ContactsListScreen", () => {
       });
       renderWithProviders(<ContactsListScreen />);
       await user.click(screen.getByText("Requests"));
-      expect(screen.getByText("Outgoing (1)")).toBeInTheDocument();
+      await user.click(screen.getByText("Outgoing"));
+      expect(screen.getByTestId("outgoing-request-card")).toBeInTheDocument();
     });
 
     it("shows request account label", async () => {
@@ -653,8 +655,9 @@ describe("ContactsListScreen", () => {
       });
       renderWithProviders(<ContactsListScreen />);
       await user.click(screen.getByText("Requests"));
+      await user.click(screen.getByText("Outgoing"));
       expect(
-        screen.getByText("Cannot be cancelled"),
+        screen.getByText("Cannot be cancelled once sent"),
       ).toBeInTheDocument();
     });
 

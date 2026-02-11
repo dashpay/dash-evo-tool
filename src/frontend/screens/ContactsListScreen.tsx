@@ -13,6 +13,7 @@ import {
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { LoadingSpinner } from "@/components/feedback/LoadingSpinner";
+import { ContactRequests } from "@/components/dashpay/ContactRequests";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -27,10 +28,7 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { useDashPayStore } from "@/stores/dashpayStore";
-import type {
-  StoredContactDto,
-  StoredContactRequestDto,
-} from "@/bindings";
+import type { StoredContactDto } from "@/bindings";
 import type { ContactFilter, ContactSortField } from "@/stores/dashpayStore";
 
 // ─── Filter / Sort labels ────────────────────────────────────────────
@@ -53,11 +51,6 @@ const SORT_LABELS: Record<ContactSortField, string> = {
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────
-
-function truncateId(id: string, chars = 8): string {
-  if (id.length <= chars * 2 + 3) return id;
-  return `${id.slice(0, chars)}...${id.slice(-chars)}`;
-}
 
 function getContactDisplayName(contact: StoredContactDto): string {
   return (
@@ -254,105 +247,8 @@ function ContactCard({
   );
 }
 
-// ─── Requests Tab ────────────────────────────────────────────────────
-
-function RequestsTab() {
-  const incomingRequests = useDashPayStore((s) => s.incomingRequests);
-  const outgoingRequests = useDashPayStore((s) => s.outgoingRequests);
-  const requestsLoading = useDashPayStore((s) => s.requestsLoading);
-
-  if (requestsLoading) {
-    return (
-      <div className="flex-1 flex items-center justify-center py-12">
-        <LoadingSpinner size="lg" label="Loading requests..." />
-      </div>
-    );
-  }
-
-  if (incomingRequests.length === 0 && outgoingRequests.length === 0) {
-    return (
-      <EmptyState
-        icon={Users}
-        title="No Contact Requests"
-        description="You don't have any pending contact requests."
-      />
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* Incoming requests */}
-      {incomingRequests.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="text-sm font-medium text-muted-foreground">
-            Incoming ({incomingRequests.length})
-          </h3>
-          {incomingRequests.map((req) => (
-            <RequestCard key={req.id} request={req} direction="incoming" />
-          ))}
-        </div>
-      )}
-
-      {/* Outgoing requests */}
-      {outgoingRequests.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="text-sm font-medium text-muted-foreground">
-            Outgoing ({outgoingRequests.length})
-          </h3>
-          {outgoingRequests.map((req) => (
-            <RequestCard key={req.id} request={req} direction="outgoing" />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function RequestCard({
-  request,
-  direction,
-}: {
-  request: StoredContactRequestDto;
-  direction: "incoming" | "outgoing";
-}) {
-  const displayId =
-    direction === "incoming"
-      ? request.fromIdentityId
-      : request.toIdentityId;
-  const displayName =
-    direction === "incoming"
-      ? request.toUsername || truncateId(request.fromIdentityId)
-      : request.toUsername || truncateId(request.toIdentityId);
-
-  return (
-    <div className="flex items-center gap-4 rounded-lg border bg-card p-4">
-      <div className="shrink-0 h-10 w-10 rounded-full bg-muted flex items-center justify-center">
-        <User className="h-5 w-5 text-muted-foreground" />
-      </div>
-      <div className="flex-1 min-w-0 space-y-0.5">
-        <p className="text-sm font-medium truncate">{displayName}</p>
-        <p className="text-xs text-muted-foreground font-mono truncate">
-          {displayId}
-        </p>
-        {request.accountLabel && (
-          <p className="text-xs text-muted-foreground">
-            Account: {request.accountLabel}
-          </p>
-        )}
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <Badge variant="outline" className="text-xs">
-          {request.status}
-        </Badge>
-        {direction === "outgoing" && (
-          <span className="text-xs text-muted-foreground italic">
-            Cannot be cancelled
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
+// ─── Re-export ContactRequests (inline) ──────────────────────────────
+// The full ContactRequests component is in components/dashpay/ContactRequests.tsx
 
 // ─── ContactsListScreen ──────────────────────────────────────────────
 
@@ -519,7 +415,7 @@ export function ContactsListScreen() {
 
       {/* Tab content */}
       {activeTab === "requests" ? (
-        <RequestsTab />
+        <ContactRequests onAddContact={handleAddContact} />
       ) : (
         <ContactsTabContent
           contacts={contacts}

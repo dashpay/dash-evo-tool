@@ -918,7 +918,7 @@
     Reference: `contacts_list.rs` (1212 lines)
     Write component tests for search/filter/sort logic. Write Playwright test.
 
-  - [ ] **8.2e Implement ContactRequests with accept/reject flows** (P2)
+  - [x] **8.2e Implement ContactRequests with accept/reject flows** (P2)
     Build the contact requests component (embedded in Contacts tab):
     - Two sub-tabs: Incoming / Outgoing
     - Incoming cards: avatar placeholder, display name/username/truncated ID, account label, timestamp, Accept/Reject buttons

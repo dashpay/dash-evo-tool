@@ -67,6 +67,7 @@ import { PaymentHistoryScreen } from "@/screens/PaymentHistoryScreen";
 import { ProfileSearchScreen } from "@/screens/ProfileSearchScreen";
 import { QRCodeGeneratorScreen } from "@/screens/QRCodeGeneratorScreen";
 import { QRScannerScreen } from "@/screens/QRScannerScreen";
+import { GroveSTARKScreen } from "@/screens/GroveSTARKScreen";
 
 // Placeholder screen components — each renders a simple page for now,
 // to be replaced with full implementations in later phases.
@@ -551,7 +552,7 @@ const toolsContractRoute = createRoute({
 const toolsGroveStarkRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/grovestark",
-  component: () => <PlaceholderScreen title="GroveSTARK" />,
+  component: GroveSTARKScreen,
 });
 
 const toolsAddressBalanceRoute = createRoute({

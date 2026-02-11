@@ -8,6 +8,7 @@ use dash_evo_tool::backend_task::grovestark::GroveSTARKTask;
 use dash_evo_tool::backend_task::mnlist::MnListTask;
 use dash_evo_tool::backend_task::system_task::SystemTask;
 use dash_evo_tool::backend_task::BackendTask;
+use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
 use dash_evo_tool::model::settings::ThemeMode;
 
 use serde::{Deserialize, Serialize};
@@ -90,6 +91,9 @@ pub struct FetchDiffsChainInput {
 }
 
 /// Input for generating a GroveSTARK proof.
+///
+/// The private and public keys are resolved on the backend from the identity
+/// and key ID, so the frontend never handles raw private key material.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateGroveStarkProofInput {
@@ -98,8 +102,6 @@ pub struct GenerateGroveStarkProofInput {
     pub document_type: String,
     pub document_id: String,
     pub key_id: u32,
-    pub private_key_hex: String,
-    pub public_key_hex: String,
 }
 
 /// Input for verifying a GroveSTARK proof.
@@ -296,6 +298,9 @@ pub fn mnlist_fetch_diffs_chain(
 // ---------------------------------------------------------------------------
 
 /// Generate a GroveSTARK proof.
+///
+/// Resolves the private and public keys from the identity on the backend,
+/// keeping key material off the frontend.
 #[tauri::command]
 #[specta::specta]
 pub fn grovestark_generate_proof(
@@ -303,8 +308,65 @@ pub fn grovestark_generate_proof(
     state: tauri::State<'_, Arc<AppState>>,
     input: GenerateGroveStarkProofInput,
 ) -> Result<DispatchTaskResponse, String> {
-    let private_key = parse_32_bytes(&input.private_key_hex, "private key")?;
-    let public_key = parse_32_bytes(&input.public_key_hex, "public key")?;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::identity::KeyType;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+    let ctx = state.current_context();
+
+    // Load qualified identities and find the one matching the input identity_id
+    let qualified_identities = ctx
+        .load_local_qualified_identities()
+        .map_err(|e| format!("Failed to load identities: {e}"))?;
+
+    let qualified_identity = qualified_identities
+        .iter()
+        .find(|qi| qi.identity.id().to_string(Encoding::Base58) == input.identity_id)
+        .ok_or_else(|| format!("Identity not found: {}", input.identity_id))?;
+
+    // Verify the key exists and is EdDSA
+    let _identity_key = qualified_identity
+        .identity
+        .public_keys()
+        .iter()
+        .find(|(_, k)| k.id() == input.key_id)
+        .map(|(_, k)| k)
+        .ok_or_else(|| format!("Key {} not found on identity", input.key_id))?;
+
+    if _identity_key.key_type() != KeyType::EDDSA_25519_HASH160 {
+        return Err(format!(
+            "Key {} is not EdDSA (EDDSA_25519_HASH160). Got {:?}",
+            input.key_id,
+            _identity_key.key_type()
+        ));
+    }
+
+    // Resolve the private key from the qualified identity
+    let wallet_vec: Vec<_> = ctx
+        .loaded_wallets()
+        .into_iter()
+        .map(|(_, arc)| arc)
+        .collect();
+
+    let private_key = qualified_identity
+        .private_keys
+        .get_resolve(
+            &(PrivateKeyTarget::PrivateKeyOnMainIdentity, input.key_id),
+            &wallet_vec,
+            ctx.network(),
+        )
+        .map_err(|e| format!("Failed to resolve private key: {e}"))?
+        .map(|(_, bytes)| bytes)
+        .ok_or_else(|| "Private key not found in storage".to_string())?;
+
+    // Derive the public key from the private key using ed25519-dalek
+    let public_key = {
+        use ed25519_dalek::SigningKey;
+        let signing_key = SigningKey::from_bytes(&private_key);
+        *signing_key.verifying_key().as_bytes()
+    };
+
     let task = BackendTask::GroveSTARKTask(GroveSTARKTask::GenerateProof {
         identity_id: input.identity_id,
         contract_id: input.contract_id,
@@ -477,8 +539,6 @@ mod tests {
             document_type: "note".into(),
             document_id: "ghi".into(),
             key_id: 1,
-            private_key_hex: "aa".repeat(32),
-            public_key_hex: "bb".repeat(32),
         };
         let json = serde_json::to_string(&input).unwrap();
         assert!(json.contains("\"identityId\":\"abc\""));

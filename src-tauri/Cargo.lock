@@ -2137,6 +2137,7 @@ dependencies = [
  "dash-evo-tool",
  "dash-sdk",
  "directories",
+ "ed25519-dalek",
  "hex",
  "rand 0.8.5",
  "serde",

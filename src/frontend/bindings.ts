@@ -1954,6 +1954,9 @@ async mnlistFetchDiffsChain(input: FetchDiffsChainInput) : Promise<Result<Dispat
 },
 /**
  * Generate a GroveSTARK proof.
+ *
+ * Resolves the private and public keys from the identity on the backend,
+ * keeping key material off the frontend.
  */
 async grovestarkGenerateProof(input: GenerateGroveStarkProofInput) : Promise<Result<DispatchTaskResponse, string>> {
     try {
@@ -2776,8 +2779,11 @@ amount: number | null }
 export type GenerateAutoAcceptProofInput = { identityId: string; accountIndex: number; validityHours: number }
 /**
  * Input for generating a GroveSTARK proof.
+ *
+ * The private and public keys are resolved on the backend from the identity
+ * and key ID, so the frontend never handles raw private key material.
  */
-export type GenerateGroveStarkProofInput = { identityId: string; contractId: string; documentType: string; documentId: string; keyId: number; privateKeyHex: string; publicKeyHex: string }
+export type GenerateGroveStarkProofInput = { identityId: string; contractId: string; documentType: string; documentId: string; keyId: number }
 /**
  * Input for generating a receive address.
  */

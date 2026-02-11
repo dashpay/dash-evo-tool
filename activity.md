@@ -1,5 +1,19 @@
 # Activity Log
 
+## Run 179 — 2026-02-10
+**Task:** 9.1k — Implement GroveSTARK screen — Verify mode
+**What was done:** Replaced the Verify mode placeholder with a full implementation: multiline textarea for proof input (supports Base64-encoded JSON and raw JSON), client-side proof parsing with validation (checks proof, public_inputs, metadata fields), IPC dispatch to `grovestarkVerifyProof` with structured hex-encoded fields, verifying spinner with elapsed time, green "PROOF IS VALID" card with details grid (Verified At, Document Exists, Key Control, Contract, Security Level) and copy result button, red "PROOF IS INVALID" card with error reason and collapsible technical details, parse error handling with dismissible alerts, and Verify Another/Try Another reset buttons.
+**Files changed:** src/frontend/screens/GroveSTARKScreen.tsx, src/frontend/screens/GroveSTARKScreen.test.tsx, tasks.md, activity.md
+**Tests added:** 11 new tests (31 total) covering verify mode rendering, textarea input, parse errors (invalid data, missing fields), error dismissal, IPC call with correct params from JSON and Base64, verifying spinner, IPC failure handling, state preservation across mode switches, monospace font
+**Sub-tasks created:** 0
+
+## Run 178 — 2026-02-10
+**Task:** 9.1j — Implement GroveSTARK screen — Generate mode
+**What was done:** Implemented full GroveSTARK Generate mode screen with 3-step form (identity selector filtered to EdDSA keys, contract selector excluding system contracts, document ID input), mode toggle (Generate/Verify), research warning banner, green checkmarks for completed steps, generating spinner with elapsed time, success/error states, and copy proof button. Modified the Tauri `grovestark_generate_proof` command to resolve private/public keys on the backend (removing `privateKeyHex`/`publicKeyHex` from the input DTO) for better security. Regenerated TypeScript bindings. Replaced the placeholder route with the real screen component.
+**Files changed:** src-tauri/src/commands/system.rs, src-tauri/Cargo.toml, src/frontend/bindings.ts, src/frontend/screens/GroveSTARKScreen.tsx (new), src/frontend/screens/GroveSTARKScreen.test.tsx (new), src/frontend/routes.tsx, tasks.md, activity.md
+**Tests added:** 20 component tests covering rendering, identity/contract filtering, step progression, key reset on identity change, generate button enablement, IPC call params, spinner state, error display/dismiss, mode toggle, state preservation
+**Sub-tasks created:** 0
+
 ## Run 177 — 2026-02-10
 **Task:** Fix Playwright E2E mock IPC initialization failure (critical)
 **What was done:** Fixed root cause of ALL Playwright E2E integration tests failing with `waitForInit` timeout. The `webServer.env` in `playwright.config.ts` was set without spreading `process.env`, so the Vite dev server child process lost all parent environment variables (PATH, HOME, etc.) and the `VITE_E2E_MOCK=true` value. Fix: added `...process.env` spread to the `env` object. Also fixed one E2E test (`shows no-identity empty state`) that expected "No Identity Selected" from the search screen but the DashPay layout blocks child routes when no identities exist, showing "No Identities Loaded" instead. Result: 384 E2E integration tests pass (0 failures), 4343 component tests pass.

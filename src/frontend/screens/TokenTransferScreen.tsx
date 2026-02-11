@@ -67,6 +67,7 @@ export function TokenTransferScreen() {
           contractId: tokenContext.contractId,
           tokenPosition: tokenContext.tokenPosition,
           keyId: params.keyId,
+          publicNote: params.publicNote,
         },
         recipientId,
         amount,

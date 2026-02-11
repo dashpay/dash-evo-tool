@@ -151,7 +151,7 @@ export function GroupActionsScreen() {
   // Auto-select first identity if only one
   const effectiveIdentityId = useMemo(() => {
     if (selectedIdentityId) return selectedIdentityId;
-    if (identities.length === 1) return identities[0].id;
+    if (identities.length === 1) return identities[0]!.id;
     return "";
   }, [selectedIdentityId, identities]);
 
@@ -297,7 +297,7 @@ export function GroupActionsScreen() {
       <PageHeader
         title="Group Actions"
         breadcrumbs={[
-          { label: "Contracts", href: "/contracts" },
+          { label: "Contracts" },
           { label: "Group Actions" },
         ]}
         actions={
@@ -564,8 +564,8 @@ function parseGroupActions(
     const entries = Object.entries(p);
     if (
       entries.length > 0 &&
-      typeof entries[0][1] === "object" &&
-      entries[0][1] !== null
+      typeof entries[0]![1] === "object" &&
+      entries[0]![1] !== null
     ) {
       return entries.map(([, v]) => normalizeGroupAction(v));
     }

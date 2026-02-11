@@ -194,7 +194,7 @@ export function RegisterDpnsNameScreen({
     if (manualKeyId !== null && signingKeys.some((k) => k.keyId === manualKeyId)) {
       return manualKeyId;
     }
-    return signingKeys[0].keyId;
+    return signingKeys[0]?.keyId ?? null;
   }, [signingKeys, manualKeyId]);
 
   const validation = useMemo(

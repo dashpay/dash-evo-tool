@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { commands, events } from "../bindings";
 import type {
   IdentityTokenIdentifierDto,
+  JsonValue,
   TaskResultEvent,
 } from "../bindings";
 
@@ -368,7 +369,7 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
   saveTokenLocally: async (tokenInfoJson: unknown) => {
     set({ fetching: true, error: null });
     try {
-      const result = await commands.tokenSaveLocally({ tokenInfoJson });
+      const result = await commands.tokenSaveLocally({ tokenInfoJson: tokenInfoJson as JsonValue });
       if (result.status === "ok") {
         return result.data.taskId;
       }
@@ -440,7 +441,7 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
     // Reorder the tokenId list
     const reorderedIds = [...tokenIds];
     const [moved] = reorderedIds.splice(oldIndex, 1);
-    reorderedIds.splice(newIndex, 0, moved);
+    reorderedIds.splice(newIndex, 0, moved ?? "");
 
     // Rebuild token entries array in new group order
     const byTokenId = new Map<string, TokenEntry[]>();

@@ -414,6 +414,7 @@ export function TokenSetPriceScreen() {
           contractId: tokenContext.contractId,
           tokenPosition: tokenContext.tokenPosition,
           keyId: params.keyId,
+          publicNote: params.publicNote,
         },
         tokenPricingSchedule: schedule as null,
         groupInfo: groupInfo as unknown as null,

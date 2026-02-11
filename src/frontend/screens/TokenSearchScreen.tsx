@@ -161,7 +161,7 @@ export function TokenSearchScreen() {
     // Re-search from appropriate cursor
     const keyword = useTokenStore.getState().searchKeyword;
     const cursor =
-      prevCursors.length > 0 ? prevCursors[prevCursors.length - 1] : null;
+      prevCursors.length > 0 ? prevCursors[prevCursors.length - 1] ?? null : null;
     if (keyword) {
       commands.tokenQueryDescriptionsByKeyword({
         keyword,

@@ -617,7 +617,9 @@ export function SendScreen() {
             throw new Error(
               "Core to Platform currently only supports a single destination",
             );
-          const duffs = duffsFromDashString(advOutputs[0].amount);
+          const firstOutput = advOutputs[0];
+          if (!firstOutput) throw new Error("No output specified");
+          const duffs = duffsFromDashString(firstOutput.amount);
           if (!duffs || duffs <= 0) throw new Error("Invalid amount");
 
           const feeDeductFromOutput =
@@ -627,7 +629,7 @@ export function SendScreen() {
           const result = await commands.walletFundPlatformAddressFromUtxos({
             walletSeedHash: seedHash,
             amount: duffs,
-            destination: advOutputs[0].address.trim(),
+            destination: firstOutput.address.trim(),
             feeDeductFromOutput,
           });
           if (result.status === "error") throw new Error(result.error);
@@ -680,11 +682,13 @@ export function SendScreen() {
             throw new Error(
               "Withdrawal currently only supports a single Core destination",
             );
+          const coreOutput = advOutputs[0];
+          if (!coreOutput) throw new Error("No output specified");
 
           const result = await commands.walletWithdrawFromPlatformAddress({
             walletSeedHash: seedHash,
             inputs,
-            outputScriptHex: advOutputs[0].address.trim(),
+            outputScriptHex: coreOutput.address.trim(),
             coreFeePerByte: 1,
             feePayerIndex: 0,
           });
@@ -1303,7 +1307,7 @@ export function SendScreen() {
                   const withdrawalKeys = identity.keys.filter(
                     (k) => k.purpose === "transfer" || k.purpose === "authentication",
                   );
-                  if (withdrawalKeys.length > 0) {
+                  if (withdrawalKeys.length > 0 && withdrawalKeys[0]) {
                     setSelectedKeyId(withdrawalKeys[0].keyId);
                   }
                 }}

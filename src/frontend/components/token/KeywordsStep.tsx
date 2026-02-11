@@ -39,7 +39,7 @@ export function validateKeywords(state: KeywordsState): KeywordsValidation {
 
   // Validate each keyword
   for (let i = 0; i < state.keywords.length; i++) {
-    const keyword = state.keywords[i].trim();
+    const keyword = state.keywords[i]?.trim() ?? "";
     if (keyword.length < 3) {
       errors[`keyword_${i}`] = "Keyword must be at least 3 characters";
     } else if (keyword.length > 50) {
@@ -50,9 +50,9 @@ export function validateKeywords(state: KeywordsState): KeywordsValidation {
   // Duplicate check (case-insensitive)
   const seen = new Set<string>();
   for (let i = 0; i < state.keywords.length; i++) {
-    const lower = state.keywords[i].trim().toLowerCase();
+    const lower = state.keywords[i]?.trim().toLowerCase() ?? "";
     if (lower && seen.has(lower)) {
-      errors[`keyword_${i}_dup`] = `Duplicate keyword: "${state.keywords[i]}"`;
+      errors[`keyword_${i}_dup`] = `Duplicate keyword: "${state.keywords[i] ?? ""}"`;
     }
     if (lower) seen.add(lower);
   }

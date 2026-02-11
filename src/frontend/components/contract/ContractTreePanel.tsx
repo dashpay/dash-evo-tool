@@ -119,8 +119,9 @@ export function parseDocumentTypes(
               if (prop && typeof prop === "object" && !Array.isArray(prop)) {
                 const propObj = prop as Record<string, JsonValue>;
                 const entries = Object.entries(propObj);
-                if (entries.length > 0) {
-                  const [field, order] = entries[0];
+                const firstEntry = entries[0];
+                if (firstEntry) {
+                  const [field, order] = firstEntry;
                   idxProps.push({
                     field,
                     ascending: order === "asc",

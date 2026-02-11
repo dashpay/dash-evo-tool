@@ -80,7 +80,7 @@ function autoSelectKey(
       k.securityLevel === "CRITICAL",
   );
 
-  if (criticalAuthKeys.length > 0) return criticalAuthKeys[0].keyId;
+  if (criticalAuthKeys.length > 0) return criticalAuthKeys[0]!.keyId;
   return null;
 }
 
@@ -225,7 +225,7 @@ export function UpdateContractScreen() {
     if (rawIdentityId && identities.some((i) => i.id === rawIdentityId)) {
       return rawIdentityId;
     }
-    return identities.length > 0 ? identities[0].id : "";
+    return identities.length > 0 ? identities[0]!.id : "";
   }, [rawIdentityId, identities]);
 
   // Derived: selected identity
@@ -509,7 +509,7 @@ export function UpdateContractScreen() {
       <PageHeader
         title="Update Data Contract"
         breadcrumbs={[
-          { label: "Contracts", href: "/contracts" },
+          { label: "Contracts" },
           { label: "Update Contract" },
         ]}
         actions={

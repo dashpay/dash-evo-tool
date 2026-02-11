@@ -140,14 +140,14 @@ export function CreateAssetLockScreen() {
       .listen((event) => {
         if (taskId && event.payload.taskId === taskId) {
           // Extract TX ID from message if present
-          const msg = event.payload.message || "";
+          const msg = typeof event.payload.payload === "string" ? event.payload.payload : "";
           const txIdMatch = msg.match(/TX ID:\s*(\S+)/);
           const extractedTxId = txIdMatch ? txIdMatch[1] : null;
           setAssetLockTxId(extractedTxId ?? "created");
           setStep("success");
         } else if (step === "funding") {
           // Check for UTXO received event at our funding address
-          const msg = event.payload.message || "";
+          const msg = typeof event.payload.payload === "string" ? event.payload.payload : "";
           if (msg.includes("UTXO") || event.payload.resultType === "Core") {
             // Funds may have arrived — trigger asset lock creation
             handleCreateAssetLock();
@@ -210,7 +210,7 @@ export function CreateAssetLockScreen() {
         walletSeedHash: wallet.seedHash,
       });
       if (result.status === "ok") {
-        setFundingAddress(result.data);
+        setFundingAddress(result.data.taskId);
         setStep("funding");
       } else {
         setError(result.error);

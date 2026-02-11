@@ -224,12 +224,14 @@ export function validateBasicInfo(state: BasicInfoState): BasicInfoValidation {
 
   // Validate additional names
   for (let i = 1; i < state.names.length; i++) {
-    const name = state.names[i].singular.trim();
+    const entry = state.names[i];
+    if (!entry) continue;
+    const name = entry.singular.trim();
     if (name && (name.length < 3 || name.length > 50)) {
       errors[`tokenName_${i}`] =
         `Name must be between 3 and 50 characters`;
     }
-    const plural = state.names[i].plural.trim();
+    const plural = entry.plural.trim();
     if (plural && (plural.length < 3 || plural.length > 50)) {
       errors[`tokenPluralName_${i}`] =
         `Plural name must be between 3 and 50 characters`;
@@ -239,7 +241,8 @@ export function validateBasicInfo(state: BasicInfoState): BasicInfoValidation {
   // Duplicate language check
   const usedLangs = new Set<string>();
   for (let i = 0; i < state.names.length; i++) {
-    const lang = state.names[i].languageCode;
+    const lang = state.names[i]?.languageCode;
+    if (!lang) continue;
     if (usedLangs.has(lang)) {
       errors[`language_${i}`] = "Duplicate language";
     }
@@ -749,7 +752,9 @@ export function BasicInfoStep({ state, onChange }: BasicInfoStepProps) {
       value: string,
     ) => {
       const newNames = [...state.names];
-      newNames[index] = { ...newNames[index], [field]: value };
+      const existing = newNames[index];
+      if (!existing) return;
+      newNames[index] = { ...existing, [field]: value };
       onChange({ ...state, names: newNames });
     },
     [state, onChange],
@@ -1187,7 +1192,8 @@ export function SimpleInfoForm({ state, onChange }: SimpleInfoFormProps) {
   const updateName = useCallback(
     (field: keyof TokenNameEntry, value: string) => {
       const newNames = [...state.names];
-      newNames[0] = { ...newNames[0], [field]: value };
+      const existing = newNames[0] ?? { singular: "", plural: "", languageCode: "en" };
+      newNames[0] = { ...existing, [field]: value };
       onChange({ ...state, names: newNames });
     },
     [state, onChange],

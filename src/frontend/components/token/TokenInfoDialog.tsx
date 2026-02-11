@@ -237,7 +237,7 @@ export function TokenInfoDialog({
           </CollapsibleSection>
 
           {/* Token Configuration (JSON schema) */}
-          {token.configurationJson && (
+          {!!token.configurationJson && (
             <CollapsibleSection title="Token Configuration" defaultOpen={false}>
               <p className="text-sm text-muted-foreground mb-2">
                 Full token configuration schema:
@@ -253,7 +253,7 @@ export function TokenInfoDialog({
           )}
 
           {/* View Schema button (when configurationJson is available) */}
-          {token.configurationJson && !showSchema && (
+          {!!token.configurationJson && !showSchema && (
             <div className="flex justify-center">
               {/* The schema is shown inline in the collapsible above;
                   this button opens a full expanded view */}

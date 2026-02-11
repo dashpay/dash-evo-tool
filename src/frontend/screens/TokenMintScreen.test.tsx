@@ -241,6 +241,7 @@ describe("TokenMintScreen", () => {
           contractId: "contract111122223333",
           tokenPosition: 0,
           keyId: 3,
+          publicNote: null,
         },
         amount: "1000",
         recipientId: null,

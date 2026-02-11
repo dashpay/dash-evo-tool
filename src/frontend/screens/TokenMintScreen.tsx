@@ -200,6 +200,7 @@ export function TokenMintScreen() {
           contractId: tokenContext.contractId,
           tokenPosition: tokenContext.tokenPosition,
           keyId: params.keyId,
+          publicNote: params.publicNote,
         },
         amount,
         recipientId: recipientId || null,

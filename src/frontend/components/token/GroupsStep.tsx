@@ -64,6 +64,7 @@ export function validateGroups(state: GroupsState): GroupsValidation {
 
   for (let g = 0; g < state.groups.length; g++) {
     const group = state.groups[g];
+    if (!group) continue;
     const prefix = `group_${g}`;
 
     // Required power
@@ -82,6 +83,7 @@ export function validateGroups(state: GroupsState): GroupsValidation {
     // Members
     for (let m = 0; m < group.members.length; m++) {
       const member = group.members[m];
+      if (!member) continue;
       const mPrefix = `${prefix}.member_${m}`;
 
       // Identity ID
@@ -109,7 +111,9 @@ export function validateGroups(state: GroupsState): GroupsValidation {
     // Duplicate identity check within group
     const seen = new Set<string>();
     for (let m = 0; m < group.members.length; m++) {
-      const id = group.members[m].identityId.trim();
+      const member = group.members[m];
+      if (!member) continue;
+      const id = member.identityId.trim();
       if (id && seen.has(id)) {
         errors[`${prefix}.member_${m}.duplicate`] = "Duplicate identity in this group";
       }
@@ -176,7 +180,9 @@ export function GroupsStep({ state, onChange }: GroupsStepProps) {
   const updateGroup = useCallback(
     (index: number, update: Partial<GroupConfig>) => {
       const newGroups = [...state.groups];
-      newGroups[index] = { ...newGroups[index], ...update };
+      const existing = newGroups[index];
+      if (!existing) return;
+      newGroups[index] = { ...existing, ...update };
       onChange({ ...state, groups: newGroups });
     },
     [state, onChange],
@@ -185,7 +191,9 @@ export function GroupsStep({ state, onChange }: GroupsStepProps) {
   const toggleGroupExpanded = useCallback(
     (index: number) => {
       const newGroups = [...state.groups];
-      newGroups[index] = { ...newGroups[index], expanded: !newGroups[index].expanded };
+      const existing = newGroups[index];
+      if (!existing) return;
+      newGroups[index] = { ...existing, expanded: !existing.expanded };
       onChange({ ...state, groups: newGroups });
     },
     [state, onChange],
@@ -194,10 +202,12 @@ export function GroupsStep({ state, onChange }: GroupsStepProps) {
   const addMember = useCallback(
     (groupIndex: number) => {
       const newGroups = [...state.groups];
+      const existing = newGroups[groupIndex];
+      if (!existing) return;
       newGroups[groupIndex] = {
-        ...newGroups[groupIndex],
+        ...existing,
         members: [
-          ...newGroups[groupIndex].members,
+          ...existing.members,
           { identityId: "", power: "1" },
         ],
       };
@@ -209,9 +219,11 @@ export function GroupsStep({ state, onChange }: GroupsStepProps) {
   const removeMember = useCallback(
     (groupIndex: number, memberIndex: number) => {
       const newGroups = [...state.groups];
+      const existing = newGroups[groupIndex];
+      if (!existing) return;
       newGroups[groupIndex] = {
-        ...newGroups[groupIndex],
-        members: newGroups[groupIndex].members.filter((_, i) => i !== memberIndex),
+        ...existing,
+        members: existing.members.filter((_, i) => i !== memberIndex),
       };
       onChange({ ...state, groups: newGroups });
     },
@@ -221,9 +233,13 @@ export function GroupsStep({ state, onChange }: GroupsStepProps) {
   const updateMember = useCallback(
     (groupIndex: number, memberIndex: number, update: Partial<GroupMember>) => {
       const newGroups = [...state.groups];
-      const newMembers = [...newGroups[groupIndex].members];
-      newMembers[memberIndex] = { ...newMembers[memberIndex], ...update };
-      newGroups[groupIndex] = { ...newGroups[groupIndex], members: newMembers };
+      const existingGroup = newGroups[groupIndex];
+      if (!existingGroup) return;
+      const newMembers = [...existingGroup.members];
+      const existingMember = newMembers[memberIndex];
+      if (!existingMember) return;
+      newMembers[memberIndex] = { ...existingMember, ...update };
+      newGroups[groupIndex] = { ...existingGroup, members: newMembers };
       onChange({ ...state, groups: newGroups });
     },
     [state, onChange],

@@ -154,7 +154,7 @@ export function parseMinRelayFeeError(error: string): number | null {
   const afterLt = error.substring(ltPos + 1).trim();
   const digits = afterLt.match(/^(\d+)/);
   if (!digits) return null;
-  const requiredFee = parseInt(digits[1], 10);
+  const requiredFee = parseInt(digits[1] ?? "", 10);
   return isNaN(requiredFee) ? null : requiredFee;
 }
 
@@ -249,7 +249,7 @@ export function SingleKeySendScreen() {
           event.payload.taskId === sendStatus.taskId
         ) {
           pendingRequestRef.current = null;
-          const message = event.payload.message || "Transaction completed successfully!";
+          const message = "Transaction completed successfully!";
           setSendStatus({ state: "complete", message });
         }
       })
@@ -270,7 +270,7 @@ export function SingleKeySendScreen() {
           if (requiredFee !== null && pendingRequestRef.current) {
             // Extract estimated fee from the error (the number before '<')
             const match = event.payload.message.match(/(\d+)\s*</);
-            const estimatedFee = match ? parseInt(match[1], 10) : 0;
+            const estimatedFee = match ? parseInt(match[1] ?? "", 10) : 0;
             setFeeDialogEstimated(estimatedFee);
             setFeeDialogRequired(requiredFee);
             setFeeDialogOpen(true);
@@ -421,6 +421,7 @@ export function SingleKeySendScreen() {
 
     for (let i = 0; i < recipients.length; i++) {
       const r = recipients[i];
+      if (!r) continue;
       if (!r.address.trim()) {
         errors.push(`Recipient ${i + 1} has empty address`);
         continue;

@@ -360,7 +360,7 @@ describe("ProfileSearchScreen", () => {
       await user.click(screen.getByRole("button", { name: /view profile/i }));
       expect(mockNavigate).toHaveBeenCalledWith(
         expect.objectContaining({
-          to: "/app/dashpay/contact-details/$contactId/profile",
+          to: "/dashpay/contact-profile/$contactId",
           params: { contactId: IDENTITY_B },
         }),
       );
@@ -373,7 +373,7 @@ describe("ProfileSearchScreen", () => {
       await user.click(screen.getByRole("button", { name: /add contact/i }));
       expect(mockNavigate).toHaveBeenCalledWith(
         expect.objectContaining({
-          to: "/app/dashpay/add-contact",
+          to: "/dashpay/add-contact",
         }),
       );
     });

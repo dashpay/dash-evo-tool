@@ -288,10 +288,10 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
     if (index <= 0) return;
 
     const reordered = [...identities];
-    [reordered[index - 1], reordered[index]] = [
-      reordered[index],
-      reordered[index - 1],
-    ];
+    const a = reordered[index];
+    const b = reordered[index - 1];
+    if (!a || !b) return;
+    [reordered[index - 1], reordered[index]] = [a, b];
 
     set({ identities: reordered, useCustomOrder: true });
 
@@ -311,10 +311,10 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
     if (index < 0 || index >= identities.length - 1) return;
 
     const reordered = [...identities];
-    [reordered[index], reordered[index + 1]] = [
-      reordered[index + 1],
-      reordered[index],
-    ];
+    const a = reordered[index];
+    const b = reordered[index + 1];
+    if (!a || !b) return;
+    [reordered[index], reordered[index + 1]] = [b, a];
 
     set({ identities: reordered, useCustomOrder: true });
 
@@ -337,6 +337,7 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
 
     const reordered = [...identities];
     const [moved] = reordered.splice(oldIndex, 1);
+    if (!moved) return;
     reordered.splice(newIndex, 0, moved);
 
     set({ identities: reordered, useCustomOrder: true });

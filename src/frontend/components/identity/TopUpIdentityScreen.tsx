@@ -126,9 +126,9 @@ export function TopUpIdentityScreen({
           (w) => w.seedHash === identity.associatedWalletHashes[0],
         )
       ) {
-        return identity.associatedWalletHashes[0];
+        return identity.associatedWalletHashes[0] ?? "";
       }
-      return wallets.length > 0 ? wallets[0].seedHash : "";
+      return wallets.length > 0 ? wallets[0]?.seedHash ?? "" : "";
     },
   );
 

@@ -300,6 +300,7 @@ export function TokenPurchaseScreen() {
           contractId: tokenContext.contractId,
           tokenPosition: tokenContext.tokenPosition,
           keyId: params.keyId,
+          publicNote: params.publicNote,
         },
         amount: amountSmallestUnits,
         totalAgreedPrice: calculatedPriceCredits,

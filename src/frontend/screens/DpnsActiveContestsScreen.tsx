@@ -121,7 +121,7 @@ export function DpnsActiveContestsScreen() {
               voterId: entry.voterId,
               contestedName: sv.contestedName,
               choice: sv.choice,
-              scheduledTimestamp: Math.floor(entry.unixTimestamp / 1000),
+              unixTimestamp: Math.floor(entry.unixTimestamp / 1000),
               executedSuccessfully: false,
             })),
         );

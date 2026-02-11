@@ -140,7 +140,7 @@ function autoSelectKey(identity: QualifiedIdentityDto | null): number | null {
   if (criticalKey) return criticalKey.keyId;
   const mediumKey = authKeys.find((k) => k.securityLevel === "MEDIUM");
   if (mediumKey) return mediumKey.keyId;
-  return authKeys.length > 0 ? authKeys[0].keyId : null;
+  return authKeys.length > 0 ? authKeys[0]!.keyId : null;
 }
 
 /** Find the wallet associated with the selected identity. */
@@ -397,7 +397,7 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
     if (rawIdentityId && identities.some((i) => i.id === rawIdentityId)) {
       return rawIdentityId;
     }
-    return identities.length > 0 ? identities[0].id : "";
+    return identities.length > 0 ? identities[0]!.id : "";
   }, [rawIdentityId, identities]);
 
   const selectedIdentity = useMemo(
@@ -699,7 +699,7 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
         setSelectedContractDetail(result.data);
         // Auto-select first document type
         if (result.data && result.data.documentTypeNames.length > 0) {
-          setSelectedDocTypeName(result.data.documentTypeNames[0]);
+          setSelectedDocTypeName(result.data.documentTypeNames[0] ?? "");
         }
       }
     } catch {
@@ -1056,7 +1056,7 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
       <PageHeader
         title={ACTION_LABELS[actionType]}
         breadcrumbs={[
-          { label: "Contracts", href: "/contracts" },
+          { label: "Contracts" },
           { label: ACTION_LABELS[actionType] },
         ]}
         actions={

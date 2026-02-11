@@ -350,7 +350,7 @@ function ContractDetailView({
                     )}
                     Add to My Tokens
                   </Button>
-                  {token.configurationJson && (
+                  {!!token.configurationJson && (
                     <Button
                       variant="ghost"
                       size="sm"

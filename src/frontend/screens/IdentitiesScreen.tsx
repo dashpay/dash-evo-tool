@@ -481,7 +481,7 @@ export function IdentitiesScreen() {
         const result = await commands.identityTopUpFromPlatformAddresses({
           identityId: params.identityId,
           walletSeedHash: params.walletSeedHash,
-          outputs: params.outputs,
+          inputs: params.outputs,
         });
         if (result.status === "ok") {
           setTopUpStatus({ type: "success" });

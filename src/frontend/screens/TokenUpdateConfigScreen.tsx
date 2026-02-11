@@ -473,14 +473,11 @@ export function TokenUpdateConfigScreen() {
 
   // Group the options for the Select
   const groups = useMemo(() => {
-    const map = new Map<string, typeof CHANGE_ITEM_OPTIONS>();
+    const map = new Map<string, (typeof CHANGE_ITEM_OPTIONS)[number][]>();
     for (const opt of CHANGE_ITEM_OPTIONS) {
       const arr = map.get(opt.group) ?? [];
       arr.push(opt);
-      map.set(
-        opt.group,
-        arr as unknown as typeof CHANGE_ITEM_OPTIONS,
-      );
+      map.set(opt.group, arr);
     }
     return map;
   }, []);

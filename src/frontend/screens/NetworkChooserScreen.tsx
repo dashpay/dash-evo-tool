@@ -678,23 +678,20 @@ export function NetworkChooserScreen() {
                     size="sm"
                     onClick={async () => {
                       try {
-                        const result =
+                        const { path, error } =
                           await commands.settingsPickDashQtPath();
-                        if (result.status === "ok") {
-                          const { path, error } = result.data;
-                          if (path) {
-                            setDashQtPath(path);
-                            setDashQtPathError(null);
-                            await commands.settingsUpdateDashCore({
-                              customDashQtPath: path,
-                              overwriteDashConf,
-                            });
-                            toast.success("Dash-Qt path saved");
-                          } else if (error) {
-                            setDashQtPathError(error);
-                          }
-                          // If both null, user cancelled — do nothing
+                        if (path) {
+                          setDashQtPath(path);
+                          setDashQtPathError(null);
+                          await commands.settingsUpdateDashCore({
+                            customDashQtPath: path,
+                            overwriteDashConf,
+                          });
+                          toast.success("Dash-Qt path saved");
+                        } else if (error) {
+                          setDashQtPathError(error);
                         }
+                        // If both null, user cancelled — do nothing
                       } catch {
                         // Backend not available
                       }

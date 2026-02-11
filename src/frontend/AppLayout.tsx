@@ -70,10 +70,8 @@ export function AppLayout() {
   useEffect(() => {
     commands
       .contextIsDeveloperMode()
-      .then((result) => {
-        if (result.status === "ok") {
-          setDeveloperMode(result.data);
-        }
+      .then((isDev) => {
+        setDeveloperMode(isDev);
       })
       .catch(() => {
         // Not connected to backend
@@ -111,7 +109,7 @@ export function AppLayout() {
   );
 
   const handleConnectionClick = useCallback(() => {
-    commands.coreStartDashQt().catch(() => {
+    commands.coreStartDashQt({ dashQtPath: "", overwriteDashConf: false }).catch(() => {
       // Ignore errors (no Dash-Qt configured)
     });
   }, []);

@@ -73,7 +73,7 @@ function validateSeedPhrase(words: string[]): {
   if (!isValid) {
     // Check which word is invalid
     for (let i = 0; i < words.length; i++) {
-      const word = words[i].trim().toLowerCase();
+      const word = words[i]?.trim().toLowerCase() ?? "";
       if (!wordlist.includes(word)) {
         return {
           valid: false,
@@ -225,7 +225,7 @@ function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
             i < pastedWords.length && index + i < next.length;
             i++
           ) {
-            next[index + i] = pastedWords[i];
+            next[index + i] = pastedWords[i] ?? "";
           }
           return next;
         });

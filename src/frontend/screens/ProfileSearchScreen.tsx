@@ -86,7 +86,7 @@ export function ProfileSearchScreen() {
     (identityId: string) => {
       if (!selectedIdentityId) return;
       navigate({
-        to: "/app/dashpay/contact-details/$contactId/profile",
+        to: "/dashpay/contact-profile/$contactId",
         params: { contactId: identityId },
       });
     },
@@ -95,7 +95,7 @@ export function ProfileSearchScreen() {
 
   const handleAddContact = useCallback(
     (_identityId: string) => {
-      navigate({ to: "/app/dashpay/add-contact" });
+      navigate({ to: "/dashpay/add-contact" });
     },
     [navigate],
   );

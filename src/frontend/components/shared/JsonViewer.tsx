@@ -41,7 +41,7 @@ export function JsonViewer({
     parsedData = data;
   }
 
-  const shouldInitiallyExpand = (_level: number, _value: unknown, field: string | number) => {
+  const shouldInitiallyExpand = (_level: number, _value: unknown, field?: string) => {
     // Always expand root
     if (field === "") return true;
     if (!defaultExpanded) return false;

@@ -147,7 +147,7 @@ export function WithdrawScreen({
   const [addressError, setAddressError] = useState<string | null>(null);
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(() => {
     const keys = getWithdrawalKeys(identity);
-    return keys.length > 0 ? keys[0].keyId : null;
+    return keys.length > 0 ? keys[0]?.keyId ?? null : null;
   });
   const [showConfirmation, setShowConfirmation] = useState(false);
 

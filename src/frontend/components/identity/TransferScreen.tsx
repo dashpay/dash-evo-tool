@@ -150,7 +150,7 @@ export function TransferScreen({
   const [platformAddress, setPlatformAddress] = useState("");
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(() => {
     const keys = getTransferKeys(identity);
-    return keys.length > 0 ? keys[0].keyId : null;
+    return keys.length > 0 ? keys[0]?.keyId ?? null : null;
   });
   const [showConfirmation, setShowConfirmation] = useState(false);
 

@@ -220,6 +220,7 @@ describe("TokenBurnScreen", () => {
           contractId: "contract-burn-111222",
           tokenPosition: 0,
           keyId: 5,
+          publicNote: null,
         },
         amount: "5000",
         groupInfo: null,

@@ -144,6 +144,7 @@ function categoryLabel(category: AddressCategory): string {
 function extractIndex(derivationPath: string): number {
   const parts = derivationPath.split("/");
   const last = parts[parts.length - 1];
+  if (!last) return 0;
   return parseInt(last.replace("'", ""), 10) || 0;
 }
 
@@ -153,7 +154,7 @@ function getAccountLabel(derivationPath: string): string {
   if (category === "funds" || category === "change") {
     const match = derivationPath.match(/m\/44'\/5'\/(\d+)'/);
     if (match) {
-      const accountIndex = parseInt(match[1], 10);
+      const accountIndex = parseInt(match[1] ?? "", 10);
       return accountIndex === 0
         ? "Main Account"
         : `BIP44 Account #${accountIndex}`;

@@ -321,7 +321,7 @@ export function AddContractsScreen() {
       <PageHeader
         title="Add Contracts"
         breadcrumbs={[
-          { label: "Contracts", href: "/contracts" },
+          { label: "Contracts" },
           { label: "Add Contracts" },
         ]}
         actions={
@@ -366,7 +366,7 @@ export function AddContractsScreen() {
                       }}
                       placeholder="Hex or base58 identifier"
                       className="font-mono flex-1"
-                      disabled={status.type === "fetching"}
+                      disabled={(status as ScreenStatus).type === "fetching"}
                     />
                     {contractInputs.length > 1 && (
                       <Button

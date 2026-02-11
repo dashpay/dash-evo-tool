@@ -122,6 +122,7 @@ export function TokenBurnScreen() {
           contractId: tokenContext.contractId,
           tokenPosition: tokenContext.tokenPosition,
           keyId: params.keyId,
+          publicNote: params.publicNote,
         },
         amount,
         groupInfo: groupInfo as unknown as null,

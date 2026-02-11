@@ -554,8 +554,7 @@ describe("NetworkChooserScreen", () => {
 
   it("Browse button calls settingsPickDashQtPath and auto-saves on valid path", async () => {
     vi.mocked(commands.settingsPickDashQtPath).mockResolvedValue({
-      status: "ok",
-      data: { path: "/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt", error: null },
+      path: "/Applications/Dash-Qt.app/Contents/MacOS/Dash-Qt", error: null,
     });
 
     render(<NetworkChooserScreen />);
@@ -580,8 +579,7 @@ describe("NetworkChooserScreen", () => {
 
   it("Browse button shows error when invalid file is selected", async () => {
     vi.mocked(commands.settingsPickDashQtPath).mockResolvedValue({
-      status: "ok",
-      data: { path: null, error: "Invalid file: Please select a valid 'Dash-Qt or Dash-Qt.app'." },
+      path: null, error: "Invalid file: Please select a valid 'Dash-Qt or Dash-Qt.app'.",
     });
 
     render(<NetworkChooserScreen />);
@@ -602,8 +600,7 @@ describe("NetworkChooserScreen", () => {
 
   it("error can be dismissed", async () => {
     vi.mocked(commands.settingsPickDashQtPath).mockResolvedValue({
-      status: "ok",
-      data: { path: null, error: "Invalid file" },
+      path: null, error: "Invalid file",
     });
 
     render(<NetworkChooserScreen />);
@@ -629,8 +626,7 @@ describe("NetworkChooserScreen", () => {
 
   it("Browse does nothing when user cancels file dialog", async () => {
     vi.mocked(commands.settingsPickDashQtPath).mockResolvedValue({
-      status: "ok",
-      data: { path: null, error: null },
+      path: null, error: null,
     });
 
     render(<NetworkChooserScreen />);

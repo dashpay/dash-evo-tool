@@ -68,7 +68,7 @@ function getAvailableSecurityLevels(purpose: string): string[] {
 
 function getDefaultSecurityLevel(purpose: string): string {
   const levels = getAvailableSecurityLevels(purpose);
-  return levels[0];
+  return levels[0] ?? "";
 }
 
 // ─── Status ────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@ export function AddKeyDialog({
       setPurpose(newPurpose);
       const levels = getAvailableSecurityLevels(newPurpose);
       if (!levels.includes(securityLevel)) {
-        setSecurityLevel(levels[0]);
+        setSecurityLevel(levels[0] ?? "");
       }
     },
     [securityLevel],
@@ -566,7 +566,7 @@ export function AddKeyDialog({
 
       {/* Submit */}
       <div className="flex justify-end pt-2">
-        <Button onClick={handleSubmit} disabled={status.type === "submitting" || walletLocked}>
+        <Button onClick={handleSubmit} disabled={walletLocked}>
           <Plus className="mr-1.5 size-4" />
           Add Key
         </Button>

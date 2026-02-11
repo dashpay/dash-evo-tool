@@ -771,7 +771,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
           Array.isArray(payload.results)
         ) {
           set({
-            searchResults: payload.results as ProfileSearchResult[],
+            searchResults: payload.results as unknown as ProfileSearchResult[],
           });
         }
 

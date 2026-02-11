@@ -38,7 +38,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useDashPayStore } from "@/stores/dashpayStore";
 import { formatAmount } from "@/components/shared/AmountInput";
-import type { StoredPaymentDto, ContactPrivateInfoDto } from "@/bindings";
+import type { StoredPaymentDto, ContactPrivateInfoDto, StoredContactDto } from "@/bindings";
 
 // ─── Constants ────────────────────────────────────────────────────────
 

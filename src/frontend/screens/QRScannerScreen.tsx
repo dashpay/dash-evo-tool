@@ -12,7 +12,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
-import { WalletUnlockDialog } from "@/components/shared";
+import { WalletUnlockDialog, type WalletUnlockResult } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -192,9 +192,9 @@ export function QRScannerScreen() {
   }, [navigate]);
 
   const handleWalletUnlockResult = useCallback(
-    (result: { success: boolean }) => {
+    (result: WalletUnlockResult) => {
       setShowWalletUnlock(false);
-      if (result.success) {
+      if (result.status === "unlocked") {
         setError(null);
       }
     },

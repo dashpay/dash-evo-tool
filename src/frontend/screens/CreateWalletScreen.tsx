@@ -208,14 +208,14 @@ export function CreateWalletScreen() {
           step={2}
           label="Backup"
           active={step === "backup"}
-          completed={step === "protect" || step === "success"}
+          completed={step === "protect"}
         />
-        <StepConnector completed={step === "protect" || step === "success"} />
+        <StepConnector completed={step === "protect"} />
         <StepIndicator
           step={3}
           label="Protect"
           active={step === "protect"}
-          completed={step === "success"}
+          completed={false}
         />
       </div>
 

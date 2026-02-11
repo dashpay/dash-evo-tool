@@ -1131,7 +1131,7 @@
   - `npm run typecheck` was previously a no-op due to `tsconfig.json` `"files": []` pattern — noted for future fix
 
   **Sub-tasks produced (P2):**
-  - [ ] **10.4a** Fix 132 TypeScript strict-mode type errors revealed by `tsc -p tsconfig.app.json --noEmit`. Most are `noUncheckedIndexedAccess` issues (Object possibly undefined). Top files: GroupsStep.tsx (18), SingleKeySendScreen.tsx (7), identityStore.ts (5), TokenOperationForm.tsx (5). Fix errors and update `npm run typecheck` to use project-aware checking. (P2)
+  - [x] **10.4a** Fix 132 TypeScript strict-mode type errors revealed by `tsc -p tsconfig.app.json --noEmit`. Most are `noUncheckedIndexedAccess` issues (Object possibly undefined). Top files: GroupsStep.tsx (18), SingleKeySendScreen.tsx (7), identityStore.ts (5), TokenOperationForm.tsx (5). Fix errors and update `npm run typecheck` to use project-aware checking. (P2)
   - [ ] **10.4b** Add frontend code splitting to reduce main bundle size below 500 KB. Currently 1,549 KB (one chunk). Use dynamic `import()` for screen-level components and heavy libraries (react-json-view-lite, qrcode.react, token creator wizard). (P3)
 
 - [ ] **10.5 Performance optimization and bundle size** (P2)
@@ -1175,7 +1175,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 197 |
-| Remaining | 5 |
+| Completed | 198 |
+| Remaining | 4 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

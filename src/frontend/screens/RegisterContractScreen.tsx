@@ -145,7 +145,7 @@ function autoSelectKey(
   if (criticalKey) return criticalKey.keyId;
 
   // Fall back to any auth key
-  if (authKeys.length > 0) return authKeys[0].keyId;
+  if (authKeys.length > 0) return authKeys[0]!.keyId;
 
   return null;
 }
@@ -339,7 +339,7 @@ export function RegisterContractScreen() {
     if (rawIdentityId && identities.some((i) => i.id === rawIdentityId)) {
       return rawIdentityId;
     }
-    return identities.length > 0 ? identities[0].id : "";
+    return identities.length > 0 ? identities[0]!.id : "";
   }, [rawIdentityId, identities]);
 
   // Derived: selected identity
@@ -570,7 +570,7 @@ export function RegisterContractScreen() {
       <PageHeader
         title="Register Data Contract"
         breadcrumbs={[
-          { label: "Contracts", href: "/contracts" },
+          { label: "Contracts" },
           { label: "Register Contract" },
         ]}
         actions={

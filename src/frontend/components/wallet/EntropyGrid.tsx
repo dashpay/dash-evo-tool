@@ -27,7 +27,7 @@ function randomBytes(): Uint8Array {
 function getBit(bytes: Uint8Array, position: number): boolean {
   const byteIndex = Math.floor(position / 8);
   const bitIndex = position % 8;
-  return ((bytes[byteIndex] >> bitIndex) & 1) === 1;
+  return (((bytes[byteIndex] ?? 0) >> bitIndex) & 1) === 1;
 }
 
 /** Toggle bit at `position` (0-255) within a 32-byte array (XOR). */
@@ -35,7 +35,7 @@ function toggleBit(bytes: Uint8Array, position: number): Uint8Array {
   const result = new Uint8Array(bytes);
   const byteIndex = Math.floor(position / 8);
   const bitIndex = position % 8;
-  result[byteIndex] ^= 1 << bitIndex;
+  result[byteIndex] = (result[byteIndex] ?? 0) ^ (1 << bitIndex);
   return result;
 }
 
@@ -43,7 +43,7 @@ function toggleBit(bytes: Uint8Array, position: number): Uint8Array {
 function xorBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
   const result = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
-    result[i] = a[i] ^ b[i];
+    result[i] = (a[i] ?? 0) ^ (b[i] ?? 0);
   }
   return result;
 }

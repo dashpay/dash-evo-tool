@@ -1450,7 +1450,7 @@ export function MasternodeListDiffScreen() {
           if (!pendingTaskIds.current.has(taskId)) return;
           pendingTaskIds.current.delete(taskId);
 
-          const data = payload as MnListPayload;
+          const data = payload as unknown as MnListPayload;
           switch (data.type) {
             case "FetchedDiff":
               setFetchedDiffs((prev) => [

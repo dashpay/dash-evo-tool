@@ -223,7 +223,7 @@ describe("CreateAssetLockScreen", () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: "yGenerated123Address456",
+        status: "ok", data: { taskId: "yGenerated123Address456" },
       });
       render(<CreateAssetLockScreen />);
       await user.click(screen.getByText("Registration"));
@@ -238,7 +238,7 @@ describe("CreateAssetLockScreen", () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: "yGenerated123Address456",
+        status: "ok", data: { taskId: "yGenerated123Address456" },
       });
       render(<CreateAssetLockScreen />);
       await user.click(screen.getByText("Registration"));
@@ -253,7 +253,7 @@ describe("CreateAssetLockScreen", () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: "yGenerated123Address456",
+        status: "ok", data: { taskId: "yGenerated123Address456" },
       });
       render(<CreateAssetLockScreen />);
       await user.click(screen.getByText("Registration"));
@@ -268,7 +268,7 @@ describe("CreateAssetLockScreen", () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: "yGenerated123Address456",
+        status: "ok", data: { taskId: "yGenerated123Address456" },
       });
       render(<CreateAssetLockScreen />);
       await user.click(screen.getByText("Registration"));
@@ -300,7 +300,7 @@ describe("CreateAssetLockScreen", () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: "yGenerated123Address456",
+        status: "ok", data: { taskId: "yGenerated123Address456" },
       });
       vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
         status: "ok", data: { taskId: "task-lock-123" },
@@ -324,7 +324,7 @@ describe("CreateAssetLockScreen", () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: "yGenerated123Address456",
+        status: "ok", data: { taskId: "yGenerated123Address456" },
       });
       vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
         status: "ok", data: { taskId: "task-lock-123" },
@@ -344,7 +344,7 @@ describe("CreateAssetLockScreen", () => {
       const user = userEvent.setup();
       setupWallet();
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: "yGenerated123Address456",
+        status: "ok", data: { taskId: "yGenerated123Address456" },
       });
       vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
         status: "error", error: "Creation failed",

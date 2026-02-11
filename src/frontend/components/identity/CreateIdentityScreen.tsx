@@ -225,7 +225,7 @@ export function CreateIdentityScreen({
 
   const [selectedWalletSeedHash, setSelectedWalletSeedHash] = useState<
     string
-  >(() => (wallets.length > 0 ? wallets[0].seedHash : ""));
+  >(() => (wallets.length > 0 ? wallets[0]?.seedHash ?? "" : ""));
 
   const selectedWallet = useMemo(
     () => wallets.find((w) => w.seedHash === selectedWalletSeedHash) ?? null,
@@ -344,7 +344,7 @@ export function CreateIdentityScreen({
       availableFundingMethods.length > 0 &&
       !availableFundingMethods.some((m) => m.value === fundingMethod)
     ) {
-      setFundingMethod(availableFundingMethods[0].value);
+      setFundingMethod(availableFundingMethods[0]!.value);
     }
   }, [availableFundingMethods, fundingMethod]);
 

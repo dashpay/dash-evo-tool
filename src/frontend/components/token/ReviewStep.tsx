@@ -111,7 +111,7 @@ function findAssociatedWallet(
         seedHash: sk.keyHash,
         alias: sk.alias,
         usesPassword: sk.usesPassword,
-        passwordHint: sk.passwordHint,
+        passwordHint: null,
       };
     }
   }
@@ -129,7 +129,7 @@ function autoSelectKey(
   if (highKey) return highKey.keyId;
   const criticalKey = authKeys.find((k) => k.securityLevel === "CRITICAL");
   if (criticalKey) return criticalKey.keyId;
-  if (authKeys.length > 0) return authKeys[0].keyId;
+  if (authKeys.length > 0) return authKeys[0]?.keyId ?? null;
   return null;
 }
 
@@ -256,7 +256,7 @@ export function ReviewStep({
   const [rawKeyId, setRawKeyId] = useState<string>("");
 
   const selectedIdentity = useMemo(() => {
-    if (!rawIdentityId && identities.length > 0) return identities[0];
+    if (!rawIdentityId && identities.length > 0) return identities[0] ?? null;
     return identities.find((id) => id.id === rawIdentityId) ?? null;
   }, [rawIdentityId, identities]);
 
@@ -492,7 +492,7 @@ export function ReviewStep({
 
   // ── Derived state ────────────────────────────────────────────────────
   const basicInfoValid = simpleMode
-    ? (basicInfo.names[0]?.singular?.trim().length >= 3 && !!basicInfo.baseSupply.trim() && !!basicInfo.preset)
+    ? ((basicInfo.names[0]?.singular?.trim().length ?? 0) >= 3 && !!basicInfo.baseSupply.trim() && !!basicInfo.preset)
     : true; // In advanced mode, basicInfo was already validated at step 0
   const canCreate =
     !!selectedIdentityId && selectedKeyId !== null && !walletLocked && basicInfoValid;

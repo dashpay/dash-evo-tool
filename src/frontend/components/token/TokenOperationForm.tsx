@@ -198,7 +198,7 @@ function findAssociatedWallet(
         seedHash: sk.keyHash,
         alias: sk.alias,
         usesPassword: sk.usesPassword,
-        passwordHint: sk.passwordHint,
+        passwordHint: null,
       };
     }
   }
@@ -216,7 +216,7 @@ export function autoSelectKey(
   if (highKey) return highKey.keyId;
   const criticalKey = authKeys.find((k) => k.securityLevel === "CRITICAL");
   if (criticalKey) return criticalKey.keyId;
-  if (authKeys.length > 0) return authKeys[0].keyId;
+  if (authKeys.length > 0) return authKeys[0]?.keyId ?? null;
   return null;
 }
 
@@ -298,7 +298,7 @@ export function TokenOperationForm({
 
   const selectedIdentity = useMemo(() => {
     const id = rawIdentityId || tokenContext.identityId;
-    if (!id) return identities.length > 0 ? identities[0] : null;
+    if (!id) return identities.length > 0 ? (identities[0] ?? null) : null;
     return identities.find((i) => i.id === id) ?? null;
   }, [rawIdentityId, tokenContext.identityId, identities]);
 
@@ -960,8 +960,7 @@ export function TokenOperationForm({
         <WalletUnlockDialog
           open={walletUnlockOpen}
           onOpenChange={setWalletUnlockOpen}
-          seedHash={associatedWallet.seedHash}
-          walletAlias={associatedWallet.alias}
+          walletAlias={associatedWallet.alias ?? ""}
           passwordHint={associatedWallet.passwordHint}
           onResult={handleWalletUnlockResult}
           error={walletUnlockError}

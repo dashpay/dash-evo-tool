@@ -228,6 +228,7 @@ describe("TokenTransferScreen", () => {
           contractId: "contract111122223333",
           tokenPosition: 0,
           keyId: 1,
+          publicNote: null,
         },
         recipientId: "recipient-id-123",
         amount: "100",

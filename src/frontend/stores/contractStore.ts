@@ -3,6 +3,7 @@ import { commands, events } from "../bindings";
 import type {
   ContractSummaryDto,
   DataContractDto,
+  JsonValue,
   TaskResultEvent,
 } from "../bindings";
 
@@ -210,7 +211,7 @@ export const useContractStore = create<ContractStore>((set, get) => ({
     set({ fetching: true, error: null });
     try {
       const result = await commands.contractSave({
-        contractJson,
+        contractJson: contractJson as JsonValue,
         alias,
         insertTokens,
       });

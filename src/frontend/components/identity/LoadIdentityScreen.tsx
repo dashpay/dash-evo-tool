@@ -147,7 +147,7 @@ export function LoadIdentityScreen({
 
   // By wallet state
   const [walletSeedHash, setWalletSeedHash] = useState<string>(
-    wallets.length > 0 ? wallets[0].seedHash : "",
+    wallets.length > 0 ? wallets[0]?.seedHash ?? "" : "",
   );
   const [identityIndex, setIdentityIndex] = useState("0");
   const [walletSearchMode, setWalletSearchMode] = useState<
@@ -598,8 +598,8 @@ export function LoadIdentityScreen({
                 <Label>Wallet</Label>
                 {wallets.length === 1 ? (
                   <p className="text-sm text-muted-foreground">
-                    {wallets[0].alias?.trim() ||
-                      wallets[0].seedHash.slice(0, 10)}
+                    {wallets[0]?.alias?.trim() ||
+                      wallets[0]?.seedHash.slice(0, 10)}
                   </p>
                 ) : (
                   <Select

@@ -346,7 +346,7 @@ export function GroveSTARKScreen() {
             const payload = event.payload.payload;
             setGenerateStatus({
               type: "success",
-              proofBase64: payload ?? "Proof generated successfully",
+              proofBase64: (payload as string) ?? "Proof generated successfully",
             });
           }
 
@@ -618,7 +618,7 @@ export function GroveSTARKScreen() {
           <GenerateModeContent
             eddsaIdentities={eddsaIdentities}
             selectedIdentityId={selectedIdentityId}
-            selectedKey={selectedKey}
+            selectedKey={selectedKey ?? null}
             selectedKeyId={selectedKeyId}
             availableKeys={availableKeys}
             userContracts={userContracts}

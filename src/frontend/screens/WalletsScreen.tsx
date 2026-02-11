@@ -99,7 +99,7 @@ export function WalletsScreen() {
     commands
       .contextIsDeveloperMode()
       .then((result) => {
-        if (result.status === "ok") setIsDeveloperMode(result.data);
+        setIsDeveloperMode(result);
       })
       .catch(() => {});
   }, [loadWallets]);

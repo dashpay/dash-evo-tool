@@ -460,7 +460,9 @@ export function DistributionStep({ state, onChange }: DistributionStepProps) {
   const updateStepwiseEntry = useCallback(
     (index: number, field: keyof StepwiseEntry, value: string) => {
       const entries = [...state.perpetual.stepwiseEntries];
-      entries[index] = { ...entries[index], [field]: sanitizeU64(value) };
+      const existing = entries[index];
+      if (!existing) return;
+      entries[index] = { ...existing, [field]: sanitizeU64(value) };
       updatePerpetual({ stepwiseEntries: entries });
     },
     [state.perpetual.stepwiseEntries, updatePerpetual],
@@ -491,7 +493,9 @@ export function DistributionStep({ state, onChange }: DistributionStepProps) {
       if (field === "days" || field === "hours" || field === "minutes" || field === "amount") {
         sanitized = sanitizeU64(value);
       }
-      entries[index] = { ...entries[index], [field]: sanitized };
+      const existing = entries[index];
+      if (!existing) return;
+      entries[index] = { ...existing, [field]: sanitized };
       updatePreProgrammed({ entries });
     },
     [state.preProgrammed.entries, updatePreProgrammed],

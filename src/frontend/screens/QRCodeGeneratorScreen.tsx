@@ -14,7 +14,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { QRCodeSVG } from "qrcode.react";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
-import { WalletUnlockDialog } from "@/components/shared";
+import { WalletUnlockDialog, type WalletUnlockResult } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -189,9 +189,9 @@ export function QRCodeGeneratorScreen() {
   }, [navigate]);
 
   const handleWalletUnlockResult = useCallback(
-    (result: { success: boolean }) => {
+    (result: WalletUnlockResult) => {
       setShowWalletUnlock(false);
-      if (result.success) {
+      if (result.status === "unlocked") {
         setError(null);
       }
     },

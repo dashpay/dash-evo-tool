@@ -337,7 +337,7 @@ export function initE2EMockIPC() {
 
   // Set up the IPC mock handler with event support enabled
   mockIPC(
-    (cmd: string, args?: Record<string, unknown>) => {
+    (cmd, args) => {
       // Record call history (skip internal plugin commands)
       if (!cmd.startsWith("plugin:")) {
         if (!config.callHistory[cmd]) {

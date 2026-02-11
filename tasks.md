@@ -998,7 +998,7 @@
     Reference: `profile_search.rs` (382 lines)
     Write component tests. Write Playwright E2E test for search flow.
 
-  - [ ] **8.3f Implement QRCodeGenerator and QRScanner screens** (P2)
+  - [x] **8.3f Implement QRCodeGenerator and QRScanner screens** (P2)
     Build the QR code screens:
     - **QRCodeGenerator:** identity selector, account index input (advanced), validity hours input (1-720, advanced), wallet unlock, Generate button, QR image display (use qrcode.react), collapsible text data, Copy to clipboard, warnings
     - **QRScanner:** identity selector, QR data text input (paste), Parse button, parsed details (identity, account ref, expiration), wallet unlock, Add Contact button
@@ -1143,7 +1143,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 174 |
-| Remaining | 22 |
+| Completed | 175 |
+| Remaining | 21 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

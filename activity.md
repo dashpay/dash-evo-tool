@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 172 — 2026-02-10
+**Task:** 8.3f Implement QRCodeGenerator and QRScanner screens
+**What was done:** Both QR screens were already implemented with full functionality (identity selector, QR generation/parsing, Add Contact flow, expiration detection, success/error states, info dialogs). The missing feature from the egui version was wallet-locked detection — both egui screens check `wallet_needs_unlock()` and show a warning with "Unlock Wallet" button before allowing QR generation or contact addition. Added: wallet-locked detection to both screens using `associatedWallet.usesPassword`, warning banner with Lock icon and "Unlock Wallet" link button, generate/add-contact button disabling when wallet is locked. Refactored `walletAlias` computation to reuse the `associatedWallet` memo. Added 8 new component tests (5 for QRCodeGeneratorScreen, 3 for QRScannerScreen) covering wallet-locked warnings, button disabling, and unlock-button rendering.
+**Files changed:** src/frontend/screens/QRCodeGeneratorScreen.tsx, src/frontend/screens/QRCodeGeneratorScreen.test.tsx, src/frontend/screens/QRScannerScreen.tsx, src/frontend/screens/QRScannerScreen.test.tsx
+**Tests added:** 8 new tests (5 QRCodeGenerator wallet-locked tests + 3 QRScanner wallet-locked tests). Total: 4287 tests pass.
+**Sub-tasks created:** 0
+
 ## Run 171 — 2026-02-10
 **Task:** 8.3e Implement ProfileSearchScreen
 **What was done:** Created `ProfileSearchScreen` component for the DashPay profile search tab. Features: DPNS username prefix search with Enter key trigger, search/clear buttons, search results cards (username primary, display name, public message preview truncated at 60 chars, identity ID), per-result View Profile and Add Contact action buttons, loading spinner with "Searching..." label, "No Users Found" empty state after search with no results, info popup explaining profile search, no-identity-selected empty state, error display with alert role. Also: updated backend `task_dispatcher.rs` to serialize `ProfileSearchResults` in event payload (previously discarded), added `ProfileSearchResult` type and event handling to `dashpayStore.ts`, updated route from placeholder to real component, removed unused `DashPayPlaceholder` and `Island` import from routes.tsx. Wrote 7 Playwright E2E tests for search screen (heading, input, button states, tip text, no-identity state, info dialog).

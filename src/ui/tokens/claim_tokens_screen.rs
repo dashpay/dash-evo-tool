@@ -268,9 +268,8 @@ impl ScreenLike for ClaimTokensScreen {
             if amount > 0 {
                 self.status = ClaimTokensStatus::Complete;
             } else {
-                self.status = ClaimTokensStatus::ErrorMessage(
-                    "No tokens available to claim.".to_string(),
-                );
+                self.status =
+                    ClaimTokensStatus::ErrorMessage("No tokens available to claim.".to_string());
             }
         }
     }
@@ -293,13 +292,12 @@ impl ScreenLike for ClaimTokensScreen {
     }
 
     fn refresh(&mut self) {
-        if let Ok(all) = self.app_context.load_local_qualified_identities() {
-            if let Some(updated) = all
+        if let Ok(all) = self.app_context.load_local_qualified_identities()
+            && let Some(updated) = all
                 .into_iter()
                 .find(|id| id.identity.id() == self.identity.identity.id())
-            {
-                self.identity = updated;
-            }
+        {
+            self.identity = updated;
         }
     }
 
@@ -605,5 +603,9 @@ impl ScreenWithWalletUnlock for ClaimTokensScreen {
 
     fn error_message(&self) -> Option<&String> {
         self.error_message.as_ref()
+    }
+
+    fn app_context(&self) -> Arc<AppContext> {
+        self.app_context.clone()
     }
 }

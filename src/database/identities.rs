@@ -114,6 +114,39 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)] // May be used for caching remote identities from network queries
+    pub fn insert_remote_identity_if_not_exists(
+        &self,
+        identifier: &Identifier,
+        qualified_identity: Option<&QualifiedIdentity>,
+        app_context: &AppContext,
+    ) -> rusqlite::Result<()> {
+        let id = identifier.to_vec();
+        let alias = qualified_identity.and_then(|qi| qi.alias.clone());
+        let identity_type =
+            qualified_identity.map_or("".to_string(), |qi| format!("{:?}", qi.identity_type));
+        let data = qualified_identity.map(|qi| qi.to_bytes());
+
+        let network = app_context.network.to_string();
+
+        // Check if the identity already exists
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT COUNT(*) FROM identity WHERE id = ? AND network = ?")?;
+        let count: i64 = stmt.query_row(params![id, network], |row| row.get(0))?;
+
+        // If the identity doesn't exist, insert it
+        if count == 0 {
+            self.execute(
+                "INSERT INTO identity (id, data, is_local, alias, identity_type, network)
+             VALUES (?, ?, 0, ?, ?, ?)",
+                params![id, data, alias, identity_type, network],
+            )?;
+        }
+
+        Ok(())
+    }
+
     pub fn get_local_qualified_identities(
         &self,
         app_context: &AppContext,

@@ -35,6 +35,7 @@ import type {
 } from "@/bindings";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useContractStore } from "@/stores/contractStore";
+import { toastError } from "@/lib/toastError";
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -217,10 +218,9 @@ export function GroupActionsScreen() {
             const actions = parseGroupActions(payload);
             setStatus({ type: "fetched", actions });
           } catch {
-            setStatus({
-              type: "error",
-              message: "Failed to parse group actions result",
-            });
+            const msg = "Failed to parse group actions result";
+            setStatus({ type: "error", message: msg });
+            toastError(msg);
           }
         },
       );
@@ -229,6 +229,7 @@ export function GroupActionsScreen() {
         (event: { payload: { taskId: string; message: string } }) => {
           if (event.payload.taskId !== taskIdRef.current) return;
           setStatus({ type: "error", message: event.payload.message });
+          toastError(event.payload.message);
         },
       );
     };
@@ -258,12 +259,12 @@ export function GroupActionsScreen() {
         taskIdRef.current = result.data.taskId;
       } else {
         setStatus({ type: "error", message: result.error });
+        toastError(result.error);
       }
     } catch (e) {
-      setStatus({
-        type: "error",
-        message: e instanceof Error ? e.message : String(e),
-      });
+      const msg = e instanceof Error ? e.message : String(e);
+      setStatus({ type: "error", message: msg });
+      toastError(msg);
     }
   }, [canFetch, selectedContractId, effectiveIdentityId]);
 

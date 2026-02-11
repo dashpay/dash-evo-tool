@@ -35,6 +35,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/lib/toastError";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useContractStore } from "@/stores/contractStore";
 
@@ -486,12 +487,12 @@ export function GroveSTARKScreen() {
           type: "error",
           message: result.error,
         });
+        toastError(result.error);
       }
     } catch (err) {
-      setGenerateStatus({
-        type: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      const msg = err instanceof Error ? err.message : String(err);
+      setGenerateStatus({ type: "error", message: msg });
+      toastError(msg);
     }
   }, [
     selectedIdentityId,
@@ -512,10 +513,9 @@ export function GroveSTARKScreen() {
     try {
       parsed = parseProofInput(proofText);
     } catch (err) {
-      setVerifyStatus({
-        type: "error",
-        message: `Failed to parse proof: ${err instanceof Error ? err.message : String(err)}`,
-      });
+      const msg = `Failed to parse proof: ${err instanceof Error ? err.message : String(err)}`;
+      setVerifyStatus({ type: "error", message: msg });
+      toastError(msg);
       return;
     }
 
@@ -541,16 +541,13 @@ export function GroveSTARKScreen() {
           startTime: Date.now(),
         });
       } else {
-        setVerifyStatus({
-          type: "error",
-          message: result.error,
-        });
+        setVerifyStatus({ type: "error", message: result.error });
+        toastError(result.error);
       }
     } catch (err) {
-      setVerifyStatus({
-        type: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      const msg = err instanceof Error ? err.message : String(err);
+      setVerifyStatus({ type: "error", message: msg });
+      toastError(msg);
     }
   }, [proofText]);
 

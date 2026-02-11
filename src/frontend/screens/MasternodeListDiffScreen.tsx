@@ -30,6 +30,7 @@ import {
   Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/lib/toastError";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -832,10 +833,13 @@ function QrInfoTab() {
       } else {
         if (result.error !== "File selection cancelled") {
           setError(result.error);
+          toastError(result.error);
         }
       }
     } catch (e) {
-      setError(String(e));
+      const msg = String(e);
+      setError(msg);
+      toastError(msg);
     } finally {
       setLoading(false);
     }
@@ -1497,6 +1501,7 @@ export function MasternodeListDiffScreen() {
           if (pendingTaskIds.current.has(taskId)) {
             pendingTaskIds.current.delete(taskId);
             setError(errMsg);
+            toastError(errMsg);
             setPendingOp(null);
           }
         },
@@ -1597,11 +1602,14 @@ export function MasternodeListDiffScreen() {
             pendingTaskIds.current.add(taskId);
           } else if ("status" in result && result.status === "error") {
             setError(result.error);
+            toastError(result.error);
             setPendingOp(null);
           }
         }
       } catch (e) {
-        setError(String(e));
+        const msg = String(e);
+        setError(msg);
+        toastError(msg);
         setPendingOp(null);
       }
     },

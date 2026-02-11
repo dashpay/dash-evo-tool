@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/lib/toastError";
 import { useNavigate } from "@tanstack/react-router";
 
 type ParseState =
@@ -126,6 +127,7 @@ export function TransitionVisualizerScreen() {
             message: event.payload.message,
             timestamp: Date.now(),
           });
+          toastError(event.payload.message);
         },
       );
     };
@@ -171,10 +173,9 @@ export function TransitionVisualizerScreen() {
         setParseState({ status: "error", message: result.error });
       }
     } catch (err) {
-      setParseState({
-        status: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      const msg = err instanceof Error ? err.message : String(err);
+      setParseState({ status: "error", message: msg });
+      toastError(msg);
     } finally {
       setIsParsing(false);
     }
@@ -229,13 +230,16 @@ export function TransitionVisualizerScreen() {
           message: result.error,
           timestamp: Date.now(),
         });
+        toastError(result.error);
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       setBroadcastStatus({
         type: "error",
-        message: err instanceof Error ? err.message : String(err),
+        message: msg,
         timestamp: Date.now(),
       });
+      toastError(msg);
     }
   }, [parseState, inputValue]);
 
@@ -262,12 +266,15 @@ export function TransitionVisualizerScreen() {
           text: `Failed to fetch contract: ${result.error}`,
           timestamp: Date.now(),
         });
+        toastError(result.error);
       }
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       setContractFetchMessage({
-        text: `Error fetching contract: ${err instanceof Error ? err.message : String(err)}`,
+        text: `Error fetching contract: ${msg}`,
         timestamp: Date.now(),
       });
+      toastError(msg);
     }
   }, [selectedContractId]);
 

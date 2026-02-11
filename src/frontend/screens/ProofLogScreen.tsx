@@ -12,6 +12,7 @@ import {
   FileSearch,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/lib/toastError";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -96,10 +97,13 @@ export function ProofLogScreen() {
         setDetailError(null);
       } else {
         setError(result.error);
+        toastError(result.error);
         setItems([]);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      toastError(msg);
       setItems([]);
     } finally {
       setIsLoading(false);
@@ -201,7 +205,9 @@ export function ProofLogScreen() {
         }
       } catch (err) {
         if (seq !== detailSeqRef.current) return;
-        setDetailError(err instanceof Error ? err.message : String(err));
+        const msg = err instanceof Error ? err.message : String(err);
+        setDetailError(msg);
+        toastError(msg);
       } finally {
         if (seq === detailSeqRef.current) {
           setIsDetailLoading(false);

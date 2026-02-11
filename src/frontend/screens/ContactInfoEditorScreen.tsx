@@ -30,6 +30,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/lib/toastError";
 import { useDashPayStore } from "@/stores/dashpayStore";
 
 // ─── Constants ────────────────────────────────────────────────────────
@@ -153,10 +154,9 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
 
       setMessage({ text: "Contact information updated successfully", type: "success" });
     } catch (e) {
-      setMessage({
-        text: e instanceof Error ? e.message : String(e),
-        type: "error",
-      });
+      const msg = e instanceof Error ? e.message : String(e);
+      setMessage({ text: msg, type: "error" });
+      toastError(msg);
     } finally {
       setSaving(false);
     }

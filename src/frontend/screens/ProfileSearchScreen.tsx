@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Search,
   X,
@@ -28,6 +28,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/lib/toastError";
 import { useDashPayStore } from "@/stores/dashpayStore";
 
 // ─── Constants ────────────────────────────────────────────────────────
@@ -57,6 +58,13 @@ export function ProfileSearchScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [hasSearched, setHasSearched] = useState(false);
   const [showInfoPopup, setShowInfoPopup] = useState(false);
+
+  // Show toast when search error occurs
+  useEffect(() => {
+    if (searchError) {
+      toastError(searchError);
+    }
+  }, [searchError]);
 
   // ── Handlers ─────────────────────────────────────────────────────
 

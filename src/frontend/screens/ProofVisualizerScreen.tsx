@@ -6,6 +6,7 @@ import { MonospaceOutput } from "@/components/tools/MonospaceOutput";
 import { AlertCircle, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/lib/toastError";
 
 type ParseState =
   | { status: "idle" }
@@ -55,10 +56,9 @@ export function ProofVisualizerScreen() {
         setParseState({ status: "error", message: result.error });
       }
     } catch (err) {
-      setParseState({
-        status: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      const msg = err instanceof Error ? err.message : String(err);
+      setParseState({ status: "error", message: msg });
+      toastError(msg);
     } finally {
       setIsParsing(false);
     }

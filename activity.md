@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 191 — 2026-02-11
+**Task:** 10.6d Standardize error handling: add toastError() to screens with silent failures
+**What was done:** Added `toastError()` calls to 12 screens that previously only displayed errors in inline UI banners without toast notifications. Screens updated: GroupActionsScreen (4 error paths: parse failure, task error event, IPC result error, catch), ContactDetailsScreen (2: save catch, refresh catch), ContactInfoEditorScreen (1: save catch), ProfileSearchScreen (1: useEffect on searchError from store), ContractVisualizerScreen (1: catch), DocumentVisualizerScreen (1: catch), ProofVisualizerScreen (1: catch), TransitionVisualizerScreen (5: parse catch, broadcast event error, broadcast result error, broadcast catch, contract fetch error/catch), ProofLogScreen (3: fetch result error, fetch catch, detail parse catch), GroveSTARKScreen (5: generate result error, generate catch, verify parse catch, verify result error, verify catch), MasternodeListDiffScreen (4: file load error, file load catch, task error event, action result error, action catch). AddressBalanceScreen already had toastError() — no changes needed. All 4487 tests pass, typecheck clean.
+**Files changed:** GroupActionsScreen.tsx, ContactDetailsScreen.tsx, ContactInfoEditorScreen.tsx, ProfileSearchScreen.tsx, ContractVisualizerScreen.tsx, DocumentVisualizerScreen.tsx, ProofVisualizerScreen.tsx, TransitionVisualizerScreen.tsx, ProofLogScreen.tsx, GroveSTARKScreen.tsx, MasternodeListDiffScreen.tsx, tasks.md, activity.md
+**Tests added:** 0 (existing tests cover error paths; toastError is additive notification)
+**Sub-tasks created:** 0
+
 ## Run 163 — 2026-02-11
 **Task:** 10.6c Add loading spinners to TokenOperationForm-based screens
 **What was done:** Replaced the standalone full-page broadcasting screen with an inline broadcasting banner and submit button spinner in `TokenOperationForm`. When submitting, all form inputs (identity selector, key selector, amount, recipient, public note) are now disabled, the submit button shows a `Loader2` spinner with "ActionName..." text, and a broadcasting status banner appears at the top of the form with elapsed time. The "Back to Tokens" button is also disabled during submission. This automatically applies to all 12 token operation screens (Transfer, Mint, Burn, Freeze, Unfreeze, Destroy Frozen Funds, Pause, Resume, Claim, Set Price, Purchase, Update Config). Updated 12 test files to use `getByTestId("operation-broadcasting")` instead of text matching which now returns multiple elements.

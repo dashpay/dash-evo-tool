@@ -36,6 +36,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { toastError } from "@/lib/toastError";
 import { useDashPayStore } from "@/stores/dashpayStore";
 import { formatAmount } from "@/components/shared/AmountInput";
 import type { StoredPaymentDto, ContactPrivateInfoDto, StoredContactDto } from "@/bindings";
@@ -205,10 +206,9 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
       setEditing(false);
       setMessage({ text: "Contact info saved to Platform", type: "success" });
     } catch (e) {
-      setMessage({
-        text: e instanceof Error ? e.message : String(e),
-        type: "error",
-      });
+      const msg = e instanceof Error ? e.message : String(e);
+      setMessage({ text: msg, type: "error" });
+      toastError(msg);
     } finally {
       setSaving(false);
     }
@@ -229,7 +229,9 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
       await fetchContactProfile(contactId);
       setMessage({ text: "Profile refreshed", type: "info" });
     } catch {
-      setMessage({ text: "Failed to refresh profile", type: "error" });
+      const msg = "Failed to refresh profile";
+      setMessage({ text: msg, type: "error" });
+      toastError(msg);
     } finally {
       setRefreshing(false);
     }

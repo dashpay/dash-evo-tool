@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import {
   Search,
   Users,
@@ -253,6 +254,8 @@ function ContactCard({
 // ─── ContactsListScreen ──────────────────────────────────────────────
 
 export function ContactsListScreen() {
+  const navigate = useNavigate();
+
   // Store state
   const contacts = useDashPayStore((s) => s.contacts);
   const contactsLoading = useDashPayStore((s) => s.contactsLoading);
@@ -323,8 +326,8 @@ export function ContactsListScreen() {
   );
 
   const handleAddContact = useCallback(() => {
-    // Will be wired to AddContact screen when implemented
-  }, []);
+    navigate({ to: "/dashpay/add-contact" });
+  }, [navigate]);
 
   const handleRefresh = useCallback(() => {
     refreshContacts();

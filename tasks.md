@@ -931,7 +931,7 @@
     Reference: `contact_requests.rs` (1248 lines)
     Write component tests for accept/reject flows.
 
-  - [ ] **8.2f Implement AddContactScreen with validation and error handling** (P2)
+  - [x] **8.2f Implement AddContactScreen with validation and error handling** (P2)
     Build the add contact screen (navigated to from Contacts):
     - Identity selector (From/Sender) with auto key selection
     - Key selector (Advanced Options toggle)

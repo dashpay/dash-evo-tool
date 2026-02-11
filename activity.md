@@ -111,3 +111,10 @@
 **Files changed:** tests/e2e-integration/phase2-shell.spec.ts, tests/e2e-integration/phase3-wallets.spec.ts
 **Tests added:** 16 new tests (6 in phase2-shell, 10 in phase3-wallets) added to existing 55 tests
 **Sub-tasks created:** 0
+
+## Run 150 — 2026-02-10
+**Task:** 8.2f Implement AddContactScreen with validation and error handling
+**What was done:** Built the full AddContactScreen component with sender identity card, username/ID input with inline validation (.dash format check), optional relationship label with character counter (100 max), auto key selection (AUTHENTICATION + CRITICAL/HIGH), advanced options toggle for manual key selection, request summary card, structured error handling with categorized recovery actions (MissingEncryptionKey → Add Key button, UsernameResolutionFailed → Retry, network errors → Retry), wallet unlock dialog integration, success screen with Send Another / Back to Contacts navigation. Added route `/dashpay/add-contact` and wired ContactsListScreen "Add Contact" button to navigate there. Wrote 37 component tests covering empty state, form rendering, validation, summary, advanced options, send flow, error handling, navigation, success screen, and info dialog. Added 10 Playwright E2E integration tests. All 3983 component tests pass, lint and typecheck clean.
+**Files changed:** src/frontend/screens/AddContactScreen.tsx (new), src/frontend/screens/AddContactScreen.test.tsx (new), src/frontend/screens/ContactsListScreen.tsx (wired navigation), src/frontend/routes.tsx (added route), tests/e2e-integration/phase8-dashpay.spec.ts (10 new E2E tests)
+**Tests added:** 37 component tests + 10 Playwright E2E tests = 47 tests
+**Sub-tasks created:** 0

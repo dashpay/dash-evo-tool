@@ -54,6 +54,7 @@ import { TokenUpdateConfigScreen } from "@/screens/TokenUpdateConfigScreen";
 import { DashPayScreen } from "@/screens/DashPayScreen";
 import { ProfileScreen } from "@/screens/ProfileScreen";
 import { ContactsListScreen } from "@/screens/ContactsListScreen";
+import { AddContactScreen } from "@/screens/AddContactScreen";
 import { Island } from "@/components/layout/Island";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -163,6 +164,12 @@ const dashpaySearchRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/search",
   component: () => <DashPayPlaceholder title="Search Profiles" />,
+});
+
+const dashpayAddContactRoute = createRoute({
+  getParentRoute: () => dashpayRoute,
+  path: "/add-contact",
+  component: AddContactScreen,
 });
 
 const identitiesRoute = createRoute({
@@ -512,6 +519,7 @@ const routeTree = rootRoute.addChildren([
       dashpayContactsRoute,
       dashpayPaymentsRoute,
       dashpaySearchRoute,
+      dashpayAddContactRoute,
     ]),
     identitiesRoute,
     contractsRoute.addChildren([

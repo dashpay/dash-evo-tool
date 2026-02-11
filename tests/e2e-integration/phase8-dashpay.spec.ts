@@ -336,6 +336,151 @@ test.describe("DashPay Search Route", () => {
 });
 
 // ---------------------------------------------------------------------------
+// DashPay Add Contact Route
+// ---------------------------------------------------------------------------
+
+test.describe("DashPay Add Contact Screen", () => {
+  test("renders Add Contact form with identity selected", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/add-contact",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Add Contact" }),
+    ).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("username-input")).toBeVisible();
+    await expect(page.getByTestId("label-input")).toBeVisible();
+    await expect(page.getByTestId("send-button")).toBeVisible();
+  });
+
+  test("shows sender identity card", async ({ page, mockIPC }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/add-contact",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(
+      page.getByText("Alice"),
+    ).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText("user")).toBeVisible();
+  });
+
+  test("validates username format inline", async ({ page, mockIPC }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/add-contact",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await page.getByTestId("username-input").fill("bob.eth");
+    await expect(
+      page.getByText(/usernames must end with/i),
+    ).toBeVisible({ timeout: 5000 });
+  });
+
+  test("enables send button with valid username", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/add-contact",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(page.getByTestId("send-button")).toBeDisabled({ timeout: 10000 });
+    await page.getByTestId("username-input").fill("bob.dash");
+    await expect(page.getByTestId("send-button")).toBeEnabled();
+  });
+
+  test("shows request summary when username is entered", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/add-contact",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await page.getByTestId("username-input").fill("bob.dash");
+    await expect(page.getByTestId("request-summary")).toBeVisible({
+      timeout: 5000,
+    });
+    await expect(page.getByTestId("request-summary")).toContainText("bob.dash");
+  });
+
+  test("opens info dialog", async ({ page, mockIPC }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/add-contact",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await page
+      .getByRole("button", { name: /contact request info/i })
+      .click();
+    await expect(
+      page.getByText("About Contact Requests"),
+    ).toBeVisible({ timeout: 5000 });
+  });
+
+  test("shows advanced options with key selector on toggle", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/add-contact",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(
+      page.getByTestId("key-selector"),
+    ).not.toBeVisible({ timeout: 5000 });
+    await page.getByTestId("advanced-options-toggle").click();
+    await expect(page.getByTestId("key-selector")).toBeVisible();
+  });
+
+  test("navigates back to contacts on Cancel", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/add-contact",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Add Contact" }),
+    ).toBeVisible({ timeout: 10000 });
+
+    await page.getByRole("button", { name: /cancel/i }).click();
+    await expect(
+      page.getByRole("heading", { name: "Contacts" }),
+    ).toBeVisible({ timeout: 5000 });
+  });
+
+  test("navigates to add-contact from Contacts screen", async ({
+    page,
+    mockIPC,
+  }) => {
+    await mockIPC.navigateWithHandlers(
+      "/dashpay/contacts",
+      dashpayWithIdentityHandlers(),
+    );
+
+    await expect(
+      page.getByRole("heading", { name: "Contacts" }),
+    ).toBeVisible({ timeout: 10000 });
+
+    await page.getByRole("button", { name: /add contact/i }).click();
+    await expect(
+      page.getByRole("heading", { level: 2, name: "Add Contact" }),
+    ).toBeVisible({ timeout: 5000 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cross-section Navigation
 // ---------------------------------------------------------------------------
 

@@ -175,7 +175,7 @@ pub async fn update_profile(
                         );
                     }
                     Err(e) => {
-                        eprintln!("Warning: Could not calculate avatar fingerprint: {}", e);
+                        tracing::warn!("Could not calculate avatar fingerprint: {}", e);
                         // Continue without fingerprint - it's optional
                     }
                 }
@@ -183,10 +183,7 @@ pub async fn update_profile(
             Err(e) => {
                 // If we can't fetch the image, just set the URL without hash/fingerprint
                 // These fields are optional according to DIP-0015
-                eprintln!(
-                    "Warning: Could not fetch avatar image for processing: {}",
-                    e
-                );
+                tracing::warn!("Could not fetch avatar image for processing: {}", e);
             }
         }
     }

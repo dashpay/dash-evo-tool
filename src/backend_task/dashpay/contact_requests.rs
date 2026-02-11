@@ -430,8 +430,8 @@ pub async fn send_contact_request_with_proof(
             &to_identity_id,
             account_reference,
         )?;
-        eprintln!(
-            "DEBUG: Including autoAcceptProof in contact request ({} bytes)",
+        tracing::debug!(
+            "Including autoAcceptProof in contact request ({} bytes)",
             proof.len()
         );
         properties.insert("autoAcceptProof".to_string(), Value::Bytes(proof));

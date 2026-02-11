@@ -781,7 +781,7 @@ fn doc_to_filtered_string(
     // 3) Convert filtered_value to the chosen format
     let final_string = match display_mode {
         DocumentDisplayMode::Json => serde_json::to_string_pretty(&filtered_value).ok()?,
-        DocumentDisplayMode::Yaml => serde_yaml::to_string(&filtered_value).ok()?,
+        DocumentDisplayMode::Yaml => serde_yaml_ng::to_string(&filtered_value).ok()?,
     };
 
     Some(final_string)

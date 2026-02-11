@@ -84,6 +84,7 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
+    last_repaint_request: Instant,      // Throttle periodic repaint scheduling to once per second
     pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
     pub show_welcome_screen: bool,
@@ -194,8 +195,8 @@ impl AppState {
         ) {
             Some(context) => context,
             None => {
-                eprintln!(
-                    "Error: Failed to create the AppContext. Expected Dash config for mainnet."
+                tracing::error!(
+                    "Failed to create the AppContext. Expected Dash config for mainnet."
                 );
                 std::process::exit(1);
             }
@@ -625,6 +626,7 @@ impl AppState {
             task_result_receiver,
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
+            last_repaint_request: Instant::now(),
             subtasks,
             show_welcome_screen: !onboarding_completed,
             welcome_screen: None,
@@ -700,7 +702,7 @@ impl AppState {
 
             // Send the result back to the main thread
             if let Err(e) = sender.send(result.into()).await {
-                eprintln!("Failed to send task result: {}", e);
+                tracing::error!("Failed to send task result: {}", e);
             }
         });
     }
@@ -727,7 +729,7 @@ impl AppState {
             // Send the results back to the main thread
             for result in results {
                 if let Err(e) = sender.send(result.into()).await {
-                    eprintln!("Failed to send task result: {}", e);
+                    tracing::error!("Failed to send task result: {}", e);
                 }
             }
         });
@@ -857,6 +859,14 @@ impl App for AppState {
             }
         }
 
+        // Schedule a periodic repaint every ~1 second so timed messages update
+        // their countdown and other periodic UI elements stay current.
+        // Throttled so we don't re-schedule on every frame during user interaction.
+        if self.last_repaint_request.elapsed() >= Duration::from_secs(1) {
+            ctx.request_repaint_after(Duration::from_secs(1));
+            self.last_repaint_request = Instant::now();
+        }
+
         // **Poll the instant_send_receiver for any new InstantSend messages**
         while let Ok((message, network)) = self.core_message_receiver.try_recv() {
             let app_context = match network {
@@ -865,7 +875,7 @@ impl App for AppState {
                     if let Some(context) = self.testnet_app_context.as_ref() {
                         context
                     } else {
-                        eprintln!("No testnet app context available for Testnet");
+                        tracing::error!("No testnet app context available for Testnet");
                         continue;
                     }
                 }
@@ -873,7 +883,7 @@ impl App for AppState {
                     if let Some(context) = self.devnet_app_context.as_ref() {
                         context
                     } else {
-                        eprintln!("No devnet app context available");
+                        tracing::error!("No devnet app context available");
                         continue;
                     }
                 }
@@ -881,7 +891,7 @@ impl App for AppState {
                     if let Some(context) = self.local_app_context.as_ref() {
                         context
                     } else {
-                        eprintln!("No local app context available");
+                        tracing::error!("No local app context available");
                         continue;
                     }
                 }
@@ -902,7 +912,7 @@ impl App for AppState {
                                 .display_task_result(BackendTaskSuccessResult::CoreItem(core_item));
                         }
                         Err(e) => {
-                            eprintln!("Failed to store asset lock: {}", e);
+                            tracing::error!("Failed to store asset lock: {}", e);
                         }
                     }
                 }
@@ -910,7 +920,7 @@ impl App for AppState {
                     if let Err(e) =
                         app_context.received_transaction_finality(&tx, None, Some(height))
                     {
-                        eprintln!("Failed to store asset lock: {}", e);
+                        tracing::error!("Failed to store asset lock: {}", e);
                     }
                 }
                 ZMQMessage::ChainLockedBlock(block, chain_lock) => {
@@ -933,7 +943,7 @@ impl App for AppState {
             let db_votes = match app_context.get_scheduled_votes() {
                 Ok(votes) => votes,
                 Err(e) => {
-                    eprintln!("Error querying scheduled votes: {}", e);
+                    tracing::error!("Error querying scheduled votes: {}", e);
                     return;
                 }
             };
@@ -957,7 +967,7 @@ impl App for AppState {
                 let local_identities = match app_context.load_local_voting_identities() {
                     Ok(identities) => identities,
                     Err(e) => {
-                        eprintln!("Error querying local voting identities: {}", e);
+                        tracing::error!("Error querying local voting identities: {}", e);
                         return;
                     }
                 };
@@ -988,7 +998,7 @@ impl App for AppState {
                         );
                         self.handle_backend_task(task);
                     } else {
-                        eprintln!("Voter not found for scheduled vote: {:?}", vote);
+                        tracing::warn!("Voter not found for scheduled vote: {:?}", vote);
                     }
                 }
             }

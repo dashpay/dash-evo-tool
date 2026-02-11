@@ -257,7 +257,7 @@ impl Database {
             // Copy `data.db` to the unique backup file
             fs::copy(db_file_path, &backup_path)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
-            println!("Old database backed up to {:?}", backup_path);
+            tracing::info!("Old database backed up to {:?}", backup_path);
         }
 
         Ok(())

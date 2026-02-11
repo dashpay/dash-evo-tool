@@ -8,6 +8,7 @@ use dash_sdk::query_types::IndexMap;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use rusqlite::params;
+use tracing::warn;
 
 use super::Database;
 use crate::ui::tokens::tokens_screen::{
@@ -234,7 +235,7 @@ impl Database {
                 app_context.platform_version(),
             )
             .map_err(|e| {
-                eprintln!("Failed to deserialize DataContract: {}", e);
+                tracing::error!("Failed to deserialize DataContract: {}", e);
                 rusqlite::Error::ToSqlConversionFailure(Box::new(e))
             })?;
 
@@ -523,10 +524,10 @@ impl Database {
                 if let Ok(identity_id) = Identifier::from_vec(identity_id_bytes) {
                     result.push((token_id, identity_id));
                 } else {
-                    // If for some reason it fails to parse, skip it or handle error
+                    warn!("Failed to parse identity ID from token_order table, skipping");
                 }
             } else {
-                // If for some reason it fails to parse, skip it or handle error
+                warn!("Failed to parse token ID from token_order table, skipping");
             }
         }
 

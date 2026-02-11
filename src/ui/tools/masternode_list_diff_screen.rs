@@ -94,7 +94,7 @@ impl MnListData {
         let masternode_list_engine = match app_context.network {
             Network::Dash => {
                 use std::env;
-                println!(
+                tracing::debug!(
                     "Current working directory: {:?}",
                     env::current_dir().unwrap()
                 );
@@ -114,12 +114,12 @@ impl MnListData {
                             .expect("expected to start engine")
                         }
                         Err(e) => {
-                            eprintln!("Failed to read MNListDiff file: {}", e);
+                            tracing::error!("Failed to read MNListDiff file: {}", e);
                             MasternodeListEngine::default_for_network(Network::Dash)
                         }
                     }
                 } else {
-                    eprintln!("MNListDiff file not found: {}", file_path);
+                    tracing::warn!("MNListDiff file not found: {}", file_path);
                     MasternodeListEngine::default_for_network(Network::Dash)
                 }
             }
@@ -140,12 +140,12 @@ impl MnListData {
                             .expect("expected to start engine")
                         }
                         Err(e) => {
-                            eprintln!("Failed to read MNListDiff file: {}", e);
+                            tracing::error!("Failed to read MNListDiff file: {}", e);
                             MasternodeListEngine::default_for_network(Network::Testnet)
                         }
                     }
                 } else {
-                    eprintln!("MNListDiff file not found: {}", file_path);
+                    tracing::warn!("MNListDiff file not found: {}", file_path);
                     MasternodeListEngine::default_for_network(Network::Dash)
                 }
             }
@@ -340,7 +340,7 @@ impl MasternodeListDiffScreen {
             .get_height(block_hash)
         else {
             let Some(height) = self.cache.block_height_cache.get(block_hash) else {
-                println!(
+                tracing::debug!(
                     "Asking core for height no cache {} ({})",
                     block_hash,
                     block_hash.reverse()
@@ -378,7 +378,7 @@ impl MasternodeListDiffScreen {
             .get_height(block_hash)
         else {
             let Some(height) = self.cache.block_height_cache.get(block_hash) else {
-                println!(
+                tracing::debug!(
                     "Asking core for height {} ({})",
                     block_hash,
                     block_hash.reverse()
@@ -636,7 +636,7 @@ impl MasternodeListDiffScreen {
     fn feed_mn_list_diff_heights(&mut self, mn_list_diff: &MnListDiff) {
         // Feed base block hash height
         if let Ok(base_height) = self.get_height(&mn_list_diff.base_block_hash) {
-            println!("feeding {} {}", base_height, mn_list_diff.base_block_hash);
+            tracing::debug!("feeding {} {}", base_height, mn_list_diff.base_block_hash);
             self.data
                 .masternode_list_engine
                 .feed_block_height(base_height, mn_list_diff.base_block_hash);
@@ -649,7 +649,7 @@ impl MasternodeListDiffScreen {
 
         // Feed block hash height
         if let Ok(block_height) = self.get_height(&mn_list_diff.block_hash) {
-            println!("feeding {} {}", block_height, mn_list_diff.block_hash);
+            tracing::debug!("feeding {} {}", block_height, mn_list_diff.block_hash);
             self.data
                 .masternode_list_engine
                 .feed_block_height(block_height, mn_list_diff.block_hash);
@@ -806,7 +806,7 @@ impl MasternodeListDiffScreen {
         block_hash: BlockHash,
     ) -> Option<QRInfo> {
         let known_block_hashes = self.known_block_hashes_with_base(base_block_hash);
-        println!(
+        tracing::debug!(
             "requesting with known_block_hashes {}",
             known_block_hashes
                 .iter()
@@ -1659,12 +1659,12 @@ impl MasternodeListDiffScreen {
                             self.data.masternode_list_engine = engine;
                         }
                         Err(e) => {
-                            eprintln!("Failed to decode QRInfo: {}", e);
+                            tracing::error!("Failed to decode QRInfo: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to read file: {:?}", e);
+                    tracing::error!("Failed to read file: {:?}", e);
                 }
             }
         }
@@ -1691,7 +1691,7 @@ impl MasternodeListDiffScreen {
             // Attempt to write the serialized data to the selected file
             match fs::write(&path, serialized) {
                 Ok(_) => {
-                    println!("Masternode list engine saved to {:?}", path);
+                    tracing::info!("Masternode list engine saved to {:?}", path);
                 }
                 Err(e) => {
                     self.ui_state.error = Some(format!("Failed to save file: {}", e));
@@ -2266,7 +2266,7 @@ impl MasternodeListDiffScreen {
                     )
                     .expect("serialize container");
                     if let Err(e) = std::fs::write(&path, serialized_data) {
-                        eprintln!("Failed to write file: {}", e);
+                        tracing::error!("Failed to write file: {}", e);
                     }
                 }
             }
@@ -2329,7 +2329,7 @@ impl MasternodeListDiffScreen {
                     )
                     .expect("serialize container");
                     if let Err(e) = std::fs::write(&path, serialized_data) {
-                        eprintln!("Failed to write file: {}", e);
+                        tracing::error!("Failed to write file: {}", e);
                     }
                 }
             }
@@ -2463,7 +2463,7 @@ impl MasternodeListDiffScreen {
             // Attempt to write the serialized data to the selected file
             match fs::write(&path, serialized) {
                 Ok(_) => {
-                    println!("MNListDiff saved to {:?}", path);
+                    tracing::info!("MNListDiff saved to {:?}", path);
                 }
                 Err(e) => {
                     self.ui_state.error = Some(format!("Failed to save file: {}", e));
@@ -2940,14 +2940,14 @@ impl MasternodeListDiffScreen {
                                             self.data.qr_infos.insert(key, qr_info);
                                         }
                                         Err(e) => {
-                                            eprintln!("Failed to decode QRInfo: {}", e);
+                                            tracing::error!("Failed to decode QRInfo: {}", e);
                                         }
                                     }
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("Failed to read file: {}", e);
+                            tracing::error!("Failed to read file: {}", e);
                         }
                     }
                 }
@@ -2971,7 +2971,7 @@ impl MasternodeListDiffScreen {
                             bincode::encode_to_vec(&selected_qr_info, bincode::config::standard())
                                 .expect("serialize container");
                         if let Err(e) = std::fs::write(&path, serialized_data) {
-                            eprintln!("Failed to write file: {}", e);
+                            tracing::error!("Failed to write file: {}", e);
                         }
                     }
                 }

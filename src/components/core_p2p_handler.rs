@@ -67,7 +67,7 @@ impl CoreP2PHandler {
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .map_err(|e| format!("set_write_timeout failed: {}", e))?;
-        println!("Connected to Dash Core at 127.0.0.1:{}", port);
+        tracing::info!("Connected to Dash Core at 127.0.0.1:{}", port);
         Ok(CoreP2PHandler {
             network,
             port,
@@ -93,7 +93,7 @@ impl CoreP2PHandler {
         stream
             .write_all(&encoded_message)
             .map_err(|e| format!("Failed to send message: {}", e))?;
-        println!("Sent getmnlistdiff message to Dash Core");
+        tracing::debug!("Sent getmnlistdiff message to Dash Core");
 
         let (mut command, mut payload);
         let start_time = std::time::Instant::now();
@@ -114,7 +114,7 @@ impl CoreP2PHandler {
                 Err(ReadMessageError::Fatal(e)) => return Err(e),
             }
             if command == "mnlistdiff" {
-                println!("Got mnlistdiff message");
+                tracing::debug!("Got mnlistdiff message");
                 break;
             } else {
                 thread::sleep(Duration::from_millis(10));
@@ -163,7 +163,7 @@ impl CoreP2PHandler {
         stream
             .write_all(&encoded_message)
             .map_err(|e| format!("Failed to send message: {}", e))?;
-        println!("Sent qr info request message to Dash Core");
+        tracing::debug!("Sent qr info request message to Dash Core");
 
         let (mut command, mut payload);
         // QRInfo on mainnet can take noticeably longer to prepare.
@@ -201,7 +201,7 @@ impl CoreP2PHandler {
                 Err(ReadMessageError::Fatal(e)) => return Err(e),
             }
             if command == "qrinfo" {
-                println!("Got qrinfo message");
+                tracing::debug!("Got qrinfo message");
                 // Restore previous socket timeout
                 self.stream
                     .set_read_timeout(previous_socket_timeout)
@@ -284,7 +284,7 @@ impl CoreP2PHandler {
         self.stream
             .write_all(&encoded_version)
             .map_err(|e| format!("Failed to send version: {}", e))?;
-        println!("Sent version message");
+        tracing::debug!("Sent version message");
 
         thread::sleep(Duration::from_millis(50));
 
@@ -398,7 +398,7 @@ impl CoreP2PHandler {
             .map_err(|e| format!("Failed to deserialize version payload: {}", e))?;
         match raw.payload {
             NetworkMessage::Version(peer_version) => {
-                println!("Received peer version: {:?}", peer_version);
+                tracing::debug!("Received peer version: {:?}", peer_version);
             }
             _ => {
                 return Err("Deserialized message was not a version message".to_string());
@@ -420,7 +420,7 @@ impl CoreP2PHandler {
                 Err(ReadMessageError::Fatal(e)) => return Err(e),
             };
             if command == "verack" {
-                println!("Got verack message");
+                tracing::debug!("Got verack message");
                 break;
             } else {
                 thread::sleep(Duration::from_millis(10));
@@ -438,7 +438,7 @@ impl CoreP2PHandler {
             .write_all(&encoded_verack)
             .map_err(|e| format!("Failed to send verack: {}", e))?;
 
-        println!("Sent verack message");
+        tracing::debug!("Sent verack message");
         Ok(())
     }
 

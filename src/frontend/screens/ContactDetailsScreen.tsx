@@ -236,7 +236,7 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
   }, [contactId, fetchContactProfile]);
 
   const handlePay = useCallback(() => {
-    navigate({ to: "/dashpay/payments", search: { contactId } });
+    navigate({ to: "/dashpay/send-payment/$contactId", params: { contactId } });
   }, [navigate, contactId]);
 
   // ── Render ──

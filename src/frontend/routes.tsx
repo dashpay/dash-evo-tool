@@ -59,6 +59,7 @@ import { AddContactScreen } from "@/screens/AddContactScreen";
 import { ContactDetailsScreen } from "@/screens/ContactDetailsScreen";
 import { ContactProfileViewer } from "@/screens/ContactProfileViewer";
 import { ContactInfoEditorScreen } from "@/screens/ContactInfoEditorScreen";
+import { SendPaymentScreen } from "@/screens/SendPaymentScreen";
 import { Island } from "@/components/layout/Island";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -207,6 +208,17 @@ const dashpayContactInfoEditorRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/contact-info-editor/$contactId",
   component: ContactInfoEditorWrapper,
+});
+
+function SendPaymentWrapper() {
+  const { contactId } = useParams({ strict: false }) as { contactId: string };
+  return <SendPaymentScreen contactId={contactId} />;
+}
+
+const dashpaySendPaymentRoute = createRoute({
+  getParentRoute: () => dashpayRoute,
+  path: "/send-payment/$contactId",
+  component: SendPaymentWrapper,
 });
 
 const identitiesRoute = createRoute({
@@ -560,6 +572,7 @@ const routeTree = rootRoute.addChildren([
       dashpayContactDetailsRoute,
       dashpayContactProfileRoute,
       dashpayContactInfoEditorRoute,
+      dashpaySendPaymentRoute,
     ]),
     identitiesRoute,
     contractsRoute.addChildren([

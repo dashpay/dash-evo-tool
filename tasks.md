@@ -965,7 +965,7 @@
     Reference: `contact_info_editor.rs` (392 lines)
     Write component tests.
 
-  - [ ] **8.3c Implement SendPaymentScreen with amount input and memo** (P2)
+  - [x] **8.3c Implement SendPaymentScreen with amount input and memo** (P2)
     Build the send payment screen:
     - From identity display with wallet balance
     - To contact display (resolved name or ID)

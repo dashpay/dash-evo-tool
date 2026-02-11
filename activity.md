@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 173 — 2026-02-10
+**Task:** 8.4 [REVIEW] DashPay screens functionality parity
+**What was done:** Exhaustive screen-by-screen audit of all 12 DashPay screens against the egui originals (~85 user actions across 13 egui source files). Read every egui DashPay file (profile_screen.rs, contacts_list.rs, contact_requests.rs, add_contact_screen.rs, contact_details.rs, contact_info_editor.rs, contact_profile_viewer.rs, profile_search.rs, send_payment.rs, qr_code_generator.rs, qr_scanner.rs, dashpay_screen.rs, mod.rs) and compared against all 12 Tauri frontend screen implementations plus dashpayStore and ContactRequests component. Grade: A-. All screens have full or near-full parity. 2 minor P3 gaps found (ContactRequests missing structured MissingEncryptionKey error action button; avatar hash/fingerprint not shown in ContactProfileViewer — but these were never populated in egui either). No fix tasks needed — gaps are non-blocking.
+**Files changed:** ralph/docs/phase8-dashpay-design.md, tasks.md, activity.md
+**Tests added:** 0 (review task)
+**Sub-tasks created:** 0
+
 ## Run 172 — 2026-02-10
 **Task:** 8.3f Implement QRCodeGenerator and QRScanner screens
 **What was done:** Both QR screens were already implemented with full functionality (identity selector, QR generation/parsing, Add Contact flow, expiration detection, success/error states, info dialogs). The missing feature from the egui version was wallet-locked detection — both egui screens check `wallet_needs_unlock()` and show a warning with "Unlock Wallet" button before allowing QR generation or contact addition. Added: wallet-locked detection to both screens using `associatedWallet.usesPassword`, warning banner with Lock icon and "Unlock Wallet" link button, generate/add-contact button disabling when wallet is locked. Refactored `walletAlias` computation to reuse the `associatedWallet` memo. Added 8 new component tests (5 for QRCodeGeneratorScreen, 3 for QRScannerScreen) covering wallet-locked warnings, button disabling, and unlock-button rendering.

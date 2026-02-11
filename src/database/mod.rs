@@ -24,15 +24,13 @@ use std::sync::Mutex;
 ///
 /// Converts into `rusqlite::Error::FromSqlConversionFailure` so it can
 /// be propagated with `?` from any function returning `rusqlite::Result`.
+#[derive(Debug, thiserror::Error)]
+#[error("corrupted data detected: {0}")]
 pub(crate) struct CorruptedBlobError(pub String);
 
 impl From<CorruptedBlobError> for rusqlite::Error {
     fn from(e: CorruptedBlobError) -> Self {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Blob,
-            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.0)),
-        )
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e))
     }
 }
 

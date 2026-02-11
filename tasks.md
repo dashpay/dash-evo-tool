@@ -1070,12 +1070,27 @@
 
 ## Phase 10: Integration, Polish & Final Audit
 
-- [ ] **10.1 [META] Full functionality audit — complete action inventory comparison** (P0)
+- [x] **10.1 [META] Full functionality audit — complete action inventory comparison** (P0)
   Systematically go through EVERY screen in the egui version and the Tauri version side by side. For each screen:
   1. List every user action in the egui version (buttons, menus, dialogs, keyboard shortcuts)
   2. Verify the action exists and works in the Tauri version
   3. Note any differences in behavior
   This is the definitive "zero functionality loss" verification. Produce fix tasks for every gap found.
+
+  > **Audit Findings (Run 35):** ~90% feature parity achieved. All 58+ screens exist with routes, IPC, and tests. Remaining gaps are minor UX differences and a few missing UI details. Details: [ralph/docs/phase10-functionality-audit.md](ralph/docs/phase10-functionality-audit.md)
+
+  **Sub-tasks produced (P1 fixes):**
+  - [ ] **10.1a** Add "In Wallet" info to identity list cards — show wallet association without needing to open detail panel
+  - [ ] **10.1b** Add direct key viewing from identity detail panel — allow viewing individual keys without navigating to KeyManagementScreen
+  - [ ] **10.1c** Verify and fix DPNS Owned Names "Set Alias" action — ensure clicking a name sets the identity alias
+  - [ ] **10.1d** Add YAML display mode toggle to DocumentQueryScreen — egui supports JSON+YAML, Tauri may only have JSON
+  - [ ] **10.1e** Verify and fix document field selection dropdown in DocumentQueryScreen — ensure field selection works
+
+  **Sub-tasks produced (P2 fixes):**
+  - [ ] **10.1f** Add Create/Load Identity buttons to main toolbar for discoverability
+  - [ ] **10.1g** Add DPNS filter character substitution (o→0, l→1) for confusable characters
+  - [ ] **10.1h** Add visual highlighting in DPNS active contests when locked votes exceed max contestant votes
+  - [ ] **10.1i** Verify Network Chooser: Core status indicators and custom Dash-Qt path selector
 
 - [ ] **10.2 Implement drag-and-drop reordering** (P2)
   Add drag-and-drop for lists that support reordering:

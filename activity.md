@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 182 — 2026-02-10
+**Task:** 10.1 [META] Full functionality audit — complete action inventory comparison
+**What was done:** Systematically audited every screen in the egui version against the Tauri frontend, comparing all user actions across Identities, Wallets, DPNS, Tokens, Contracts/Documents, DashPay, Tools, and Settings screens. Found ~90% feature parity with all 58+ screens implemented. Identified 9 specific gaps (5 P1, 4 P2) and produced sub-tasks. Major findings: "In Wallet" column missing from identity list, key access requires extra navigation, DPNS filter character substitution missing, YAML display mode may be absent from document query screen.
+**Files changed:** ralph/docs/phase10-functionality-audit.md, tasks.md, activity.md
+**Tests added:** 0 (META task — research only)
+**Sub-tasks created:** 9 (5 P1 + 4 P2)
+
 ## Run 181 — 2026-02-10
 **Task:** 9.1m — Implement Masternode List Diff screen — QR Info tab
 **What was done:** Built the QR Info tab for the Masternode List Diff screen with a three-panel layout matching the egui implementation. Created two new Tauri IPC commands (`qrinfo_load_file` and `qrinfo_save_file`) using `rfd` for native file dialogs, with dual-format support (consensus decode + bincode fallback). Created comprehensive DTOs: `QrInfoDto`, `QuorumSnapshotDto`, `MnListDiffDto`, `SimpleQuorumEntryDto`, `QuorumEntryDto`, `DeletedQuorumDto`, `MasternodeEntryDto`, `ChainLockSigEntryDto`. Frontend features: 5 selectable QRInfo fields (Quorum Snapshots, MnListDiffs, Rotated Quorums, Quorum Snapshot List, MN List Diff List), detail views for snapshots (active members, skip list), diffs (version, hashes, masternodes, quorums, chainlock sigs), and quorum entries (8-column member grid with signer/valid status, public key, signatures). Added 14 new component tests. Enabled the QR Info tab (previously disabled). All 4,414 frontend tests pass, 270 Rust tests pass.

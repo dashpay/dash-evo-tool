@@ -33,6 +33,8 @@ Test locations:
 - UI integration: `tests/kittest/`
 - E2E: `tests/e2e/`
 
+Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
+
 ## Architecture Overview
 
 **Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.

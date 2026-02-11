@@ -29,6 +29,7 @@ import { PlatformInfoScreen } from "@/screens/PlatformInfoScreen";
 import { AddressBalanceScreen } from "@/screens/AddressBalanceScreen";
 import { ContractVisualizerScreen } from "@/screens/ContractVisualizerScreen";
 import { DocumentVisualizerScreen } from "@/screens/DocumentVisualizerScreen";
+import { ProofVisualizerScreen } from "@/screens/ProofVisualizerScreen";
 import { DocumentQueryScreen } from "@/screens/DocumentQueryScreen";
 import { AddContractsScreen } from "@/screens/AddContractsScreen";
 import { RegisterContractScreen } from "@/screens/RegisterContractScreen";
@@ -524,7 +525,7 @@ const toolsDocumentRoute = createRoute({
 const toolsProofVisualizerRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/proof-visualizer",
-  component: () => <PlaceholderScreen title="Proof Visualizer" />,
+  component: ProofVisualizerScreen,
 });
 
 const toolsMnListRoute = createRoute({

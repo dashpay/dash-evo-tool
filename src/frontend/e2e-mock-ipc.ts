@@ -260,6 +260,7 @@ const DEFAULT_RESPONSES: Record<string, unknown> = {
   // -- Parsers --
   parse_data_contract: { json: "{}", id: "" },
   parse_document: { json: "{}" },
+  parse_grovedb_proof: { text: "" },
 
   // -- Platform Info (direct return) --
   platform_current_epoch_info: DISPATCH,

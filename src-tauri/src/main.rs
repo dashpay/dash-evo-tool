@@ -293,6 +293,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             // Visualizer commands
             commands::visualizer::parse_data_contract,
             commands::visualizer::parse_document,
+            commands::visualizer::parse_grovedb_proof,
             // Platform info commands
             commands::platform_info::platform_current_epoch_info,
             commands::platform_info::platform_total_credits,

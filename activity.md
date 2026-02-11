@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 169 — 2026-02-10
+**Task:** 9.1f Implement Proof Visualizer screen
+**What was done:** Created `ProofVisualizerScreen` component and `parse_grovedb_proof` Tauri IPC command. The Rust command accepts hex-encoded GroveDB proof bytes, deserializes via bincode (big-endian, no-limit config matching the egui implementation), and returns the proof's string representation. The frontend screen follows the same pattern as ContractVisualizerScreen: HexInput with auto-format detection (hex/base64/CSV), debounced parsing (300ms), MonospaceOutput for proof text display, error alert with dismiss button, and ToolPageLayout wrapper. Updated route from placeholder to real component. Added bincode dependency to src-tauri/Cargo.toml. Regenerated TypeScript bindings. Updated mock-ipc and e2e-mock-ipc with new command. Updated bindings test count (181→182).
+**Files changed:** src-tauri/Cargo.toml, src-tauri/src/commands/visualizer.rs, src-tauri/src/main.rs, src/frontend/screens/ProofVisualizerScreen.tsx (new), src/frontend/screens/ProofVisualizerScreen.test.tsx (new), src/frontend/routes.tsx, src/frontend/bindings.ts (regenerated), src/frontend/bindings.test.ts, src/frontend/test/mock-ipc.ts, src/frontend/e2e-mock-ipc.ts
+**Tests added:** 14 component tests (React) + 8 Rust unit tests (DTO serialization, empty/invalid input rejection) = 22 tests
+**Sub-tasks created:** 0
+
 ## Run 168 — 2026-02-10
 **Task:** 8.3c Implement SendPaymentScreen with amount input and memo
 **What was done:** Created `SendPaymentScreen` for sending DashPay payments to contacts. Features: from identity display (alias → DPNS name → truncated ID), wallet balance display with associated wallet lookup, wallet locked warning with unlock button, to contact display with name resolution (displayName → username → truncated ID), amount input with Max button (fills wallet's confirmed balance), memo textarea with 100-char max and character counter with color warnings, send button with validation (amount > 0, memo length, wallet exists), sending state with spinner, success screen with amount/recipient info and "Back to DashPay" / "Send Another Payment" buttons, error handling with banner display, info popup with payment guidelines, wallet unlock dialog integration. Added route `/dashpay/send-payment/$contactId` with wrapper component. Updated Pay button navigation in ContactDetailsScreen and ContactProfileViewer to use the new route instead of `/dashpay/payments`. Wrote 45 component tests.

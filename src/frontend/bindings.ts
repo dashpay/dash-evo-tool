@@ -1763,6 +1763,20 @@ async parseDocument(input: ParseDocumentInput) : Promise<Result<ParseDocumentOut
 }
 },
 /**
+ * Parse hex-encoded bytes into a GroveDB proof and return its string representation.
+ *
+ * Uses bincode deserialization with big-endian, no-limit config (matching the
+ * egui implementation). The frontend decodes base64/CSV → hex before calling.
+ */
+async parseGrovedbProof(input: ParseGrovedbProofInput) : Promise<Result<ParseGrovedbProofOutput, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("parse_grovedb_proof", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Fetch current epoch info from Platform.
  */
 async platformCurrentEpochInfo() : Promise<DispatchTaskResponse> {
@@ -3031,6 +3045,22 @@ export type ParseDocumentOutput = {
  * Pretty-printed JSON representation of the document.
  */
 json: string }
+/**
+ * Input for parsing a serialized GroveDB proof.
+ */
+export type ParseGrovedbProofInput = {
+/**
+ * Hex-encoded proof bytes.
+ */
+hexData: string }
+/**
+ * Output from successfully parsing a GroveDB proof.
+ */
+export type ParseGrovedbProofOutput = {
+/**
+ * Human-readable string representation of the proof structure.
+ */
+text: string }
 /**
  * Input for pausing tokens.
  */

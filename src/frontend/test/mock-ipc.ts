@@ -2,7 +2,7 @@
  * Centralized Mock IPC Infrastructure
  *
  * Provides a single place to configure mock Tauri IPC command handlers
- * for all 181 commands in bindings.ts. Tests import `createMockBindings()`
+ * for all 182 commands in bindings.ts. Tests import `createMockBindings()`
  * and pass overrides for the specific commands they care about.
  *
  * Usage in a test file:
@@ -204,6 +204,7 @@ export type CommandName =
   // Parsers
   | "parseDataContract"
   | "parseDocument"
+  | "parseGrovedbProof"
   // Platform Info
   | "platformCurrentEpochInfo"
   | "platformTotalCredits"
@@ -510,6 +511,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     // -- Parsers --
     parseDataContract: resolvesOk("parseDataContract", { json: "{}", id: "" }),
     parseDocument: resolvesOk("parseDocument", { json: "{}" }),
+    parseGrovedbProof: resolvesOk("parseGrovedbProof", { text: "" }),
 
     // -- Platform Info --
     platformCurrentEpochInfo: resolves("platformCurrentEpochInfo", { taskId: "mock-task-id" }),

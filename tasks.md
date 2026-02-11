@@ -1039,7 +1039,7 @@
 
   - [x] **9.1e** Implement Document Visualizer screen. Adds searchable contract selector (ComboBox) and document type selector on top of `HexInput`. Parsing via new Tauri command (`parse_document`) requiring contract ID + document type name + bytes. Shows parsed JSON or error. Reference: `document_visualizer_screen.rs`. Write component tests + Tauri command.
 
-  - [ ] **9.1f** Implement Proof Visualizer screen. `HexInput` for GroveDB proof data. Parsing via new Tauri command (`parse_grovedb_proof`) using bincode deserialization on Rust side. Shows proof structure as formatted text. Reference: `proof_visualizer_screen.rs`. Write component tests + Tauri command.
+  - [x] **9.1f** Implement Proof Visualizer screen. `HexInput` for GroveDB proof data. Parsing via new Tauri command (`parse_grovedb_proof`) using bincode deserialization on Rust side. Shows proof structure as formatted text. Reference: `proof_visualizer_screen.rs`. Write component tests + Tauri command.
 
   - [ ] **9.1g** Implement Transition Visualizer screen. `HexInput` for state transition data. Parsing via new Tauri command (`parse_state_transition`) returning JSON + detected contract IDs. Features: contract ID detection with clickable links, fetch-contract confirmation dialog, broadcast button with `broadcastStateTransition` IPC, elapsed time display, success/error toasts with 8-second fade. Reference: `transition_visualizer_screen.rs`. Write component tests + Tauri command.
 
@@ -1141,7 +1141,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 170 |
-| Remaining | 26 |
+| Completed | 171 |
+| Remaining | 25 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

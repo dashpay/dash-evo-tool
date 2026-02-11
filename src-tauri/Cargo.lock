@@ -2131,6 +2131,7 @@ name = "dash-evo-tool-tauri"
 version = "1.0.0-dev"
 dependencies = [
  "base64 0.22.1",
+ "bincode 2.0.1",
  "bip39",
  "crossbeam-channel",
  "dash-evo-tool",

@@ -9,6 +9,7 @@ use crate::state::AppState;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
+use dash_sdk::drive::grovedb::operations::proof::GroveDBProof;
 use dash_sdk::platform::{DataContract, Document, Identifier};
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,22 @@ pub struct ParseDocumentInput {
 pub struct ParseDocumentOutput {
     /// Pretty-printed JSON representation of the document.
     pub json: String,
+}
+
+/// Input for parsing a serialized GroveDB proof.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseGrovedbProofInput {
+    /// Hex-encoded proof bytes.
+    pub hex_data: String,
+}
+
+/// Output from successfully parsing a GroveDB proof.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseGrovedbProofOutput {
+    /// Human-readable string representation of the proof structure.
+    pub text: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +156,33 @@ pub fn parse_document(
     Ok(ParseDocumentOutput { json })
 }
 
+/// Parse hex-encoded bytes into a GroveDB proof and return its string representation.
+///
+/// Uses bincode deserialization with big-endian, no-limit config (matching the
+/// egui implementation). The frontend decodes base64/CSV → hex before calling.
+#[tauri::command]
+#[specta::specta]
+pub fn parse_grovedb_proof(
+    input: ParseGrovedbProofInput,
+) -> Result<ParseGrovedbProofOutput, String> {
+    let bytes = hex::decode(&input.hex_data).map_err(|e| format!("Invalid hex data: {e}"))?;
+
+    if bytes.is_empty() {
+        return Err("No data provided".into());
+    }
+
+    let config = bincode::config::standard()
+        .with_big_endian()
+        .with_no_limit();
+
+    let (proof, _): (GroveDBProof, _) = bincode::decode_from_slice(&bytes, config)
+        .map_err(|e| format!("Deserialization error: {e}"))?;
+
+    Ok(ParseGrovedbProofOutput {
+        text: proof.to_string(),
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -208,5 +252,64 @@ mod tests {
         let json = r#"{"json":"{\"$id\": \"abc\"}"}"#;
         let output: ParseDocumentOutput = serde_json::from_str(json).unwrap();
         assert_eq!(output.json, "{\"$id\": \"abc\"}");
+    }
+
+    #[test]
+    fn parse_grovedb_proof_input_serializes() {
+        let input = ParseGrovedbProofInput {
+            hex_data: "deadbeef".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"hexData\":\"deadbeef\""));
+    }
+
+    #[test]
+    fn parse_grovedb_proof_input_deserializes() {
+        let json = r#"{"hexData":"aabb"}"#;
+        let input: ParseGrovedbProofInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.hex_data, "aabb");
+    }
+
+    #[test]
+    fn parse_grovedb_proof_output_serializes() {
+        let output = ParseGrovedbProofOutput {
+            text: "GroveDBProof { ... }".into(),
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        assert!(json.contains("\"text\":\"GroveDBProof { ... }\""));
+    }
+
+    #[test]
+    fn parse_grovedb_proof_output_deserializes() {
+        let json = r#"{"text":"some proof text"}"#;
+        let output: ParseGrovedbProofOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.text, "some proof text");
+    }
+
+    #[test]
+    fn parse_grovedb_proof_rejects_empty() {
+        let result = parse_grovedb_proof(ParseGrovedbProofInput {
+            hex_data: String::new(),
+        });
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "No data provided");
+    }
+
+    #[test]
+    fn parse_grovedb_proof_rejects_invalid_hex() {
+        let result = parse_grovedb_proof(ParseGrovedbProofInput {
+            hex_data: "xyz".into(),
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid hex data"));
+    }
+
+    #[test]
+    fn parse_grovedb_proof_rejects_invalid_bincode() {
+        let result = parse_grovedb_proof(ParseGrovedbProofInput {
+            hex_data: "deadbeef".into(),
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Deserialization error"));
     }
 }

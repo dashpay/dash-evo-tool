@@ -426,8 +426,8 @@ mod tests {
             "https://insight.dash.org/insight-api",
             9998,
         );
-        // Should not panic — valid address parses successfully
-        let _list = config.dapi_address_list();
+        let list = config.dapi_address_list();
+        assert_eq!(list.len(), 1);
     }
 
     #[test]
@@ -437,8 +437,8 @@ mod tests {
             "https://insight.dash.org/insight-api",
             9998,
         );
-        // Should not panic — valid addresses parse successfully
-        let _list = config.dapi_address_list();
+        let list = config.dapi_address_list();
+        assert_eq!(list.len(), 3);
     }
 
     #[test]

@@ -528,10 +528,10 @@ impl QualifiedIdentity {
     }
 
     /// Deserializes a QualifiedIdentity from a vector of bytes.
-    pub fn from_bytes(bytes: &[u8]) -> Self {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         bincode::decode_from_slice(bytes, bincode::config::standard())
-            .expect("Failed to decode QualifiedIdentity")
-            .0
+            .map(|(identity, _)| identity)
+            .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
 
     pub fn display_string(&self) -> String {

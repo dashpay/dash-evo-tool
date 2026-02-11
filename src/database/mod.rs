@@ -20,6 +20,22 @@ use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{Connection, Params};
 use std::sync::Mutex;
 
+/// Error indicating a corrupted data blob in the database.
+///
+/// Converts into `rusqlite::Error::FromSqlConversionFailure` so it can
+/// be propagated with `?` from any function returning `rusqlite::Result`.
+pub(crate) struct CorruptedBlobError(pub String);
+
+impl From<CorruptedBlobError> for rusqlite::Error {
+    fn from(e: CorruptedBlobError) -> Self {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Blob,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e.0)),
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct Database {
     conn: Mutex<Connection>,

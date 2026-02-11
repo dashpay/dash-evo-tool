@@ -173,7 +173,14 @@ impl Database {
             // Handle NULL status values from older database entries by defaulting to Active (2)
             let status: Option<u8> = row.get(3)?;
 
-            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            Ok((data, alias, wallet_index, status))
+        })?;
+
+        let mut identities = Vec::new();
+        for row in identity_iter {
+            let (data, alias, wallet_index, status) = row?;
+            let mut identity = QualifiedIdentity::from_bytes(&data)
+                .map_err(super::CorruptedBlobError)?;
             identity.alias = alias;
             identity.wallet_index = wallet_index;
 
@@ -199,11 +206,9 @@ impl Database {
             // Assign the top_ups to the identity
             identity.top_ups = top_ups;
 
-            Ok(identity)
-        })?;
-
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
-        identities
+            identities.push(identity);
+        }
+        Ok(identities)
     }
 
     #[allow(dead_code)] // May be used for filtering identities that belong to specific wallets
@@ -231,7 +236,14 @@ impl Database {
             let alias: Option<String> = row.get(1)?;
             let wallet_index: Option<u32> = row.get(2)?;
 
-            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            Ok((data, alias, wallet_index))
+        })?;
+
+        let mut identities = Vec::new();
+        for row in identity_iter {
+            let (data, alias, wallet_index) = row?;
+            let mut identity = QualifiedIdentity::from_bytes(&data)
+                .map_err(super::CorruptedBlobError)?;
             identity.alias = alias;
             identity.wallet_index = wallet_index;
             identity.network = app_context.network;
@@ -255,11 +267,9 @@ impl Database {
             // Assign the top_ups to the identity
             identity.top_ups = top_ups;
 
-            Ok(identity)
-        })?;
-
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
-        identities
+            identities.push(identity);
+        }
+        Ok(identities)
     }
 
     pub fn get_identity_by_id(
@@ -282,12 +292,19 @@ impl Database {
             conn.prepare("SELECT top_up_index, amount FROM top_up WHERE identity_id = ?")?;
 
         // Iterate over each identity
-        let identity_iter = stmt.query_map(params![identifier.to_buffer(), network], |row| {
-            let data: Vec<u8> = row.get(0)?;
-            let alias: Option<String> = row.get(1)?;
-            let wallet_index: Option<u32> = row.get(2)?;
+        let mut identity_iter =
+            stmt.query_map(params![identifier.to_buffer(), network], |row| {
+                let data: Vec<u8> = row.get(0)?;
+                let alias: Option<String> = row.get(1)?;
+                let wallet_index: Option<u32> = row.get(2)?;
 
-            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+                Ok((data, alias, wallet_index))
+            })?;
+
+        if let Some(row) = identity_iter.next() {
+            let (data, alias, wallet_index) = row?;
+            let mut identity = QualifiedIdentity::from_bytes(&data)
+                .map_err(super::CorruptedBlobError)?;
             identity.alias = alias;
             identity.wallet_index = wallet_index;
             identity.network = app_context.network;
@@ -311,11 +328,10 @@ impl Database {
             // Assign the top_ups to the identity
             identity.top_ups = top_ups;
 
-            Ok(identity)
-        })?;
-
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
-        Ok(identities?.into_iter().next())
+            Ok(Some(identity))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn get_local_voting_identities(
@@ -330,14 +346,18 @@ impl Database {
         )?;
         let identity_iter = stmt.query_map(params![network], |row| {
             let data: Vec<u8> = row.get(0)?;
-            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
-            identity.network = app_context.network;
-
-            Ok(identity)
+            Ok(data)
         })?;
 
-        let identities: rusqlite::Result<Vec<QualifiedIdentity>> = identity_iter.collect();
-        identities
+        let mut identities = Vec::new();
+        for row in identity_iter {
+            let data = row?;
+            let mut identity = QualifiedIdentity::from_bytes(&data)
+                .map_err(super::CorruptedBlobError)?;
+            identity.network = app_context.network;
+            identities.push(identity);
+        }
+        Ok(identities)
     }
 
     /// Retrieves all local user identities along with their associated wallet IDs.
@@ -354,18 +374,21 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT data,wallet FROM identity WHERE is_local = 1 AND network = ? AND identity_type = 'User' AND data IS NOT NULL",
         )?;
-        let identities: Result<Vec<(QualifiedIdentity, Option<WalletSeedHash>)>, rusqlite::Error> =
-            stmt.query_map(params![network], |row| {
-                let data: Vec<u8> = row.get(0)?;
-                let wallet_id: Option<WalletSeedHash> = row.get(1)?;
-                let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
-                identity.network = app_context.network;
+        let row_iter = stmt.query_map(params![network], |row| {
+            let data: Vec<u8> = row.get(0)?;
+            let wallet_id: Option<WalletSeedHash> = row.get(1)?;
+            Ok((data, wallet_id))
+        })?;
 
-                Ok((identity, wallet_id))
-            })?
-            .collect();
-
-        identities
+        let mut identities = Vec::new();
+        for row in row_iter {
+            let (data, wallet_id) = row?;
+            let mut identity = QualifiedIdentity::from_bytes(&data)
+                .map_err(super::CorruptedBlobError)?;
+            identity.network = app_context.network;
+            identities.push((identity, wallet_id));
+        }
+        Ok(identities)
     }
 
     /// Deletes a local qualified identity with the given identifier from the database.

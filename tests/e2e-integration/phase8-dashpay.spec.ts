@@ -455,7 +455,7 @@ test.describe("DashPay Add Contact Screen", () => {
     await expect(
       page.getByText("Alice"),
     ).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText("user")).toBeVisible();
+    await expect(page.locator('[data-variant="outline"]').filter({ hasText: "user" })).toBeVisible();
   });
 
   test("validates username format inline", async ({ page, mockIPC }) => {
@@ -562,7 +562,7 @@ test.describe("DashPay Add Contact Screen", () => {
       page.getByRole("heading", { name: "Contacts" }),
     ).toBeVisible({ timeout: 10000 });
 
-    await page.getByRole("button", { name: /add contact/i }).click();
+    await page.getByRole("button", { name: /add contact/i }).first().click();
     await expect(
       page.getByRole("heading", { level: 2, name: "Add Contact" }),
     ).toBeVisible({ timeout: 5000 });

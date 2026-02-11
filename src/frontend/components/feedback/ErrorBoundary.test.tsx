@@ -17,14 +17,6 @@ function ThrowingComponent({ message }: { message: string }): never {
   throw new Error(message);
 }
 
-/** Component that conditionally throws. */
-function ConditionalThrow({ shouldThrow }: { shouldThrow: boolean }) {
-  if (shouldThrow) {
-    throw new Error("conditional error");
-  }
-  return <div>Healthy content</div>;
-}
-
 describe("ErrorBoundary", () => {
   it("renders children when no error occurs", () => {
     render(

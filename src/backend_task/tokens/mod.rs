@@ -183,6 +183,7 @@ pub enum TokenTask {
         distribution_type: TokenDistributionType,
         signing_key: IdentityPublicKey,
         public_note: Option<String>,
+        claim_all: bool,
     },
     EstimatePerpetualTokenRewardsWithExplanation {
         identity_id: Identifier,
@@ -487,18 +488,34 @@ impl AppContext {
                 distribution_type,
                 signing_key,
                 public_note,
-            } => self
-                .claim_all_tokens(
-                    data_contract.clone(),
-                    *token_position,
-                    actor_identity,
-                    *distribution_type,
-                    signing_key.clone(),
-                    public_note.clone(),
-                    sdk,
-                )
-                .await
-                .map_err(|e| format!("Failed to claim tokens: {e}")),
+                claim_all,
+            } => {
+                if *claim_all {
+                    self.claim_all_tokens(
+                        data_contract.clone(),
+                        *token_position,
+                        actor_identity,
+                        *distribution_type,
+                        signing_key.clone(),
+                        public_note.clone(),
+                        sdk,
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to claim all tokens: {e}"))
+                } else {
+                    self.claim_token(
+                        data_contract.clone(),
+                        *token_position,
+                        actor_identity,
+                        *distribution_type,
+                        signing_key.clone(),
+                        public_note.clone(),
+                        sdk,
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to claim tokens: {e}"))
+                }
+            }
             TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                 identity_id,
                 token_id,

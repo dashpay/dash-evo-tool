@@ -56,7 +56,7 @@ struct TestnetNodes {
 
 fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
     let file_content = fs::read_to_string(file_path).ok()?;
-    serde_yaml::from_str(&file_content).expect("expected proper yaml")
+    serde_yaml_ng::from_str(&file_content).expect("expected proper yaml")
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

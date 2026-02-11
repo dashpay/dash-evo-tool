@@ -3,7 +3,7 @@ name: Clippy
 on:
   push:
     branches:
-      - master
+      - main
       - "v*-dev"
   pull_request:
 
@@ -54,10 +54,11 @@ jobs:
             ${{ runner.os }}-cargo-registry-
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rs/toolchain@v1
         with:
-          toolchain: "1.92"
+          toolchain: 1.92
           components: clippy, rustfmt
+          override: true
 
       - name: Install system dependencies
         run: |
@@ -77,4 +78,8 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-features --all-targets -- -D warnings
+        uses: actions-rs/clippy-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          args: --all-features --all-targets -- -D warnings
+          name: Clippy Report

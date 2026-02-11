@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 161 — 2026-02-10
+**Task:** 7.5.4c Add IPC assertion tests for 14 commonly-used but untested commands
+**What was done:** Created two test files covering all 14 untested IPC commands. `ipc-commands-coverage.test.ts` (56 tests) provides direct unit tests for all 14 commands: identity search ops (identitySearchFromWallet, identitySearchUpToIndex, identitySearchByDpnsName), identity sign (identitySignMessage), wallet platform ops (walletFetchPlatformAddressBalances, walletBootstrapAddresses, walletStartSpv), core chain ops (coreGetBestChainLock, coreGetBestChainLocks, coreRecoverAssetLocks), settings mutations (settingsUpdatePassword, settingsUpdateAutoStartSpv), and context ops (contextGetFeeMultiplier, contextSetFeeMultiplier). Tests cover success paths, error handling, argument shapes, and edge cases. `ipc-screen-integration.test.tsx` (8 tests) provides screen-level integration tests verifying commands are wired correctly in LoadIdentityScreen (search from wallet, search by DPNS name, batch search), NetworkChooserScreen (coreGetBestChainLocks polling, settingsUpdateAutoStartSpv), WalletsScreen (coreRecoverAssetLocks), and KeyInfoScreen (identitySignMessage). All 3774 tests pass, lint clean, typecheck clean.
+**Files changed:** src/frontend/test/ipc-commands-coverage.test.ts (new), src/frontend/test/ipc-screen-integration.test.tsx (new), tasks.md, activity.md
+**Tests added:** 64 new tests (56 command-level + 8 screen integration)
+**Sub-tasks created:** 0
+
 ## Run 160 — 2026-02-10
 **Task:** 7.5.4a Fix 15 failing token E2E integration tests + 7.5.4b Fix 2 failing tools tests
 **What was done:** Diagnosed and fixed 15 failing token E2E integration tests plus 2 tools landing page tests. Root causes: (1) `TokenOperationForm` cancel button text said "Cancel" instead of "Back to Tokens" — changed to match success/error screens, (2) `TokenCreatorScreen` passed children to `PageHeader` which only accepts `actions` prop — fixed to use `actions`, (3) `formatTokenBalance` crashed with `padStart is not a function` when balance was a number from URL params — made defensive with `String()` conversion, (4) Purchase amount test `.or()` matched 2 elements in strict mode — simplified to use single testid. Tools tests passed after ensuring `VITE_E2E_MOCK=true` environment variable is set. All 365 E2E integration tests pass, all 3710 component tests pass.

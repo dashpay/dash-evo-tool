@@ -847,7 +847,7 @@
   **Fix sub-tasks:**
   - [x] **7.5.4a** Fix 15 failing token E2E integration tests: all token action screen tests checking "Back to Tokens" button are failing. Investigate navigation button rendering in token operation screens (TokenOperationForm or shared layout). Fix the UI regression and verify all 15 tests pass. (P1)
   - [x] **7.5.4b** Fix 2 failing tools landing page E2E integration tests: "renders all 9 tool cards" and "renders tool descriptions" fail with `waitForInit` timeout in `fixtures.ts:44`. Fix mock IPC initialization race condition for tools routes. (P1)
-  - [ ] **7.5.4c** Add IPC assertion tests for 14 commonly-used but untested commands: identity search ops (`identitySearchFromWallet`, `identitySearchUpToIndex`, `identitySearchByDpnsName`), identity sign (`identitySignMessage`), wallet platform ops (`walletFetchPlatformAddressBalances`, `walletBootstrapAddresses`, `walletStartSpv`), core chain ops (`coreGetBestChainLock`, `coreGetBestChainLocks`, `coreRecoverAssetLocks`), settings mutations (`settingsUpdatePassword`, `settingsUpdateAutoStartSpv`), context ops (`contextGetFeeMultiplier`, `contextSetFeeMultiplier`). Add targeted component or E2E tests that invoke and assert these commands. (P2)
+  - [x] **7.5.4c** Add IPC assertion tests for 14 commonly-used but untested commands: identity search ops (`identitySearchFromWallet`, `identitySearchUpToIndex`, `identitySearchByDpnsName`), identity sign (`identitySignMessage`), wallet platform ops (`walletFetchPlatformAddressBalances`, `walletBootstrapAddresses`, `walletStartSpv`), core chain ops (`coreGetBestChainLock`, `coreGetBestChainLocks`, `coreRecoverAssetLocks`), settings mutations (`settingsUpdatePassword`, `settingsUpdateAutoStartSpv`), context ops (`contextGetFeeMultiplier`, `contextSetFeeMultiplier`). Add targeted component or E2E tests that invoke and assert these commands. (P2)
 
 ---
 
@@ -1141,7 +1141,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 121 |
-| Remaining | 9 |
+| Completed | 122 |
+| Remaining | 8 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

@@ -405,7 +405,7 @@ impl NetworkChooserScreen {
                             updated_local_config.clone(),
                         );
                         if let Err(e) = config.save() {
-                            eprintln!("Failed to save config to .env: {e}");
+                            tracing::error!("Failed to save config to .env: {e}");
                         }
 
                         // Update our local AppContext in memory
@@ -420,7 +420,10 @@ impl NetworkChooserScreen {
                             if let Err(e) =
                                 Arc::clone(local_app_context).reinit_core_client_and_sdk()
                             {
-                                eprintln!("Failed to re-init local RPC client and sdk: {}", e);
+                                tracing::error!(
+                                    "Failed to re-init local RPC client and sdk: {}",
+                                    e
+                                );
                             } else {
                                 // Trigger SwitchNetworks
                                 app_action = AppAction::SwitchNetwork(Network::Regtest);
@@ -951,7 +954,7 @@ impl NetworkChooserScreen {
                         if let Ok(mut config) = Config::load() {
                             config.developer_mode = Some(self.developer_mode);
                             if let Err(e) = config.save() {
-                                eprintln!("Failed to save config: {e}");
+                                tracing::error!("Failed to save config: {e}");
                             }
                         }
 

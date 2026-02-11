@@ -371,7 +371,7 @@ impl GroveSTARKProver {
 
         // Step 9: Generate the STARK proof
         tracing::info!("Generating STARK proof (this normally takes around 10 seconds)...");
-        eprintln!("Rayon thread pool size: {}", rayon::current_num_threads());
+        tracing::debug!("Rayon thread pool size: {}", rayon::current_num_threads());
         let proof = self
             .prover
             .prove(witness, public_inputs.clone())

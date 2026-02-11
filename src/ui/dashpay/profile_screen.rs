@@ -462,7 +462,7 @@ impl ProfileScreen {
                     Self::process_avatar_bytes_async(ctx_clone, url_clone, image_bytes, true);
                 }
                 Err(e) => {
-                    eprintln!("Failed to fetch avatar image: {}", e);
+                    tracing::warn!("Failed to fetch avatar image: {}", e);
                 }
             }
         });
@@ -1424,7 +1424,7 @@ impl ProfileScreen {
                             Some(&avatar_url),
                             None, // public_message not used in profile screen yet
                         ) {
-                            eprintln!("Failed to cache profile in database: {}", e);
+                            tracing::error!("Failed to cache profile in database: {}", e);
                         }
                     }
                     // Profile loaded successfully - no need to show a message
@@ -1448,7 +1448,10 @@ impl ProfileScreen {
                             None, // avatar_url
                             None, // public_message
                         ) {
-                            eprintln!("Failed to cache 'no profile' state in database: {}", e);
+                            tracing::error!(
+                                "Failed to cache 'no profile' state in database: {}",
+                                e
+                            );
                         }
                     }
                     // Don't show a message - let the UI show "Create Profile" button

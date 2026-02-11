@@ -281,7 +281,7 @@ impl ContactsList {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to fetch contact avatar image: {}", e);
+                    tracing::warn!("Failed to fetch contact avatar image: {}", e);
                 }
             }
         });

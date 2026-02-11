@@ -264,7 +264,7 @@ impl ImportMnemonicScreen {
                 wallets.insert(new_wallet_seed_hash, wallet_arc.clone());
                 self.app_context.has_wallet.store(true, Ordering::Relaxed);
             } else {
-                eprintln!("Failed to acquire write lock on wallets");
+                tracing::error!("Failed to acquire write lock on wallets");
             }
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet

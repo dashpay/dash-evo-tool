@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 170 — 2026-02-10
+**Task:** 8.3d Implement PaymentHistory component
+**What was done:** Created `PaymentHistoryScreen` component for the DashPay payment history tab. Features: identity-aware loading (auto-loads from local DB on mount/identity change), Refresh button to fetch from Platform (async task with refreshing state), payment card list with direction indicators (incoming green ⬇ / outgoing red ⬆), contact name resolution (displayName → username → truncated ID fallback), amount display in Dash format with +/- color coding, memo display in italics with quotes, truncated transaction ID with copy-to-clipboard button, relative timestamp formatting (just now, Xm/Xh/Xd ago, date for older), status badge for non-confirmed payments, error banner, empty state, loading spinner. Updated route from placeholder to real component. Updated E2E test to check for "Payment History" heading instead of placeholder text. Fixed pre-existing mock-ipc test count mismatch (181→182).
+**Files changed:** src/frontend/screens/PaymentHistoryScreen.tsx (new), src/frontend/screens/PaymentHistoryScreen.test.tsx (new), src/frontend/routes.tsx (updated), tests/e2e-integration/phase8-dashpay.spec.ts (updated), src/frontend/test/mock-ipc.test.ts (fix count)
+**Tests added:** 33 component tests — no identity state (1), loading states (2), empty state (1), header (3), error display (2), payment card rendering (8), contact name resolution (3), multiple payments (1), copy txId (1), data loading (2), timestamp formatting (4), accessibility (4)
+**Sub-tasks created:** 0
+
 ## Run 151 — 2026-02-10
 **Task:** 9.5 [REVIEW] Tools screens functionality parity
 **What was done:** Audited all implemented tools screens (6 of 10) against egui originals for functionality parity, test coverage, and UI quality. PlatformInfoScreen (7 query types, two-column layout), AddressBalanceScreen (validation, fetch, result display), ContractVisualizerScreen (hex/base64/CSV input, JSON output), DocumentVisualizerScreen (contract/doc type selectors, parsing), ProofVisualizerScreen (proof deserialization), and ToolsScreen landing page (card grid) all have full or enhanced parity. 151 tests across 9 files. No fix tasks needed for implemented screens. 4 screens remain unimplemented (Transition Visualizer, Proof Log, GroveSTARK, Masternode List Diff) — tracked by existing tasks 9.1g–9.1n.

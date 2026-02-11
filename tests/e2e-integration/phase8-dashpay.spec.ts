@@ -310,14 +310,14 @@ test.describe("DashPay Contacts Route", () => {
 });
 
 test.describe("DashPay Payments Route", () => {
-  test("renders DashPay Payments placeholder", async ({ page, mockIPC }) => {
+  test("renders Payment History screen", async ({ page, mockIPC }) => {
     await mockIPC.navigateWithHandlers(
       "/dashpay/payments",
       dashpayWithIdentityHandlers(),
     );
 
     await expect(
-      page.getByText(/will be implemented/i),
+      page.getByText("Payment History"),
     ).toBeVisible({ timeout: 10000 });
   });
 });

@@ -61,6 +61,7 @@ import { ContactDetailsScreen } from "@/screens/ContactDetailsScreen";
 import { ContactProfileViewer } from "@/screens/ContactProfileViewer";
 import { ContactInfoEditorScreen } from "@/screens/ContactInfoEditorScreen";
 import { SendPaymentScreen } from "@/screens/SendPaymentScreen";
+import { PaymentHistoryScreen } from "@/screens/PaymentHistoryScreen";
 import { Island } from "@/components/layout/Island";
 
 // Placeholder screen components — each renders a simple page for now,
@@ -163,7 +164,7 @@ const dashpayContactsRoute = createRoute({
 const dashpayPaymentsRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/payments",
-  component: () => <DashPayPlaceholder title="Payment History" />,
+  component: PaymentHistoryScreen,
 });
 
 const dashpaySearchRoute = createRoute({

@@ -979,7 +979,7 @@
     Reference: `send_payment.rs` (lines 1-472)
     Write component tests.
 
-  - [ ] **8.3d Implement PaymentHistory component** (P2)
+  - [x] **8.3d Implement PaymentHistory component** (P2)
     Build the payment history tab:
     - Identity selector
     - Payment record cards: avatar placeholder, direction indicator (⬇ incoming / ⬆ outgoing), contact name, amount (+/- with color), memo (italic), tx ID (monospace), timestamp
@@ -1143,7 +1143,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 172 |
-| Remaining | 24 |
+| Completed | 173 |
+| Remaining | 23 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

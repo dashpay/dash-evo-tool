@@ -108,8 +108,8 @@
   --popover: #ffffff;              /* DashColors::SURFACE */
   --popover-foreground: #111921;   /* DashColors::TEXT_PRIMARY */
 
-  /* --- Primary: Dash Blue --- */
-  --primary: #008de4;              /* DashColors::DASH_BLUE rgb(0,141,228) */
+  /* --- Primary: Dash Blue (darkened for WCAG AA 4.5:1 contrast with white) --- */
+  --primary: #006db5;              /* Dash Blue adjusted for a11y (was #008de4) */
   --primary-foreground: #ffffff;   /* DashColors::WHITE */
 
   /* --- Secondary --- */
@@ -130,7 +130,7 @@
   /* --- Borders & Inputs --- */
   --border: #e2e8f0;               /* DashColors::BORDER rgb(226,232,240) */
   --input: #e2e8f0;                /* DashColors::BORDER */
-  --ring: #008de4;                 /* Dash Blue for focus rings */
+  --ring: #006db5;                 /* Dash Blue for focus rings */
 
   /* --- Semantic Status Colors --- */
   --success: #27ae60;              /* DashColors::SUCCESS rgb(39,174,96) */
@@ -156,12 +156,12 @@
   /* --- Sidebar (slightly elevated surface) --- */
   --sidebar: #f8fafc;              /* DashColors::INPUT_BACKGROUND */
   --sidebar-foreground: #111921;   /* DashColors::TEXT_PRIMARY */
-  --sidebar-primary: #008de4;      /* Dash Blue */
+  --sidebar-primary: #006db5;      /* Dash Blue (a11y adjusted) */
   --sidebar-primary-foreground: #ffffff;
   --sidebar-accent: #c8dcfa;       /* DashColors::HOVER */
   --sidebar-accent-foreground: #111921;
   --sidebar-border: #e2e8f0;       /* DashColors::BORDER */
-  --sidebar-ring: #008de4;         /* Dash Blue */
+  --sidebar-ring: #006db5;         /* Dash Blue */
 }
 
 /* ============================================================
@@ -293,6 +293,21 @@
   }
 }
 
+/* ============================================================
+   REDUCED MOTION — Respect user's motion preferences
+   Disables non-essential animations for vestibular disorder users
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -398,5 +413,15 @@
   /* === Network Badge (pill with network accent color) === */
   .network-badge {
     @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium text-white;
+  }
+
+  /* === Skip to Main Content (a11y) === */
+  .skip-to-main {
+    @apply fixed left-2 top-2 z-[100] -translate-y-16 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-lg transition-transform focus:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring;
+  }
+
+  /* === Keyboard Shortcut Hint (a11y) === */
+  .kbd {
+    @apply inline-flex h-5 items-center justify-center rounded border border-border bg-muted px-1.5 text-[11px] font-mono font-medium text-muted-foreground;
   }
 }

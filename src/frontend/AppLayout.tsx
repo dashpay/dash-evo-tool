@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { AppShell } from "@/components/layout";
 import { Sidebar, TopBar, getActiveSectionFromPath, navItems } from "@/components/navigation";
@@ -6,6 +6,7 @@ import type { BreadcrumbItem } from "@/components/navigation";
 import type { NetworkDto } from "@/bindings";
 import { commands, events } from "@/bindings";
 import type { ZmqConnectionStatusEvent } from "@/bindings";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 
 /** Build breadcrumbs from the current route path */
 function buildBreadcrumbs(
@@ -114,6 +115,25 @@ export function AppLayout() {
       // Ignore errors (no Dash-Qt configured)
     });
   }, []);
+
+  // Global keyboard shortcuts: number keys 1-7 navigate to sidebar sections,
+  // [ and ] collapse/expand sidebar
+  const shortcuts = useMemo(
+    () => [
+      ...navItems.map((item, index) => ({
+        key: String(index + 1),
+        description: `Navigate to ${item.label}`,
+        action: () => handleNavigate(item.path),
+      })),
+      {
+        key: "[",
+        description: "Toggle sidebar collapsed",
+        action: () => setCollapsed((c) => !c),
+      },
+    ],
+    [handleNavigate],
+  );
+  useKeyboardShortcuts(shortcuts);
 
   return (
     <AppShell

@@ -56,4 +56,29 @@ describe("AppShell", () => {
     const root = container.firstChild as HTMLElement;
     expect(root).toHaveClass("h-screen", "w-screen");
   });
+
+  it("renders a skip-to-main-content link", () => {
+    render(
+      <AppShell sidebar={<div>Nav</div>}>
+        <div>Content</div>
+      </AppShell>,
+    );
+
+    const skipLink = screen.getByText("Skip to main content");
+    expect(skipLink).toBeInTheDocument();
+    expect(skipLink.tagName).toBe("A");
+    expect(skipLink).toHaveAttribute("href", "#main-content");
+    expect(skipLink).toHaveClass("skip-to-main");
+  });
+
+  it("main content has id for skip link target", () => {
+    render(
+      <AppShell sidebar={<div>Nav</div>}>
+        <div>Content</div>
+      </AppShell>,
+    );
+
+    const main = screen.getByRole("main");
+    expect(main).toHaveAttribute("id", "main-content");
+  });
 });

@@ -1119,21 +1119,15 @@ function AssetLockPanel({
         {assetLocks.map((lock) => {
           const isSelected = lock.txid === selectedTxid;
           return (
-            <div
+            <button
+              type="button"
               key={lock.txid}
-              className={`flex items-center justify-between p-3 border-b last:border-b-0 cursor-pointer hover:bg-muted/50 transition-colors ${
+              className={`flex w-full items-center justify-between p-3 border-b last:border-b-0 cursor-pointer hover:bg-muted/50 transition-colors text-left ${
                 isSelected ? "bg-primary/5 border-l-2 border-l-primary" : ""
               }`}
               onClick={() => !disabled && onSelect(lock.txid)}
               data-testid={`asset-lock-${lock.txid.slice(0, 8)}`}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  if (!disabled) onSelect(lock.txid);
-                }
-              }}
+              disabled={disabled}
             >
               <div className="space-y-0.5">
                 <p className="text-sm font-mono">
@@ -1156,7 +1150,7 @@ function AssetLockPanel({
                   <Badge className="text-xs bg-primary">Selected</Badge>
                 )}
               </div>
-            </div>
+            </button>
           );
         })}
       </div>

@@ -809,9 +809,14 @@ describe("ContractTreePanel", () => {
 
   // ─── Accessibility ───────────────────────────────────────────────
 
-  it("has accessible tree role", () => {
-    renderPanel();
+  it("has accessible tree role when contracts are loaded", () => {
+    renderPanel({ contracts: [makeSummary()] });
     expect(screen.getByRole("tree")).toBeInTheDocument();
+  });
+
+  it("omits tree role when no contracts are loaded", () => {
+    renderPanel({ contracts: [] });
+    expect(screen.queryByRole("tree")).not.toBeInTheDocument();
   });
 
   it("search input has aria-label", () => {

@@ -406,7 +406,7 @@ export function ContractTreePanel({
 
       {/* Tree content */}
       <ScrollArea className="flex-1">
-        <div className="p-2" role="tree" aria-label="Contract browser">
+        <div className="p-2" role={filteredContracts.length > 0 ? "tree" : undefined} aria-label={filteredContracts.length > 0 ? "Contract browser" : undefined}>
           {loading ? (
             <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
               Loading contracts...

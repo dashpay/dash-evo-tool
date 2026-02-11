@@ -21,13 +21,18 @@ export function AppShell({ sidebar, children, className }: AppShellProps) {
         className,
       )}
     >
+      {/* Skip to main content link — visible only on focus for keyboard users */}
+      <a href="#main-content" className="skip-to-main">
+        Skip to main content
+      </a>
+
       {/* Sidebar region — fixed width, full height, no scroll at this level */}
       <aside className="flex-shrink-0" role="navigation" aria-label="Main navigation">
         {sidebar}
       </aside>
 
       {/* Content region — fills remaining width, manages its own scrolling */}
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden" role="main">
+      <main id="main-content" className="flex min-w-0 flex-1 flex-col overflow-hidden" role="main">
         {children}
       </main>
     </div>

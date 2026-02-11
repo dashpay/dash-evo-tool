@@ -900,7 +900,19 @@ impl ProfileScreen {
                                     ui.add_space(8.0);
                                     ui.horizontal(|ui| {
                                         if ui.button("Cancel").clicked() {
-                                            self.cancel_editing();
+                                            if self.has_unsaved_changes {
+                                                self.confirmation_dialog = Some(
+                                                    ConfirmationDialog::new(
+                                                        "Discard Changes?",
+                                                        "You have unsaved profile changes. Are you sure you want to discard them?",
+                                                    )
+                                                    .confirm_text(Some("Discard"))
+                                                    .cancel_text(Some("Keep Editing"))
+                                                    .danger_mode(true),
+                                                );
+                                            } else {
+                                                self.cancel_editing();
+                                            }
                                         }
                                         ui.add_space(10.0);
                                         if ui.button("Unlock Wallet").clicked() {
@@ -1353,10 +1365,8 @@ impl ProfileScreen {
         }
 
         // Show confirmation dialog for discarding unsaved changes
-        if self.confirmation_dialog.is_some() {
-            let dialog = self.confirmation_dialog.as_mut().unwrap();
-            let response = dialog.show(ui);
-            match response.inner.dialog_response {
+        if let Some(dialog) = self.confirmation_dialog.as_mut() {
+            match dialog.show(ui).inner.dialog_response {
                 Some(ConfirmationStatus::Confirmed) => {
                     self.confirmation_dialog = None;
                     self.cancel_editing();

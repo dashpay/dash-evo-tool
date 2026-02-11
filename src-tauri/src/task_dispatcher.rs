@@ -324,7 +324,9 @@ pub fn start_zmq_forwarding(
                                 network: net_dto,
                                 txid,
                                 raw_tx: serialize_tx_hex(tx),
+                                raw_is_lock: serialize_consensus_hex(is_lock),
                                 affected_utxo_count: utxos.len() as u32,
+                                is_valid: true, // Passed finality check
                             }
                             .emit(&handle_msg);
                         }
@@ -338,13 +340,24 @@ pub fn start_zmq_forwarding(
                         tracing::error!("Failed to process chain-locked transaction: {}", e);
                     }
                 }
-                ZMQMessage::ChainLockedBlock(ref block, ref _chain_lock) => {
+                ZMQMessage::ChainLockedBlock(ref block, ref chain_lock) => {
                     let block_hash = format!("{}", block.block_hash());
+                    let tx_ids: Vec<String> = block
+                        .txdata
+                        .iter()
+                        .map(|tx| format!("{}", tx.txid()))
+                        .collect();
+                    let signature = hex::encode(chain_lock.signature.to_bytes());
                     let _ = ZmqChainLockedBlockEvent {
                         network: net_dto,
                         block_height: block.bip34_block_height().unwrap_or(0) as u32,
                         block_hash,
                         tx_count: block.txdata.len() as u32,
+                        tx_ids,
+                        raw_block: serialize_consensus_hex(block),
+                        raw_chain_lock: serialize_consensus_hex(chain_lock),
+                        signature,
+                        is_valid: true, // Received via ZMQ — assumed valid
                     }
                     .emit(&handle_msg);
                 }
@@ -531,6 +544,13 @@ fn convert_spv_status(status: dash_evo_tool::spv::SpvStatus) -> SpvStatusDto {
 fn serialize_tx_hex(tx: &dash_sdk::dpp::dashcore::Transaction) -> String {
     let mut buf = Vec::new();
     tx.consensus_encode(&mut buf).unwrap_or_default();
+    hex::encode(&buf)
+}
+
+/// Serialize any consensus-encodable type to hex string.
+fn serialize_consensus_hex<T: Encodable>(item: &T) -> String {
+    let mut buf = Vec::new();
+    item.consensus_encode(&mut buf).unwrap_or_default();
     hex::encode(&buf)
 }
 

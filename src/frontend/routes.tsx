@@ -68,19 +68,7 @@ import { ProfileSearchScreen } from "@/screens/ProfileSearchScreen";
 import { QRCodeGeneratorScreen } from "@/screens/QRCodeGeneratorScreen";
 import { QRScannerScreen } from "@/screens/QRScannerScreen";
 import { GroveSTARKScreen } from "@/screens/GroveSTARKScreen";
-
-// Placeholder screen components — each renders a simple page for now,
-// to be replaced with full implementations in later phases.
-function PlaceholderScreen({ title }: { title: string }) {
-  return (
-    <div className="flex flex-1 items-center justify-center text-muted-foreground">
-      <div className="text-center">
-        <h2 className="text-2xl font-bold text-foreground">{title}</h2>
-        <p className="mt-2 text-sm">This screen will be implemented in a future phase.</p>
-      </div>
-    </div>
-  );
-}
+import { MasternodeListDiffScreen } from "@/screens/MasternodeListDiffScreen";
 
 // Root route — just renders children (either welcome or app shell)
 const rootRoute = createRootRoute({
@@ -540,7 +528,7 @@ const toolsProofVisualizerRoute = createRoute({
 const toolsMnListRoute = createRoute({
   getParentRoute: () => toolsRoute,
   path: "/masternode-list",
-  component: () => <PlaceholderScreen title="Masternode List Diff" />,
+  component: MasternodeListDiffScreen,
 });
 
 const toolsContractRoute = createRoute({

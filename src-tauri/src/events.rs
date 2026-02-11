@@ -63,8 +63,12 @@ pub struct ZmqIsLockedTransactionEvent {
     pub txid: String,
     /// Serialized transaction data (hex).
     pub raw_tx: String,
+    /// Serialized InstantLock data (hex).
+    pub raw_is_lock: String,
     /// Number of UTXOs affected by this transaction.
     pub affected_utxo_count: u32,
+    /// Whether the InstantSend lock signature was verified successfully.
+    pub is_valid: bool,
 }
 
 /// Emitted when a chain-locked block is received via ZMQ.
@@ -79,6 +83,16 @@ pub struct ZmqChainLockedBlockEvent {
     pub block_hash: String,
     /// Number of transactions in the block.
     pub tx_count: u32,
+    /// Transaction IDs in this block (hex).
+    pub tx_ids: Vec<String>,
+    /// Serialized block data (hex).
+    pub raw_block: String,
+    /// Serialized ChainLock signature data (hex).
+    pub raw_chain_lock: String,
+    /// ChainLock signature (hex).
+    pub signature: String,
+    /// Whether the chain lock signature was verified successfully.
+    pub is_valid: bool,
 }
 
 /// Emitted when ZMQ connection status changes.

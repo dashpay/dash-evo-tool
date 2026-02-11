@@ -4719,7 +4719,27 @@ blockHash: string;
 /**
  * Number of transactions in the block.
  */
-txCount: number }
+txCount: number;
+/**
+ * Transaction IDs in this block (hex).
+ */
+txIds: string[];
+/**
+ * Serialized block data (hex).
+ */
+rawBlock: string;
+/**
+ * Serialized ChainLock signature data (hex).
+ */
+rawChainLock: string;
+/**
+ * ChainLock signature (hex).
+ */
+signature: string;
+/**
+ * Whether the chain lock signature was verified successfully.
+ */
+isValid: boolean }
 /**
  * Emitted when ZMQ connection status changes.
  */
@@ -4749,9 +4769,17 @@ txid: string;
  */
 rawTx: string;
 /**
+ * Serialized InstantLock data (hex).
+ */
+rawIsLock: string;
+/**
  * Number of UTXOs affected by this transaction.
  */
-affectedUtxoCount: number }
+affectedUtxoCount: number;
+/**
+ * Whether the InstantSend lock signature was verified successfully.
+ */
+isValid: boolean }
 
 /** tauri-specta globals **/
 

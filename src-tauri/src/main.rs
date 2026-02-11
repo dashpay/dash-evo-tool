@@ -525,19 +525,30 @@ mod tests {
             network: NetworkDto::Dash,
             txid: "abc123".into(),
             raw_tx: "deadbeef".into(),
+            raw_is_lock: "aabb".into(),
             affected_utxo_count: 3,
+            is_valid: true,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"affectedUtxoCount\":3"));
+        assert!(json.contains("\"rawIsLock\":\"aabb\""));
+        assert!(json.contains("\"isValid\":true"));
 
         let event = ZmqChainLockedBlockEvent {
             network: NetworkDto::Dash,
             block_height: 500000,
             block_hash: "def456".into(),
             tx_count: 12,
+            tx_ids: vec!["tx1".into(), "tx2".into()],
+            raw_block: "ccdd".into(),
+            raw_chain_lock: "eeff".into(),
+            signature: "sig123".into(),
+            is_valid: true,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"blockHeight\":500000"));
+        assert!(json.contains("\"rawBlock\":\"ccdd\""));
+        assert!(json.contains("\"rawChainLock\":\"eeff\""));
 
         let event = ZmqConnectionStatusEvent {
             network: NetworkDto::Testnet,

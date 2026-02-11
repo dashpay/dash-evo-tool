@@ -1053,7 +1053,7 @@
 
   - [x] **9.1k** Implement GroveSTARK screen — Verify mode. Multiline input for proof (base64 or JSON). Verify button dispatches `grovestarkVerifyProof`. Results: green "PROOF IS VALID" card with details grid (verified_at, contract, security_level) + copy button, or red "PROOF IS INVALID" card with error reason + collapsible technical details. Reference: `grovestark_screen.rs`. Write component tests.
 
-  - [ ] **9.1l** Implement Masternode List Diff screen — Core Items tab. 3-column layout: (1) ChainLocked Blocks list with validation status icons, (2) Instant Send Transactions list with validation status, (3) Detail panel showing serialized block/transaction data. Selectable rows in both lists. Data comes from ZMQ listener events. Reference: `masternode_list_diff_screen/core_items_tab.rs`. Write component tests.
+  - [x] **9.1l** Implement Masternode List Diff screen — Core Items tab. 3-column layout: (1) ChainLocked Blocks list with validation status icons, (2) Instant Send Transactions list with validation status, (3) Detail panel showing serialized block/transaction data. Selectable rows in both lists. Data comes from ZMQ listener events. Reference: `masternode_list_diff_screen/core_items_tab.rs`. Write component tests.
 
   - [ ] **9.1m** Implement Masternode List Diff screen — QR Info tab. File open/save via Tauri dialog API for .dat files. Left panel: selectable QRInfo fields list (snapshots, diffs at various heights). Middle panel: items for selected field. Right panel: detail view for selected item (snapshot, diff, or quorum entry). Supports consensus and bincode file formats. Reference: `masternode_list_diff_screen/qr_info_tab.rs`. Write component tests.
 
@@ -1145,7 +1145,7 @@
 | META tasks | 13 |
 | REVIEW tasks | 12 |
 | Implementation tasks | 93 |
-| Completed | 181 |
-| Remaining | 15 |
+| Completed | 182 |
+| Remaining | 14 |
 
 *Note: Phase 7.5 (E2E Testing Infrastructure) added 13 new tasks across 3 layers. META tasks will expand into sub-tasks. The actual task count will grow significantly as META tasks are completed. Estimated total including sub-tasks: 160-260.*

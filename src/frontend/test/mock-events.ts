@@ -54,6 +54,11 @@ export interface ZmqChainLockedBlockPayload {
   blockHeight: number;
   blockHash: string;
   txCount: number;
+  txIds: string[];
+  rawBlock: string;
+  rawChainLock: string;
+  signature: string;
+  isValid: boolean;
 }
 
 export interface ZmqConnectionStatusPayload {
@@ -65,7 +70,9 @@ export interface ZmqIsLockedTransactionPayload {
   network: string;
   txid: string;
   rawTx: string;
+  rawIsLock: string;
   utxoCount: number;
+  isValid: boolean;
 }
 
 export interface ScheduledVoteExecutedPayload {

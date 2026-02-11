@@ -1,5 +1,12 @@
 # Activity Log
 
+## Run 180 — 2026-02-10
+**Task:** 9.1l — Implement Masternode List Diff screen — Core Items tab
+**What was done:** Built the Masternode List Diff screen with Core Items tab featuring a 3-column layout: (1) ChainLocked Blocks list with validation status icons sorted descending by height, (2) Instant Send Transactions list with validation status, (3) Detail panel showing block/transaction metadata, quorum signatures, block transactions, and raw serialized hex data with copy buttons. Enhanced ZMQ events (`ZmqChainLockedBlockEvent` and `ZmqIsLockedTransactionEvent`) to include raw block/chain-lock/instant-lock data, transaction IDs, signatures, and validation status. Regenerated TypeScript bindings. Replaced the placeholder route with the real screen. Added tab structure with disabled QR Info and Quorum Viewer placeholders for future tasks 9.1m/9.1n.
+**Files changed:** src-tauri/src/events.rs, src-tauri/src/task_dispatcher.rs, src-tauri/src/main.rs, src/frontend/bindings.ts, src/frontend/screens/MasternodeListDiffScreen.tsx (new), src/frontend/screens/MasternodeListDiffScreen.test.tsx (new), src/frontend/routes.tsx, src/frontend/test/mock-events.ts, src/frontend/test/mock-events.test.ts, tasks.md, activity.md
+**Tests added:** 25 component tests covering rendering, tab state, empty states, ZMQ event handling (chain-lock blocks and IS-locked transactions), selection and detail display, validation badges, raw data display, block deduplication, and selection switching
+**Sub-tasks created:** 0
+
 ## Run 179 — 2026-02-10
 **Task:** 9.1k — Implement GroveSTARK screen — Verify mode
 **What was done:** Replaced the Verify mode placeholder with a full implementation: multiline textarea for proof input (supports Base64-encoded JSON and raw JSON), client-side proof parsing with validation (checks proof, public_inputs, metadata fields), IPC dispatch to `grovestarkVerifyProof` with structured hex-encoded fields, verifying spinner with elapsed time, green "PROOF IS VALID" card with details grid (Verified At, Document Exists, Key Control, Contract, Security Level) and copy result button, red "PROOF IS INVALID" card with error reason and collapsible technical details, parse error handling with dismissible alerts, and Verify Another/Try Another reset buttons.

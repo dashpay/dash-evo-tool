@@ -124,6 +124,11 @@ describe("mock-events", () => {
         blockHeight: 999,
         blockHash: "00aabb",
         txCount: 5,
+        txIds: ["tx1", "tx2"],
+        rawBlock: "aabb",
+        rawChainLock: "ccdd",
+        signature: "sig1",
+        isValid: true,
       });
 
       expect(cb).toHaveBeenCalledWith({
@@ -132,6 +137,11 @@ describe("mock-events", () => {
           blockHeight: 999,
           blockHash: "00aabb",
           txCount: 5,
+          txIds: ["tx1", "tx2"],
+          rawBlock: "aabb",
+          rawChainLock: "ccdd",
+          signature: "sig1",
+          isValid: true,
         },
       });
     });
@@ -166,7 +176,9 @@ describe("mock-events", () => {
         network: "Testnet",
         txid: "deadbeef",
         rawTx: "0100000001...",
+        rawIsLock: "aabb",
         utxoCount: 3,
+        isValid: true,
       });
 
       expect(cb).toHaveBeenCalledWith({
@@ -174,7 +186,9 @@ describe("mock-events", () => {
           network: "Testnet",
           txid: "deadbeef",
           rawTx: "0100000001...",
+          rawIsLock: "aabb",
           utxoCount: 3,
+          isValid: true,
         },
       });
     });

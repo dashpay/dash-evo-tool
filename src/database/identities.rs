@@ -148,8 +148,8 @@ impl Database {
                 let wallet_index: Option<u32> = row.get(2)?;
                 let status: Option<u8> = row.get(3)?;
 
-                let mut identity = QualifiedIdentity::from_bytes(&data)
-                    .map_err(super::CorruptedBlobError)?;
+                let mut identity =
+                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 identity.alias = alias;
                 identity.wallet_index = wallet_index;
                 identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
@@ -208,8 +208,8 @@ impl Database {
                 let wallet_index: Option<u32> = row.get(2)?;
                 let status: Option<u8> = row.get(3)?;
 
-                let mut identity = QualifiedIdentity::from_bytes(&data)
-                    .map_err(super::CorruptedBlobError)?;
+                let mut identity =
+                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 identity.alias = alias;
                 identity.wallet_index = wallet_index;
                 identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
@@ -263,8 +263,8 @@ impl Database {
                 let wallet_index: Option<u32> = row.get(2)?;
                 let status: Option<u8> = row.get(3)?;
 
-                let mut qi = QualifiedIdentity::from_bytes(&data)
-                    .map_err(super::CorruptedBlobError)?;
+                let mut qi =
+                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 qi.alias = alias;
                 qi.wallet_index = wallet_index;
                 qi.status = IdentityStatus::from_u8(status.unwrap_or(2));
@@ -300,8 +300,8 @@ impl Database {
         )?;
         let identity_iter = stmt.query_map(params![network], |row| {
             let data: Vec<u8> = row.get(0)?;
-            let mut identity = QualifiedIdentity::from_bytes(&data)
-                .map_err(super::CorruptedBlobError)?;
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
             identity.network = app_context.network;
 
             Ok(identity)
@@ -329,8 +329,8 @@ impl Database {
             stmt.query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
                 let wallet_id: Option<WalletSeedHash> = row.get(1)?;
-                let mut identity = QualifiedIdentity::from_bytes(&data)
-                    .map_err(super::CorruptedBlobError)?;
+                let mut identity =
+                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 identity.network = app_context.network;
 
                 Ok((identity, wallet_id))

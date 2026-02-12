@@ -2453,7 +2453,7 @@ export type ContactPrivateInfoDto = { nickname: string; notes: string; isHidden:
 /**
  * State of a DPNS name contest (DTO).
  */
-export type ContestStateDto = "unknown" | "joinable" | "ongoing" | { wonBy: { identity_id: string } } | "locked"
+export type ContestStateDto = "unknown" | "joinable" | "ongoing" | { wonBy: { identityId: string } } | "locked"
 /**
  * A contestant vying for a contested DPNS name (DTO).
  */
@@ -2719,19 +2719,6 @@ export type DispatchTaskResponse = {
  */
 taskId: string }
 /**
- * Response from `contract_fetch` — includes the task ID and hex-normalised
- * versions of every requested identifier so the frontend can match results
- * regardless of whether the user typed hex or base58.
- */
-export type FetchContractsResponse = {
-/**
- * Unique task ID. Listen for `TaskResultEvent` or `TaskErrorEvent` with
- * this ID to receive the result.
- */
-taskId: string;
-/** The contract IDs normalised to lowercase hex (same order as input). */
-normalizedIds: string[] }
-/**
  * A DPNS name entry with its owning identity.
  */
 export type DpnsNameEntryDto = {
@@ -2803,6 +2790,21 @@ export type FetchContractsInput = {
  * Contract IDs (hex) to fetch.
  */
 contractIds: string[] }
+/**
+ * Response from `contract_fetch` — includes the task ID and hex-normalised
+ * versions of every requested identifier so the frontend can match results
+ * regardless of whether the user typed hex or base58.
+ */
+export type FetchContractsResponse = {
+/**
+ * Unique task ID. Listen for `TaskResultEvent` or `TaskErrorEvent` with
+ * this ID to receive the result.
+ */
+taskId: string;
+/**
+ * The contract IDs normalised to lowercase hex (same order as input).
+ */
+normalizedIds: string[] }
 /**
  * Input for fetching contracts with descriptions.
  */

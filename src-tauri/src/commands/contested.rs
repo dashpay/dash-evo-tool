@@ -307,7 +307,10 @@ pub enum ContestStateDto {
     Unknown,
     Joinable,
     Ongoing,
-    WonBy { identity_id: IdentifierDto },
+    WonBy {
+        #[serde(rename = "identityId")]
+        identity_id: IdentifierDto,
+    },
     Locked,
 }
 

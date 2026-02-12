@@ -79,9 +79,10 @@ impl AppContext {
                         if let Err(e) =
                             self.insert_token_identity_balance(&token_id, &identity_id, balance)
                         {
-                            eprintln!(
+                            tracing::error!(
                                 "Failed to update token balance for identity {}: {}",
-                                identity_id, e
+                                identity_id,
+                                e
                             );
                         }
                     }
@@ -118,7 +119,7 @@ impl AppContext {
                             &sender_id,
                             *sender_amount,
                         ) {
-                            eprintln!(
+                            tracing::error!(
                                 "Failed to update sender token balance from historical document: {}",
                                 e
                             );
@@ -128,7 +129,7 @@ impl AppContext {
                             &recipient_id,
                             *recipient_amount,
                         ) {
-                            eprintln!(
+                            tracing::error!(
                                 "Failed to update recipient token balance from historical document: {}",
                                 e
                             );
@@ -167,7 +168,7 @@ impl AppContext {
                             &sender_id,
                             *sender_amount,
                         ) {
-                            eprintln!(
+                            tracing::error!(
                                 "Failed to update sender token balance from group action document: {}",
                                 e
                             );
@@ -177,7 +178,7 @@ impl AppContext {
                             &recipient_id,
                             *recipient_amount,
                         ) {
-                            eprintln!(
+                            tracing::error!(
                                 "Failed to update recipient token balance from group action document: {}",
                                 e
                             );

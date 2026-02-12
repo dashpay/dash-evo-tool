@@ -29,6 +29,10 @@ impl Database {
             )",
             [],
         )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_scheduled_votes_network ON scheduled_votes (network)",
+            [],
+        )?;
         Ok(())
     }
 

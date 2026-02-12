@@ -18,6 +18,7 @@ use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
 use egui::{Color32, Context as EguiContext, Frame, Margin, RichText, SidePanel};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::error;
 
 pub struct ContractChooserState {
     pub right_click_contract_id: Option<String>,
@@ -159,7 +160,7 @@ pub fn add_contract_chooser_panel(
 
     // Retrieve the list of known contracts
     let contracts = app_context.get_contracts(None, None).unwrap_or_else(|e| {
-        eprintln!("Error fetching contracts: {}", e);
+        error!("Error fetching contracts: {}", e);
         vec![]
     });
 

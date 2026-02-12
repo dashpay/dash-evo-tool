@@ -262,6 +262,10 @@ pub async fn load_contacts(
             if let Some(Value::Identifier(to_id_bytes)) = outgoing_doc.properties().get("toUserId")
             {
                 let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
+                    tracing::warn!(
+                        "Failed to parse contact request toUserId ({} bytes), skipping",
+                        to_id_bytes.len()
+                    );
                     continue;
                 };
                 if to_id == from_id {

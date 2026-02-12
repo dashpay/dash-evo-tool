@@ -616,7 +616,7 @@ impl ScreenLike for WithdrawalScreen {
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs();
-                        let elapsed_seconds = now - start_time;
+                        let elapsed_seconds = now.saturating_sub(*start_time);
 
                         let display_time = if elapsed_seconds < 60 {
                             format!(

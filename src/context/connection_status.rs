@@ -240,6 +240,9 @@ impl ConnectionStatus {
         *last_update = now;
 
         self.refresh_zmq_and_spv(app_context);
+        if self.backend_mode() == CoreBackendMode::Spv {
+            return AppAction::None;
+        }
         AppAction::BackendTask(BackendTask::CoreTask(CoreTask::GetBestChainLocks))
     }
 

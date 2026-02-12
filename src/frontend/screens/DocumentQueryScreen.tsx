@@ -12,14 +12,23 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Loader2,
   SlidersHorizontal,
   X,
   FileQuestion,
   Filter,
+  Code,
+  MoreHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -310,7 +319,7 @@ export function DocumentQueryScreen() {
   const {
     contracts,
     selectedContractId,
-    selectedContractDetail,
+    contractDetails,
     loading: contractsLoading,
     loadContracts,
     selectContract,
@@ -348,6 +357,8 @@ export function DocumentQueryScreen() {
 
   // Tree selection state
   const [treeSelection, setTreeSelection] = useState<TreeSelection | null>(null);
+  // Contract ID whose JSON is shown in the main area (null = not showing)
+  const [jsonContractId, setJsonContractId] = useState<string | null>(null);
   // Field selection dialog
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false);
   // Elapsed time for waiting status
@@ -389,11 +400,20 @@ export function DocumentQueryScreen() {
   const handleSelectDocumentType = useCallback(
     (contractId: string, documentType: string, properties: string[]) => {
       setTreeSelection({ contractId, documentType });
+      setJsonContractId(null);
       setQueryTarget(contractId, documentType);
       setQueryText(`SELECT * FROM ${documentType}`);
       initFieldSelection(properties);
     },
     [setQueryTarget, setQueryText, initFieldSelection],
+  );
+
+  // Handle clicking "Contract JSON" in the tree
+  const handleSelectContractJson = useCallback(
+    (contractId: string) => {
+      setJsonContractId(contractId);
+    },
+    [],
   );
 
   // Handle tree selection: select index
@@ -411,6 +431,7 @@ export function DocumentQueryScreen() {
   // Clear tree selection
   const handleClearSelection = useCallback(() => {
     setTreeSelection(null);
+    setJsonContractId(null);
     setQueryTarget(null, null);
     clearResults();
     setQueryText("");
@@ -492,7 +513,7 @@ export function DocumentQueryScreen() {
       <div className="w-72 shrink-0">
         <ContractTreePanel
           contracts={contracts}
-          selectedContractDetail={selectedContractDetail}
+          contractDetails={contractDetails}
           selection={treeSelection}
           loading={contractsLoading}
           onExpandContract={handleExpandContract}
@@ -502,6 +523,7 @@ export function DocumentQueryScreen() {
           onRemoveContract={handleRemoveContract}
           onCopyHex={handleCopyHex}
           onCopyJson={handleCopyJson}
+          onSelectContractJson={handleSelectContractJson}
           className="h-full"
         />
       </div>
@@ -514,20 +536,43 @@ export function DocumentQueryScreen() {
             <PageHeader
               title="Document Query"
               actions={
-                <div className="flex flex-wrap gap-1.5">
-                  {actionButtons.map((btn) => (
-                    <Button
-                      key={btn.label}
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs gap-1"
-                      onClick={() => handleActionClick(btn.route)}
-                      data-testid={`action-${btn.label.toLowerCase().replace(/\s+/g, "-")}`}
-                    >
-                      {btn.icon}
-                      {btn.label}
-                    </Button>
-                  ))}
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs gap-1"
+                    onClick={() => handleActionClick("/contracts/add-contracts")}
+                    data-testid="action-load-contracts"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Load Contracts
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs gap-1"
+                        data-testid="action-more-menu"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                        Actions
+                        <ChevronDown className="h-3 w-3" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {actionButtons.slice(1).map((btn) => (
+                        <DropdownMenuItem
+                          key={btn.label}
+                          onClick={() => handleActionClick(btn.route)}
+                          data-testid={`action-${btn.label.toLowerCase().replace(/\s+/g, "-")}`}
+                        >
+                          {btn.icon}
+                          {btn.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               }
             />
@@ -627,7 +672,22 @@ export function DocumentQueryScreen() {
 
           {/* Results Area */}
           <div className="flex-1 overflow-hidden px-4 py-3">
-            {queryStatus === "idle" && documents.length === 0 && (
+            {jsonContractId && contractDetails[jsonContractId] && (
+              <ScrollArea className="h-full">
+                <div className="flex items-center gap-2 mb-3">
+                  <Code className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="text-sm font-semibold">Contract JSON</h3>
+                </div>
+                <pre
+                  className="text-xs font-mono whitespace-pre-wrap break-all p-4 bg-muted/30 rounded-lg border"
+                  data-testid="contract-json-content"
+                >
+                  {JSON.stringify(contractDetails[jsonContractId].schemaJson, null, 2)}
+                </pre>
+              </ScrollArea>
+            )}
+
+            {!jsonContractId && queryStatus === "idle" && documents.length === 0 && (
               <EmptyState
                 title="Query Documents"
                 description='Select a contract and document type on the left, then click "Fetch Documents" to query documents.'

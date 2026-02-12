@@ -36,8 +36,9 @@ export const config = {
 
   capabilities: [
     {
-      // tauri-driver uses the WebKitGTK WebDriver protocol
-      browserName: "wry",
+      // tauri-driver expects tauri:options with the app binary path.
+      // Do NOT set browserName — WebdriverIO v9 injects webSocketUrl:true
+      // when browserName is present, which tauri-driver rejects.
       "tauri:options": {
         application: appBinary,
       },
@@ -78,19 +79,37 @@ export const config = {
   },
 
   async before() {
-    // Wait for the app to be ready (web content loaded)
+    // Wait for the Tauri app to be ready.
+    // Debug builds load the frontend from devUrl (http://localhost:1420)
+    // served by docker/e2e/static-server.cjs. We wait for:
+    // 1. Page title to appear (confirms WebView loaded the HTML)
+    // 2. React to render a known screen (sidebar, welcome, or network chooser)
     await browser.waitUntil(
       async () => {
         try {
           const title = await browser.getTitle();
-          return title.length > 0;
+          if (!title) return false;
+
+          const sidebar = await browser.$('[data-testid="sidebar"]');
+          const welcome = await browser.$('[data-testid="welcome-screen"]');
+          const networkChooser = await browser.$(
+            '[data-testid="network-chooser-screen"]'
+          );
+          return (
+            (await sidebar.isExisting()) ||
+            (await welcome.isExisting()) ||
+            (await networkChooser.isExisting())
+          );
         } catch {
           return false;
         }
       },
       {
-        timeout: 30_000,
-        timeoutMsg: "Tauri app did not become ready within 30 seconds",
+        timeout: 45_000,
+        timeoutMsg:
+          "Tauri app did not become ready within 45 seconds. " +
+          "Check that the frontend static server is running (port 1420) " +
+          "and AppState initialized successfully.",
         interval: 1000,
       }
     );

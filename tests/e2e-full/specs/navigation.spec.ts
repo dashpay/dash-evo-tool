@@ -11,8 +11,6 @@ import {
   navigateToSection,
   getNetworkBadge,
   existsByTestId,
-  waitForTestId,
-  takeScreenshot,
   type SidebarSection,
 } from "../helpers/tauri.js";
 import { setupTestDatabase, teardownTestDatabase } from "../helpers/database.js";
@@ -37,10 +35,6 @@ describe("Navigation", () => {
   it("should launch and display the sidebar", async () => {
     await waitForAppReady();
     const hasSidebar = await existsByTestId("sidebar");
-    if (!hasSidebar) {
-      // May show welcome or network chooser on first launch
-      await takeScreenshot("no-sidebar");
-    }
     // At least one of these should exist
     const hasWelcome = await existsByTestId("welcome-screen");
     const hasNetworkChooser = await existsByTestId("network-chooser-screen");

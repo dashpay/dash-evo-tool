@@ -33,6 +33,12 @@ cleanup() {
         kill "$APP_PID" 2>/dev/null || true
         wait "$APP_PID" 2>/dev/null || true
     fi
+    # Kill frontend dev server if running
+    if [ -n "${DEV_SERVER_PID:-}" ] && kill -0 "$DEV_SERVER_PID" 2>/dev/null; then
+        echo "  Stopping frontend server (PID $DEV_SERVER_PID)..."
+        kill "$DEV_SERVER_PID" 2>/dev/null || true
+        wait "$DEV_SERVER_PID" 2>/dev/null || true
+    fi
     # Kill tauri-driver if running
     if [ -n "${DRIVER_PID:-}" ] && kill -0 "$DRIVER_PID" 2>/dev/null; then
         echo "  Stopping tauri-driver (PID $DRIVER_PID)..."
@@ -83,7 +89,22 @@ if [ ! -f "$APP_BINARY" ]; then
 fi
 echo "=== App binary found: $APP_BINARY ==="
 
-# ---- 4. Run WebdriverIO tests ----
+# ---- 4. Start frontend dev server ----
+# Debug builds use devUrl (http://localhost:1420) instead of embedding dist/.
+# Serve the built frontend assets so the Tauri WebView can load them.
+DEV_SERVER_PORT=1420
+echo "=== Starting frontend static server on port $DEV_SERVER_PORT ==="
+PORT=$DEV_SERVER_PORT node /app/docker/e2e/static-server.cjs &
+DEV_SERVER_PID=$!
+sleep 1
+
+if ! kill -0 "$DEV_SERVER_PID" 2>/dev/null; then
+    echo "ERROR: Frontend static server failed to start"
+    exit 1
+fi
+echo "  Frontend server started (PID $DEV_SERVER_PID)"
+
+# ---- 5. Run WebdriverIO tests ----
 echo "=== Running WebdriverIO E2E tests ==="
 echo ""
 

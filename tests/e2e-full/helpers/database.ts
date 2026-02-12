@@ -15,15 +15,19 @@ import { execSync } from "child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** Database location in the Docker E2E environment */
+/** Database location in the Docker E2E environment.
+ *  The app uses `directories::ProjectDirs::from("", "", "Dash-Evo-Tool")`.
+ *  On Linux this resolves to `~/.config/Dash-Evo-Tool/`.
+ *  The database file is `data.db` (see src-tauri/src/state.rs).
+ */
 const DB_PATHS = {
   linux: path.join(
     process.env.HOME || "/root",
-    ".config/dash-evo-tool/dash-evo-tool.db"
+    ".config/Dash-Evo-Tool/data.db"
   ),
   darwin: path.join(
     process.env.HOME || "/Users/dev",
-    "Library/Application Support/Dash-Evo-Tool/dash-evo-tool.db"
+    "Library/Application Support/Dash-Evo-Tool/data.db"
   ),
 };
 

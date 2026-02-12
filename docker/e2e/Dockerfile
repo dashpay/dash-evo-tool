@@ -15,6 +15,8 @@ ENV TZ=UTC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Build essentials
     build-essential \
+    ca-certificates \
+    clang \
     curl \
     wget \
     git \
@@ -26,8 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     librsvg2-dev \
     libssl-dev \
     libxdo-dev \
-    # Protocol Buffers compiler (required by dash-sdk)
-    protobuf-compiler \
+    # protobuf-compiler from apt is too old (3.x); protoc v25.2+ installed below
     # Virtual display for headless GUI testing
     xvfb \
     # WebKit2GTK WebDriver (for tauri-driver)
@@ -38,8 +39,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libjavascriptcoregtk-4.1-dev \
     # dbus for desktop integration
     dbus-x11 \
+    unzip \
+    # sqlite3 CLI for test database seeding
+    sqlite3 \
     # Clean up
     && rm -rf /var/lib/apt/lists/*
+
+# ---- Install protoc v25.2 (dash-sdk requires v25.2+) ----
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "arm64" ]; then PB_ARCH="aarch_64"; else PB_ARCH="x86_64"; fi && \
+    curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-${PB_ARCH}.zip" -o /tmp/protoc.zip && \
+    unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*' && \
+    rm /tmp/protoc.zip && \
+    protoc --version
 
 # ---- Install Rust toolchain ----
 ENV RUSTUP_HOME=/usr/local/rustup
@@ -87,9 +99,10 @@ COPY . .
 # ---- Build the Tauri app in debug mode ----
 # Debug mode is faster to compile and sufficient for E2E testing
 RUN npm run build 2>/dev/null && \
-    cargo build --manifest-path src-tauri/Cargo.toml 2>&1 | tail -5
+    cargo build --manifest-path src-tauri/Cargo.toml && \
+    test -f src-tauri/target/debug/dash-evo-tool-tauri
 
-# ---- Copy entrypoint ----
+# ---- Copy entrypoint and helpers ----
 COPY docker/e2e/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

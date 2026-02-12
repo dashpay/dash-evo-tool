@@ -1,5 +1,6 @@
 # Docker build context exclusions — keeps E2E image builds fast
 target/
+src-tauri/target/
 node_modules/
 dist/
 test-results/

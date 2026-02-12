@@ -1,4 +1,12 @@
 {
+  "permissions": {
+    "deny": [
+      "Edit(.github/scripts/**)",
+      "Write(.github/scripts/**)",
+      "Edit(.github/workflows/**)",
+      "Write(.github/workflows/**)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

@@ -165,20 +165,15 @@ impl BitOrAssign for AppAction {
     }
 }
 impl AppState {
-    pub fn new(ctx: egui::Context) -> Self {
-        create_app_user_data_directory_if_not_exists()
-            .expect("Failed to create app user_data directory");
+    pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        create_app_user_data_directory_if_not_exists()?;
         copy_env_file_if_not_exists();
         initialize_logger();
-        let db_file_path = app_user_data_file_path("data.db").expect("should create db file path");
-        let db = Arc::new(Database::new(&db_file_path).unwrap());
-        db.initialize(&db_file_path).unwrap();
+        let db_file_path = app_user_data_file_path("data.db")?;
+        let db = Arc::new(Database::new(&db_file_path)?);
+        db.initialize(&db_file_path)?;
 
-        let settings = db
-            .get_settings()
-            .expect("expected to get settings")
-            .map(Settings::from)
-            .unwrap_or_default();
+        let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
         let password_info = settings.password_info;
         let theme_preference = settings.theme_mode;
         let overwrite_dash_conf = settings.overwrite_dash_conf;
@@ -186,21 +181,14 @@ impl AppState {
 
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
-        let mainnet_app_context = match AppContext::new(
+        let mainnet_app_context = AppContext::new(
             Network::Dash,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
             connection_status.clone(),
-        ) {
-            Some(context) => context,
-            None => {
-                tracing::error!(
-                    "Failed to create the AppContext. Expected Dash config for mainnet."
-                );
-                std::process::exit(1);
-            }
-        };
+        )
+        .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
         let testnet_app_context = AppContext::new(
             Network::Testnet,
             db.clone(),
@@ -686,7 +674,7 @@ impl AppState {
             }
         }
 
-        app_state
+        Ok(app_state)
     }
 
     /// Allows enabling or disabling animations globally for the app.

@@ -12,7 +12,9 @@ fn test_basic_navigation() {
     let _guard = rt.enter();
 
     let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false)
     });
 
     harness.set_size(egui::vec2(1024.0, 768.0));
@@ -35,7 +37,9 @@ fn test_navigation_responsive_layout() {
 
     for size in sizes {
         let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
         });
 
         harness.set_size(size);
@@ -50,7 +54,9 @@ fn test_rapid_frame_navigation() {
     let _guard = rt.enter();
 
     let mut harness = Harness::builder().with_max_steps(300).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false)
     });
 
     harness.set_size(egui::vec2(1024.0, 768.0));
@@ -68,7 +74,9 @@ fn test_extended_navigation_stability() {
     let _guard = rt.enter();
 
     let mut harness = Harness::builder().with_max_steps(500).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false)
     });
 
     harness.set_size(egui::vec2(1280.0, 720.0));
@@ -88,7 +96,9 @@ fn test_minimum_size_navigation() {
     let _guard = rt.enter();
 
     let mut harness = Harness::builder().with_max_steps(50).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
+        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false)
     });
 
     // Very small window

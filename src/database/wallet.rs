@@ -140,8 +140,7 @@ impl Database {
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
-        let address = check_address_for_network(address.as_unchecked().clone(), network)
-            .expect("Expected address to be valid for network");
+        let address = check_address_for_network(address.as_unchecked().clone(), network)?;
 
         // Step 1: Check if the address already exists for the given seed.
         let mut stmt = conn.prepare(
@@ -436,8 +435,12 @@ impl Database {
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
-                ExtendedPubKey::decode(&master_ecdsa_bip44_account_0_epk_bytes)
-                    .expect("Failed to decode ExtendedPubKey");
+                ExtendedPubKey::decode(&master_ecdsa_bip44_account_0_epk_bytes).map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Failed to decode ExtendedPubKey: {}",
+                        e
+                    ))
+                })?;
 
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
@@ -452,9 +455,11 @@ impl Database {
                 WalletSeed::Closed(closed_wallet_seed)
             } else {
                 WalletSeed::Open(OpenWalletSeed {
-                    seed: encrypted_seed
-                        .try_into()
-                        .expect("expected to decrypt seed with no password"),
+                    seed: encrypted_seed.try_into().map_err(|_| {
+                        rusqlite::Error::InvalidParameterName(
+                            "Seed should be 64 bytes for open wallet".to_string(),
+                        )
+                    })?,
                     wallet_info: closed_wallet_seed,
                 })
             };
@@ -548,12 +553,21 @@ impl Database {
             } else {
                 // Standard Core addresses - validate network
                 let address_unchecked =
-                    Address::from_str(&address_str).expect("Invalid address format");
+                    Address::from_str(&address_str).map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!(
+                            "Invalid address format '{}': {}",
+                            address_str, e
+                        ))
+                    })?;
                 check_address_for_network(address_unchecked, network)?
             };
 
-            let derivation_path = DerivationPath::from_str(&derivation_path)
-                .expect("Expected to convert to derivation path");
+            let derivation_path = DerivationPath::from_str(&derivation_path).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Invalid derivation path '{}': {}",
+                    derivation_path, e
+                ))
+            })?;
 
             let path_type = DerivationPathType::from_bits_truncate(path_type);
 
@@ -640,11 +654,18 @@ impl Database {
             let script_pubkey: Vec<u8> = row.get(4)?;
 
             let address = Address::from_str(&address)
-                .expect("Invalid address format")
+                .map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Invalid UTXO address format '{}': {}",
+                        address, e
+                    ))
+                })?
                 .assume_checked();
 
             let outpoint = OutPoint {
-                txid: Txid::from_slice(&txid).expect("Invalid txid"),
+                txid: Txid::from_slice(&txid).map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!("Invalid UTXO txid: {}", e))
+                })?,
                 vout: vout as u32,
             };
             let tx_out = TxOut {
@@ -777,12 +798,23 @@ impl Database {
 
             let seed_hash_array: [u8; 32] =
                 seed_hash.try_into().expect("Seed hash should be 32 bytes");
-            let txid = Txid::from_slice(&txid_bytes).expect("Invalid txid bytes");
-            let transaction: Transaction =
-                deserialize(&raw_transaction).expect("Failed to deserialize transaction");
+            let txid = Txid::from_slice(&txid_bytes).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Invalid transaction txid: {}", e))
+            })?;
+            let transaction: Transaction = deserialize(&raw_transaction).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to deserialize transaction: {}",
+                    e
+                ))
+            })?;
             let block_hash = block_hash_bytes
                 .as_ref()
-                .map(|bytes| BlockHash::from_slice(bytes).expect("Invalid block hash"));
+                .map(|bytes| {
+                    BlockHash::from_slice(bytes).map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!("Invalid block hash: {}", e))
+                    })
+                })
+                .transpose()?;
             let fee = fee.map(|f| f as u64);
             let height = height.map(|h| h as u32);
 

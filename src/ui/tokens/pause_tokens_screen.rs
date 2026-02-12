@@ -209,7 +209,7 @@ impl PauseTokensScreen {
                 self.confirmation_dialog = None;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.status = PauseTokensStatus::WaitingForResult(now);
 
@@ -518,7 +518,7 @@ impl ScreenLike for PauseTokensScreen {
                     PauseTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Pausing... elapsed: {}s", elapsed));

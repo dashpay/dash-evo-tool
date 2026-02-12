@@ -485,7 +485,7 @@ impl WalletSendScreen {
     fn now_epoch_secs() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs()
     }
 

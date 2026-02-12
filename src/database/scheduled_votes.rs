@@ -156,13 +156,14 @@ impl Database {
             let contested_name: String = row.get(1)?;
             let vote_choice_string: String = row.get(2)?;
             let time: u64 = row.get(3)?;
-            let executed_successfully: bool = match row.get(4)? {
+            let executed_successfully: bool = match row.get::<_, i64>(4)? {
                 0 => false,
                 1 => true,
                 other => {
                     tracing::warn!(
-                        "Unexpected value {} for executed column in scheduled_votes, defaulting to false",
-                        other
+                        "Unexpected 'executed' value {} for scheduled vote '{}', treating as not executed",
+                        other,
+                        contested_name
                     );
                     false
                 }

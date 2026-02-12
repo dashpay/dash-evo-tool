@@ -156,10 +156,17 @@ impl Database {
             let contested_name: String = row.get(1)?;
             let vote_choice_string: String = row.get(2)?;
             let time: u64 = row.get(3)?;
-            let executed_successfully: bool = match row.get(4)? {
+            let executed_successfully: bool = match row.get::<_, i64>(4)? {
                 0 => false,
                 1 => true,
-                _ => unreachable!(),
+                other => {
+                    tracing::warn!(
+                        "Unexpected 'executed' value {} for scheduled vote '{}', treating as not executed",
+                        other,
+                        contested_name
+                    );
+                    false
+                }
             };
 
             let vote_choice = match vote_choice_string.as_str() {

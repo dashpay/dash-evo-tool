@@ -857,8 +857,7 @@ describe("identityStore", () => {
       resultCallback!({
         payload: {
           taskId: "t1",
-          resultType: "Identity",
-          payload: { identityId: "aabb001122" },
+          result: { type: "identityCompleted", identityId: "aabb001122" },
         },
       });
 
@@ -886,8 +885,7 @@ describe("identityStore", () => {
       resultCallback!({
         payload: {
           taskId: "t1",
-          resultType: "Wallet",
-          payload: { someData: true },
+          result: { type: "walletCompleted" },
         },
       });
 
@@ -902,7 +900,7 @@ describe("identityStore", () => {
       });
 
       let errorCallback: (event: {
-        payload: { taskId: string; message: string };
+        payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
       }) => void;
       (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
       (events.taskErrorEvent.listen as Mock).mockImplementation(
@@ -914,7 +912,7 @@ describe("identityStore", () => {
 
       await useIdentityStore.getState().subscribeToUpdates();
       errorCallback!({
-        payload: { taskId: "t1", message: "Platform error" },
+        payload: { taskId: "t1", domain: "identity", message: "Platform error", details: "", recoverable: false },
       });
 
       const state = useIdentityStore.getState();

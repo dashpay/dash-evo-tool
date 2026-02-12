@@ -37,7 +37,7 @@ beforeEach(() => {
   useContractStore.setState({
     contracts: [],
     selectedContractId: null,
-    selectedContractDetail: null,
+    contractDetails: {},
     loading: false,
     fetching: false,
     error: null,
@@ -53,7 +53,7 @@ describe("contractStore", () => {
     const state = useContractStore.getState();
     expect(state.contracts).toEqual([]);
     expect(state.selectedContractId).toBeNull();
-    expect(state.selectedContractDetail).toBeNull();
+    expect(state.contractDetails).toEqual({});
     expect(state.loading).toBe(false);
     expect(state.fetching).toBe(false);
     expect(state.error).toBeNull();
@@ -179,46 +179,33 @@ describe("contractStore", () => {
 
       const state = useContractStore.getState();
       expect(state.selectedContractId).toBe("contract001");
-      expect(state.selectedContractDetail).toEqual(detail);
+      expect(state.contractDetails["contract001"]).toEqual(detail);
     });
 
     it("clears selection when null passed", async () => {
       useContractStore.setState({
         selectedContractId: "contract001",
-        selectedContractDetail: createMockContract(),
+        contractDetails: { contract001: createMockContract() },
       });
 
       await useContractStore.getState().selectContract(null);
 
       const state = useContractStore.getState();
       expect(state.selectedContractId).toBeNull();
-      expect(state.selectedContractDetail).toBeNull();
     });
 
-    it("clears old detail immediately when selecting new contract", async () => {
+    it("does not re-fetch already loaded contract detail", async () => {
+      const detail = createMockContract({ id: "old" });
       useContractStore.setState({
         selectedContractId: "old",
-        selectedContractDetail: createMockContract({ id: "old" }),
+        contractDetails: { old: detail },
       });
 
-      let resolvePromise: (value: unknown) => void;
-      (commands.contractGetById as Mock).mockReturnValue(
-        new Promise((resolve) => {
-          resolvePromise = resolve;
-        }),
-      );
+      // Select "old" again — should skip fetch since it's already loaded
+      await useContractStore.getState().selectContract("old");
 
-      const selectPromise =
-        useContractStore.getState().selectContract("contract001");
-
-      // Detail should be cleared while loading
-      expect(useContractStore.getState().selectedContractDetail).toBeNull();
-      expect(useContractStore.getState().selectedContractId).toBe(
-        "contract001",
-      );
-
-      resolvePromise!({ status: "ok", data: createMockContract() });
-      await selectPromise;
+      expect(commands.contractGetById).not.toHaveBeenCalled();
+      expect(useContractStore.getState().contractDetails["old"]).toEqual(detail);
     });
   });
 
@@ -242,13 +229,13 @@ describe("contractStore", () => {
       expect(contract.alias).toBe("New Name");
     });
 
-    it("updates alias in selected contract detail", async () => {
+    it("updates alias in contract detail map", async () => {
       const summary = createMockContractSummary();
       const detail = createMockContract({ id: summary.id });
       useContractStore.setState({
         contracts: [summary],
         selectedContractId: summary.id,
-        selectedContractDetail: detail,
+        contractDetails: { [summary.id]: detail },
       });
       (commands.contractSetAlias as Mock).mockResolvedValue({
         status: "ok",
@@ -257,7 +244,7 @@ describe("contractStore", () => {
 
       await useContractStore.getState().setAlias(summary.id, "Renamed");
 
-      expect(useContractStore.getState().selectedContractDetail?.alias).toBe(
+      expect(useContractStore.getState().contractDetails[summary.id]?.alias).toBe(
         "Renamed",
       );
     });
@@ -322,7 +309,7 @@ describe("contractStore", () => {
       useContractStore.setState({
         contracts: [summary],
         selectedContractId: summary.id,
-        selectedContractDetail: createMockContract({ id: summary.id }),
+        contractDetails: { [summary.id]: createMockContract({ id: summary.id }) },
       });
       (commands.contractRemove as Mock).mockResolvedValue({
         status: "ok",
@@ -333,7 +320,7 @@ describe("contractStore", () => {
 
       const state = useContractStore.getState();
       expect(state.selectedContractId).toBeNull();
-      expect(state.selectedContractDetail).toBeNull();
+      expect(state.contractDetails[summary.id]).toBeUndefined();
     });
 
     it("preserves selection when removing different contract", async () => {
@@ -344,7 +331,7 @@ describe("contractStore", () => {
           createMockContractSummary({ id: "contract002" }),
         ],
         selectedContractId: selected.id,
-        selectedContractDetail: createMockContract({ id: selected.id }),
+        contractDetails: { [selected.id]: createMockContract({ id: selected.id }) },
       });
       (commands.contractRemove as Mock).mockResolvedValue({
         status: "ok",
@@ -355,8 +342,8 @@ describe("contractStore", () => {
 
       expect(useContractStore.getState().selectedContractId).toBe(selected.id);
       expect(
-        useContractStore.getState().selectedContractDetail,
-      ).not.toBeNull();
+        useContractStore.getState().contractDetails[selected.id],
+      ).not.toBeUndefined();
     });
 
     it("sets error on failure", async () => {
@@ -524,8 +511,7 @@ describe("contractStore", () => {
       resultCallback!({
         payload: {
           taskId: "task-123",
-          resultType: "Contract",
-          payload: null,
+          result: { type: "contractCompleted" },
         },
       });
 
@@ -549,8 +535,7 @@ describe("contractStore", () => {
       resultCallback!({
         payload: {
           taskId: "task-456",
-          resultType: "Identity",
-          payload: null,
+          result: { type: "identityCompleted", identityId: null },
         },
       });
 
@@ -561,12 +546,12 @@ describe("contractStore", () => {
 
     it("sets error on task error event", async () => {
       let errorCallback: (event: {
-        payload: { taskId: string; message: string };
+        payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
       }) => void;
       (events.taskErrorEvent.listen as Mock).mockImplementation(
         async (
           cb: (event: {
-            payload: { taskId: string; message: string };
+            payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
           }) => void,
         ) => {
           errorCallback = cb;
@@ -578,7 +563,7 @@ describe("contractStore", () => {
       await useContractStore.getState().subscribeToUpdates();
 
       errorCallback!({
-        payload: { taskId: "task-999", message: "Backend crash" },
+        payload: { taskId: "task-999", domain: "contract", message: "Backend crash", details: "", recoverable: false },
       });
 
       expect(useContractStore.getState().error).toBe("Backend crash");

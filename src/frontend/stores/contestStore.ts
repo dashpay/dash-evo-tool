@@ -8,6 +8,7 @@ import type {
   TaskResultEvent,
   ScheduledVoteExecutedEvent,
 } from "../bindings";
+import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Local types (contest data not yet in auto-generated bindings) ───
 
@@ -126,6 +127,9 @@ interface ContestActions {
   /** Dispatch a query to refresh contested names from Platform. */
   loadContests: () => Promise<void>;
 
+  /** Load contested names from local database (after Platform query completes). */
+  loadContestedNames: () => Promise<void>;
+
   /** Load local DPNS names from backend. */
   loadLocalNames: () => Promise<void>;
 
@@ -173,6 +177,9 @@ interface ContestActions {
 
   /** Subscribe to contest-related Tauri events. Returns unsubscribe fn. */
   subscribeToUpdates: () => Promise<() => void>;
+
+  /** Reset all state (used on network switch). */
+  resetState: () => void;
 
   /** Clear error state. */
   clearError: () => void;
@@ -246,6 +253,28 @@ export function matchesDpnsFilter(
   return normalizedName.includes(normalizedFilter);
 }
 
+/** Convert a ContestStateDto from the backend to the frontend ContestState type. */
+function convertContestState(dto: { wonBy?: { identityId: string } } | string): ContestState {
+  if (typeof dto === "string") {
+    const lower = dto.toLowerCase();
+    if (lower === "unknown") return "unknown";
+    if (lower === "joinable") return "joinable";
+    if (lower === "ongoing") return "ongoing";
+    if (lower === "locked") return "locked";
+    return "unknown";
+  }
+  if (typeof dto === "object" && dto !== null) {
+    if ("wonBy" in dto && dto.wonBy) {
+      return { wonBy: dto.wonBy.identityId };
+    }
+  }
+  return "unknown";
+}
+
+// ─── Task timeout manager ────────────────────────────────────────────
+
+const timeouts = new TaskTimeoutManager();
+
 // ─── Store ──────────────────────────────────────────────────────────
 
 export const useContestStore = create<ContestStore>((set, get) => ({
@@ -270,12 +299,50 @@ export const useContestStore = create<ContestStore>((set, get) => ({
     try {
       // Dispatch async query — result arrives via TaskResultEvent
       await commands.contestedQueryDpnsContests();
+      timeouts.start("contest", () => {
+        set({ refreshing: false, votingInProgress: false, scheduledVoteCastInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
+      });
       // refreshing will be cleared when the "Contest" result event arrives
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : String(e),
         refreshing: false,
       });
+    }
+  },
+
+  loadContestedNames: async () => {
+    try {
+      const result = await commands.contestedGetAllNames();
+      if (result.status === "ok") {
+        const names: ContestedName[] = result.data.map((dto) => ({
+          normalizedContestedName: dto.normalizedContestedName,
+          contestants: dto.contestants
+            ? dto.contestants.map((c) => ({
+                id: c.id,
+                name: c.name,
+                info: c.info,
+                votes: c.votes,
+                createdAt: c.createdAt ?? null,
+                createdAtBlockHeight: c.createdAtBlockHeight ?? null,
+                createdAtCoreBlockHeight: c.createdAtCoreBlockHeight ?? null,
+                documentId: c.documentId,
+              }))
+            : null,
+          lockedVotes: dto.lockedVotes ?? null,
+          abstainVotes: dto.abstainVotes ?? null,
+          awardedTo: dto.awardedTo ?? null,
+          endTime: dto.endTime ?? null,
+          state: convertContestState(dto.state),
+          lastUpdated: dto.lastUpdated ?? null,
+        }));
+        const { sortColumn, sortOrder } = get();
+        set({ contestedNames: sortContestedNames(names, sortColumn, sortOrder) });
+      } else {
+        set({ error: result.error });
+      }
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
     }
   },
 
@@ -369,6 +436,10 @@ export const useContestStore = create<ContestStore>((set, get) => ({
       });
       if (result.status === "error") {
         set({ error: result.error, votingInProgress: false });
+      } else {
+        timeouts.start("castVotes", () => {
+          set({ refreshing: false, votingInProgress: false, scheduledVoteCastInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // votingInProgress will be cleared when the "Contest" result event arrives
     } catch (e) {
@@ -387,6 +458,10 @@ export const useContestStore = create<ContestStore>((set, get) => ({
       const result = await commands.contestedScheduleDpnsVotes({ votes });
       if (result.status === "error") {
         set({ error: result.error, votingInProgress: false });
+      } else {
+        timeouts.start("scheduleVotes", () => {
+          set({ refreshing: false, votingInProgress: false, scheduledVoteCastInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // votingInProgress cleared by event
     } catch (e) {
@@ -427,6 +502,10 @@ export const useContestStore = create<ContestStore>((set, get) => ({
           error: result.error,
           scheduledVoteCastInProgress: false,
         }));
+      } else {
+        timeouts.start("castScheduled", () => {
+          set({ refreshing: false, votingInProgress: false, scheduledVoteCastInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // scheduledVoteCastInProgress cleared by event
     } catch (e) {
@@ -541,9 +620,11 @@ export const useContestStore = create<ContestStore>((set, get) => ({
   subscribeToUpdates: async () => {
     const unlistenResult = await events.taskResultEvent.listen(
       (event: { payload: TaskResultEvent }) => {
-        const { resultType } = event.payload;
+        const { result } = event.payload;
 
-        if (resultType === "Contest") {
+        if (result.type === "contestCompleted") {
+          timeouts.clearAll();
+
           const state = get();
 
           // Contest query completed — clear refreshing/voting state
@@ -552,30 +633,26 @@ export const useContestStore = create<ContestStore>((set, get) => ({
             votingInProgress: false,
           });
 
-          // Reload contests data if payload contains it
-          const payload = event.payload.payload;
-          if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-            const p = payload as Record<string, unknown>;
-            if (Array.isArray(p.contestedNames)) {
-              set({
-                contestedNames: p.contestedNames as ContestedName[],
-              });
-            }
-          }
+          // Load contested names from DB (they were just saved by the backend)
+          state.loadContestedNames();
 
           // Also reload scheduled votes (may have been updated)
           state.loadScheduledVotes();
         }
 
         // Also handle Identity results that may contain DPNS name updates
-        if (resultType === "Identity") {
+        if (result.type === "identityCompleted") {
           get().loadLocalNames();
         }
       },
     );
 
     const unlistenError = await events.taskErrorEvent.listen(
-      (event: { payload: { taskId: string; message: string } }) => {
+      (event: { payload: { taskId: string; domain: string; message: string } }) => {
+        if (event.payload.domain !== "contest") return;
+
+        timeouts.clearAll();
+
         set({
           refreshing: false,
           votingInProgress: false,
@@ -587,6 +664,8 @@ export const useContestStore = create<ContestStore>((set, get) => ({
 
     const unlistenScheduled = await events.scheduledVoteExecutedEvent.listen(
       (event: { payload: ScheduledVoteExecutedEvent }) => {
+        timeouts.clear("castScheduled");
+
         const { contestedName, voterId, success, error: errMsg } = event.payload;
 
         set((state) => ({
@@ -615,6 +694,24 @@ export const useContestStore = create<ContestStore>((set, get) => ({
       unlistenError();
       unlistenScheduled();
     };
+  },
+
+  resetState: () => {
+    timeouts.clearAll();
+    set({
+      contestedNames: [],
+      localDpnsNames: [],
+      scheduledVotes: [],
+      selectedVotes: [],
+      loading: false,
+      refreshing: false,
+      votingInProgress: false,
+      error: null,
+      activeFilterTerm: "",
+      pastFilterTerm: "",
+      ownedFilterTerm: "",
+      scheduledVoteCastInProgress: false,
+    });
   },
 
   clearError: () => {

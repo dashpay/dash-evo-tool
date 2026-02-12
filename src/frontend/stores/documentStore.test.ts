@@ -556,18 +556,24 @@ describe("documentStore", () => {
       });
       await useDocumentStore.getState().subscribeToUpdates();
 
-      const docs = [mpe(), mpe({ id: "doc002" })];
+      // Send flat DPP-serialized documents (as the backend would)
+      const flatDocs = [
+        { $id: "abcd1234", $ownerId: "owner01", $revision: 1, $createdAt: 1000, $updatedAt: null, $transferredAt: null, label: "alice" },
+        { $id: "doc002", $ownerId: "owner02", $revision: 2, $createdAt: 2000, $updatedAt: null, $transferredAt: null, label: "bob" },
+      ];
       resultCallback!({
         payload: {
           taskId: "task-doc-1",
-          resultType: "Document",
-          payload: { documents: docs, hasMore: true },
+          result: { type: "documentPage", documents: flatDocs, hasMore: true },
         },
       });
 
       const state = useDocumentStore.getState();
       expect(state.queryStatus).toBe("complete");
-      expect(state.documents).toEqual(docs);
+      expect(state.documents).toHaveLength(2);
+      expect(state.documents[0].id).toBe("abcd1234");
+      expect(state.documents[0].document?.ownerId).toBe("owner01");
+      expect(state.documents[0].document?.data).toEqual(flatDocs[0]);
       expect(state.hasNextPage).toBe(true);
       expect(state.activeTaskId).toBeNull();
     });
@@ -590,8 +596,7 @@ describe("documentStore", () => {
       resultCallback!({
         payload: {
           taskId: "task-doc-2",
-          resultType: "Document",
-          payload: null,
+          result: { type: "documentCompleted" },
         },
       });
 
@@ -617,8 +622,7 @@ describe("documentStore", () => {
       resultCallback!({
         payload: {
           taskId: "task-other",
-          resultType: "Contract",
-          payload: null,
+          result: { type: "contractCompleted" },
         },
       });
 
@@ -644,8 +648,7 @@ describe("documentStore", () => {
       resultCallback!({
         payload: {
           taskId: "task-stale",
-          resultType: "Document",
-          payload: { documents: [mpe()], hasMore: false },
+          result: { type: "documentPage", documents: [{ $id: "test", label: "x" }], hasMore: false },
         },
       });
 
@@ -656,12 +659,12 @@ describe("documentStore", () => {
 
     it("sets error on task error event", async () => {
       let errorCallback: (event: {
-        payload: { taskId: string; message: string };
+        payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
       }) => void;
       (events.taskErrorEvent.listen as Mock).mockImplementation(
         async (
           cb: (event: {
-            payload: { taskId: string; message: string };
+            payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
           }) => void,
         ) => {
           errorCallback = cb;
@@ -676,7 +679,7 @@ describe("documentStore", () => {
       await useDocumentStore.getState().subscribeToUpdates();
 
       errorCallback!({
-        payload: { taskId: "task-fail", message: "Query timeout" },
+        payload: { taskId: "task-fail", domain: "document", message: "Query timeout", details: "", recoverable: false },
       });
 
       expect(useDocumentStore.getState().queryStatus).toBe("error");
@@ -686,12 +689,12 @@ describe("documentStore", () => {
 
     it("ignores error events for different task IDs", async () => {
       let errorCallback: (event: {
-        payload: { taskId: string; message: string };
+        payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
       }) => void;
       (events.taskErrorEvent.listen as Mock).mockImplementation(
         async (
           cb: (event: {
-            payload: { taskId: string; message: string };
+            payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
           }) => void,
         ) => {
           errorCallback = cb;
@@ -706,7 +709,7 @@ describe("documentStore", () => {
       await useDocumentStore.getState().subscribeToUpdates();
 
       errorCallback!({
-        payload: { taskId: "task-unrelated", message: "Some error" },
+        payload: { taskId: "task-unrelated", domain: "document", message: "Some error", details: "", recoverable: false },
       });
 
       // State unchanged

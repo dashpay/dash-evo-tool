@@ -1026,8 +1026,7 @@ describe("dashpayStore", () => {
       resultCallback!({
         payload: {
           taskId: "t1",
-          resultType: "DashPay",
-          payload: {},
+          result: { type: "dashPayCompleted" },
         },
       });
 
@@ -1074,8 +1073,7 @@ describe("dashpayStore", () => {
       resultCallback!({
         payload: {
           taskId: "t1",
-          resultType: "DashPay",
-          payload: {},
+          result: { type: "dashPayCompleted" },
         },
       });
 
@@ -1101,8 +1099,7 @@ describe("dashpayStore", () => {
       resultCallback!({
         payload: {
           taskId: "t1",
-          resultType: "Identity",
-          payload: {},
+          result: { type: "identityCompleted", identityId: null },
         },
       });
 
@@ -1117,7 +1114,7 @@ describe("dashpayStore", () => {
       });
 
       let errorCallback: (event: {
-        payload: { taskId: string; message: string };
+        payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
       }) => void;
       (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
       (events.taskErrorEvent.listen as Mock).mockImplementation(
@@ -1129,7 +1126,7 @@ describe("dashpayStore", () => {
 
       await useDashPayStore.getState().subscribeToUpdates();
       errorCallback!({
-        payload: { taskId: "t1", message: "Task failed" },
+        payload: { taskId: "t1", domain: "dashPay", message: "Task failed", details: "", recoverable: false },
       });
 
       const state = useDashPayStore.getState();

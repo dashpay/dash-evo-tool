@@ -6,6 +6,7 @@ import type {
   TaskResultEvent,
 } from "../bindings";
 import type { JsonValue } from "../bindings";
+import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Document types (from task result payload) ─────────────────────
 
@@ -36,6 +37,17 @@ export type DocumentQueryStatus =
   | "waiting"
   | "complete"
   | "error";
+
+// ─── Helpers ──────────────────────────────────────────────────────
+
+/** Extract an identifier from a DPP-serialized value (byte array or string). */
+function extractIdString(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map((b: number) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return "";
+}
 
 // ─── Special document fields ───────────────────────────────────────
 
@@ -151,6 +163,9 @@ interface DocumentActions {
   /** Subscribe to task result events for document updates. Returns unsubscribe fn. */
   subscribeToUpdates: () => Promise<() => void>;
 
+  /** Reset all state (used on network switch). */
+  resetState: () => void;
+
   /** Clear the error state. */
   clearError: () => void;
 }
@@ -158,6 +173,10 @@ interface DocumentActions {
 // ─── Combined store type ────────────────────────────────────────────
 
 export type DocumentStore = DocumentState & DocumentActions;
+
+// ─── Task timeout manager ────────────────────────────────────────────
+
+const timeouts = new TaskTimeoutManager();
 
 // ─── Store implementation ───────────────────────────────────────────
 
@@ -227,6 +246,9 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
 
       if (result.status === "ok") {
         set({ activeTaskId: result.data.taskId });
+        timeouts.start("query", () => {
+          set({ queryStatus: "error", queryError: TIMEOUT_ERROR_MESSAGE, queryStartedAt: null, activeTaskId: null });
+        });
         return result.data.taskId;
       }
 
@@ -269,6 +291,9 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
 
       if (result.status === "ok") {
         set({ activeTaskId: result.data.taskId });
+        timeouts.start("query", () => {
+          set({ queryStatus: "error", queryError: TIMEOUT_ERROR_MESSAGE, queryStartedAt: null, activeTaskId: null });
+        });
         return result.data.taskId;
       }
 
@@ -368,6 +393,7 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
   },
 
   clearResults: () => {
+    timeouts.clearAll();
     set({
       documents: [],
       queryStatus: "idle",
@@ -384,19 +410,36 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
   subscribeToUpdates: async () => {
     const unlistenResult = await events.taskResultEvent.listen(
       (event: { payload: TaskResultEvent }) => {
-        const { resultType, payload, taskId } = event.payload;
+        const { result, taskId } = event.payload;
         const state = get();
 
-        if (resultType !== "Document") return;
+        // Handle document page results
+        if (result.type === "documentPage") {
+          // Only process results for the active query
+          if (state.activeTaskId && taskId !== state.activeTaskId) return;
 
-        // Only process results for the active query
-        if (state.activeTaskId && taskId !== state.activeTaskId) return;
+          timeouts.clear("query");
 
-        // Parse document page data from payload if available
-        if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-          const pageData = payload as Record<string, unknown>;
-          const documents = (pageData.documents ?? []) as DocumentPageEntry[];
-          const hasMore = (pageData.hasMore ?? false) as boolean;
+          const rawDocs = result.documents as Record<string, unknown>[];
+          const hasMore = result.hasMore;
+
+          // Convert flat DPP-serialized docs to DocumentPageEntry format
+          const documents: DocumentPageEntry[] = rawDocs.map((doc) => {
+            const id = extractIdString(doc["$id"]);
+            return {
+              id,
+              document: {
+                id,
+                ownerId: extractIdString(doc["$ownerId"]),
+                documentType: "",
+                data: doc as JsonValue,
+                revision: (doc["$revision"] as number) ?? 0,
+                createdAt: (doc["$createdAt"] as number) ?? null,
+                updatedAt: (doc["$updatedAt"] as number) ?? null,
+                transferredAt: (doc["$transferredAt"] as number) ?? null,
+              },
+            };
+          });
 
           set({
             documents,
@@ -405,8 +448,14 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
             queryStartedAt: null,
             activeTaskId: null,
           });
-        } else {
-          // Result with no payload — mark complete with empty results
+          return;
+        }
+
+        if (result.type === "documentCompleted") {
+          if (state.activeTaskId && taskId !== state.activeTaskId) return;
+
+          timeouts.clear("query");
+
           set({
             queryStatus: "complete",
             queryStartedAt: null,
@@ -417,9 +466,13 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
     );
 
     const unlistenError = await events.taskErrorEvent.listen(
-      (event: { payload: { taskId: string; message: string } }) => {
+      (event: { payload: { taskId: string; domain: string; message: string } }) => {
+        if (event.payload.domain !== "document") return;
+
         const state = get();
         if (state.activeTaskId && event.payload.taskId !== state.activeTaskId) return;
+
+        timeouts.clearAll();
 
         set({
           queryStatus: "error",
@@ -434,6 +487,28 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
       unlistenResult();
       unlistenError();
     };
+  },
+
+  resetState: () => {
+    timeouts.clearAll();
+    set({
+      queryText: "",
+      whereClauses: [],
+      orderByClauses: [],
+      documents: [],
+      queryStatus: "idle",
+      queryStartedAt: null,
+      queryError: null,
+      activeTaskId: null,
+      displayMode: "json",
+      searchFilter: "",
+      fieldSelection: {},
+      currentPage: 1,
+      nextCursors: [null],
+      hasNextPage: false,
+      queryContractId: null,
+      queryDocumentType: null,
+    });
   },
 
   clearError: () => {

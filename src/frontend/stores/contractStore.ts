@@ -6,6 +6,7 @@ import type {
   JsonValue,
   TaskResultEvent,
 } from "../bindings";
+import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Store state ────────────────────────────────────────────────────
 
@@ -14,8 +15,8 @@ interface ContractState {
   contracts: ContractSummaryDto[];
   /** Currently selected contract ID (hex). */
   selectedContractId: string | null;
-  /** Full contract data for selected contract (fetched on demand). */
-  selectedContractDetail: DataContractDto | null;
+  /** Loaded contract details keyed by contract ID. */
+  contractDetails: Record<string, DataContractDto>;
   /** Whether the initial load is in progress. */
   loading: boolean;
   /** Whether a contract fetch/save operation is in progress. */
@@ -54,6 +55,9 @@ interface ContractActions {
   /** Subscribe to task result events for contract updates. Returns unsubscribe fn. */
   subscribeToUpdates: () => Promise<() => void>;
 
+  /** Reset all state (used on network switch). */
+  resetState: () => void;
+
   /** Clear the error state. */
   clearError: () => void;
 }
@@ -62,13 +66,17 @@ interface ContractActions {
 
 export type ContractStore = ContractState & ContractActions;
 
+// ─── Task timeout manager ────────────────────────────────────────────
+
+const timeouts = new TaskTimeoutManager();
+
 // ─── Store implementation ───────────────────────────────────────────
 
 export const useContractStore = create<ContractStore>((set, get) => ({
   // Initial state
   contracts: [],
   selectedContractId: null,
-  selectedContractDetail: null,
+  contractDetails: {},
   loading: false,
   fetching: false,
   error: null,
@@ -106,14 +114,17 @@ export const useContractStore = create<ContractStore>((set, get) => ({
 
   selectContract: async (contractId: string | null) => {
     if (!contractId) {
-      set({ selectedContractId: null, selectedContractDetail: null });
+      set({ selectedContractId: null });
       return;
     }
-    set({ selectedContractId: contractId, selectedContractDetail: null });
+    set({ selectedContractId: contractId });
+    // Skip fetch if already loaded
+    if (get().contractDetails[contractId]) return;
     const detail = await get().getContractById(contractId);
-    // Only update if the selection hasn't changed while we were fetching
-    if (get().selectedContractId === contractId) {
-      set({ selectedContractDetail: detail });
+    if (detail) {
+      set((state) => ({
+        contractDetails: { ...state.contractDetails, [contractId]: detail },
+      }));
     }
   },
 
@@ -125,15 +136,18 @@ export const useContractStore = create<ContractStore>((set, get) => ({
       });
       if (result.status === "ok") {
         // Update local state
-        set((state) => ({
-          contracts: state.contracts.map((c) =>
-            c.id === contractId ? { ...c, alias } : c,
-          ),
-          selectedContractDetail:
-            state.selectedContractDetail?.id === contractId
-              ? { ...state.selectedContractDetail, alias }
-              : state.selectedContractDetail,
-        }));
+        set((state) => {
+          const updatedDetails = { ...state.contractDetails };
+          if (updatedDetails[contractId]) {
+            updatedDetails[contractId] = { ...updatedDetails[contractId], alias };
+          }
+          return {
+            contracts: state.contracts.map((c) =>
+              c.id === contractId ? { ...c, alias } : c,
+            ),
+            contractDetails: updatedDetails,
+          };
+        });
       } else {
         set({ error: result.error });
       }
@@ -146,17 +160,17 @@ export const useContractStore = create<ContractStore>((set, get) => ({
     try {
       const result = await commands.contractRemove({ contractId });
       if (result.status === "ok") {
-        set((state) => ({
-          contracts: state.contracts.filter((c) => c.id !== contractId),
-          selectedContractId:
-            state.selectedContractId === contractId
-              ? null
-              : state.selectedContractId,
-          selectedContractDetail:
-            state.selectedContractDetail?.id === contractId
-              ? null
-              : state.selectedContractDetail,
-        }));
+        set((state) => {
+          const { [contractId]: _, ...remainingDetails } = state.contractDetails;
+          return {
+            contracts: state.contracts.filter((c) => c.id !== contractId),
+            selectedContractId:
+              state.selectedContractId === contractId
+                ? null
+                : state.selectedContractId,
+            contractDetails: remainingDetails,
+          };
+        });
       } else {
         set({ error: result.error });
       }
@@ -170,6 +184,9 @@ export const useContractStore = create<ContractStore>((set, get) => ({
     try {
       const result = await commands.contractFetch({ contractIds });
       if (result.status === "ok") {
+        timeouts.start("fetch", () => {
+          set({ fetching: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
         return result.data.taskId;
       }
       set({ error: result.error, fetching: false });
@@ -190,6 +207,9 @@ export const useContractStore = create<ContractStore>((set, get) => ({
         contractIds,
       });
       if (result.status === "ok") {
+        timeouts.start("fetchWithDesc", () => {
+          set({ fetching: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
         return result.data.taskId;
       }
       set({ error: result.error, fetching: false });
@@ -216,6 +236,9 @@ export const useContractStore = create<ContractStore>((set, get) => ({
         insertTokens,
       });
       if (result.status === "ok") {
+        timeouts.start("save", () => {
+          set({ fetching: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
         return result.data.taskId;
       }
       set({ error: result.error, fetching: false });
@@ -232,9 +255,11 @@ export const useContractStore = create<ContractStore>((set, get) => ({
   subscribeToUpdates: async () => {
     const unlistenResult = await events.taskResultEvent.listen(
       (event: { payload: TaskResultEvent }) => {
-        const { resultType } = event.payload;
+        const { result } = event.payload;
 
-        if (resultType !== "Contract") return;
+        if (result.type !== "contractCompleted") return;
+
+        timeouts.clearAll();
 
         // Contract result received — reload local contracts list
         set({ fetching: false });
@@ -243,7 +268,11 @@ export const useContractStore = create<ContractStore>((set, get) => ({
     );
 
     const unlistenError = await events.taskErrorEvent.listen(
-      (event: { payload: { taskId: string; message: string } }) => {
+      (event: { payload: { taskId: string; domain: string; message: string } }) => {
+        if (event.payload.domain !== "contract") return;
+
+        timeouts.clearAll();
+
         set({
           fetching: false,
           error: event.payload.message,
@@ -255,6 +284,18 @@ export const useContractStore = create<ContractStore>((set, get) => ({
       unlistenResult();
       unlistenError();
     };
+  },
+
+  resetState: () => {
+    timeouts.clearAll();
+    set({
+      contracts: [],
+      selectedContractId: null,
+      contractDetails: {},
+      loading: false,
+      fetching: false,
+      error: null,
+    });
   },
 
   clearError: () => {

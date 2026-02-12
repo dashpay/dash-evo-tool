@@ -1,10 +1,12 @@
 import { create } from "zustand";
 import { commands, events } from "../bindings";
 import type {
+  IdentityTokenBalanceDto,
   IdentityTokenIdentifierDto,
   JsonValue,
   TaskResultEvent,
 } from "../bindings";
+import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Sort types ──────────────────────────────────────────────────────
 
@@ -109,8 +111,13 @@ interface TokenActions {
   /** Fetch a token by token ID (async — result via event). */
   fetchTokenByTokenId: (tokenId: string) => Promise<string | null>;
 
-  /** Save a token locally (async — result via event). */
-  saveTokenLocally: (tokenInfoJson: unknown) => Promise<string | null>;
+  /** Save a token locally (synchronous DB insert). */
+  saveTokenLocally: (input: {
+    tokenId: string;
+    contractId: string;
+    tokenPosition: number;
+    tokenName: string;
+  }) => Promise<void>;
 
   /** Remove a token from local DB. */
   removeToken: (tokenId: string) => Promise<void>;
@@ -129,6 +136,9 @@ interface TokenActions {
 
   /** Subscribe to task result events for token updates. Returns unsubscribe fn. */
   subscribeToUpdates: () => Promise<() => void>;
+
+  /** Reset all state (used on network switch). */
+  resetState: () => void;
 
   /** Clear error state. */
   clearError: () => void;
@@ -171,70 +181,9 @@ function sortTokens(
   return sorted;
 }
 
-/**
- * Extract token entries from a TaskResultEvent payload.
- * The backend sends token balance results as an array of token info objects.
- */
-function extractTokenEntries(payload: unknown): TokenEntry[] | null {
-  if (!payload || typeof payload !== "object") return null;
+// ─── Task timeout manager ────────────────────────────────────────────
 
-  // Payload could be an array of token entries or an object with a tokens field
-  if (Array.isArray(payload)) {
-    return payload.map(normalizeTokenEntry).filter(Boolean) as TokenEntry[];
-  }
-
-  const p = payload as Record<string, unknown>;
-  if (Array.isArray(p.tokens)) {
-    return (p.tokens as unknown[])
-      .map(normalizeTokenEntry)
-      .filter(Boolean) as TokenEntry[];
-  }
-
-  // Single token result
-  const entry = normalizeTokenEntry(payload);
-  if (entry) return [entry];
-
-  return null;
-}
-
-/** Normalize a raw token payload object into a TokenEntry. */
-function normalizeTokenEntry(raw: unknown): TokenEntry | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Record<string, unknown>;
-
-  // Must have at least tokenId or token_id
-  const tokenId = (r.tokenId ?? r.token_id) as string | undefined;
-  if (!tokenId) return null;
-
-  return {
-    identityId: ((r.identityId ?? r.identity_id) as string) || "",
-    tokenId,
-    contractId: ((r.contractId ?? r.contract_id) as string) || "",
-    tokenPosition: ((r.tokenPosition ?? r.token_position) as number) || 0,
-    name: ((r.name ?? r.token_name) as string) || null,
-    ownerAlias: ((r.ownerAlias ?? r.owner_alias) as string) || null,
-    balance: String(r.balance ?? "0"),
-    decimals: ((r.decimals) as number) ?? 8,
-  };
-}
-
-/** Extract search results from a TaskResultEvent payload. */
-function extractSearchResults(payload: unknown): TokenSearchResult[] | null {
-  if (!payload || typeof payload !== "object") return null;
-
-  const p = payload as Record<string, unknown>;
-  if (Array.isArray(p.results)) {
-    return (p.results as unknown[]).map((r) => {
-      const item = r as Record<string, unknown>;
-      return {
-        contractId: (item.contractId ?? item.contract_id ?? "") as string,
-        description: (item.description ?? "") as string,
-      };
-    });
-  }
-
-  return null;
-}
+const timeouts = new TaskTimeoutManager();
 
 // ─── Store implementation ───────────────────────────────────────────
 
@@ -257,6 +206,9 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const response = await commands.tokenQueryMyBalances();
+      timeouts.start("loadBalances", () => {
+        set({ loading: false, fetching: false, searching: false, refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
+      });
       return response.taskId;
       // loading will be cleared when the TaskResultEvent arrives
     } catch (e) {
@@ -283,6 +235,9 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
         startAfter: null,
       });
       if (result.status === "ok") {
+        timeouts.start("search", () => {
+          set({ loading: false, fetching: false, searching: false, refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
         return result.data.taskId;
       }
       set({ error: result.error, searching: false });
@@ -307,6 +262,9 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
         startAfter: searchCursor,
       });
       if (result.status === "ok") {
+        timeouts.start("searchNext", () => {
+          set({ loading: false, fetching: false, searching: false, refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
         return result.data.taskId;
       }
       set({ error: result.error, searching: false });
@@ -335,6 +293,9 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
     try {
       const result = await commands.tokenFetchByContractId({ contractId });
       if (result.status === "ok") {
+        timeouts.start("fetchByContract", () => {
+          set({ loading: false, fetching: false, searching: false, refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
         return result.data.taskId;
       }
       set({ error: result.error, fetching: false });
@@ -353,6 +314,9 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
     try {
       const result = await commands.tokenFetchByTokenId({ tokenId });
       if (result.status === "ok") {
+        timeouts.start("fetchByToken", () => {
+          set({ loading: false, fetching: false, searching: false, refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
         return result.data.taskId;
       }
       set({ error: result.error, fetching: false });
@@ -366,21 +330,20 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
     }
   },
 
-  saveTokenLocally: async (tokenInfoJson: unknown) => {
+  saveTokenLocally: async (input) => {
     set({ fetching: true, error: null });
     try {
-      const result = await commands.tokenSaveLocally({ tokenInfoJson: tokenInfoJson as JsonValue });
+      const result = await commands.tokenSaveLocally(input);
       if (result.status === "ok") {
-        return result.data.taskId;
+        set({ fetching: false });
+      } else {
+        set({ error: result.error, fetching: false });
       }
-      set({ error: result.error, fetching: false });
-      return null;
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : String(e),
         fetching: false,
       });
-      return null;
     }
   },
 
@@ -493,50 +456,86 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
   subscribeToUpdates: async () => {
     const unlistenResult = await events.taskResultEvent.listen(
       (event: { payload: TaskResultEvent }) => {
-        const { resultType, payload } = event.payload;
+        const { result } = event.payload;
 
-        if (resultType !== "Token") return;
-
-        const state = get();
-        const { sortColumn, sortOrder } = state;
-
-        // Try to extract token entries from the payload
-        const entries = extractTokenEntries(payload);
-        if (entries !== null) {
+        // Handle token search results (transient — not in DB)
+        if (result.type === "tokenSearchResults") {
+          timeouts.clearAll();
+          const items: TokenSearchResult[] = (result.results ?? []).map(
+            (r: { contractId: string; description: string }) => ({
+              contractId: r.contractId,
+              description: r.description,
+            }),
+          );
           set({
-            tokens: sortTokens(entries, sortColumn, sortOrder),
-            loading: false,
-            refreshing: false,
-            fetching: false,
+            searchResults: items,
+            searchHasMore: result.hasMore ?? false,
+            searching: false,
           });
           return;
         }
 
-        // Try to extract search results
-        const searchResults = extractSearchResults(payload);
-        if (searchResults !== null) {
-          const p = payload as Record<string, unknown>;
-          const cursor = (p.nextCursor ?? p.next_cursor ?? null) as string | null;
-          set((s) => ({
-            searchResults:
-              s.searchCursor !== null
-                ? [...s.searchResults, ...searchResults]
-                : searchResults,
-            searchCursor: cursor,
-            searchHasMore: cursor !== null,
-            searching: false,
-          }));
+        // Handle token not found
+        if (result.type === "tokenNotFound") {
+          timeouts.clearAll();
+          set({
+            fetching: false,
+            error: "Token not found on Platform.",
+          });
           return;
         }
 
-        // Fallback — clear fetching states, reload
-        set({ fetching: false, loading: false, refreshing: false });
-        state.loadMyTokenBalances();
+        // Token pricing and reward estimates are handled by screen-level
+        // listeners, not the store. Skip them here.
+        if (
+          result.type === "tokenPricing" ||
+          result.type === "tokenRewardEstimate"
+        ) {
+          return;
+        }
+
+        // Token balances loaded — read from DB and populate the store
+        if (result.type === "tokenBalancesLoaded") {
+          timeouts.clearAll();
+          set({ fetching: false, loading: false, refreshing: false });
+          // Read the actual balance data from the local DB
+          commands.tokenGetMyBalances().then((res) => {
+            if (res.status === "ok") {
+              const { sortColumn, sortOrder } = get();
+              const entries: TokenEntry[] = res.data.map(
+                (b: IdentityTokenBalanceDto) => ({
+                  identityId: b.identityId,
+                  tokenId: b.tokenId,
+                  contractId: b.dataContractId,
+                  tokenPosition: b.tokenPosition,
+                  name: b.tokenAlias || null,
+                  ownerAlias: null,
+                  balance: b.balance,
+                  decimals: b.decimals,
+                }),
+              );
+              set({ tokens: sortTokens(entries, sortColumn, sortOrder) });
+            }
+          });
+          return;
+        }
+
+        if (result.type !== "tokenCompleted") return;
+
+        timeouts.clearAll();
+
+        // Mutation completed (mint, burn, transfer, etc.) — refresh balances
+        set({ fetching: false, refreshing: false });
+        get().loadMyTokenBalances();
       },
     );
 
     const unlistenError = await events.taskErrorEvent.listen(
-      (event: { payload: { taskId: string; message: string } }) => {
+      (event: { payload: { taskId: string; domain: string; message: string } }) => {
+        if (event.payload.domain !== "token") return;
+
+        timeouts.clearAll();
+
         set({
           fetching: false,
           loading: false,
@@ -551,6 +550,22 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
       unlistenResult();
       unlistenError();
     };
+  },
+
+  resetState: () => {
+    timeouts.clearAll();
+    set({
+      tokens: [],
+      searchResults: [],
+      searchKeyword: "",
+      searchCursor: null,
+      searchHasMore: false,
+      searching: false,
+      loading: false,
+      fetching: false,
+      refreshing: false,
+      error: null,
+    });
   },
 
   clearError: () => {

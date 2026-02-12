@@ -8,6 +8,7 @@ import type {
   ContactPrivateInfoDto,
   TaskResultEvent,
 } from "../bindings";
+import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -103,6 +104,10 @@ interface DashPayState {
   searchLoading: boolean;
   /** Profile search error message. */
   searchError: string | null;
+
+  // ── In-flight operation tracking ──
+  /** Set of operation keys currently in-flight (for targeted reload on event). */
+  pendingOps: Set<string>;
 }
 
 // ─── Store actions ──────────────────────────────────────────────────
@@ -206,6 +211,9 @@ interface DashPayActions {
   clearErrors: () => void;
   /** Reset store to initial state. */
   reset: () => void;
+
+  /** Reset all state (used on network switch). */
+  resetState: () => void;
 }
 
 export type DashPayStore = DashPayState & DashPayActions;
@@ -241,7 +249,12 @@ const initialState: DashPayState = {
   searchResults: [],
   searchLoading: false,
   searchError: null,
+  pendingOps: new Set(),
 };
+
+// ─── Task timeout manager ────────────────────────────────────────────
+
+const timeouts = new TaskTimeoutManager();
 
 // ─── Store ──────────────────────────────────────────────────────────
 
@@ -297,7 +310,10 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     const { selectedIdentityId } = get();
     if (!selectedIdentityId) return;
 
-    set({ profileSaving: true, profileError: null });
+    set((s) => ({
+      profileSaving: true, profileError: null,
+      pendingOps: new Set(s.pendingOps).add("profile"),
+    }));
     try {
       const result = await commands.dashpayUpdateProfile({
         identityId: selectedIdentityId,
@@ -307,6 +323,10 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
       });
       if (result.status === "error") {
         set({ profileError: result.error, profileSaving: false });
+      } else {
+        timeouts.start("profile", () => {
+          set({ profileSaving: false, profileError: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // On success, profileSaving stays true — cleared by task result event
     } catch (e) {
@@ -343,13 +363,20 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     const { selectedIdentityId } = get();
     if (!selectedIdentityId) return;
 
-    set({ contactsRefreshing: true, contactsError: null });
+    set((s) => ({
+      contactsRefreshing: true, contactsError: null,
+      pendingOps: new Set(s.pendingOps).add("contacts"),
+    }));
     try {
       const result = await commands.dashpayLoadContacts({
         identityId: selectedIdentityId,
       });
       if (result.status === "error") {
         set({ contactsError: result.error, contactsRefreshing: false });
+      } else {
+        timeouts.start("contacts", () => {
+          set({ contactsRefreshing: false, contactsError: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // contactsRefreshing cleared by task result event
     } catch (e) {
@@ -470,13 +497,20 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     const { selectedIdentityId } = get();
     if (!selectedIdentityId) return;
 
-    set({ requestsRefreshing: true, requestsError: null });
+    set((s) => ({
+      requestsRefreshing: true, requestsError: null,
+      pendingOps: new Set(s.pendingOps).add("requests"),
+    }));
     try {
       const result = await commands.dashpayLoadContactRequests({
         identityId: selectedIdentityId,
       });
       if (result.status === "error") {
         set({ requestsError: result.error, requestsRefreshing: false });
+      } else {
+        timeouts.start("requests", () => {
+          set({ requestsRefreshing: false, requestsError: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // requestsRefreshing cleared by task result event
     } catch (e) {
@@ -491,7 +525,10 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     const { selectedIdentityId } = get();
     if (!selectedIdentityId) return;
 
-    set({ requestsError: null });
+    set((s) => ({
+      requestsError: null,
+      pendingOps: new Set(s.pendingOps).add("sendRequest"),
+    }));
     try {
       const result = await commands.dashpaySendContactRequest({
         identityId: selectedIdentityId,
@@ -515,6 +552,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     set((state) => ({
       acceptingIds: new Set(state.acceptingIds).add(numericId),
       requestsError: null,
+      pendingOps: new Set(state.pendingOps).add("accept"),
     }));
 
     try {
@@ -527,6 +565,14 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
           const newIds = new Set(state.acceptingIds);
           newIds.delete(numericId);
           return { acceptingIds: newIds, requestsError: result.error };
+        });
+      } else {
+        timeouts.start(`accept:${requestId}`, () => {
+          set((s) => {
+            const newIds = new Set(s.acceptingIds);
+            newIds.delete(numericId);
+            return { acceptingIds: newIds, requestsError: TIMEOUT_ERROR_MESSAGE };
+          });
         });
       }
       // acceptingIds cleared by task result event
@@ -550,6 +596,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     set((state) => ({
       rejectingIds: new Set(state.rejectingIds).add(numericId),
       requestsError: null,
+      pendingOps: new Set(state.pendingOps).add("reject"),
     }));
 
     try {
@@ -562,6 +609,14 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
           const newIds = new Set(state.rejectingIds);
           newIds.delete(numericId);
           return { rejectingIds: newIds, requestsError: result.error };
+        });
+      } else {
+        timeouts.start(`reject:${requestId}`, () => {
+          set((s) => {
+            const newIds = new Set(s.rejectingIds);
+            newIds.delete(numericId);
+            return { rejectingIds: newIds, requestsError: TIMEOUT_ERROR_MESSAGE };
+          });
         });
       }
       // rejectingIds cleared by task result event
@@ -606,13 +661,20 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     const { selectedIdentityId } = get();
     if (!selectedIdentityId) return;
 
-    set({ paymentsRefreshing: true, paymentsError: null });
+    set((s) => ({
+      paymentsRefreshing: true, paymentsError: null,
+      pendingOps: new Set(s.pendingOps).add("payments"),
+    }));
     try {
       const result = await commands.dashpayLoadPaymentHistory({
         identityId: selectedIdentityId,
       });
       if (result.status === "error") {
         set({ paymentsError: result.error, paymentsRefreshing: false });
+      } else {
+        timeouts.start("payments", () => {
+          set({ paymentsRefreshing: false, paymentsError: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // paymentsRefreshing cleared by task result event
     } catch (e) {
@@ -718,13 +780,20 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
   // ── Profile search ──────────────────────────────────────────────
 
   searchProfiles: async (query) => {
-    set({ searchLoading: true, searchError: null });
+    set((s) => ({
+      searchLoading: true, searchError: null,
+      pendingOps: new Set(s.pendingOps).add("search"),
+    }));
     try {
       const result = await commands.dashpaySearchProfiles({
         searchQuery: query,
       });
       if (result.status === "error") {
         set({ searchError: result.error, searchLoading: false });
+      } else {
+        timeouts.start("search", () => {
+          set({ searchLoading: false, searchError: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // searchLoading cleared by task result event
     } catch (e) {
@@ -744,49 +813,79 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
   subscribeToUpdates: async () => {
     const unlistenResult = await events.taskResultEvent.listen(
       (event: { payload: TaskResultEvent }) => {
-        const { resultType, payload } = event.payload;
+        const { result } = event.payload;
 
-        if (resultType !== "DashPay") return;
+        if (result.type !== "dashPayCompleted" && result.type !== "dashPayProfileSearchResults") return;
+
+        timeouts.clearAll();
 
         const state = get();
-
-        // Clear all async-in-progress flags and reload data
-        set({
-          profileSaving: false,
-          contactsRefreshing: false,
-          requestsRefreshing: false,
-          paymentsRefreshing: false,
-          searchLoading: false,
-          acceptingIds: new Set(),
-          rejectingIds: new Set(),
-        });
+        const ops = state.pendingOps;
 
         // Handle ProfileSearchResults payload from the backend
-        if (
-          payload &&
-          typeof payload === "object" &&
-          "type" in payload &&
-          payload.type === "ProfileSearchResults" &&
-          "results" in payload &&
-          Array.isArray(payload.results)
-        ) {
-          set({
-            searchResults: payload.results as unknown as ProfileSearchResult[],
+        if (result.type === "dashPayProfileSearchResults") {
+          set({ searchResults: result.results as unknown as ProfileSearchResult[], searchLoading: false });
+          set((s) => {
+            const next = new Set(s.pendingOps);
+            next.delete("search");
+            return { pendingOps: next };
           });
+          return;
         }
 
-        // Reload local data from DB for current identity
-        if (state.selectedIdentityId) {
+        // Targeted reload: only clear flags and reload data for pending ops
+        if (ops.has("profile")) {
+          set({ profileSaving: false });
+          if (state.selectedIdentityId) state.loadProfile();
+        }
+        if (ops.has("contacts")) {
+          set({ contactsRefreshing: false });
+          if (state.selectedIdentityId) state.loadContacts();
+        }
+        if (ops.has("requests") || ops.has("sendRequest")) {
+          set({ requestsRefreshing: false });
+          if (state.selectedIdentityId) state.loadContactRequests();
+        }
+        if (ops.has("accept") || ops.has("reject")) {
+          set({ acceptingIds: new Set(), rejectingIds: new Set() });
+          if (state.selectedIdentityId) {
+            state.loadContactRequests();
+            state.loadContacts();
+          }
+        }
+        if (ops.has("payments")) {
+          set({ paymentsRefreshing: false });
+          if (state.selectedIdentityId) state.loadPayments();
+        }
+
+        // If no specific ops were pending, fall back to reloading everything
+        if (ops.size === 0 && state.selectedIdentityId) {
+          set({
+            profileSaving: false,
+            contactsRefreshing: false,
+            requestsRefreshing: false,
+            paymentsRefreshing: false,
+            searchLoading: false,
+            acceptingIds: new Set(),
+            rejectingIds: new Set(),
+          });
           state.loadProfile();
           state.loadContacts();
           state.loadContactRequests();
           state.loadPayments();
         }
+
+        // Clear pending ops
+        set({ pendingOps: new Set() });
       },
     );
 
     const unlistenError = await events.taskErrorEvent.listen(
-      (event: { payload: { taskId: string; message: string } }) => {
+      (event: { payload: { taskId: string; domain: string; message: string } }) => {
+        if (event.payload.domain !== "dashPay") return;
+
+        timeouts.clearAll();
+
         set({
           profileSaving: false,
           contactsRefreshing: false,
@@ -795,6 +894,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
           searchLoading: false,
           acceptingIds: new Set(),
           rejectingIds: new Set(),
+          pendingOps: new Set(),
           profileError: event.payload.message,
         });
       },
@@ -819,6 +919,11 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
   },
 
   reset: () => {
+    set(initialState);
+  },
+
+  resetState: () => {
+    timeouts.clearAll();
     set(initialState);
   },
 }));

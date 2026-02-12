@@ -323,35 +323,44 @@ describe("tokenStore", () => {
   // ─── saveTokenLocally ───────────────────────────────────────
 
   describe("saveTokenLocally", () => {
-    it("dispatches save and returns task ID", async () => {
+    it("saves token and clears fetching on success", async () => {
       (commands.tokenSaveLocally as Mock).mockResolvedValue({
         status: "ok",
-        data: { taskId: "task-600" },
+        data: undefined,
       });
 
-      const taskId = await useTokenStore
-        .getState()
-        .saveTokenLocally({ name: "MyToken" });
+      await useTokenStore.getState().saveTokenLocally({
+        tokenId: "token001",
+        contractId: "contract001",
+        tokenPosition: 0,
+        tokenName: "MyToken",
+      });
 
-      expect(taskId).toBe("task-600");
       expect(commands.tokenSaveLocally).toHaveBeenCalledWith({
-        tokenInfoJson: { name: "MyToken" },
+        tokenId: "token001",
+        contractId: "contract001",
+        tokenPosition: 0,
+        tokenName: "MyToken",
       });
-      expect(useTokenStore.getState().fetching).toBe(true);
+      expect(useTokenStore.getState().fetching).toBe(false);
+      expect(useTokenStore.getState().error).toBeNull();
     });
 
-    it("returns null and sets error on failure", async () => {
+    it("sets error on failure", async () => {
       (commands.tokenSaveLocally as Mock).mockResolvedValue({
         status: "error",
-        error: "Save failed",
+        error: "save failed",
       });
 
-      const taskId = await useTokenStore
-        .getState()
-        .saveTokenLocally({});
+      await useTokenStore.getState().saveTokenLocally({
+        tokenId: "token001",
+        contractId: "contract001",
+        tokenPosition: 0,
+        tokenName: "MyToken",
+      });
 
-      expect(taskId).toBeNull();
-      expect(useTokenStore.getState().error).toBe("Save failed");
+      expect(useTokenStore.getState().error).toBe("save failed");
+      expect(useTokenStore.getState().fetching).toBe(false);
     });
   });
 
@@ -624,7 +633,7 @@ describe("tokenStore", () => {
       expect(unsubError).toHaveBeenCalled();
     });
 
-    it("updates tokens on Token result event with array payload", async () => {
+    it("clears fetching/refreshing and triggers reload on Token result event", async () => {
       let resultCallback: (event: { payload: TaskResultEvent }) => void;
       (events.taskResultEvent.listen as Mock).mockImplementation(
         async (cb: (event: { payload: TaskResultEvent }) => void) => {
@@ -633,36 +642,30 @@ describe("tokenStore", () => {
         },
       );
 
-      useTokenStore.setState({ loading: true });
+      // Mock the reload that happens on tokenCompleted
+      (commands.tokenQueryMyBalances as Mock).mockResolvedValue({
+        taskId: "task-reload",
+      });
+
+      useTokenStore.setState({ loading: true, fetching: true, refreshing: true });
       await useTokenStore.getState().subscribeToUpdates();
 
-      // Simulate token result event with tokens array
+      // Simulate token result event
       resultCallback!({
         payload: {
           taskId: "task-100",
-          resultType: "Token",
-          payload: {
-            tokens: [
-              {
-                tokenId: "t1",
-                identityId: "id1",
-                contractId: "c1",
-                tokenPosition: 0,
-                name: "MyToken",
-                ownerAlias: "Alice",
-                balance: "5000",
-                decimals: 8,
-              },
-            ],
-          },
+          result: { type: "tokenCompleted" },
         },
       });
 
       const state = useTokenStore.getState();
-      expect(state.tokens).toHaveLength(1);
-      expect(state.tokens[0].tokenId).toBe("t1");
-      expect(state.tokens[0].name).toBe("MyToken");
-      expect(state.loading).toBe(false);
+      // fetching and refreshing are cleared by the handler
+      expect(state.fetching).toBe(false);
+      expect(state.refreshing).toBe(false);
+      // loading is set back to true by the loadMyTokenBalances() call
+      expect(state.loading).toBe(true);
+      // Verify that loadMyTokenBalances was called (which re-queries)
+      expect(commands.tokenQueryMyBalances).toHaveBeenCalled();
     });
 
     it("ignores non-Token result events", async () => {
@@ -681,8 +684,7 @@ describe("tokenStore", () => {
       resultCallback!({
         payload: {
           taskId: "task-456",
-          resultType: "Identity",
-          payload: null,
+          result: { type: "identityCompleted", identityId: null },
         },
       });
 
@@ -690,7 +692,7 @@ describe("tokenStore", () => {
       expect(useTokenStore.getState().fetching).toBe(true);
     });
 
-    it("handles search results in Token event", async () => {
+    it("triggers reload on Token result event when searching", async () => {
       let resultCallback: (event: { payload: TaskResultEvent }) => void;
       (events.taskResultEvent.listen as Mock).mockImplementation(
         async (cb: (event: { payload: TaskResultEvent }) => void) => {
@@ -699,7 +701,7 @@ describe("tokenStore", () => {
         },
       );
 
-      // Mock loadMyTokenBalances for the fallback
+      // Mock loadMyTokenBalances for the reload
       (commands.tokenQueryMyBalances as Mock).mockResolvedValue({
         taskId: "task-reload",
       });
@@ -707,73 +709,29 @@ describe("tokenStore", () => {
       useTokenStore.setState({ searching: true, searchKeyword: "test" });
       await useTokenStore.getState().subscribeToUpdates();
 
-      // Simulate search result event
+      // Simulate token completed event
       resultCallback!({
         payload: {
           taskId: "task-200",
-          resultType: "Token",
-          payload: {
-            results: [
-              { contractId: "c1", description: "Token A" },
-              { contractId: "c2", description: "Token B" },
-            ],
-            nextCursor: "cursor999",
-          },
+          result: { type: "tokenCompleted" },
         },
       });
 
       const state = useTokenStore.getState();
-      expect(state.searchResults).toHaveLength(2);
-      expect(state.searchResults[0].contractId).toBe("c1");
-      expect(state.searchCursor).toBe("cursor999");
-      expect(state.searchHasMore).toBe(true);
-      expect(state.searching).toBe(false);
-    });
-
-    it("appends search results on pagination", async () => {
-      let resultCallback: (event: { payload: TaskResultEvent }) => void;
-      (events.taskResultEvent.listen as Mock).mockImplementation(
-        async (cb: (event: { payload: TaskResultEvent }) => void) => {
-          resultCallback = cb;
-          return () => {};
-        },
-      );
-
-      useTokenStore.setState({
-        searching: true,
-        searchKeyword: "test",
-        searchCursor: "cursor-page1",
-        searchResults: [makeSearchResult({ contractId: "c0" })],
-      });
-      await useTokenStore.getState().subscribeToUpdates();
-
-      // Simulate next page result
-      resultCallback!({
-        payload: {
-          taskId: "task-301",
-          resultType: "Token",
-          payload: {
-            results: [{ contractId: "c3", description: "Token C" }],
-            nextCursor: null,
-          },
-        },
-      });
-
-      const state = useTokenStore.getState();
-      expect(state.searchResults).toHaveLength(2);
-      expect(state.searchResults[0].contractId).toBe("c0");
-      expect(state.searchResults[1].contractId).toBe("c3");
-      expect(state.searchHasMore).toBe(false);
+      expect(state.fetching).toBe(false);
+      expect(state.refreshing).toBe(false);
+      // loadMyTokenBalances was called, which re-queries
+      expect(commands.tokenQueryMyBalances).toHaveBeenCalled();
     });
 
     it("sets error on task error event", async () => {
       let errorCallback: (event: {
-        payload: { taskId: string; message: string };
+        payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
       }) => void;
       (events.taskErrorEvent.listen as Mock).mockImplementation(
         async (
           cb: (event: {
-            payload: { taskId: string; message: string };
+            payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
           }) => void,
         ) => {
           errorCallback = cb;
@@ -785,7 +743,7 @@ describe("tokenStore", () => {
       await useTokenStore.getState().subscribeToUpdates();
 
       errorCallback!({
-        payload: { taskId: "task-999", message: "Backend crash" },
+        payload: { taskId: "task-999", domain: "token", message: "Backend crash", details: "", recoverable: false },
       });
 
       const state = useTokenStore.getState();

@@ -856,8 +856,7 @@ describe("contestStore", () => {
       resultCallback!({
         payload: {
           taskId: "t1",
-          resultType: "Contest",
-          payload: null,
+          result: { type: "contestCompleted" },
         },
       });
 
@@ -887,8 +886,7 @@ describe("contestStore", () => {
       resultCallback!({
         payload: {
           taskId: "t1",
-          resultType: "Identity",
-          payload: null,
+          result: { type: "identityCompleted", identityId: null },
         },
       });
 
@@ -914,8 +912,7 @@ describe("contestStore", () => {
       resultCallback!({
         payload: {
           taskId: "t1",
-          resultType: "Wallet",
-          payload: null,
+          result: { type: "walletCompleted" },
         },
       });
 
@@ -931,7 +928,7 @@ describe("contestStore", () => {
       });
 
       let errorCallback: (event: {
-        payload: { taskId: string; message: string };
+        payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
       }) => void;
       (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
       (events.taskErrorEvent.listen as Mock).mockImplementation(
@@ -946,7 +943,7 @@ describe("contestStore", () => {
 
       await useContestStore.getState().subscribeToUpdates();
       errorCallback!({
-        payload: { taskId: "t1", message: "Platform error" },
+        payload: { taskId: "t1", domain: "contest", message: "Platform error", details: "", recoverable: false },
       });
 
       const state = useContestStore.getState();

@@ -6,6 +6,7 @@ import type {
   WalletRefDto,
   PlatformSyncModeDto,
 } from "../bindings";
+import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Refresh modes (mirrors egui WalletRefreshMode) ─────────────────
 
@@ -75,14 +76,23 @@ interface WalletActions {
   /** Reload a single single-key wallet (after backend mutation). */
   reloadSingleKeyWallet: (keyHash: string) => Promise<void>;
 
-  /** Notify the backend a wallet has been unlocked. */
+  /** Notify the backend a wallet has been unlocked (non-password wallets only). */
   notifyUnlocked: (seedHash: string) => Promise<void>;
 
-  /** Notify the backend a wallet has been locked. */
+  /** Notify the backend a wallet has been locked (non-password wallets only). */
   notifyLocked: (seedHash: string) => Promise<void>;
+
+  /** Unlock a password-protected wallet. Returns error string or null on success. */
+  unlockWallet: (walletRef: WalletRefDto, password: string) => Promise<string | null>;
+
+  /** Lock a wallet (securely erases decrypted key material). */
+  lockWallet: (walletRef: WalletRefDto) => Promise<void>;
 
   /** Subscribe to wallet-updated Tauri events. Returns unsubscribe fn. */
   subscribeToUpdates: () => Promise<() => void>;
+
+  /** Reset all state (used on network switch). */
+  resetState: () => void;
 
   /** Clear error state. */
   clearError: () => void;
@@ -107,6 +117,10 @@ function platformSyncModeForRefresh(
       return "terminalOnly";
   }
 }
+
+// ─── Task timeout manager ────────────────────────────────────────────
+
+const timeouts = new TaskTimeoutManager();
 
 // ─── Store ──────────────────────────────────────────────────────────
 
@@ -168,19 +182,10 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
         set({ error: result.error, refreshing: false });
         return;
       }
-      // The actual updated wallet data comes back via the walletUpdated event
-      // or we can re-fetch it. For immediate UI update, re-fetch this wallet.
-      const walletResult = await commands.walletGetHd(seedHash);
-      if (walletResult.status === "ok") {
-        set((state) => ({
-          hdWallets: state.hdWallets.map((w) =>
-            w.seedHash === seedHash ? walletResult.data : w,
-          ),
-          refreshing: false,
-        }));
-      } else {
-        set({ refreshing: false });
-      }
+      // refreshing stays true — cleared when walletUpdatedEvent arrives
+      timeouts.start(`refreshHd:${seedHash}`, () => {
+        set({ refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
+      });
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : String(e),
@@ -199,17 +204,10 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
         set({ error: result.error, refreshing: false });
         return;
       }
-      const walletResult = await commands.walletGetSingleKey(keyHash);
-      if (walletResult.status === "ok") {
-        set((state) => ({
-          singleKeyWallets: state.singleKeyWallets.map((w) =>
-            w.keyHash === keyHash ? walletResult.data : w,
-          ),
-          refreshing: false,
-        }));
-      } else {
-        set({ refreshing: false });
-      }
+      // refreshing stays true — cleared when walletUpdatedEvent arrives
+      timeouts.start(`refreshSk:${keyHash}`, () => {
+        set({ refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
+      });
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : String(e),
@@ -381,9 +379,45 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
     }
   },
 
+  unlockWallet: async (walletRef, password) => {
+    try {
+      const result = await commands.walletUnlock({ walletRef, password });
+      if (result.status === "error") {
+        return result.error;
+      }
+      return null;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  },
+
+  lockWallet: async (walletRef) => {
+    try {
+      await commands.walletLock({ walletRef });
+    } catch {
+      // Best effort
+    }
+  },
+
   subscribeToUpdates: async () => {
-    const unlisten = await events.walletUpdatedEvent.listen((event) => {
-      const { walletSeedHash } = event.payload;
+    const unlisten = await events.walletUpdatedEvent.listen(async (event) => {
+      const { walletSeedHash, network } = event.payload;
+
+      // Ignore events from other networks
+      try {
+        const currentNet = await commands.contextGetNetwork();
+        if (network !== currentNet) return;
+      } catch {
+        // If we can't check the network, process the event anyway
+      }
+
+      // Clear any pending refresh timeout for this wallet
+      timeouts.clear(`refreshHd:${walletSeedHash}`);
+      timeouts.clear(`refreshSk:${walletSeedHash}`);
+
+      // Clear refreshing flag now that we have fresh data
+      set({ refreshing: false });
+
       // Reload the updated wallet's data
       const state = get();
       const isHd = state.hdWallets.some(
@@ -397,6 +431,18 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
       }
     });
     return unlisten;
+  },
+
+  resetState: () => {
+    timeouts.clearAll();
+    set({
+      hdWallets: [],
+      singleKeyWallets: [],
+      selectedWallet: null,
+      loading: false,
+      refreshing: false,
+      error: null,
+    });
   },
 
   clearError: () => {

@@ -4,6 +4,7 @@ import type {
   QualifiedIdentityDto,
   TaskResultEvent,
 } from "../bindings";
+import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Sort types ──────────────────────────────────────────────────────
 
@@ -86,6 +87,9 @@ interface IdentityActions {
   /** Subscribe to task-result events for identity updates. Returns unsubscribe fn. */
   subscribeToUpdates: () => Promise<() => void>;
 
+  /** Reset all state (used on network switch). */
+  resetState: () => void;
+
   /** Clear error state. */
   clearError: () => void;
 }
@@ -153,6 +157,10 @@ function sortIdentities(
   return sorted;
 }
 
+// ─── Task timeout manager ────────────────────────────────────────────
+
+const timeouts = new TaskTimeoutManager();
+
 // ─── Store ───────────────────────────────────────────────────────────
 
 export const useIdentityStore = create<IdentityStore>((set, get) => ({
@@ -212,6 +220,15 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
           newIds.delete(identityId);
           return { error: result.error, refreshingIds: newIds };
         });
+      } else {
+        // On success dispatch, start timeout keyed by identity
+        timeouts.start(`refresh:${identityId}`, () => {
+          set((s) => {
+            const newIds = new Set(s.refreshingIds);
+            newIds.delete(identityId);
+            return { refreshingIds: newIds, error: TIMEOUT_ERROR_MESSAGE };
+          });
+        });
       }
       // On success, the TaskResultEvent will trigger reloadIdentity
       // We DON'T clear refreshingIds here — that happens in subscribeToUpdates
@@ -231,7 +248,11 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
     const { identities } = get();
     if (identities.length === 0) return;
 
-    set({ refreshingAll: true, error: null });
+    set({
+      refreshingAll: true,
+      refreshingIds: new Set(identities.map((i) => i.id)),
+      error: null,
+    });
     try {
       // Dispatch refresh for each identity
       const results = await Promise.allSettled(
@@ -252,6 +273,10 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
 
       if (errors.length > 0) {
         set({ error: `Refresh errors: ${errors[0]}`, refreshingAll: false });
+      } else {
+        timeouts.start("refreshAll", () => {
+          set({ refreshingIds: new Set(), refreshingAll: false, error: TIMEOUT_ERROR_MESSAGE });
+        });
       }
       // refreshingAll will be cleared when task results come back
     } catch (e) {
@@ -430,35 +455,27 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
   subscribeToUpdates: async () => {
     const unlistenResult = await events.taskResultEvent.listen(
       (event: { payload: TaskResultEvent }) => {
-        const { resultType, payload } = event.payload;
+        const { result } = event.payload;
+        console.debug("[identityStore] taskResultEvent received:", result.type, event.payload);
 
-        if (resultType !== "Identity") return;
+        if (result.type !== "identityCompleted") return;
 
         const state = get();
 
         // Handle identity results — reload the affected identity
-        if (payload && typeof payload === "object") {
-          // Try to extract identity ID from the payload
-          const p = payload as Record<string, unknown>;
-          const identityId =
-            (p.identityId as string) ??
-            (p.id as string) ??
-            null;
-
-          if (identityId) {
-            // Clear this identity from refreshingIds
-            set((s) => {
-              const newIds = new Set(s.refreshingIds);
-              newIds.delete(identityId);
-              return { refreshingIds: newIds };
-            });
-            state.reloadIdentity(identityId);
-          } else {
-            // Broad refresh — reload all
-            state.loadIdentities();
-          }
+        const identityId = result.identityId;
+        if (identityId) {
+          timeouts.clear(`refresh:${identityId}`);
+          // Clear this identity from refreshingIds
+          set((s) => {
+            const newIds = new Set(s.refreshingIds);
+            newIds.delete(identityId);
+            return { refreshingIds: newIds };
+          });
+          state.reloadIdentity(identityId);
         } else {
-          // Null payload or non-object — reload all
+          timeouts.clearAll();
+          // Broad refresh — reload all
           state.loadIdentities();
         }
 
@@ -468,13 +485,18 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
           currentState.refreshingAll &&
           currentState.refreshingIds.size === 0
         ) {
+          timeouts.clear("refreshAll");
           set({ refreshingAll: false });
         }
       },
     );
 
     const unlistenError = await events.taskErrorEvent.listen(
-      (event: { payload: { taskId: string; message: string } }) => {
+      (event: { payload: { taskId: string; domain: string; message: string } }) => {
+        if (event.payload.domain !== "identity") return;
+
+        timeouts.clearAll();
+
         // Clear refreshing state on error
         set({
           refreshingIds: new Set(),
@@ -488,6 +510,18 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
       unlistenResult();
       unlistenError();
     };
+  },
+
+  resetState: () => {
+    timeouts.clearAll();
+    set({
+      identities: [],
+      selectedIdentityId: null,
+      loading: false,
+      refreshingIds: new Set(),
+      refreshingAll: false,
+      error: null,
+    });
   },
 
   clearError: () => {

@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef } from "react";
 import { Search, ChevronRight, ChevronDown, FileText, Database, Coins, Code, Trash2, Copy, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, displayId, hexToBase58 } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -210,8 +210,8 @@ export interface ContractTreePanelProps {
   onClearSelection: () => void;
   /** Called when a contract should be removed. */
   onRemoveContract: (contractId: string) => void;
-  /** Called when contract hex should be copied. */
-  onCopyHex?: (contractId: string) => void;
+  /** Called when contract ID should be copied. */
+  onCopyId?: (contractId: string) => void;
   /** Called when contract JSON should be copied. */
   onCopyJson?: (contractId: string, json: string) => void;
   /** Called when user clicks Contract JSON to view in the main area. */
@@ -245,7 +245,7 @@ export function ContractTreePanel({
   onSelectIndex,
   onClearSelection,
   onRemoveContract,
-  onCopyHex,
+  onCopyId,
   onCopyJson,
   onSelectContractJson,
   className,
@@ -399,7 +399,7 @@ export function ContractTreePanel({
       </div>
 
       {/* Tree content */}
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         <div className="p-2" role={filteredContracts.length > 0 ? "tree" : undefined} aria-label={filteredContracts.length > 0 ? "Contract browser" : undefined}>
           {loading ? (
             <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
@@ -430,7 +430,7 @@ export function ContractTreePanel({
                 handleSelectIndex,
                 isSystemContract,
                 setRemoveTarget,
-                onCopyHex,
+                onCopyId,
                 onCopyJson,
                 onSelectContractJson,
               ),
@@ -461,10 +461,7 @@ function getDisplayName(contract: ContractSummaryDto): string {
   if (contract.alias) {
     return DISPLAY_NAMES[contract.alias] ?? contract.alias;
   }
-  // Show truncated ID
-  return contract.id.length > 12
-    ? `${contract.id.slice(0, 6)}...${contract.id.slice(-6)}`
-    : contract.id;
+  return displayId(contract.id);
 }
 
 function renderContract(
@@ -478,7 +475,7 @@ function renderContract(
   onSelectIndex: (contractId: string, docType: string, index: IndexInfo) => void,
   isSystemContract: (contract: ContractSummaryDto) => boolean,
   setRemoveTarget: (target: { contractId: string; name: string } | null) => void,
-  onCopyHex?: (contractId: string) => void,
+  onCopyId?: (contractId: string) => void,
   onCopyJson?: (contractId: string, json: string) => void,
   onSelectContractJson?: (contractId: string) => void,
 ) {
@@ -519,7 +516,7 @@ function renderContract(
               <span className="truncate">{displayName}</span>
             </TooltipTrigger>
             <TooltipContent side="right">
-              <p className="font-mono text-xs">{contract.id}</p>
+              <p className="font-mono text-xs">{hexToBase58(contract.id)}</p>
               {contract.alias && (
                 <p className="text-xs text-muted-foreground">Alias: {contract.alias}</p>
               )}
@@ -546,13 +543,13 @@ function renderContract(
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" side="right">
-              {onCopyHex && (
+              {onCopyId && (
                 <DropdownMenuItem
-                  onClick={() => onCopyHex(contract.id)}
-                  data-testid="copy-hex-action"
+                  onClick={() => onCopyId(contract.id)}
+                  data-testid="copy-id-action"
                 >
                   <Copy className="h-4 w-4 mr-2" aria-hidden="true" />
-                  Copy (Hex)
+                  Copy ID
                 </DropdownMenuItem>
               )}
               {onCopyJson && detail && (

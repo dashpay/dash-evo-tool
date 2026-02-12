@@ -42,7 +42,7 @@ import {
   X,
   Calculator,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, displayId, hexToBase58 } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -159,12 +159,6 @@ function formatTokenBalance(balance: string | number, decimals: number): string 
   const trimmedFrac = fracPart.replace(/0+$/, "");
   if (!trimmedFrac) return intPart;
   return `${intPart}.${trimmedFrac}`;
-}
-
-/** Truncate a hex string for display. */
-function truncateId(id: string, chars = 8): string {
-  if (id.length <= chars * 2 + 3) return id;
-  return `${id.slice(0, chars)}...${id.slice(-chars)}`;
 }
 
 /** Group token entries by tokenId into summaries. */
@@ -537,11 +531,11 @@ function SortableTokenRow({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="text-sm font-mono text-muted-foreground cursor-default">
-              {truncateId(summary.tokenId)}
+              {displayId(summary.tokenId)}
             </span>
           </TooltipTrigger>
           <TooltipContent>
-            <p className="font-mono text-xs">{summary.tokenId}</p>
+            <p className="font-mono text-xs">{hexToBase58(summary.tokenId)}</p>
           </TooltipContent>
         </Tooltip>
       </TableCell>
@@ -640,11 +634,11 @@ function TokenDetailView({
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="text-xs font-mono text-muted-foreground cursor-default">
-                {truncateId(tokenId)}
+                {displayId(tokenId)}
               </span>
             </TooltipTrigger>
             <TooltipContent>
-              <p className="font-mono text-xs">{tokenId}</p>
+              <p className="font-mono text-xs">{hexToBase58(tokenId)}</p>
             </TooltipContent>
           </Tooltip>
         </div>
@@ -753,11 +747,11 @@ function IdentityBalanceRow({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="text-sm font-mono text-muted-foreground cursor-default">
-              {truncateId(entry.identityId)}
+              {displayId(entry.identityId)}
             </span>
           </TooltipTrigger>
           <TooltipContent>
-            <p className="font-mono text-xs">{entry.identityId}</p>
+            <p className="font-mono text-xs">{hexToBase58(entry.identityId)}</p>
           </TooltipContent>
         </Tooltip>
       </TableCell>
@@ -950,4 +944,4 @@ function RewardExplanationDialog({
 
 // ─── Exports ────────────────────────────────────────────────────────
 
-export { formatTokenBalance, truncateId, groupTokens };
+export { formatTokenBalance, groupTokens };

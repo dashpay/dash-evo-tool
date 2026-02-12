@@ -261,7 +261,8 @@ export function ContactRequests({ onAddContact }: ContactRequestsProps) {
       if (status === "confirmed" && confirmDialog.request) {
         const platformId = confirmDialog.request.platformDocumentId;
         if (!platformId) {
-          // Old DB row without platform document ID — cannot proceed
+          // Old DB row without platform document ID — trigger a refresh
+          useDashPayStore.getState().refreshContactRequests();
           return;
         }
         const dbRowId = confirmDialog.request.id;

@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { CopyButton } from "@/components/shared/CopyButton";
 import { JsonViewer } from "@/components/shared/JsonViewer";
+import { displayId, hexToBase58 } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -55,12 +56,6 @@ export interface TokenInfoDialogProps {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
-
-/** Truncate a hex string for display. */
-function truncateHex(hex: string, chars = 12): string {
-  if (hex.length <= chars * 2 + 3) return hex;
-  return `${hex.slice(0, chars)}...${hex.slice(-chars)}`;
-}
 
 /** Format a supply value for display. */
 function formatSupply(value: string | null | undefined, decimals: number): string {
@@ -115,11 +110,13 @@ function InfoRow({
   value,
   mono = false,
   copyable = false,
+  copyValue,
 }: {
   label: string;
   value: string;
   mono?: boolean;
   copyable?: boolean;
+  copyValue?: string;
 }) {
   return (
     <div className="flex items-start gap-3 py-1">
@@ -133,7 +130,7 @@ function InfoRow({
         >
           {value}
         </span>
-        {copyable && <CopyButton value={value} />}
+        {copyable && <CopyButton value={copyValue ?? value} />}
       </div>
     </div>
   );
@@ -211,22 +208,25 @@ export function TokenInfoDialog({
 
               <InfoRow
                 label="Token ID"
-                value={truncateHex(token.tokenId)}
+                value={displayId(token.tokenId)}
                 mono
                 copyable
+                copyValue={hexToBase58(token.tokenId)}
               />
               <InfoRow
                 label="Contract ID"
-                value={truncateHex(token.contractId)}
+                value={displayId(token.contractId)}
                 mono
                 copyable
+                copyValue={hexToBase58(token.contractId)}
               />
               {token.ownerIdentityId && (
                 <InfoRow
                   label="Contract Owner"
-                  value={truncateHex(token.ownerIdentityId)}
+                  value={displayId(token.ownerIdentityId)}
                   mono
                   copyable
+                  copyValue={hexToBase58(token.ownerIdentityId)}
                 />
               )}
               <InfoRow
@@ -299,4 +299,4 @@ export function TokenInfoDialog({
 
 // ─── Exports ────────────────────────────────────────────────────────
 
-export { truncateHex, formatSupply };
+export { formatSupply };

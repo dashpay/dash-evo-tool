@@ -1,7 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { MyTokensTable, formatTokenBalance, truncateId, groupTokens } from "./MyTokensTable";
+import { MyTokensTable, formatTokenBalance, groupTokens } from "./MyTokensTable";
+import { displayId } from "@/lib/utils";
 import type { MyTokensTableProps, RewardEstimate } from "./MyTokensTable";
 import type { TokenEntry } from "@/stores/tokenStore";
 import type { TokenSortColumn, TokenSortOrder } from "@/stores/tokenStore";
@@ -429,20 +430,20 @@ describe("formatTokenBalance", () => {
 
 // ─── ID truncation ──────────────────────────────────────────────────
 
-describe("truncateId", () => {
-  it("truncates long IDs", () => {
+describe("displayId", () => {
+  it("truncates long IDs via base58 conversion", () => {
     const id = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
-    expect(truncateId(id)).toBe("abcd1234...abcd1234");
+    const result = displayId(id);
+    // displayId converts to base58 then truncates with ellipsis
+    expect(result).toContain("...");
+    expect(result.length).toBeLessThan(id.length);
   });
 
-  it("does not truncate short IDs", () => {
-    const id = "short";
-    expect(truncateId(id)).toBe("short");
-  });
-
-  it("supports custom truncation length", () => {
-    const id = "aabbccddee1234567890aabbccddee1234567890";
-    expect(truncateId(id, 4)).toBe("aabb...7890");
+  it("returns short base58 IDs without truncation", () => {
+    // A short hex string that produces short base58
+    const id = "0a";
+    const result = displayId(id);
+    expect(result).not.toContain("...");
   });
 });
 

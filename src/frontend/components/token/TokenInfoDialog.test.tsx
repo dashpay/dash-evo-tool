@@ -3,9 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   TokenInfoDialog,
-  truncateHex,
   formatSupply,
 } from "./TokenInfoDialog";
+import { displayId } from "@/lib/utils";
 import type { TokenInfoData, TokenInfoDialogProps } from "./TokenInfoDialog";
 
 // ─── Mocks ──────────────────────────────────────────────────────────
@@ -67,24 +67,17 @@ beforeEach(() => {
 
 // ─── Unit tests for helpers ─────────────────────────────────────────
 
-describe("truncateHex", () => {
-  it("returns short strings unchanged", () => {
-    expect(truncateHex("abcdef")).toBe("abcdef");
+describe("displayId", () => {
+  it("returns short base58 strings unchanged", () => {
+    const result = displayId("0a");
+    expect(result).not.toContain("...");
   });
 
-  it("truncates long hex strings", () => {
+  it("truncates long hex strings via base58 conversion", () => {
     const long =
       "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000011112222333344";
-    const result = truncateHex(long, 12);
+    const result = displayId(long);
     expect(result).toContain("...");
-    expect(result.startsWith("aaaa1111bbbb")).toBe(true);
-    expect(result.endsWith("112222333344")).toBe(true);
-  });
-
-  it("uses default char count of 12", () => {
-    const long =
-      "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666000011112222333344";
-    const result = truncateHex(long);
     expect(result.length).toBeLessThan(long.length);
   });
 });

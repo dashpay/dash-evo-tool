@@ -13,6 +13,7 @@ import { commands, events } from "@/bindings";
 import type { TaskResultEvent } from "@/bindings";
 import { toastError } from "@/lib/toastError";
 import { toast } from "sonner";
+import { displayId, hexToBase58 } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -37,12 +38,6 @@ interface FoundToken {
 /** Validate a hex string (even-length, hex chars only). */
 function isValidHex(s: string): boolean {
   return /^[0-9a-fA-F]+$/.test(s) && s.length >= 32;
-}
-
-/** Truncate a hex string for display. */
-function truncateHex(hex: string, chars = 12): string {
-  if (hex.length <= chars * 2 + 3) return hex;
-  return `${hex.slice(0, chars)}...${hex.slice(-chars)}`;
 }
 
 // ─── Component ──────────────────────────────────────────────────────
@@ -453,16 +448,16 @@ function TokenResultCard({
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">Token ID:</span>
           <code className="text-xs font-mono" data-testid="token-id-display">
-            {truncateHex(token.tokenId)}
+            {displayId(token.tokenId)}
           </code>
-          <CopyButton value={token.tokenId} />
+          <CopyButton value={hexToBase58(token.tokenId)} />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">Contract ID:</span>
           <code className="text-xs font-mono" data-testid="contract-id-display">
-            {truncateHex(token.contractId)}
+            {displayId(token.contractId)}
           </code>
-          <CopyButton value={token.contractId} />
+          <CopyButton value={hexToBase58(token.contractId)} />
         </div>
       </div>
       <div className="flex flex-col gap-1.5 shrink-0">

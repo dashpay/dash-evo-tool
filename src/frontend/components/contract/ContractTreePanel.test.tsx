@@ -781,14 +781,14 @@ describe("ContractTreePanel", () => {
   // ─── Copy actions ─────────────────────────────────────────────────
 
   it("renders copy actions menu when contract expanded", async () => {
-    const onCopyHex = vi.fn();
+    const onCopyId = vi.fn();
     const onCopyJson = vi.fn();
     const detail = makeDetail();
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
       contractDetails: { [detail.id]: detail },
-      onCopyHex,
+      onCopyId,
       onCopyJson,
     });
 

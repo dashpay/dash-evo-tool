@@ -48,6 +48,7 @@ import { useDocumentStore, DOCUMENT_PRIVATE_FIELDS } from "@/stores/documentStor
 import type { DocumentPageEntry, DocumentDisplayMode } from "@/stores/documentStore";
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
+import { hexToBase58 } from "@/lib/utils";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -452,9 +453,9 @@ export function DocumentQueryScreen() {
     [removeContract, selectedContractId, handleClearSelection],
   );
 
-  // Copy contract hex
-  const handleCopyHex = useCallback((contractId: string) => {
-    navigator.clipboard.writeText(contractId);
+  // Copy contract ID (base58)
+  const handleCopyId = useCallback((contractId: string) => {
+    navigator.clipboard.writeText(hexToBase58(contractId));
     toast.success("Contract ID copied");
   }, []);
 
@@ -513,7 +514,7 @@ export function DocumentQueryScreen() {
   return (
     <div className="flex flex-1 gap-3 p-3 overflow-hidden" data-testid="document-query-screen">
       {/* Left: Contract Tree Panel */}
-      <div className="w-72 shrink-0">
+      <div className="w-72 shrink-0 min-h-0">
         <ContractTreePanel
           contracts={contracts}
           contractDetails={contractDetails}
@@ -524,7 +525,7 @@ export function DocumentQueryScreen() {
           onSelectIndex={handleSelectIndex}
           onClearSelection={handleClearSelection}
           onRemoveContract={handleRemoveContract}
-          onCopyHex={handleCopyHex}
+          onCopyId={handleCopyId}
           onCopyJson={handleCopyJson}
           onSelectContractJson={handleSelectContractJson}
           className="h-full"

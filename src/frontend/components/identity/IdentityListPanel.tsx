@@ -40,7 +40,7 @@ import {
   Plus,
   Search,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, displayId, hexToBase58 } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -132,12 +132,7 @@ function formatCreditsBalance(credits: number): string {
 }
 
 function getIdentityDisplayName(identity: QualifiedIdentityDto): string {
-  return identity.alias?.trim() || truncateId(identity.id);
-}
-
-function truncateId(id: string): string {
-  if (id.length <= 12) return id;
-  return `${id.slice(0, 6)}...${id.slice(-6)}`;
+  return identity.alias?.trim() || displayId(identity.id);
 }
 
 function IdentityTypeIcon({
@@ -498,20 +493,20 @@ const IdentityCard = React.memo(React.forwardRef<HTMLDivElement, IdentityCardInt
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="text-[10px] text-muted-foreground/70 font-mono truncate max-w-[140px]">
-                    {identity.id}
+                    {hexToBase58(identity.id)}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent>
                   <div className="text-xs">
                     <span className="text-muted-foreground">
-                      {identity.identityType === "user" ? "UserId (Base58)" : "ProTxHash (Hex)"}:
+                      {identity.identityType === "user" ? "User ID" : "ProTxHash"}:
                     </span>
                     <br />
-                    {identity.id}
+                    {hexToBase58(identity.id)}
                   </div>
                 </TooltipContent>
               </Tooltip>
-              <CopyButton value={identity.id} size="icon-xs" />
+              <CopyButton value={hexToBase58(identity.id)} size="icon-xs" />
             </div>
           </div>
         </div>

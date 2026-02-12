@@ -21,7 +21,7 @@ impl AppContext {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
-            .expect("expected document type");
+            .map_err(|_| "DPNS contract missing 'domain' document type".to_string())?;
         let Some(contested_index) = document_type.find_contested_index() else {
             return Err(
                 "Contested resource query failed: No contested index on dpns domains.".to_string(),
@@ -128,16 +128,21 @@ impl AppContext {
             let contested_resources_as_strings: Vec<String> = contested_resources
                 .0
                 .into_iter()
-                .map(|contested_resource| {
-                    contested_resource
-                        .0
-                        .as_str()
-                        .expect("expected str")
-                        .to_string()
+                .filter_map(|contested_resource| match contested_resource.0.as_str() {
+                    Some(s) => Some(s.to_string()),
+                    None => {
+                        tracing::warn!(
+                            "Contested resource value is not a string: {:?}",
+                            contested_resource.0
+                        );
+                        None
+                    }
                 })
                 .collect();
 
-            let last_found_name = contested_resources_as_strings.last().unwrap().clone();
+            let Some(last_found_name) = contested_resources_as_strings.last().cloned() else {
+                break;
+            };
 
             let new_names_to_be_updated = self
                 .db

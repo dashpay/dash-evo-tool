@@ -51,7 +51,7 @@ impl CoreP2PHandler {
             Network::Testnet => 19999, // Dash Testnet default
             Network::Devnet => 29999,  // Dash Devnet default
             Network::Regtest => 29999, // Dash Regtest default
-            _ => panic!("Unsupported network type"),
+            _ => return Err(format!("Unsupported network type: {:?}", network)),
         });
         let stream = TcpStream::connect_timeout(
             &format!("127.0.0.1:{}", port)

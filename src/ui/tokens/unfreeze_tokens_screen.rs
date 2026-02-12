@@ -252,6 +252,12 @@ impl UnfreezeTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
+        if self.selected_key.is_none() {
+            self.error_message = Some("No signing key selected".into());
+            self.status = UnfreezeTokensStatus::ErrorMessage("No key selected".into());
+            return AppAction::None;
+        }
+
         // Validate user input
         let parsed = Identifier::from_string_try_encodings(
             &self.unfreeze_identity_id,
@@ -298,7 +304,7 @@ impl UnfreezeTokensScreen {
                 actor_identity: self.identity.clone(),
                 data_contract,
                 token_position: self.identity_token_info.token_position,
-                signing_key: self.selected_key.clone().expect("No key selected"),
+                signing_key: self.selected_key.clone().unwrap(),
                 public_note: if self.group_action_id.is_some() {
                     None
                 } else {

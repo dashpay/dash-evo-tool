@@ -14,49 +14,11 @@ import type { ReceiveAddress } from "@/components/wallet/ReceiveDialog";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
 import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { useWalletStore } from "@/stores/walletStore";
-import { commands, events } from "@/bindings";
+import { commands } from "@/bindings";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toastError";
-
-/** Wait for a dispatched backend task to complete. Resolves on success, rejects on error. */
-async function waitForTask(taskId: string, timeoutMs = 30000): Promise<void> {
-  return new Promise<void>(async (resolve, reject) => {
-    let resolved = false;
-
-    const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      unsubResult();
-      unsubError();
-      reject(new Error("Task timed out"));
-    }, timeoutMs);
-
-    const done = (fn: () => void) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      unsubResult();
-      unsubError();
-      fn();
-    };
-
-    const unsubResult = await events.taskResultEvent.listen((event) => {
-      if (event.payload.taskId !== taskId) return;
-      done(() => resolve());
-    });
-    const unsubError = await events.taskErrorEvent.listen((event) => {
-      if (event.payload.taskId !== taskId) return;
-      done(() => reject(new Error(event.payload.message)));
-    });
-
-    // If already resolved (e.g. by timeout) before listeners were set up, clean up
-    if (resolved) {
-      unsubResult();
-      unsubError();
-    }
-  });
-}
+import { waitForTask } from "@/lib/utils";
 
 // ─── Helpers ───────────────────────────────────────────────────────
 

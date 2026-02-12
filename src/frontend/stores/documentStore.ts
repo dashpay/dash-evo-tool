@@ -441,15 +441,27 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
             };
           });
 
-          // Empty page means we've gone past the last result — revert to previous page
-          if (documents.length === 0 && get().currentPage > 1) {
-            set({
-              hasNextPage: false,
-              currentPage: get().currentPage - 1,
-              queryStatus: "complete",
-              queryStartedAt: null,
-              activeTaskId: null,
-            });
+          // Empty result handling
+          if (documents.length === 0) {
+            if (get().currentPage > 1) {
+              // Went past last page — revert to previous page (its data is still in store)
+              set({
+                hasNextPage: false,
+                currentPage: get().currentPage - 1,
+                queryStatus: "complete",
+                queryStartedAt: null,
+                activeTaskId: null,
+              });
+            } else {
+              // Page 1 is empty — no results at all
+              set({
+                documents,
+                hasNextPage: false,
+                queryStatus: "complete",
+                queryStartedAt: null,
+                activeTaskId: null,
+              });
+            }
             return;
           }
 

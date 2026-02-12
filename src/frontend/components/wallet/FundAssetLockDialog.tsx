@@ -16,7 +16,8 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { formatAmount } from "@/components/shared/AmountInput";
-import { commands, events } from "@/bindings";
+import { waitForTask } from "@/lib/utils";
+import { commands } from "@/bindings";
 import type { WalletDto } from "@/bindings";
 import { toast } from "sonner";
 
@@ -28,44 +29,6 @@ interface FundAssetLockDialogProps {
   onOpenChange: (open: boolean) => void;
   wallet: WalletDto;
   assetLockIndex: number;
-}
-
-/** Wait for a dispatched backend task to complete. */
-async function waitForTask(taskId: string, timeoutMs = 60000): Promise<void> {
-  return new Promise<void>(async (resolve, reject) => {
-    let resolved = false;
-
-    const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      unsubResult();
-      unsubError();
-      reject(new Error("Task timed out"));
-    }, timeoutMs);
-
-    const done = (fn: () => void) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      unsubResult();
-      unsubError();
-      fn();
-    };
-
-    const unsubResult = await events.taskResultEvent.listen((event) => {
-      if (event.payload.taskId !== taskId) return;
-      done(() => resolve());
-    });
-    const unsubError = await events.taskErrorEvent.listen((event) => {
-      if (event.payload.taskId !== taskId) return;
-      done(() => reject(new Error(event.payload.message)));
-    });
-
-    if (resolved) {
-      unsubResult();
-      unsubError();
-    }
-  });
 }
 
 function truncateString(s: string, maxLen: number = 20): string {
@@ -85,6 +48,68 @@ export function FundAssetLockDialog({
   wallet,
   assetLockIndex,
 }: FundAssetLockDialogProps) {
+  // Use openCount key to reset inner state when dialog reopens
+  const [openCount, setOpenCount] = useState(0);
+  const handleOpenChange = useCallback(
+    (value: boolean) => {
+      if (value) setOpenCount((c) => c + 1);
+      onOpenChange(value);
+    },
+    [onOpenChange],
+  );
+
+  const assetLock = wallet.unusedAssetLocks[assetLockIndex] ?? null;
+
+  if (!assetLock) {
+    return (
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Asset Lock Not Found</DialogTitle>
+            <DialogDescription className="sr-only">
+              Asset lock error
+            </DialogDescription>
+          </DialogHeader>
+          <p className="text-sm text-destructive">
+            The selected asset lock could not be found. It may have already been used.
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => handleOpenChange(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <FundAssetLockContent
+          key={openCount}
+          wallet={wallet}
+          assetLockIndex={assetLockIndex}
+          assetLock={assetLock}
+          onClose={() => handleOpenChange(false)}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Inner content that resets state when remounted via key. */
+function FundAssetLockContent({
+  wallet,
+  assetLockIndex,
+  assetLock,
+  onClose,
+}: {
+  wallet: WalletDto;
+  assetLockIndex: number;
+  assetLock: { txid: string; amount: number };
+  onClose: () => void;
+}) {
   const [selectedAddress, setSelectedAddress] = useState<string>("");
   const [processing, setProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{
@@ -92,17 +117,13 @@ export function FundAssetLockDialog({
     text: string;
   } | null>(null);
 
-  const assetLock = wallet.unusedAssetLocks[assetLockIndex] ?? null;
-
   const assetLockAmountDash = useMemo(() => {
-    if (!assetLock) return "0";
-    // amount is in credits; convert to duffs then format
     const duffs = assetLock.amount / CREDITS_PER_DUFF;
     return formatAmount(duffs, DUFFS_DECIMAL_PLACES);
   }, [assetLock]);
 
   const handleFund = useCallback(async () => {
-    if (!selectedAddress || !assetLock) return;
+    if (!selectedAddress) return;
     setProcessing(true);
     setStatusMessage(null);
 
@@ -111,13 +132,13 @@ export function FundAssetLockDialog({
         walletSeedHash: wallet.seedHash,
         assetLockIndex,
         destinationAddress: selectedAddress,
-        amount: null, // use full asset lock amount
+        amount: null,
       });
 
       if (result.status === "ok") {
         await waitForTask(result.data.taskId);
         toast.success("Platform address funded from asset lock");
-        onOpenChange(false);
+        onClose();
       } else {
         setStatusMessage({ type: "error", text: result.error });
       }
@@ -129,94 +150,91 @@ export function FundAssetLockDialog({
     } finally {
       setProcessing(false);
     }
-  }, [selectedAddress, assetLock, wallet.seedHash, assetLockIndex, onOpenChange]);
-
-  if (!assetLock) return null;
+  }, [selectedAddress, wallet.seedHash, assetLockIndex, onClose]);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Fund Platform Address from Asset Lock</DialogTitle>
-          <DialogDescription className="sr-only">
-            Select a platform address to fund from an asset lock
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <DialogHeader>
+        <DialogTitle>Fund Platform Address from Asset Lock</DialogTitle>
+        <DialogDescription className="sr-only">
+          Select a platform address to fund from an asset lock
+        </DialogDescription>
+      </DialogHeader>
 
-        <div className="space-y-4">
-          {/* Asset lock info */}
-          <div className="space-y-1 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Asset Lock TX</span>
-              <code className="font-mono text-xs">
-                {truncateString(assetLock.txid, 24)}
-              </code>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Amount</span>
-              <span className="font-medium">{assetLockAmountDash} DASH</span>
-            </div>
+      <div className="space-y-4">
+        {/* Asset lock info */}
+        <div className="space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Asset Lock TX</span>
+            <code className="font-mono text-xs">
+              {truncateString(assetLock.txid, 24)}
+            </code>
           </div>
-
-          {/* Platform address selector */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium">
-              Destination Platform Address
-            </label>
-            {wallet.platformAddresses.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No platform addresses available. Generate one first.
-              </p>
-            ) : (
-              <Select value={selectedAddress} onValueChange={setSelectedAddress}>
-                <SelectTrigger className="w-full" aria-label="Select platform address">
-                  <SelectValue placeholder="Select a platform address" />
-                </SelectTrigger>
-                <SelectContent>
-                  {wallet.platformAddresses.map((addr) => {
-                    const balanceDuffs = addr.balance / CREDITS_PER_DUFF;
-                    return (
-                      <SelectItem key={addr.address} value={addr.address}>
-                        <span className="font-mono text-xs">
-                          {truncateString(addr.address)}
-                        </span>
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          ({formatAmount(balanceDuffs, DUFFS_DECIMAL_PLACES)} DASH)
-                        </span>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
-            )}
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Amount</span>
+            <span className="font-medium">{assetLockAmountDash} DASH</span>
           </div>
+        </div>
 
-          {/* Status message */}
-          {statusMessage && (
-            <p
-              className={`text-sm ${statusMessage.type === "error" ? "text-destructive" : "text-green-600"}`}
-            >
-              {statusMessage.text}
+        {/* Platform address selector */}
+        <div className="space-y-2">
+          <label className="text-sm font-medium">
+            Destination Platform Address
+          </label>
+          {wallet.platformAddresses.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No platform addresses available. Generate one first.
             </p>
+          ) : (
+            <Select value={selectedAddress} onValueChange={setSelectedAddress}>
+              <SelectTrigger className="w-full" aria-label="Select platform address">
+                <SelectValue placeholder="Select a platform address" />
+              </SelectTrigger>
+              <SelectContent>
+                {wallet.platformAddresses.map((addr) => {
+                  const balanceDuffs = addr.balance / CREDITS_PER_DUFF;
+                  return (
+                    <SelectItem key={addr.address} value={addr.address}>
+                      <span className="font-mono text-xs">
+                        {truncateString(addr.address)}
+                      </span>
+                      <span className="ml-2 text-xs text-muted-foreground">
+                        ({formatAmount(balanceDuffs, DUFFS_DECIMAL_PLACES)} DASH)
+                      </span>
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
           )}
         </div>
 
-        <DialogFooter className="gap-2 sm:gap-0">
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={processing}
+        {/* Status message */}
+        {statusMessage && (
+          <p
+            role="alert"
+            className={`text-sm ${statusMessage.type === "error" ? "text-destructive" : "text-green-600"}`}
           >
-            Cancel
-          </Button>
-          <Button
-            onClick={handleFund}
-            disabled={!selectedAddress || processing || wallet.platformAddresses.length === 0}
-          >
-            {processing ? "Funding..." : "Fund"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+            {statusMessage.text}
+          </p>
+        )}
+      </div>
+
+      <DialogFooter className="gap-2 sm:gap-0">
+        <Button
+          variant="outline"
+          onClick={onClose}
+          disabled={processing}
+        >
+          Cancel
+        </Button>
+        <Button
+          onClick={handleFund}
+          disabled={!selectedAddress || processing || wallet.platformAddresses.length === 0}
+        >
+          {processing ? "Funding..." : "Fund"}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }

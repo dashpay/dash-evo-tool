@@ -1,4 +1,4 @@
-use crate::database::Database;
+use crate::database::{CorruptedBlobError, Database};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
@@ -814,11 +814,18 @@ impl Database {
             let (identity_data, wallet_seed_hash_array, wallet_index) = row?;
 
             if let Some(wallet) = wallets_map.get_mut(&wallet_seed_hash_array) {
-                let Ok(mut identity) = QualifiedIdentity::from_bytes(&identity_data)
-                    .inspect_err(|e| tracing::warn!(wallet_index, error = %e, "skipping corrupted identity blob"))
-                else {
-                    continue;
-                };
+                let mut identity = QualifiedIdentity::from_bytes(&identity_data).map_err(|e| {
+                    tracing::warn!(wallet_index, error = %e, "found corrupted identity blob");
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Blob,
+                        CorruptedBlobError(format!(
+                            "Failed to deserialize identity for wallet_index {}: {}",
+                            wallet_index, e
+                        ))
+                        .into(),
+                    )
+                })?;
                 identity.wallet_index = Some(wallet_index);
                 identity.network = *network;
 

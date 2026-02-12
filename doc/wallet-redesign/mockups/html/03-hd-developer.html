@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>HD Wallet Developer View — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app-frame">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">Test Wallet</span>
+      <span class="wallet-balance">0.8000 tDASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-testnet">Testnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area ===== -->
+    <main class="content-area">
+
+      <!-- Wallet Title -->
+      <div class="wallet-title">
+        <h2>Test Wallet</h2>
+        <span class="dev-badge">DEV</span>
+        <button class="overflow-menu" aria-label="More actions">&#8943;</button>
+      </div>
+
+      <!-- Balance Display -->
+      <div class="balance-header">
+        <div class="balance-amount">
+          0.8000<span class="currency">tDASH</span>
+        </div>
+        <div class="balance-label">Total Balance</div>
+
+        <!-- Expanded Breakdown -->
+        <div class="balance-breakdown">
+          <div class="breakdown-line">
+            <span class="breakdown-label">Core:</span>
+            <span class="breakdown-value">0.5000 tDASH</span>
+          </div>
+          <div class="breakdown-line">
+            <span class="breakdown-label">Platform:</span>
+            <span class="breakdown-value">0.3000 tDASH</span>
+            <span class="breakdown-extra">(300,000,000 credits)</span>
+          </div>
+          <div class="breakdown-line">
+            <span class="breakdown-label">Pending:</span>
+            <span class="breakdown-value amount-positive">+0.1000 tDASH</span>
+          </div>
+        </div>
+        <div class="mt-xs">
+          <button class="link-subtle">Hide breakdown &#9652;</button>
+        </div>
+      </div>
+
+      <!-- Action Bar -->
+      <div class="action-bar">
+        <button class="btn btn-primary">Send</button>
+        <button class="btn btn-primary">Receive</button>
+        <button class="btn btn-secondary">Refresh &#9662; <span class="text-muted text-sm">(Core Only)</span></button>
+        <div class="ml-auto">
+          <button class="btn btn-primary" style="background-color: var(--color-warning); border-color: var(--color-warning); color: var(--color-text-inverse);">Get Test Dash</button>
+        </div>
+      </div>
+
+      <!-- Transaction History -->
+      <section>
+        <div class="flex items-center justify-between mb-lg">
+          <h3 class="heading-section" style="margin-bottom:0">Transaction History</h3>
+          <div class="flex items-center gap-md">
+            <select class="form-select select-compact" aria-label="Filter transactions">
+              <option selected>Filter: All</option>
+              <option>Received</option>
+              <option>Sent</option>
+              <option>Internal</option>
+            </select>
+            <button class="btn btn-secondary btn-sm">CSV</button>
+          </div>
+        </div>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Type</th>
+              <th class="align-right">Amount</th>
+              <th class="align-right">Fee</th>
+              <th>Status</th>
+              <th>TxID</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Feb 11, 2026</td>
+              <td>
+                <span class="flex items-center gap-sm">
+                  <span class="tx-type tx-received">&#8595;</span>
+                  Received
+                </span>
+              </td>
+              <td class="align-right amount-positive">+0.3000 tDASH</td>
+              <td class="align-right text-muted">&mdash;</td>
+              <td><span class="status-badge status-ok">Confirmed</span></td>
+              <td><span class="txid" title="e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3">e2f3a4...</span></td>
+            </tr>
+            <tr>
+              <td>Feb 9, 2026</td>
+              <td>
+                <span class="flex items-center gap-sm">
+                  <span class="tx-type tx-sent">&#8593;</span>
+                  Sent
+                </span>
+              </td>
+              <td class="align-right amount-negative">-0.1500 tDASH</td>
+              <td class="align-right fee-value">0.0002</td>
+              <td><span class="status-badge status-ok">Confirmed</span></td>
+              <td><span class="txid" title="f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5">f4a5b6...</span></td>
+            </tr>
+            <tr>
+              <td>Feb 7, 2026</td>
+              <td>
+                <span class="flex items-center gap-sm">
+                  <span class="tx-type tx-received">&#8595;</span>
+                  Received
+                </span>
+              </td>
+              <td class="align-right amount-positive">+0.5000 tDASH</td>
+              <td class="align-right text-muted">&mdash;</td>
+              <td><span class="status-badge status-pending">2/6</span></td>
+              <td><span class="txid" title="b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9">b8c9d0...</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="mt-lg">
+          <a href="#" class="link-subtle">Show All Transactions</a>
+        </div>
+      </section>
+
+      <hr class="divider mt-2xl">
+
+      <!-- ===== Expanded: Accounts & Addresses ===== -->
+      <div class="section-header">
+        <span class="arrow expanded">&#9654;</span>
+        <span class="section-title">Accounts &amp; Addresses</span>
+      </div>
+
+      <div class="section-content">
+
+        <!-- === Main Account (expanded) === -->
+        <div class="section-header">
+          <span class="arrow expanded">&#9654;</span>
+          <span class="section-title">Main Account</span>
+          <span class="section-summary">0.5000 tDASH</span>
+        </div>
+
+        <div class="section-content">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Address</th>
+                <th class="align-right">Balance</th>
+                <th class="align-center">UTXOs</th>
+                <th class="align-right">Received</th>
+                <th>Type</th>
+                <th class="align-center">Idx</th>
+                <th>Path</th>
+                <th class="align-center">Key</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="font-mono text-sm">yo3kRv8m4TnPq5W2eJcL7bNfHs9Ye3m</span></td>
+                <td class="align-right tabular-nums">0.3000</td>
+                <td class="align-center">2</td>
+                <td class="align-right tabular-nums">0.3000</td>
+                <td><span class="chip chip-blue">Receiving</span></td>
+                <td class="align-center font-mono text-sm">0</td>
+                <td><span class="font-mono text-sm text-muted">m/44'/1'/0'/0/0</span></td>
+                <td class="align-center"><button class="btn btn-icon btn-sm" title="View key">View</button></td>
+              </tr>
+              <tr>
+                <td><span class="font-mono text-sm">yr8bQf4k6WnRt3A9cPdM1gYeHx7Lb2k</span></td>
+                <td class="align-right tabular-nums">0.2000</td>
+                <td class="align-center">1</td>
+                <td class="align-right tabular-nums">0.5000</td>
+                <td><span class="chip chip-blue">Receiving</span></td>
+                <td class="align-center font-mono text-sm">1</td>
+                <td><span class="font-mono text-sm text-muted">m/44'/1'/0'/0/1</span></td>
+                <td class="align-center"><button class="btn btn-icon btn-sm" title="View key">View</button></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="mt-lg">
+            <button class="btn btn-secondary btn-sm">+ Add Receiving Address</button>
+          </div>
+        </div>
+
+        <!-- === Platform Account (expanded) === -->
+        <div class="section-header mt-lg">
+          <span class="arrow expanded">&#9654;</span>
+          <span class="section-title">Platform Account</span>
+          <span class="section-summary">0.3000 tDASH (300,000,000 credits)</span>
+        </div>
+
+        <div class="section-content">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Address</th>
+                <th class="align-right">Credits</th>
+                <th class="align-right">DASH Equiv</th>
+                <th class="align-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="font-mono text-sm">tevo1qw8r3k5m2n7p4j6h9c0v1b3x5z8a4fxq2</span></td>
+                <td class="align-right tabular-nums">300,000,000</td>
+                <td class="align-right tabular-nums">0.3000</td>
+                <td class="align-center">
+                  <span class="flex gap-sm justify-center">
+                    <button class="btn btn-secondary btn-sm">Fund</button>
+                    <button class="btn btn-secondary btn-sm">Withdraw</button>
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div class="mt-lg">
+            <button class="btn btn-secondary btn-sm">+ New Platform Address</button>
+          </div>
+        </div>
+
+      </div><!-- /section-content for Accounts & Addresses -->
+
+      <hr class="divider mt-lg">
+
+      <!-- ===== Expanded: Asset Locks ===== -->
+      <div class="section-header">
+        <span class="arrow expanded">&#9654;</span>
+        <span class="section-title">Asset Locks</span>
+        <span class="section-actions">
+          <button class="btn btn-secondary btn-sm">Create</button>
+          <button class="btn btn-secondary btn-sm">Bulk Create</button>
+          <button class="btn btn-secondary btn-sm">Search</button>
+        </span>
+      </div>
+
+      <div class="section-content">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>TxID</th>
+              <th class="align-right">DASH</th>
+              <th class="align-right">Credits</th>
+              <th class="align-center">IS / Usable</th>
+              <th class="align-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="txid" title="abc123def456789012345678901234567890abcdef1234567890abcdef12345678">abc12...f4</span></td>
+              <td class="align-right tabular-nums">0.5000</td>
+              <td class="align-right tabular-nums">500,000,000</td>
+              <td class="align-center">
+                <span class="flex gap-sm justify-center">
+                  <span class="status-badge status-ok">Y</span>
+                  <span class="text-muted">/</span>
+                  <span class="status-badge status-ok">Y</span>
+                </span>
+              </td>
+              <td class="align-center">
+                <span class="flex gap-sm justify-center">
+                  <button class="btn btn-secondary btn-sm">View</button>
+                  <button class="btn btn-secondary btn-sm">Fund</button>
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Footer -->
+      <footer class="mt-2xl">
+        <p class="text-xs text-muted">Dash Evo Tool — Wallet Screen Redesign Mockup</p>
+      </footer>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+</div><!-- /app-frame -->
+
+</body>
+</html>

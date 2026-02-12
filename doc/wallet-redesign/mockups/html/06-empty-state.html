@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>No Wallets Loaded — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app-frame">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector" style="opacity: 0.5; cursor: default;">
+      <span class="wallet-name text-muted">Select a Wallet</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-mainnet">Mainnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area ===== -->
+    <main class="content-area flex items-center justify-center">
+
+      <div class="empty-state">
+        <div class="empty-icon" style="width: 80px; height: 80px; font-size: 32px;">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="6" width="20" height="14" rx="2"/>
+            <path d="M2 10h20"/>
+            <path d="M6 14h4"/>
+          </svg>
+        </div>
+        <h2 class="empty-title">No Wallets Loaded</h2>
+        <p class="empty-description">
+          Create a new wallet to start holding and transacting Dash, or import an existing wallet using your recovery phrase.
+        </p>
+        <div class="empty-actions">
+          <button class="btn btn-primary">Create Wallet</button>
+          <button class="btn btn-secondary">Import Wallet</button>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div style="position: absolute; bottom: 24px; left: 0; right: 0; text-align: center;">
+        <p class="text-xs text-muted">Dash Evo Tool — Wallet Screen Redesign Mockup</p>
+      </div>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+</div><!-- /app-frame -->
+
+</body>
+</html>

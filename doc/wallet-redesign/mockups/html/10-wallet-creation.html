@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>Wallet Creation Flow — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app-frame">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">My Dash Wallet</span>
+      <span class="wallet-balance">1.2345 DASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-testnet">Testnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area ===== -->
+    <main class="content-area">
+
+      <!-- ============================================================
+           STEP 1: Recovery Phrase
+           ============================================================ -->
+      <section>
+        <div class="stepper">
+          <span class="step-current">Create Wallet &mdash; Step 1 of 3</span>
+          <div class="stepper-dots">
+            <span class="dot active"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+          </div>
+        </div>
+
+        <h2 class="text-2xl font-bold mb-lg">Your Recovery Phrase</h2>
+
+        <div class="warning-box warning mb-lg">
+          <span class="warning-icon">&#9888;</span>
+          <div class="warning-content">
+            Write down these 12 words in order. This is the ONLY way to recover your wallet. Never share these words with anyone.
+          </div>
+        </div>
+
+        <div class="word-grid">
+          <div class="word-cell">
+            <span class="word-number">1.</span> abandon
+          </div>
+          <div class="word-cell">
+            <span class="word-number">2.</span> ability
+          </div>
+          <div class="word-cell">
+            <span class="word-number">3.</span> able
+          </div>
+          <div class="word-cell">
+            <span class="word-number">4.</span> about
+          </div>
+          <div class="word-cell">
+            <span class="word-number">5.</span> above
+          </div>
+          <div class="word-cell">
+            <span class="word-number">6.</span> absent
+          </div>
+          <div class="word-cell">
+            <span class="word-number">7.</span> absorb
+          </div>
+          <div class="word-cell">
+            <span class="word-number">8.</span> abstract
+          </div>
+          <div class="word-cell">
+            <span class="word-number">9.</span> absurd
+          </div>
+          <div class="word-cell">
+            <span class="word-number">10.</span> abuse
+          </div>
+          <div class="word-cell">
+            <span class="word-number">11.</span> access
+          </div>
+          <div class="word-cell">
+            <span class="word-number">12.</span> accident
+          </div>
+        </div>
+
+        <div class="flex justify-end mt-2xl">
+          <button class="btn btn-primary">I Have Written These Down &rarr;</button>
+        </div>
+      </section>
+
+      <hr class="divider mt-2xl">
+
+      <!-- ============================================================
+           STEP 2: Verify Backup
+           ============================================================ -->
+      <section>
+        <div class="stepper">
+          <span class="step-current">Create Wallet &mdash; Step 2 of 3</span>
+          <div class="stepper-dots">
+            <span class="dot completed"></span>
+            <span class="dot active"></span>
+            <span class="dot"></span>
+          </div>
+        </div>
+
+        <h2 class="text-2xl font-bold mb-lg">Verify Your Backup</h2>
+
+        <p class="text-secondary mb-2xl">Enter the requested words to confirm you have written them down correctly.</p>
+
+        <div class="form-group">
+          <label class="form-label">Word #3:</label>
+          <input type="text" class="form-input" placeholder="Enter word #3">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Word #7:</label>
+          <input type="text" class="form-input" placeholder="Enter word #7">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Word #11:</label>
+          <input type="text" class="form-input" placeholder="Enter word #11">
+        </div>
+
+        <div class="flex justify-end gap-md mt-2xl">
+          <button class="btn btn-secondary">&larr; Back</button>
+          <button class="btn btn-primary">Continue &rarr;</button>
+        </div>
+      </section>
+
+      <hr class="divider mt-2xl">
+
+      <!-- ============================================================
+           STEP 3: Name & Password
+           ============================================================ -->
+      <section>
+        <div class="stepper">
+          <span class="step-current">Create Wallet &mdash; Step 3 of 3</span>
+          <div class="stepper-dots">
+            <span class="dot completed"></span>
+            <span class="dot completed"></span>
+            <span class="dot active"></span>
+          </div>
+        </div>
+
+        <h2 class="text-2xl font-bold mb-lg">Name Your Wallet</h2>
+
+        <div class="form-group">
+          <label class="form-label">Wallet Name:</label>
+          <input type="text" class="form-input" value="My Dash Wallet">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Password (optional):</label>
+          <div class="form-input-group">
+            <input type="password" class="form-input" value="mysecretpass">
+            <button class="input-action">Show</button>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <div class="strength-meter">
+            <div class="meter-bar">
+              <div class="meter-fill medium"></div>
+            </div>
+            <span class="meter-label medium">Strength: Medium</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Confirm Password:</label>
+          <input type="password" class="form-input" value="mysecretpass">
+        </div>
+
+        <div class="flex justify-end gap-md mt-2xl">
+          <button class="btn btn-secondary">&larr; Back</button>
+          <button class="btn btn-primary">Create Wallet</button>
+        </div>
+      </section>
+
+      <!-- Footer -->
+      <footer class="mt-2xl">
+        <p class="text-xs text-muted">Dash Evo Tool &mdash; Wallet Screen Redesign Mockup</p>
+      </footer>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+</div><!-- /app-frame -->
+
+</body>
+</html>

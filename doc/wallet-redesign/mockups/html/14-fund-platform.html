@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>Fund Platform Address — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .modal.modal-md { max-width: 500px; }
+    .amount-input-group {
+      display: flex;
+      align-items: center;
+      gap: 0;
+    }
+    .amount-input-group .form-input {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+      border-right: none;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .amount-input-group .input-suffix {
+      padding: var(--space-sm) var(--space-md);
+      background-color: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-left: none;
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      color: var(--color-text-muted);
+      font-size: var(--font-size-sm);
+      font-weight: var(--font-weight-semibold);
+      white-space: nowrap;
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-frame" style="position: relative;">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">My Dash Wallet</span>
+      <span class="wallet-balance">1.2345 DASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-mainnet">Mainnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area (dimmed background) ===== -->
+    <main class="content-area" style="opacity: 0.3; pointer-events: none;">
+
+      <div class="wallet-title">
+        <h2>My Dash Wallet</h2>
+      </div>
+
+      <div class="balance-header">
+        <div class="balance-amount">
+          1.2345<span class="currency">DASH</span>
+        </div>
+        <div class="balance-label">Total Balance</div>
+      </div>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+  <!-- ===== Modal Overlay ===== -->
+  <div class="modal-overlay" style="position: absolute; border-radius: var(--radius-xl);">
+    <div class="modal modal-md">
+
+      <div class="modal-header">
+        <span class="modal-title">Fund Platform Address</span>
+        <button class="modal-close" aria-label="Close">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">From Asset Lock:</label>
+          <select class="form-select">
+            <option>abc123...def4 &nbsp; 0.5000 DASH &nbsp; (Usable)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">To Platform Address:</label>
+          <select class="form-select">
+            <option>tevo1...xq2m &nbsp; (0.0000 DASH)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Amount:</label>
+          <div class="amount-input-group">
+            <input type="text" class="form-input" value="0.5000">
+            <span class="input-suffix">DASH</span>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox" checked>
+            Deduct fees from amount
+          </label>
+        </div>
+
+        <hr class="divider subtle">
+
+        <div class="flex flex-col gap-xs">
+          <div class="flex justify-between">
+            <span class="text-sm text-muted">Estimated fee:</span>
+            <span class="text-sm text-muted tabular-nums">~0.0001 DASH</span>
+          </div>
+          <div class="flex justify-between">
+            <span class="text-sm text-muted">Platform address will receive:</span>
+            <span class="text-sm text-muted tabular-nums">~0.4999 DASH</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary">Cancel</button>
+        <button class="btn btn-primary">Fund</button>
+      </div>
+
+    </div>
+  </div>
+
+</div><!-- /app-frame -->
+
+<!-- Footer -->
+<footer style="text-align: center; margin-top: 24px;">
+  <p class="text-xs text-muted">Dash Evo Tool &mdash; Wallet Screen Redesign Mockup</p>
+</footer>
+
+</body>
+</html>

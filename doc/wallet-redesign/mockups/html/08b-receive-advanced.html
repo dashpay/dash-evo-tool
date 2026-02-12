@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>Receive Dialog (Advanced) — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* QR code CSS grid pattern */
+    .qr-grid {
+      display: grid;
+      grid-template-columns: repeat(11, 1fr);
+      grid-template-rows: repeat(11, 1fr);
+      width: 176px;
+      height: 176px;
+      gap: 1px;
+    }
+    .qr-grid .qr-cell {
+      background-color: #ffffff;
+    }
+    .qr-grid .qr-cell.dark {
+      background-color: #1a1a1a;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ===== App Frame (dimmed background context) ===== -->
+<div class="app-frame" style="position: relative;">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">My Dash Wallet</span>
+      <span class="wallet-balance">1.2345 DASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-mainnet">Mainnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area (dimmed behind modal) ===== -->
+    <main class="content-area" style="opacity: 0.3; pointer-events: none;">
+
+      <div class="wallet-title">
+        <h2>My Dash Wallet</h2>
+        <button class="overflow-menu" aria-label="More actions">&#8943;</button>
+      </div>
+
+      <div class="balance-header">
+        <div class="balance-amount">
+          1.2345<span class="currency">DASH</span>
+        </div>
+        <div class="balance-label">Total Balance</div>
+      </div>
+
+      <hr class="divider">
+
+      <div class="action-bar">
+        <button class="btn btn-primary">Send</button>
+        <button class="btn btn-primary">Receive</button>
+        <button class="btn btn-secondary">Refresh</button>
+      </div>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+  <!-- ===== Modal Overlay ===== -->
+  <div class="modal-overlay" style="position: absolute; border-radius: var(--radius-xl);">
+    <div class="modal" style="max-width: 480px;">
+
+      <!-- Modal Header -->
+      <div class="modal-header">
+        <span class="modal-title">Receive Dash</span>
+        <button class="modal-close" aria-label="Close">&#10005;</button>
+      </div>
+
+      <!-- Modal Body -->
+      <div class="modal-body" style="display: flex; flex-direction: column; align-items: center;">
+
+        <!-- Tab Bar -->
+        <div class="tab-bar" style="width: 100%;">
+          <button class="tab active">Core</button>
+          <button class="tab">Platform</button>
+        </div>
+
+        <!-- Address Selector Dropdown -->
+        <div class="form-group" style="width: 100%;">
+          <label class="form-label">Address</label>
+          <select class="form-select">
+            <option>XoRQE8bHjEm3p7Yf2X...K4dF</option>
+            <option>Xp4mRBz9TfKNgR1wQy...H8eJ</option>
+            <option>XkL7vDn2qRf5YmWx3z...P9aB</option>
+          </select>
+        </div>
+
+        <!-- QR Code Placeholder -->
+        <div class="qr-placeholder" style="padding: 12px;">
+          <div class="qr-grid">
+            <!-- Row 1 -->
+            <div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div>
+            <!-- Row 2 -->
+            <div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div>
+            <!-- Row 3 -->
+            <div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div>
+            <!-- Row 4 -->
+            <div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div>
+            <!-- Row 5 -->
+            <div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell dark"></div>
+            <!-- Row 6 -->
+            <div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell"></div>
+            <!-- Row 7 -->
+            <div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div>
+            <!-- Row 8 -->
+            <div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div>
+            <!-- Row 9 -->
+            <div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div>
+            <!-- Row 10 -->
+            <div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell"></div>
+            <!-- Row 11 -->
+            <div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div><div class="qr-cell dark"></div>
+          </div>
+        </div>
+
+        <!-- Full Address Display -->
+        <div class="address-display" style="width: 100%; margin-top: var(--space-lg);">
+          <span style="flex: 1; word-break: break-all;">XoRQE8bHjEm3p7Yf2X9kDmLwTzRbNcVh...K4dF</span>
+        </div>
+
+        <!-- Detail Line: Balance and Path -->
+        <div class="flex justify-between w-full mt-md" style="padding: 0 var(--space-xs);">
+          <span class="text-sm text-muted">Balance: 0.0000 DASH</span>
+          <span class="text-sm text-muted font-mono">Path: m/44'/5'/0'/0/3</span>
+        </div>
+
+      </div>
+
+      <!-- Modal Footer -->
+      <div class="modal-footer">
+        <button class="btn btn-secondary">New Address</button>
+        <button class="btn btn-primary">Copy Address</button>
+      </div>
+
+    </div>
+  </div><!-- /modal-overlay -->
+
+</div><!-- /app-frame -->
+
+<!-- Page Footer -->
+<footer style="margin-top: 24px; text-align: center;">
+  <p class="text-xs text-muted">Dash Evo Tool — Wallet Screen Redesign Mockup</p>
+</footer>
+
+</body>
+</html>

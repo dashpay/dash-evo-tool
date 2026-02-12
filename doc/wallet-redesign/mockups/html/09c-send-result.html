@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>Send Flow — Result — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Success checkmark circle */
+    .success-icon {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      background-color: var(--color-success-subtle);
+      border: 2px solid rgba(16, 185, 129, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto var(--space-2xl) auto;
+    }
+    .success-icon .checkmark {
+      font-size: 40px;
+      color: var(--color-success);
+      line-height: 1;
+    }
+    /* Centered result layout */
+    .result-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: var(--space-4xl) 0;
+      max-width: 480px;
+      margin: 0 auto;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-frame">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">My Dash Wallet</span>
+      <span class="wallet-balance">0.7344 DASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-mainnet">Mainnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area ===== -->
+    <main class="content-area">
+
+      <!-- Stepper -->
+      <div class="stepper">
+        <span>1. Enter Details</span>
+        <span>&#8594;</span>
+        <span>2. Confirm</span>
+        <span>&#8594;</span>
+        <span class="step-current">3. Result</span>
+      </div>
+
+      <!-- Result Container -->
+      <div class="result-container">
+
+        <!-- Success Icon -->
+        <div class="success-icon">
+          <span class="checkmark">&#10003;</span>
+        </div>
+
+        <!-- Title -->
+        <h2 class="text-2xl font-bold mb-sm">Transaction Sent</h2>
+
+        <!-- Description -->
+        <p class="text-secondary mb-2xl">0.5000 DASH sent to XoRQE8bHjEm3p7Yf2X9kDm...</p>
+
+        <!-- Transaction Details Card -->
+        <div class="summary-card w-full" style="text-align: left;">
+
+          <!-- TxID -->
+          <div class="summary-row">
+            <span class="summary-label">Transaction ID</span>
+            <span class="flex items-center gap-sm">
+              <span class="font-mono text-sm text-muted">a1b2c3d4e5f6...</span>
+              <button class="btn btn-secondary btn-sm">Copy TxID</button>
+            </span>
+          </div>
+
+          <!-- Status -->
+          <div class="summary-row">
+            <span class="summary-label">Status</span>
+            <span class="status-badge status-ok">Confirmed (InstantSend)</span>
+          </div>
+
+        </div>
+
+        <!-- Back to Wallet Button -->
+        <div class="mt-2xl">
+          <button class="btn btn-primary" style="padding: var(--space-md) var(--space-3xl);">Back to Wallet</button>
+        </div>
+
+      </div><!-- /result-container -->
+
+      <!-- Footer -->
+      <footer class="mt-2xl" style="text-align: center;">
+        <p class="text-xs text-muted">Dash Evo Tool — Wallet Screen Redesign Mockup</p>
+      </footer>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+</div><!-- /app-frame -->
+
+</body>
+</html>

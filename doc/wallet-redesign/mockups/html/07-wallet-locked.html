@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>Wallet Locked State — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app-frame">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">My Dash Wallet</span>
+      <span class="locked-indicator"><span class="lock-icon">&#128274;</span></span>
+      <span class="wallet-balance">1.2345 DASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-mainnet">Mainnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area ===== -->
+    <main class="content-area">
+
+      <!-- Info Banner -->
+      <div class="message-banner banner-warning">
+        <span class="banner-icon">&#128274;</span>
+        <span class="banner-content">This wallet is locked. Unlock to send funds or view private keys.</span>
+        <div class="banner-actions">
+          <button class="btn btn-sm btn-secondary">Unlock</button>
+        </div>
+      </div>
+
+      <!-- Wallet Title -->
+      <div class="wallet-title">
+        <h2>My Dash Wallet</h2>
+        <span class="locked-indicator"><span class="lock-icon">&#128274;</span></span>
+        <button class="overflow-menu" aria-label="More actions">&#8943;</button>
+      </div>
+
+      <!-- Balance Display -->
+      <div class="balance-header">
+        <div class="flex items-center gap-md">
+          <div class="balance-amount">
+            1.2345<span class="currency">DASH</span>
+          </div>
+          <span class="status-badge status-locked">Locked</span>
+        </div>
+        <div class="balance-label">Total Balance</div>
+        <div class="mt-sm">
+          <button class="link-subtle">Show breakdown &#9662;</button>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <!-- Action Bar -->
+      <div class="action-bar">
+        <div class="flex flex-col items-center gap-xs">
+          <button class="btn btn-primary disabled" disabled>Send</button>
+          <span class="text-xs text-muted">(locked)</span>
+        </div>
+        <button class="btn btn-primary">Receive</button>
+        <button class="btn btn-secondary">Refresh</button>
+      </div>
+
+      <!-- Recent Transactions -->
+      <section>
+        <h3 class="heading-section">Recent Transactions</h3>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Type</th>
+              <th class="align-right">Amount</th>
+              <th>Status</th>
+              <th>TxID</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Feb 10, 2026</td>
+              <td>
+                <span class="flex items-center gap-sm">
+                  <span class="tx-type tx-received">&#8595;</span>
+                  Received
+                </span>
+              </td>
+              <td class="align-right amount-positive">+0.5000 DASH</td>
+              <td><span class="status-badge status-ok">Confirmed</span></td>
+              <td><span class="txid" title="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2">a1b2c3...</span></td>
+            </tr>
+            <tr>
+              <td>Feb 8, 2026</td>
+              <td>
+                <span class="flex items-center gap-sm">
+                  <span class="tx-type tx-sent">&#8593;</span>
+                  Sent
+                </span>
+              </td>
+              <td class="align-right amount-negative">-0.2500 DASH</td>
+              <td><span class="status-badge status-ok">Confirmed</span></td>
+              <td><span class="txid" title="d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5">d4e5f6...</span></td>
+            </tr>
+            <tr>
+              <td>Feb 5, 2026</td>
+              <td>
+                <span class="flex items-center gap-sm">
+                  <span class="tx-type tx-received">&#8595;</span>
+                  Received
+                </span>
+              </td>
+              <td class="align-right amount-positive">+1.0000 DASH</td>
+              <td><span class="status-badge status-pending">Pending</span></td>
+              <td><span class="txid" title="g7h8i9j0k1l2m3n4o5p6q7r8s9t0u1v2w3x4y5z6a7b8c9d0e1f2g3h4i5j6k7l8">g7h8i9...</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="mt-lg">
+          <a href="#" class="link-subtle">Show All Transactions</a>
+        </div>
+      </section>
+
+      <hr class="divider mt-2xl">
+
+      <!-- Collapsed Accounts & Addresses -->
+      <div class="section-header">
+        <span class="arrow">&#9654;</span>
+        <span class="section-title">Accounts &amp; Addresses</span>
+        <span class="section-summary">4 accounts, 12 addresses</span>
+      </div>
+
+      <!-- Footer -->
+      <footer class="mt-2xl">
+        <p class="text-xs text-muted">Dash Evo Tool — Wallet Screen Redesign Mockup</p>
+      </footer>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+</div><!-- /app-frame -->
+
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>Send Flow — Confirm Transaction — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app-frame">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">My Dash Wallet</span>
+      <span class="wallet-balance">1.2345 DASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-mainnet">Mainnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area ===== -->
+    <main class="content-area">
+
+      <!-- Header with Back -->
+      <div class="flex items-center gap-md mb-2xl">
+        <button class="link-subtle" style="font-size: var(--font-size-base);">&#8592; Back</button>
+        <h2 class="text-xl font-bold">Confirm Send</h2>
+      </div>
+
+      <!-- Stepper -->
+      <div class="stepper">
+        <span>1. Enter Details</span>
+        <span>&#8594;</span>
+        <span class="step-current">2. Confirm</span>
+        <span>&#8594;</span>
+        <span>3. Result</span>
+      </div>
+
+      <!-- Summary Card -->
+      <div class="summary-card" style="max-width: 560px;">
+
+        <!-- To -->
+        <div class="summary-row">
+          <span class="summary-label">To</span>
+          <span class="summary-value font-mono text-sm" style="max-width: 320px; word-break: break-all;">XoRQE8bHjEm3p7Yf2X9kDmLwTz...K4dF</span>
+        </div>
+
+        <!-- Amount -->
+        <div class="summary-row">
+          <span class="summary-label">Amount</span>
+          <span class="summary-value">0.5000 DASH</span>
+        </div>
+
+        <!-- Fee -->
+        <div class="summary-row">
+          <span class="summary-label">Fee</span>
+          <span class="summary-value fee-value" style="color: var(--color-text-secondary);">0.0001 DASH</span>
+        </div>
+
+        <!-- Divider -->
+        <hr class="divider">
+
+        <!-- Total -->
+        <div class="summary-row summary-total">
+          <span class="summary-label">Total</span>
+          <span class="summary-value">0.5001 DASH</span>
+        </div>
+
+        <!-- Remaining Balance -->
+        <div class="summary-row">
+          <span class="summary-label">Remaining balance</span>
+          <span class="summary-value text-muted font-normal">0.4999 DASH</span>
+        </div>
+
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="flex justify-between items-center mt-2xl" style="max-width: 560px;">
+        <button class="btn btn-secondary">&#8592; Back</button>
+        <button class="btn btn-primary" style="padding: var(--space-md) var(--space-3xl);">Confirm &amp; Send</button>
+      </div>
+
+      <!-- Footer -->
+      <footer class="mt-2xl">
+        <p class="text-xs text-muted">Dash Evo Tool — Wallet Screen Redesign Mockup</p>
+      </footer>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+</div><!-- /app-frame -->
+
+</body>
+</html>

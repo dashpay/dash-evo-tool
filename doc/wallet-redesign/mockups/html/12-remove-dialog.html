@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>Remove Wallet Dialog — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .modal.modal-md { max-width: 500px; }
+    .delete-list { list-style: none; padding: 0; margin: 0; }
+    .delete-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-sm);
+      padding: var(--space-xs) 0;
+      font-size: var(--font-size-base);
+      line-height: var(--line-height-normal);
+    }
+    .delete-list li .list-icon {
+      flex-shrink: 0;
+      width: 18px;
+      text-align: center;
+      margin-top: 1px;
+    }
+    .delete-list.will-delete li .list-icon { color: var(--color-destructive); }
+    .delete-list.will-keep li .list-icon { color: var(--color-success); }
+    .section-label {
+      font-size: var(--font-size-sm);
+      font-weight: var(--font-weight-semibold);
+      color: var(--color-text-secondary);
+      margin-bottom: var(--space-xs);
+      margin-top: var(--space-lg);
+    }
+    .section-label:first-child { margin-top: 0; }
+  </style>
+</head>
+<body>
+
+<div class="app-frame" style="position: relative;">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">My Dash Wallet</span>
+      <span class="wallet-balance">1.2345 DASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-mainnet">Mainnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area (dimmed background) ===== -->
+    <main class="content-area" style="opacity: 0.3; pointer-events: none;">
+
+      <div class="wallet-title">
+        <h2>My Dash Wallet</h2>
+      </div>
+
+      <div class="balance-header">
+        <div class="balance-amount">
+          1.2345<span class="currency">DASH</span>
+        </div>
+        <div class="balance-label">Total Balance</div>
+      </div>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+  <!-- ===== Modal Overlay ===== -->
+  <div class="modal-overlay" style="position: absolute; border-radius: var(--radius-xl);">
+    <div class="modal modal-md">
+
+      <div class="modal-header">
+        <span class="modal-title">Remove Wallet</span>
+        <button class="modal-close" aria-label="Close">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <p class="mb-lg">Are you sure you want to remove &ldquo;My Dash Wallet&rdquo;?</p>
+
+        <div class="section-label">This will delete:</div>
+        <ul class="delete-list will-delete">
+          <li>
+            <span class="list-icon">&#8226;</span>
+            <span>All locally stored wallet data</span>
+          </li>
+          <li>
+            <span class="list-icon">&#8226;</span>
+            <span>Address history and balances</span>
+          </li>
+          <li>
+            <span class="list-icon">&#8226;</span>
+            <span>Asset lock records</span>
+          </li>
+        </ul>
+
+        <div class="section-label">This will NOT delete:</div>
+        <ul class="delete-list will-keep">
+          <li>
+            <span class="list-icon">&#10003;</span>
+            <span>On-chain identities</span>
+          </li>
+          <li>
+            <span class="list-icon">&#10003;</span>
+            <span>Funds (recoverable with recovery phrase)</span>
+          </li>
+        </ul>
+
+        <div class="warning-box warning mt-lg">
+          <span class="warning-icon">&#9888;</span>
+          <div class="warning-content">
+            2 identities are linked to this wallet. Identity operations will fail until you re-import this wallet.
+          </div>
+        </div>
+
+        <div class="mt-lg">
+          <button class="link-subtle">Show Recovery Phrase</button>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary">Cancel</button>
+        <button class="btn btn-destructive">Remove Wallet</button>
+      </div>
+
+    </div>
+  </div>
+
+</div><!-- /app-frame -->
+
+<!-- Footer -->
+<footer style="text-align: center; margin-top: 24px;">
+  <p class="text-xs text-muted">Dash Evo Tool &mdash; Wallet Screen Redesign Mockup</p>
+</footer>
+
+</body>
+</html>

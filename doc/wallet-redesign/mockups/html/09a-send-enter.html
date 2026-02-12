@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1280">
+  <title>Send Flow — Enter Details — Dash Evo Tool Mockup</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Amount input with inline currency label */
+    .amount-input-group {
+      display: flex;
+      align-items: center;
+      gap: 0;
+    }
+    .amount-input-group .form-input {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+      border-right: none;
+    }
+    .amount-input-group .currency-label {
+      padding: var(--space-sm) var(--space-md);
+      background-color: var(--color-bg-elevated);
+      border: 1px solid var(--color-border);
+      border-left: none;
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      color: var(--color-text-muted);
+      font-size: var(--font-size-sm);
+      font-weight: var(--font-weight-medium);
+      white-space: nowrap;
+      line-height: 1.5;
+    }
+    /* Send form container */
+    .send-form {
+      max-width: 560px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="app-frame">
+
+  <!-- ===== Top Panel ===== -->
+  <header class="top-panel">
+    <span class="app-name">Dash Evo Tool</span>
+    <div class="spacer"></div>
+    <div class="wallet-selector">
+      <span class="wallet-badge badge-hd">HD</span>
+      <span class="wallet-name">My Dash Wallet</span>
+      <span class="wallet-balance">1.2345 DASH</span>
+      <span class="chevron">&#9662;</span>
+    </div>
+    <span class="network-badge network-mainnet">Mainnet</span>
+  </header>
+
+  <!-- ===== Main Content ===== -->
+  <div class="main-content">
+
+    <!-- ===== Left Panel (Navigation) ===== -->
+    <nav class="left-panel" aria-label="Main navigation">
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>DashPay</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Identities</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Contracts</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Tokens</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item active" href="#">
+        <span class="nav-icon">&#8226;</span>
+        <span>Wallets</span>
+      </a>
+      <div class="nav-separator"></div>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Tools</span>
+      </a>
+      <a class="nav-item" href="#">
+        <span class="nav-icon">&#8211;</span>
+        <span>Settings</span>
+      </a>
+    </nav>
+
+    <!-- ===== Content Area ===== -->
+    <main class="content-area">
+
+      <!-- Header with Cancel -->
+      <div class="flex justify-between items-center mb-2xl">
+        <h2 class="text-xl font-bold">Send Dash</h2>
+        <button class="link-subtle" style="font-size: var(--font-size-base);">&#10005; Cancel</button>
+      </div>
+
+      <!-- Stepper -->
+      <div class="stepper">
+        <span class="step-current">1. Enter Details</span>
+        <span>&#8594;</span>
+        <span>2. Confirm</span>
+        <span>&#8594;</span>
+        <span>3. Result</span>
+      </div>
+
+      <!-- Send Form -->
+      <div class="send-form">
+
+        <!-- From -->
+        <div class="form-group">
+          <label class="form-label">From</label>
+          <select class="form-select">
+            <option>Core Wallet</option>
+          </select>
+          <span class="form-hint">Available: 1.0000 DASH</span>
+        </div>
+
+        <!-- To -->
+        <div class="form-group">
+          <label class="form-label">To</label>
+          <input type="text" class="form-input" placeholder="Enter a Dash address or DPNS name">
+        </div>
+
+        <!-- Amount -->
+        <div class="form-group">
+          <label class="form-label">Amount</label>
+          <div class="amount-input-group">
+            <input type="text" class="form-input" placeholder="0.0000">
+            <span class="currency-label">DASH</span>
+          </div>
+        </div>
+
+        <!-- Subtract fee checkbox -->
+        <div class="form-group">
+          <label class="checkbox-label">
+            <input type="checkbox">
+            Subtract fee from amount
+          </label>
+        </div>
+
+        <!-- Continue Button -->
+        <div class="mt-2xl">
+          <button class="btn btn-primary" style="padding: var(--space-md) var(--space-3xl);">Continue &#8594;</button>
+        </div>
+
+      </div><!-- /send-form -->
+
+      <!-- Footer -->
+      <footer class="mt-2xl">
+        <p class="text-xs text-muted">Dash Evo Tool — Wallet Screen Redesign Mockup</p>
+      </footer>
+
+    </main>
+
+  </div><!-- /main-content -->
+
+</div><!-- /app-frame -->
+
+</body>
+</html>

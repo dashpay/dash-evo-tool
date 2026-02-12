@@ -383,7 +383,7 @@ impl DocumentActionScreen {
                         self.broadcast_status = BroadcastStatus::Fetching(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .unwrap()
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
@@ -464,7 +464,7 @@ impl DocumentActionScreen {
         if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
             let elapsed = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs()
                 - start;
             ui.add_space(10.0);
@@ -507,7 +507,7 @@ impl DocumentActionScreen {
                     self.broadcast_status = BroadcastStatus::Fetching(
                         SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_secs(),
                     );
                     action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
@@ -523,7 +523,7 @@ impl DocumentActionScreen {
         if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
             let elapsed = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs()
                 - start;
             ui.add_space(10.0);
@@ -572,7 +572,7 @@ impl DocumentActionScreen {
                         self.broadcast_status = BroadcastStatus::Fetching(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .unwrap()
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
@@ -589,7 +589,7 @@ impl DocumentActionScreen {
         if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
             let elapsed = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs()
                 - start;
             ui.add_space(10.0);
@@ -925,7 +925,7 @@ impl DocumentActionScreen {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs(),
                 );
                 action = AppAction::BackendTask(task);
@@ -938,7 +938,7 @@ impl DocumentActionScreen {
                 ui.add_space(10.0);
                 let elapsed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs()
                     - start_time;
                 ui.label(format!("Broadcasting... {}s", elapsed));
@@ -947,7 +947,7 @@ impl DocumentActionScreen {
                 ui.add_space(10.0);
                 let elapsed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs()
                     - start_time;
                 ui.label(format!("Fetching... {}s", elapsed));

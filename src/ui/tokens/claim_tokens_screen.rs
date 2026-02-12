@@ -215,7 +215,7 @@ impl ClaimTokensScreen {
 
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.status = ClaimTokensStatus::WaitingForResult(now);
 
@@ -576,7 +576,7 @@ impl ScreenLike for ClaimTokensScreen {
                     ClaimTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Claiming... elapsed: {}s", elapsed));

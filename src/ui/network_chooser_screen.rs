@@ -5,6 +5,7 @@ use crate::backend_task::system_task::SystemTask;
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
+use crate::lock_helper::RwLockExt;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::component_trait::Component;
@@ -443,7 +444,7 @@ impl NetworkChooserScreen {
                         if let Some(local_app_context) = &self.local_app_context {
                             {
                                 // Overwrite the config field with the new password
-                                let mut cfg_lock = local_app_context.config.write().unwrap();
+                                let mut cfg_lock = local_app_context.config.write_or_recover();
                                 *cfg_lock = updated_local_config;
                             }
 
@@ -2039,7 +2040,7 @@ impl ScreenLike for NetworkChooserScreen {
             if self.any_rpc_backend() {
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards");
+                    .unwrap_or_default();
                 if let Some(time) = self.recheck_time {
                     if current_time.as_millis() as u64 >= time {
                         action = AppAction::BackendTask(BackendTask::CoreTask(

@@ -264,7 +264,7 @@ impl BurnTokensScreen {
                 self.confirmation_dialog = None;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.status = BurnTokensStatus::WaitingForResult(now);
 
@@ -655,7 +655,7 @@ impl ScreenLike for BurnTokensScreen {
                     BurnTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Burning... elapsed: {} seconds", elapsed));

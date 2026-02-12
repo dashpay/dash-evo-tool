@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::lock_helper::RwLockExt;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
@@ -109,7 +110,12 @@ pub struct AddExistingIdentityScreen {
 
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
+        let selected_wallet = app_context
+            .wallets
+            .read_or_recover()
+            .values()
+            .next()
+            .cloned();
         let testnet_loaded_nodes = if app_context.network == Network::Testnet {
             load_testnet_nodes_from_yml(".testnet_nodes.yml")
         } else {
@@ -161,13 +167,12 @@ impl AddExistingIdentityScreen {
         }
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallets.read().unwrap();
+            let wallets_guard = self.app_context.wallets.read_or_recover();
             wallets_guard
                 .values()
                 .map(|wallet| {
                     let alias = wallet
-                        .read()
-                        .unwrap()
+                        .read_or_recover()
                         .alias
                         .clone()
                         .unwrap_or_else(|| "Unnamed Wallet".to_string());
@@ -454,7 +459,7 @@ impl AddExistingIdentityScreen {
         if ui.add_enabled(is_valid_id, button).clicked() {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
+                .unwrap_or_default()
                 .as_secs();
             self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
             action = self.load_identity_clicked();
@@ -480,13 +485,12 @@ impl AddExistingIdentityScreen {
     fn render_wallet_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
-                let wallets = &self.app_context.wallets.read().unwrap();
+                let wallets = &self.app_context.wallets.read_or_recover();
                 let wallet_aliases: Vec<String> = wallets
                     .values()
                     .map(|wallet| {
                         wallet
-                            .read()
-                            .unwrap()
+                            .read_or_recover()
                             .alias
                             .clone()
                             .unwrap_or_else(|| "Unnamed Wallet".to_string())
@@ -656,7 +660,7 @@ impl AddExistingIdentityScreen {
         if ui.add(button).clicked() {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
+                .unwrap_or_default()
                 .as_secs();
             self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
             self.backend_message = None;
@@ -691,13 +695,12 @@ impl AddExistingIdentityScreen {
         ui.add_space(15.0);
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallets.read().unwrap();
+            let wallets_guard = self.app_context.wallets.read_or_recover();
             wallets_guard
                 .values()
                 .map(|wallet| {
                     let alias = wallet
-                        .read()
-                        .unwrap()
+                        .read_or_recover()
                         .alias
                         .clone()
                         .unwrap_or_else(|| "Unnamed Wallet".to_string());
@@ -813,7 +816,7 @@ impl AddExistingIdentityScreen {
         if ui.add_enabled(is_valid, button).clicked() {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
+                .unwrap_or_default()
                 .as_secs();
             self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
             self.backend_message = None;
@@ -823,7 +826,7 @@ impl AddExistingIdentityScreen {
             let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
                 self.selected_wallet
                     .as_ref()
-                    .map(|wallet| wallet.read().unwrap().seed_hash())
+                    .map(|wallet| wallet.read_or_recover().seed_hash())
             } else {
                 None
             };
@@ -848,7 +851,7 @@ impl AddExistingIdentityScreen {
         let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
             self.selected_wallet
                 .as_ref()
-                .map(|wallet| wallet.read().unwrap().seed_hash())
+                .map(|wallet| wallet.read_or_recover().seed_hash())
         } else {
             None
         };
@@ -1096,7 +1099,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                         }
                         LoadIdentityMode::Wallet => {
                             let wallets_len = {
-                                let wallets = self.app_context.wallets.read().unwrap();
+                                let wallets = self.app_context.wallets.read_or_recover();
                                 wallets.len()
                             };
                             inner_action |= self.render_by_wallet(ui, wallets_len);
@@ -1115,7 +1118,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                         AddIdentityStatus::WaitingForResult(start_time) => {
                             let now = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
+                                .unwrap_or_default()
                                 .as_secs();
                             let elapsed_seconds = now - start_time;
 

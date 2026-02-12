@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Migration Context
+
+This repository is actively being migrated from an **egui** (Rust immediate-mode GUI) frontend to a **Tauri + React** frontend. The `react-native` branch contains the in-progress Tauri implementation, while the production application still uses the egui-based UI on `master`/`v1.0-dev`.
+
+- **Bug reports and feature requests** typically refer to the **Tauri implementation** (this branch), not the egui version.
+- When investigating bugs, **compare behavior against the egui production implementation** to understand the intended/correct behavior. The egui screens in `src/ui/` and backend logic serve as the reference implementation.
+- The Tauri frontend lives in `src/frontend/` (React + TypeScript) while the Rust backend exposes commands via Tauri IPC (auto-generated bindings in `src/frontend/bindings.ts`).
+- The egui UI code in `src/ui/` remains in the codebase as the authoritative reference for expected behavior, screen flows, and business logic.
+
 ## Build Commands
 
 ```bash

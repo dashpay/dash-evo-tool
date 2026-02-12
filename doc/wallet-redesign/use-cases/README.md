@@ -67,7 +67,7 @@ Each use case has an ID in the format `UC-XX-NN` where:
 | UC-AM-06 Filter by activity | -- | Yes | Yes |
 | **Network and Settings** | | | |
 | UC-NS-01 Switch networks | -- | Mainnet/Testnet | + Devnet |
-| UC-NS-02 Developer mode | -- | Partial (power features) | Full |
+| UC-NS-02 Developer Tools | -- | Partial (power features) | Full |
 | UC-NS-03 Devnet config | -- | -- | Yes |
 | UC-NS-04 Testnet faucet | -- | -- | Yes |
 

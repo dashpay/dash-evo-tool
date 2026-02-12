@@ -616,9 +616,10 @@ Based on the competitor analysis and UX best practices, here are prioritized rec
 ### 7.2 Medium Priority (Progressive Disclosure)
 
 **R5: Implement User Mode Toggle**
-- Two modes: "User" (default) and "Developer" (opt-in via settings)
-- User mode: Balance dashboard, simplified send/receive, recent transactions
-- Developer mode: Address tables, coin control, derivation paths, refresh mode selector, raw transaction data
+- Three-level progressive disclosure: Level 0 (default), Level 1 (expanded detail), Level 2 (Developer Tools, opt-in via settings)
+- Level 0: Balance dashboard, simplified send/receive, recent transactions
+- Level 1: Address tables, derivation paths, refresh mode selector (expand/collapse per section)
+- Level 2: Coin control, raw transaction data, bulk operations, faucet
 
 **R6: Add Transaction History to Wallet Screen**
 - Show recent transactions below the balance dashboard
@@ -643,11 +644,11 @@ Based on the competitor analysis and UX best practices, here are prioritized rec
 - User-selectable base currency (USD, EUR, etc.)
 - Requires a price feed integration
 
-**R10: Coin Control (Developer Mode)**
+**R10: Coin Control (Developer Tools)**
 - Allow selecting specific UTXOs for spending (like Electrum's Coins tab)
 - Show per-UTXO: amount, confirmations, address, derivation path
 - Support freezing/unfreezing UTXOs
-- Only visible in developer mode
+- Only visible with Developer Tools enabled (Level 2)
 
 **R11: Contextual Help System**
 - Tooltips on all balance fields explaining what they mean

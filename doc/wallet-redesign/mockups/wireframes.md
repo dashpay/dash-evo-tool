@@ -1,5 +1,7 @@
 # Wallet Screen Wireframe Mockups
 
+> **For interactive visual mockups**, open [`html/index.html`](html/index.html) in a browser. This file provides annotated ASCII versions for code review and quick reference.
+
 ASCII wireframes for every key state of the redesigned wallet screen. These mockups show the desktop layout at a typical window width (1280px+). The left panel (Zone 1) is shown abbreviated.
 
 ---

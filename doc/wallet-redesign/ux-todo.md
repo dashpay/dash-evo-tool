@@ -23,7 +23,7 @@ Items discovered during the wallet screen redesign that apply to other areas of 
 
 - Create a centralized error message mapping (error code/type to user-facing text)
 - Every error should follow the template: "[What happened]. [What to do next]."
-- Developer mode should allow expanding errors to see raw technical details
+- Developer Tools (Level 2) should allow expanding errors to see raw technical details
 - Affected screens: identity registration, DPNS registration, token operations, contract deployment
 
 ### 3. Transaction History Visible by Default

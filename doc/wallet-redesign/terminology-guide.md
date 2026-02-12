@@ -37,8 +37,8 @@ This guide defines the user-facing language used in the wallet screen. Every lab
 | `unconfirmed_balance` | **Pending** | Balance breakdown (Level 2) | Unconfirmed incoming. |
 | Core balance | **Core** or **On-chain** | Balance breakdown | When showing the split: "Core: 1.0000 DASH". |
 | Platform credits | **Platform** | Balance breakdown | When showing the split: "Platform: 0.2345 DASH". |
-| Credits (raw) | **credits** | Level 2 parenthetical | "0.2345 DASH (234,500,000 credits)" -- only in Developer mode. |
-| Duffs | (not shown) | Never in user-facing text | Use DASH with 8 decimal places instead. Developer mode may show duffs in tooltips. |
+| Credits (raw) | **credits** | Level 2 parenthetical | "0.2345 DASH (234,500,000 credits)" -- only at Level 2 (Developer Tools). |
+| Duffs | (not shown) | Never in user-facing text | Use DASH with 8 decimal places instead. Developer Tools may show duffs in tooltips. |
 | `CREDITS_PER_DUFF` | (not shown) | Internal conversion only | Never exposed. |
 
 ---
@@ -66,8 +66,8 @@ This guide defines the user-facing language used in the wallet screen. Every lab
 | Address (P2PKH) | **Address** | Address table, receive dialog | No prefix needed. Dash addresses are "X..." or "y..." |
 | Platform address (DIP-17) | **Platform address** | Platform account, receive dialog | Bech32m format: "evo1..." or "tevo1..." |
 | DIP-18 / Bech32m | (not mentioned) | Internal | Users see the address format; they do not need the standard name. |
-| Derivation path | **Derivation path** or **Path** | Address table (Level 2 only) | Only shown in Developer mode. |
-| Index | **Index** | Address table (Level 2 only) | Only shown in Developer mode. |
+| Derivation path | **Derivation path** or **Path** | Address table (Level 2 only) | Only shown with Developer Tools enabled. |
+| Index | **Index** | Address table (Level 2 only) | Only shown with Developer Tools enabled. |
 | Funds address | **Receiving** | Address type column | External addresses used for receiving funds. |
 | Change address | **Change** | Address type column | Internal change addresses. |
 | System address | **System** | Address type column | System-purpose addresses. |
@@ -133,13 +133,13 @@ This guide defines the user-facing language used in the wallet screen. Every lab
 | Fund Platform address | **Fund** | Platform address action button | Short verb for the action. |
 | Withdraw from Platform | **Withdraw** | Platform address action button | |
 | Transfer credits | **Transfer** | Platform address action button | |
-| State transition | (not shown to Level 0/1) | Developer mode only | "State transition" is protocol jargon. |
+| State transition | (not shown to Level 0/1) | Developer Tools only | "State transition" is protocol jargon. |
 | Identity | **Identity** | Cross-screen reference | Acceptable as-is; central Dash concept. |
 | DPNS | **Username** or **Dash Name** | User-facing label | "DPNS" is an acronym; use "Dash username" or just "username" in user-facing text. |
 
 ---
 
-## Developer Mode Terminology
+## Developer Tools Terminology
 
 | Internal / Technical Term | User-Facing Term | Context | Notes |
 |---|---|---|---|

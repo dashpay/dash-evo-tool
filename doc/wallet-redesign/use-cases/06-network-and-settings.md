@@ -29,7 +29,7 @@ Then the wallet selector shows only wallets applicable to that network, and the 
 
 ---
 
-## UC-NS-02: Toggle Developer Mode
+## UC-NS-02: Toggle Developer Tools
 
 **Personas**: Priya, Jordan
 
@@ -40,10 +40,10 @@ As a technical user, I want to enable an advanced mode that shows additional wal
 
 ```
 Given I am in the Settings screen,
-When I enable Developer Mode (or the redesigned equivalent),
+When I enable Developer Tools,
 Then additional UI elements appear across the app: refresh mode selector, raw credit values, state transition details, etc.
 
-Given Developer Mode is enabled,
+Given Developer Tools is enabled,
 When I view the wallet screen,
 Then I see: granular refresh controls, account category details, full address tables, and transaction history.
 ```

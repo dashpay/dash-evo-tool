@@ -107,7 +107,7 @@ Expanded state:
   Platform balance on separate line
   "Hide breakdown" link visible
 
-Developer mode additions:
+Developer Tools additions (Level 2):
   Platform line shows credits in parentheses
   Unconfirmed balance shown as a third line if non-zero
 ```
@@ -215,7 +215,7 @@ Summary panel shows:
   - Estimated fee in DASH
   - Total deduction (amount + fee, or amount if "subtract fee" checked)
   - Remaining balance after transaction
-  - [Dev mode] Fee and amount also shown in duffs
+  - [Level 2] Fee and amount also shown in duffs
 
 Back button:
   Returns to Step 1 with all fields preserved
@@ -547,7 +547,7 @@ Structure:
 
 1. Never show raw Rust error strings to the user.
 2. Every error message should explain what happened and suggest a next step.
-3. Technical details (error codes, stack traces) are available via a "Show Details" expand within the error message, visible only in Developer mode.
+3. Technical details (error codes, stack traces) are available via a "Show Details" expand within the error message, visible only with Developer Tools enabled (Level 2).
 
 **Error message template:**
 ```

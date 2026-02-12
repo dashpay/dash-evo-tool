@@ -34,4 +34,6 @@ jobs:
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
+          model: opus
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
+          allowed_tools: "Bash(git fetch:*),Bash(git merge:*),Bash(git checkout:*),Bash(git rebase:*),Bash(git push:*),Bash(cargo build:*),Bash(cargo test:*),Bash(cargo clippy:*),Bash(cargo fmt:*)"

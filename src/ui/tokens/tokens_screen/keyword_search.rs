@@ -9,7 +9,6 @@ use crate::ui::tokens::tokens_screen::{
 use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
-use eframe::epaint::Color32;
 use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
@@ -140,7 +139,7 @@ impl TokensScreen {
                 }
             }
             ContractSearchStatus::ErrorMessage(e) => {
-                let error_color = Color32::from_rgb(255, 100, 100);
+                let error_color = DashColors::ERROR;
                 let msg = e.clone();
                 Frame::new()
                     .fill(error_color.gamma_multiply(0.1))

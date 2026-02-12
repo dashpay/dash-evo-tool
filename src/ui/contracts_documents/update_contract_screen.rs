@@ -16,6 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
@@ -191,7 +192,7 @@ impl UpdateDataContractScreen {
         };
 
         if let Some(msg) = error_msg {
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))
@@ -258,7 +259,7 @@ impl UpdateDataContractScreen {
                 ui.set_style(new_style);
                 let button =
                     egui::Button::new(RichText::new("Update Contract").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0, 128, 255))
+                        .fill(DashColors::ACTION_BUTTON_BLUE)
                         .frame(true)
                         .corner_radius(3.0);
                 if ui.add(button).clicked() {

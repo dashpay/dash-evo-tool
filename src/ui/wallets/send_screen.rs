@@ -1143,16 +1143,13 @@ impl WalletSendScreen {
                 let mut dismiss = false;
                 ui.horizontal(|ui| {
                     Frame::new()
-                        .fill(Color32::from_rgb(255, 100, 100).gamma_multiply(0.1))
+                        .fill(DashColors::ERROR.gamma_multiply(0.1))
                         .inner_margin(Margin::symmetric(10, 8))
                         .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(255, 100, 100)))
+                        .stroke(egui::Stroke::new(1.0, DashColors::ERROR))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(&error_msg)
-                                        .color(Color32::from_rgb(255, 100, 100)),
-                                );
+                                ui.label(RichText::new(&error_msg).color(DashColors::ERROR));
                                 ui.add_space(10.0);
                                 if ui.small_button("Dismiss").clicked() {
                                     dismiss = true;
@@ -1374,7 +1371,7 @@ impl WalletSendScreen {
                 ui.add_space(10.0);
                 let (type_text, type_color) = match dest_type {
                     AddressType::Core => ("Core Address", DashColors::DASH_BLUE),
-                    AddressType::Platform => ("Platform Address", Color32::from_rgb(130, 80, 220)),
+                    AddressType::Platform => ("Platform Address", DashColors::PLATFORM_PURPLE),
                     AddressType::Unknown => ("", Color32::GRAY),
                 };
                 ui.label(
@@ -2182,7 +2179,7 @@ impl WalletSendScreen {
                                 let (type_text, type_color) = match addr_type {
                                     AddressType::Core => ("Core", DashColors::DASH_BLUE),
                                     AddressType::Platform => {
-                                        ("Platform", Color32::from_rgb(130, 80, 220))
+                                        ("Platform", DashColors::PLATFORM_PURPLE)
                                     }
                                     AddressType::Unknown => ("", Color32::GRAY),
                                 };

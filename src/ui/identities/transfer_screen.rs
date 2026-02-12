@@ -178,11 +178,7 @@ impl TransferScreen {
         // Colors for selected/unselected states
         let selected_fill = DashColors::DASH_BLUE;
         let selected_text = Color32::WHITE;
-        let unselected_fill = if dark_mode {
-            Color32::from_rgb(60, 60, 60)
-        } else {
-            Color32::from_rgb(220, 220, 220)
-        };
+        let unselected_fill = DashColors::unselected_fill(dark_mode);
         let unselected_text = DashColors::text_primary(dark_mode);
 
         ui.horizontal(|ui| {
@@ -719,7 +715,7 @@ impl ScreenLike for TransferScreen {
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
                 let button = egui::Button::new(RichText::new("Transfer").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::DASH_BLUE)
                     .frame(true)
                     .corner_radius(3.0);
 
@@ -788,7 +784,7 @@ impl ScreenLike for TransferScreen {
                         ));
                     }
                     TransferCreditsStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))

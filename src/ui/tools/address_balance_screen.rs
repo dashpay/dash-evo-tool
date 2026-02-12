@@ -6,8 +6,9 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
-use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, Context, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
 pub struct AddressBalanceScreen {
@@ -93,7 +94,7 @@ impl AddressBalanceScreen {
     fn render_result(&mut self, ui: &mut Ui) {
         if let Some(ref error) = self.error_message {
             ui.add_space(20.0);
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             let error = error.clone();
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))

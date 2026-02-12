@@ -971,7 +971,7 @@ impl TokensScreen {
         // Show an error if we have one
         if let Some(err_msg) = self.token_creator_error_message.clone() {
             ui.add_space(10.0);
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))
@@ -1574,7 +1574,7 @@ impl TokensScreen {
                     ui.add(egui::Hyperlink::from_label_and_url(
                         RichText::new("dashpay.io")
                             .underline()
-                            .color(Color32::from_rgb(0, 128, 255)),
+                            .color(DashColors::ACTION_BUTTON_BLUE),
                         "https://dashpay.io",
                     ));
                 });

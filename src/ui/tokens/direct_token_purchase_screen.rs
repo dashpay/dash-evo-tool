@@ -581,7 +581,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 if can_purchase {
                     let button =
                         egui::Button::new(RichText::new(purchase_text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))
+                            .fill(DashColors::ACTION_BUTTON_BLUE)
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() && self.confirmation_dialog.is_none() {

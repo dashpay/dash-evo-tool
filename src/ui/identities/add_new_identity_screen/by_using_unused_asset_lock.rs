@@ -3,7 +3,8 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
-use egui::{Color32, RichText, Ui};
+use crate::ui::theme::DashColors;
+use egui::{RichText, Ui};
 
 impl AddNewIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
@@ -48,10 +49,7 @@ impl AddNewIdentityScreen {
 
                             // Display asset lock information with "Selected" if this one is selected
                             if Some(index) == selected_index {
-                                ui.colored_label(
-                                    Color32::from_rgb(0, 130, 90),
-                                    "Selected asset lock",
-                                );
+                                ui.colored_label(DashColors::SUCCESS, "Selected asset lock");
                             }
 
                             ui.label(format!("TxID: {}", tx_id));

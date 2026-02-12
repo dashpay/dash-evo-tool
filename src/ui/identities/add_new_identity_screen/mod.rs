@@ -20,6 +20,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -577,11 +578,7 @@ impl AddNewIdentityScreen {
             // Use a lighter stripe color that doesn't clash with comboboxes
             let original_stripe_color = ui.visuals().faint_bg_color;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            ui.visuals_mut().faint_bg_color = if dark_mode {
-                Color32::from_rgba_unmultiplied(255, 255, 255, 10) // Very subtle light stripe in dark mode
-            } else {
-                Color32::from_rgba_unmultiplied(0, 100, 200, 10) // Light blue tint in light mode
-            };
+            ui.visuals_mut().faint_bg_color = DashColors::stripe(dark_mode);
 
             TableBuilder::new(ui)
                 .striped(true)
@@ -1070,7 +1067,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
             // Display error message at the top, outside of scroll area
             if let Some(error_message) = self.error_message.clone() {
-                let message_color = Color32::from_rgb(255, 100, 100);
+                let message_color = DashColors::ERROR;
 
                 ui.horizontal(|ui| {
                     egui::Frame::new()

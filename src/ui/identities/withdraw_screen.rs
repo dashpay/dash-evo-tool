@@ -166,7 +166,7 @@ impl WithdrawalScreen {
 
                 // Show error next to input
                 if let Some(error) = &self.withdrawal_address_error {
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), error);
+                    ui.colored_label(DashColors::ERROR, error);
                 }
             });
 
@@ -548,7 +548,7 @@ impl ScreenLike for WithdrawalScreen {
                 // Withdraw button
 
                 let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::DASH_BLUE)
                     .frame(true)
                     .corner_radius(3.0)
                     .min_size(egui::vec2(60.0, 30.0));
@@ -623,7 +623,7 @@ impl ScreenLike for WithdrawalScreen {
                         ));
                     }
                     WithdrawFromIdentityStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))

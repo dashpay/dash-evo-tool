@@ -399,7 +399,7 @@ impl ContactRequests {
         if let Some(err) = self.error.clone() {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             let error_color = if dark_mode {
-                egui::Color32::from_rgb(255, 100, 100)
+                DashColors::ERROR
             } else {
                 egui::Color32::DARK_RED
             };

@@ -17,6 +17,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_t
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -741,7 +742,7 @@ impl UpdateTokenConfigScreen {
         );
 
         let button = egui::Button::new(RichText::new(&button_text).color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::ACTION_BUTTON_BLUE)
             .frame(true)
             .corner_radius(3.0);
 
@@ -1103,7 +1104,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             ui.colored_label(Color32::DARK_GREEN, &msg);
                         }
                         MessageType::Error => {
-                            let error_color = Color32::from_rgb(255, 100, 100);
+                            let error_color = DashColors::ERROR;
                             Frame::new()
                                 .fill(error_color.gamma_multiply(0.1))
                                 .inner_margin(Margin::symmetric(10, 8))

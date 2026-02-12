@@ -6,6 +6,7 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
+use crate::ui::theme::DashColors;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use egui::{Color32, ComboBox, RichText, Ui};
 
@@ -241,9 +242,9 @@ impl AddNewIdentityScreen {
 
         let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
             .fill(if can_create {
-                Color32::from_rgb(0, 128, 255)
+                DashColors::DASH_BLUE
             } else {
-                Color32::from_rgb(100, 100, 100)
+                DashColors::BUTTON_DISABLED
             })
             .frame(true)
             .corner_radius(3.0);

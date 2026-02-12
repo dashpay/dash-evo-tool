@@ -1564,7 +1564,7 @@ impl MasternodeListDiffScreen {
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let message_color = match msg_type {
-            MessageType::Error => Color32::from_rgb(255, 100, 100),
+            MessageType::Error => DashColors::ERROR,
             MessageType::Info => crate::ui::theme::DashColors::text_primary(dark_mode),
             // Dark green for success text
             MessageType::Success => Color32::DARK_GREEN,
@@ -1593,7 +1593,7 @@ impl MasternodeListDiffScreen {
             return;
         };
 
-        let message_color = Color32::from_rgb(255, 100, 100);
+        let message_color = DashColors::ERROR;
         ui.horizontal(|ui| {
             Frame::new()
                 .fill(message_color.gamma_multiply(0.1))

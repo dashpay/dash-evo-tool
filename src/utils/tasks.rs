@@ -57,6 +57,20 @@ impl TaskManager {
     /// This is an equivalent of `Runtime::shutdown_timeout` but for subtasks.
     pub fn shutdown(&self) -> Result<(), String> {
         let cancel = self.cancellation_token.clone();
+
+        // Check if Tokio runtime is still available on this thread.
+        // During macOS applicationWillTerminate, the runtime context may
+        // no longer be entered, so spawning tasks would panic.
+        let handle = match tokio::runtime::Handle::try_current() {
+            Ok(h) => h,
+            Err(_) => {
+                // No runtime available — just cancel the token.
+                // Tasks will be aborted when the runtime drops.
+                cancel.cancel();
+                return Ok(());
+            }
+        };
+
         let subtasks = self.tasks.clone();
 
         // a bit naive synchronization to wait for shutdown
@@ -66,7 +80,7 @@ impl TaskManager {
 
         let counter = completed.clone();
         // we need to run this task in separate task to avoid cancelling it during shutdown
-        tokio::task::spawn(async move {
+        handle.spawn(async move {
             // Cancel all background tasks
             cancel.cancel();
 

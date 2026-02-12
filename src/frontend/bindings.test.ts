@@ -185,12 +185,14 @@ describe("Bindings: commands object", () => {
       "walletClearSpvData",
       "walletNotifyUnlocked",
       "walletNotifyLocked",
+      "walletUnlock",
+      "walletLock",
       "walletGetPrivateKey",
     ];
     for (const cmd of walletCmds) {
       assertIsFunction(cmds, cmd);
     }
-    expect(walletCmds.length).toBe(24);
+    expect(walletCmds.length).toBe(26);
   });
 
   it("contains all 11 contract commands", () => {
@@ -257,6 +259,7 @@ describe("Bindings: commands object", () => {
       "tokenPurchase",
       "tokenSetDirectPurchasePrice",
       "tokenRegisterContract",
+      "tokenGetMyBalances",
       "tokenRemove",
       "tokenLoadOrder",
       "tokenSaveOrder",
@@ -266,7 +269,7 @@ describe("Bindings: commands object", () => {
     for (const cmd of tokenCmds) {
       assertIsFunction(cmds, cmd);
     }
-    expect(tokenCmds.length).toBe(27);
+    expect(tokenCmds.length).toBe(28);
   });
 
   it("contains all 23 dashpay commands", () => {
@@ -385,9 +388,9 @@ describe("Bindings: commands object", () => {
     expect(settingsCmds.length).toBe(17);
   });
 
-  it("total command count is 190", () => {
+  it("total command count is 195", () => {
     const allKeys = Object.keys(commands);
-    expect(allKeys.length).toBe(190);
+    expect(allKeys.length).toBe(195);
   });
 });
 

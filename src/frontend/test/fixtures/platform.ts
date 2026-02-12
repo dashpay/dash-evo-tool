@@ -153,8 +153,7 @@ export function createMockTaskResult(
 ): TaskResultEvent {
   return {
     taskId: "task-001",
-    resultType: "Identity",
-    payload: null,
+    result: { type: "identityCompleted", identityId: null },
     ...overrides,
   };
 }
@@ -164,6 +163,7 @@ export function createMockTaskError(
 ): TaskErrorEvent {
   return {
     taskId: "task-001",
+    domain: "identity",
     message: "Operation failed",
     details: "Connection timed out after 30 seconds",
     recoverable: true,

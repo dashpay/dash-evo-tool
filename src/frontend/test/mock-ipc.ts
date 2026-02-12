@@ -118,6 +118,8 @@ export type CommandName =
   | "walletBootstrapAddresses"
   | "walletNotifyUnlocked"
   | "walletNotifyLocked"
+  | "walletUnlock"
+  | "walletLock"
   | "walletGetPrivateKey"
   // Contract
   | "contractFetch"
@@ -164,6 +166,7 @@ export type CommandName =
   | "tokenPurchase"
   | "tokenSetDirectPurchasePrice"
   | "tokenRegisterContract"
+  | "tokenGetMyBalances"
   | "tokenRemove"
   | "tokenLoadOrder"
   | "tokenSaveOrder"
@@ -419,6 +422,8 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     walletBootstrapAddresses: resolvesOk("walletBootstrapAddresses", null),
     walletNotifyUnlocked: resolvesOk("walletNotifyUnlocked", null),
     walletNotifyLocked: resolvesOk("walletNotifyLocked", null),
+    walletUnlock: resolvesOk("walletUnlock", null),
+    walletLock: resolvesOk("walletLock", null),
     walletGetPrivateKey: resolvesOk("walletGetPrivateKey", ""),
 
     // -- Contract --
@@ -468,6 +473,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     tokenPurchase: dispatchOk("tokenPurchase"),
     tokenSetDirectPurchasePrice: dispatchOk("tokenSetDirectPurchasePrice"),
     tokenRegisterContract: dispatchOk("tokenRegisterContract"),
+    tokenGetMyBalances: resolvesOk("tokenGetMyBalances", []),
     tokenRemove: resolvesOk("tokenRemove", null),
     tokenLoadOrder: resolvesOk("tokenLoadOrder", []),
     tokenSaveOrder: resolvesOk("tokenSaveOrder", null),

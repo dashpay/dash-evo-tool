@@ -510,11 +510,13 @@ describe("Platform fixtures", () => {
   it("createMockTaskResult has result payload", () => {
     const result = createMockTaskResult();
     expect(typeof result.taskId).toBe("string");
-    expect(typeof result.resultType).toBe("string");
+    expect(result.result).toBeDefined();
+    expect(result.result.type).toBe("identityCompleted");
   });
 
   it("createMockTaskError has error details", () => {
     const err = createMockTaskError();
+    expect(typeof err.domain).toBe("string");
     expect(typeof err.message).toBe("string");
     expect(typeof err.details).toBe("string");
     expect(typeof err.recoverable).toBe("boolean");

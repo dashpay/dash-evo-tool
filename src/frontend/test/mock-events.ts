@@ -19,6 +19,10 @@
  */
 
 import type { MockBindingsResult, EventName } from "./mock-ipc";
+import type {
+  TaskResultPayloadDto,
+  TaskDomain,
+} from "../bindings";
 
 // ---------------------------------------------------------------------------
 // Event payload types (matching bindings.ts generated types)
@@ -26,15 +30,15 @@ import type { MockBindingsResult, EventName } from "./mock-ipc";
 
 export interface TaskResultPayload {
   taskId: string;
-  resultType: string;
-  payload: unknown;
+  result: TaskResultPayloadDto;
 }
 
 export interface TaskErrorPayload {
   taskId: string;
+  domain: TaskDomain;
   message: string;
   details: string;
-  retryable?: boolean;
+  recoverable?: boolean;
 }
 
 export interface WalletUpdatedPayload {

@@ -30,15 +30,13 @@ describe("mock-events", () => {
 
       emitTaskResult(mocks, {
         taskId: "task-1",
-        resultType: "Identity",
-        payload: { identityId: "abc123" },
+        result: { type: "identityCompleted", identityId: "abc123" },
       });
 
       expect(cb).toHaveBeenCalledWith({
         payload: {
           taskId: "task-1",
-          resultType: "Identity",
-          payload: { identityId: "abc123" },
+          result: { type: "identityCompleted", identityId: "abc123" },
         },
       });
     });
@@ -53,17 +51,19 @@ describe("mock-events", () => {
 
       emitTaskError(mocks, {
         taskId: "task-2",
+        domain: "identity",
         message: "Something went wrong",
         details: "Detailed error trace",
-        retryable: true,
+        recoverable: true,
       });
 
       expect(cb).toHaveBeenCalledWith({
         payload: {
           taskId: "task-2",
+          domain: "identity",
           message: "Something went wrong",
           details: "Detailed error trace",
-          retryable: true,
+          recoverable: true,
         },
       });
     });

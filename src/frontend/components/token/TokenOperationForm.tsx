@@ -150,8 +150,8 @@ export interface TokenOperationFormProps {
     keyId: number;
     publicNote: string | null;
   }) => Promise<{ status: "ok"; data: DispatchTaskResponse } | { status: "error"; error: string }>;
-  /** Result type to listen for in task events. */
-  resultType?: string;
+  /** Result event type to listen for in task events (e.g. "tokenCompleted"). */
+  resultEventType?: string;
   /** Custom success message. */
   successMessage?: string;
   /** Called after a successful operation. */
@@ -277,7 +277,7 @@ export function TokenOperationForm({
   isValid = true,
   validationMessage,
   onSubmit,
-  resultType = "Token",
+  resultEventType = "tokenCompleted",
   successMessage,
   onSuccess,
   doAnotherLabel,
@@ -408,9 +408,9 @@ export function TokenOperationForm({
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType: rt } = event.payload;
+          const { taskId, result } = event.payload;
           if (activeTaskIdRef.current !== taskId) return;
-          if (resultType && rt !== resultType) return;
+          if (resultEventType && result.type !== resultEventType) return;
 
           activeTaskIdRef.current = null;
           setStatus({ type: "success" });
@@ -440,7 +440,7 @@ export function TokenOperationForm({
       cleanupResult?.();
       cleanupError?.();
     };
-  }, [actionName, resultType, successMessage, loadMyTokenBalances, onSuccess]);
+  }, [actionName, resultEventType, successMessage, loadMyTokenBalances, onSuccess]);
 
   // ── Wallet unlock handler ────────────────────────────────────────────
   const handleWalletUnlockResult = useCallback(

@@ -40,6 +40,7 @@ export interface ContractDetailToken {
   tokenId: string;
   name: string;
   description: string | null;
+  tokenPosition?: number;
   configurationJson?: unknown;
 }
 

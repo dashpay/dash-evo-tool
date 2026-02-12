@@ -73,10 +73,10 @@ export function useFrozenIdentities(tokenId: string): UseFrozenIdentitiesResult 
     events.taskResultEvent
       .listen((event) => {
         if (cancelled) return;
-        if (taskIdRef.current && event.payload.taskId === taskIdRef.current) {
-          const frozenIds = event.payload.payload as string[] | null;
-          if (frozenIds && Array.isArray(frozenIds)) {
-            const frozenSet = new Set(frozenIds);
+        const { taskId, result } = event.payload;
+        if (taskIdRef.current && taskId === taskIdRef.current) {
+          if (result.type === "tokenFrozenIdentities") {
+            const frozenSet = new Set(result.identityIds);
             const filtered = identities
               .filter((i) => frozenSet.has(i.id))
               .map((i) => ({
@@ -98,12 +98,10 @@ export function useFrozenIdentities(tokenId: string): UseFrozenIdentitiesResult 
     events.taskErrorEvent
       .listen((event) => {
         if (cancelled) return;
-        const payload = event.payload as {
-          taskId: string;
-          message: string;
-        };
-        if (taskIdRef.current && payload.taskId === taskIdRef.current) {
-          setError(payload.message || "Query failed");
+        const { taskId, domain, message } = event.payload;
+        if (domain !== "token") return;
+        if (taskIdRef.current && taskId === taskIdRef.current) {
+          setError(message || "Query failed");
           setLoading(false);
         }
       })

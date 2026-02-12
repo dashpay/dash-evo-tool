@@ -194,8 +194,8 @@ function parseTokenEntry(position: string, token: JsonValue): TokenInfo | null {
 export interface ContractTreePanelProps {
   /** List of contract summaries. */
   contracts: ContractSummaryDto[];
-  /** Full contract detail for the expanded/selected contract. */
-  selectedContractDetail: DataContractDto | null;
+  /** Loaded contract details keyed by contract ID. */
+  contractDetails: Record<string, DataContractDto>;
   /** Currently selected tree node. */
   selection: TreeSelection | null;
   /** Whether the contract list is loading. */
@@ -214,6 +214,8 @@ export interface ContractTreePanelProps {
   onCopyHex?: (contractId: string) => void;
   /** Called when contract JSON should be copied. */
   onCopyJson?: (contractId: string, json: string) => void;
+  /** Called when user clicks Contract JSON to view in the main area. */
+  onSelectContractJson?: (contractId: string) => void;
   className?: string;
 }
 
@@ -235,7 +237,7 @@ function toggleNode(nodes: ExpandedNodes, key: string): ExpandedNodes {
 
 export function ContractTreePanel({
   contracts,
-  selectedContractDetail,
+  contractDetails,
   selection,
   loading = false,
   onExpandContract,
@@ -245,6 +247,7 @@ export function ContractTreePanel({
   onRemoveContract,
   onCopyHex,
   onCopyJson,
+  onSelectContractJson,
   className,
 }: ContractTreePanelProps) {
   const [searchFilter, setSearchFilter] = useState("");
@@ -267,20 +270,6 @@ export function ContractTreePanel({
       );
     });
   }, [contracts, searchFilter]);
-
-  // Parse document types and tokens from selected contract detail
-  const documentTypes = useMemo(() => {
-    if (!selectedContractDetail) return [];
-    return parseDocumentTypes(
-      selectedContractDetail.schemaJson,
-      selectedContractDetail.documentTypeNames,
-    );
-  }, [selectedContractDetail]);
-
-  const tokens = useMemo(() => {
-    if (!selectedContractDetail) return [];
-    return parseTokens(selectedContractDetail.schemaJson);
-  }, [selectedContractDetail]);
 
   const handleToggleContract = useCallback(
     (contractId: string) => {
@@ -337,13 +326,17 @@ export function ContractTreePanel({
         onSelectIndex(contractId, docTypeName, index);
       } else {
         // Collapsing index: find the parent doc type and re-select it
-        const dt = documentTypes.find((d) => d.name === docTypeName);
-        if (dt) {
-          onSelectDocumentType(contractId, docTypeName, dt.properties);
+        const detail = contractDetails[contractId];
+        if (detail) {
+          const docTypes = parseDocumentTypes(detail.schemaJson, detail.documentTypeNames);
+          const dt = docTypes.find((d) => d.name === docTypeName);
+          if (dt) {
+            onSelectDocumentType(contractId, docTypeName, dt.properties);
+          }
         }
       }
     },
-    [expandedNodes, onSelectIndex, documentTypes, onSelectDocumentType],
+    [expandedNodes, onSelectIndex, contractDetails, onSelectDocumentType],
   );
 
   const handleClearSearch = useCallback(() => {
@@ -429,10 +422,8 @@ export function ContractTreePanel({
               renderContract(
                 contract,
                 expandedNodes,
-                selectedContractDetail,
+                contractDetails,
                 selection,
-                documentTypes,
-                tokens,
                 handleToggleContract,
                 handleToggleSection,
                 handleSelectDocType,
@@ -441,6 +432,7 @@ export function ContractTreePanel({
                 setRemoveTarget,
                 onCopyHex,
                 onCopyJson,
+                onSelectContractJson,
               ),
             )
           )}
@@ -478,10 +470,8 @@ function getDisplayName(contract: ContractSummaryDto): string {
 function renderContract(
   contract: ContractSummaryDto,
   expandedNodes: ExpandedNodes,
-  selectedContractDetail: DataContractDto | null,
+  contractDetails: Record<string, DataContractDto>,
   selection: TreeSelection | null,
-  documentTypes: DocumentTypeDetail[],
-  tokens: TokenInfo[],
   onToggleContract: (id: string) => void,
   onToggleSection: (key: string) => void,
   onSelectDocType: (contractId: string, dt: DocumentTypeDetail) => void,
@@ -490,13 +480,20 @@ function renderContract(
   setRemoveTarget: (target: { contractId: string; name: string } | null) => void,
   onCopyHex?: (contractId: string) => void,
   onCopyJson?: (contractId: string, json: string) => void,
+  onSelectContractJson?: (contractId: string) => void,
 ) {
   const contractKey = `contract:${contract.id}`;
   const isExpanded = expandedNodes.has(contractKey);
   const isSelected = selection?.contractId === contract.id;
   const displayName = getDisplayName(contract);
-  const isDetail =
-    selectedContractDetail?.id === contract.id;
+  const detail = contractDetails[contract.id] ?? null;
+  const isDetail = detail !== null;
+
+  // Parse doc types and tokens for this specific contract
+  const documentTypes = isDetail
+    ? parseDocumentTypes(detail.schemaJson, detail.documentTypeNames)
+    : [];
+  const tokens = isDetail ? parseTokens(detail.schemaJson) : [];
 
   return (
     <div key={contract.id} role="treeitem" aria-expanded={isExpanded} data-testid={`contract-node-${contract.id}`}>
@@ -558,10 +555,10 @@ function renderContract(
                   Copy (Hex)
                 </DropdownMenuItem>
               )}
-              {onCopyJson && selectedContractDetail && (
+              {onCopyJson && detail && (
                 <DropdownMenuItem
                   onClick={() => {
-                    const json = JSON.stringify(selectedContractDetail.schemaJson, null, 2);
+                    const json = JSON.stringify(detail.schemaJson, null, 2);
                     onCopyJson(contract.id, json);
                   }}
                   data-testid="copy-json-action"
@@ -601,12 +598,10 @@ function renderContract(
                   onToggleSection,
                 )}
 
-              {/* Contract JSON section */}
+              {/* Contract JSON — click to view in main area */}
               {renderContractJsonSection(
                 contract.id,
-                expandedNodes,
-                selectedContractDetail,
-                onToggleSection,
+                onSelectContractJson,
               )}
 
               {/* Remove button for non-system contracts */}
@@ -809,36 +804,23 @@ function renderTokensSection(
 
 function renderContractJsonSection(
   contractId: string,
-  expandedNodes: ExpandedNodes,
-  contractDetail: DataContractDto | null,
-  onToggleSection: (key: string) => void,
+  onSelectContractJson?: (contractId: string) => void,
 ) {
-  const sectionKey = `section:${contractId}:json`;
-  const isExpanded = expandedNodes.has(sectionKey);
-
   return (
     <div key="json" data-testid="contract-json-section">
-      <TreeNodeButton
-        icon={<Code className="h-3.5 w-3.5" aria-hidden="true" />}
-        label="Contract JSON"
-        isExpanded={isExpanded}
-        level={1}
-        onClick={() => onToggleSection(sectionKey)}
-        testId="contract-json-toggle"
-      />
-
-      {isExpanded && contractDetail && (
-        <div className="mx-2 mt-1 rounded-md bg-muted/50 border">
-          <ScrollArea className="max-h-80">
-            <pre
-              className="p-3 text-xs font-mono whitespace-pre-wrap break-all"
-              data-testid="contract-json-content"
-            >
-              {JSON.stringify(contractDetail.schemaJson, null, 2)}
-            </pre>
-          </ScrollArea>
-        </div>
-      )}
+      <button
+        className={cn(
+          "flex items-center gap-1.5 w-full rounded-md px-2 py-1 text-left transition-colors",
+          "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "text-sm font-medium",
+        )}
+        style={{ paddingLeft: "8px" }}
+        onClick={() => onSelectContractJson?.(contractId)}
+        data-testid="contract-json-toggle"
+      >
+        <Code className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <span className="truncate">View Contract JSON</span>
+      </button>
     </div>
   );
 }

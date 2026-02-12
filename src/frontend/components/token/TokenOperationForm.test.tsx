@@ -780,7 +780,7 @@ describe("TokenOperationForm — task event listeners", () => {
     // Simulate task result event
     const resultListener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
     await act(async () => {
-      resultListener?.({ payload: { taskId: "task-123", resultType: "Token" } });
+      resultListener?.({ payload: { taskId: "task-123", result: { type: "tokenCompleted" } } });
     });
 
     expect(screen.getByTestId("operation-success")).toBeInTheDocument();
@@ -795,7 +795,7 @@ describe("TokenOperationForm — task event listeners", () => {
 
     const errorListener = vi.mocked(events.taskErrorEvent.listen).mock.calls[0]?.[0];
     await act(async () => {
-      errorListener?.({ payload: { taskId: "task-456", message: "Backend error occurred" } });
+      errorListener?.({ payload: { taskId: "task-456", domain: "token", message: "Backend error occurred", details: "", recoverable: false } });
     });
 
     expect(screen.getByTestId("operation-error")).toBeInTheDocument();
@@ -811,7 +811,7 @@ describe("TokenOperationForm — task event listeners", () => {
 
     const resultListener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
     await act(async () => {
-      resultListener?.({ payload: { taskId: "different-task", resultType: "Token" } });
+      resultListener?.({ payload: { taskId: "different-task", result: { type: "tokenCompleted" } } });
     });
 
     // Should still be broadcasting
@@ -831,7 +831,7 @@ describe("TokenOperationForm — success screen", () => {
     await user.click(screen.getByTestId("operation-submit"));
     const resultListener = vi.mocked(events.taskResultEvent.listen).mock.calls[0]?.[0];
     await act(async () => {
-      resultListener?.({ payload: { taskId: "task-s1", resultType: "Token" } });
+      resultListener?.({ payload: { taskId: "task-s1", result: { type: "tokenCompleted" } } });
     });
   }
 

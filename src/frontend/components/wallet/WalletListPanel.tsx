@@ -51,8 +51,8 @@ interface WalletListPanelProps {
   onRemoveHdWallet: (seedHash: string) => Promise<void>;
   /** Called to remove a single-key wallet */
   onRemoveSingleKeyWallet: (keyHash: string) => Promise<void>;
-  /** Called when an HD wallet is unlocked */
-  onUnlockWallet?: (seedHash: string) => Promise<void>;
+  /** Called when an HD wallet is unlocked. Returns error string or null on success. */
+  onUnlockWallet?: (seedHash: string, password: string) => Promise<string | null>;
   /** Called when an HD wallet is locked */
   onLockWallet?: (seedHash: string) => Promise<void>;
   /** Called when the "Create Wallet" empty-state action is clicked */
@@ -394,6 +394,8 @@ export function WalletListPanel({
     alias: string | null;
     passwordHint: string | null;
   } | null>(null);
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [unlockLoading, setUnlockLoading] = useState(false);
 
   const hasWallets = hdWallets.length > 0 || singleKeyWallets.length > 0;
 
@@ -410,8 +412,23 @@ export function WalletListPanel({
   const handleUnlockResult = useCallback(
     async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {
       if (result.status === "unlocked" && unlockTarget && onUnlockWallet) {
-        await onUnlockWallet(unlockTarget.seedHash);
+        setUnlockError(null);
+        setUnlockLoading(true);
+        try {
+          const error = await onUnlockWallet(unlockTarget.seedHash, result.password);
+          if (error) {
+            setUnlockError(error);
+            setUnlockLoading(false);
+            return; // Keep dialog open on error
+          }
+        } catch (e) {
+          setUnlockError(e instanceof Error ? e.message : String(e));
+          setUnlockLoading(false);
+          return; // Keep dialog open on error
+        }
+        setUnlockLoading(false);
       }
+      setUnlockError(null);
       setUnlockTarget(null);
     },
     [unlockTarget, onUnlockWallet],
@@ -540,6 +557,32 @@ export function WalletListPanel({
         )}
       </div>
 
+      {/* Action buttons */}
+      {(onCreateWallet || onImportWallet) && (
+        <div className="px-2 pb-2 pt-1 space-y-1 border-t border-border/50">
+          {onCreateWallet && (
+            <Button
+              variant="default"
+              className="w-full"
+              size="sm"
+              onClick={onCreateWallet}
+            >
+              Create Wallet
+            </Button>
+          )}
+          {onImportWallet && (
+            <Button
+              variant="outline"
+              className="w-full"
+              size="sm"
+              onClick={onImportWallet}
+            >
+              Import Wallet
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* Remove Confirmation Dialog */}
       <ConfirmationDialog
         open={removeTarget !== null}
@@ -567,10 +610,15 @@ export function WalletListPanel({
       <WalletUnlockDialog
         open={unlockTarget !== null}
         onOpenChange={(open) => {
-          if (!open) setUnlockTarget(null);
+          if (!open) {
+            setUnlockTarget(null);
+            setUnlockError(null);
+          }
         }}
         walletAlias={unlockTarget?.alias ?? "Wallet"}
         passwordHint={unlockTarget?.passwordHint}
+        error={unlockError}
+        loading={unlockLoading}
         onResult={handleUnlockResult}
       />
     </div>

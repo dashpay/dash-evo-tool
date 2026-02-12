@@ -112,8 +112,10 @@ describe("useFrozenIdentities", () => {
       getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "frozen-task-1",
-          resultType: "Token",
-          payload: ["aabbcc001122", "112233445566"],
+          result: {
+            type: "tokenFrozenIdentities",
+            identityIds: ["aabbcc001122", "112233445566"],
+          },
         },
       });
     });
@@ -136,8 +138,10 @@ describe("useFrozenIdentities", () => {
       getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "frozen-task-1",
-          resultType: "Token",
-          payload: ["ddeeff334455667788990011"],
+          result: {
+            type: "tokenFrozenIdentities",
+            identityIds: ["ddeeff334455667788990011"],
+          },
         },
       });
     });
@@ -158,8 +162,10 @@ describe("useFrozenIdentities", () => {
       getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "frozen-task-1",
-          resultType: "Token",
-          payload: [],
+          result: {
+            type: "tokenFrozenIdentities",
+            identityIds: [],
+          },
         },
       });
     });
@@ -168,7 +174,7 @@ describe("useFrozenIdentities", () => {
     expect(result.current.frozenIdentities).toEqual([]);
   });
 
-  it("handles null payload gracefully", async () => {
+  it("handles non-frozen result type gracefully", async () => {
     const { result } = renderHook(() => useFrozenIdentities("token-abc"));
 
     await waitFor(() => {
@@ -179,8 +185,7 @@ describe("useFrozenIdentities", () => {
       getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "frozen-task-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         },
       });
     });
@@ -200,13 +205,39 @@ describe("useFrozenIdentities", () => {
       getLastListener(events.taskErrorEvent)?.({
         payload: {
           taskId: "frozen-task-1",
+          domain: "token",
           message: "Network error",
+          details: "",
+          recoverable: false,
         },
       });
     });
 
     expect(result.current.loading).toBe(false);
     expect(result.current.error).toBe("Network error");
+  });
+
+  it("ignores error events from other domains", async () => {
+    const { result } = renderHook(() => useFrozenIdentities("token-abc"));
+
+    await waitFor(() => {
+      expect(getLastListener(events.taskErrorEvent)).not.toBeNull();
+    });
+
+    await act(async () => {
+      getLastListener(events.taskErrorEvent)?.({
+        payload: {
+          taskId: "frozen-task-1",
+          domain: "identity",
+          message: "Some identity error",
+          details: "",
+          recoverable: false,
+        },
+      });
+    });
+
+    // Should still be loading since we got a different domain
+    expect(result.current.loading).toBe(true);
   });
 
   it("sets error when IPC dispatch fails", async () => {
@@ -246,8 +277,10 @@ describe("useFrozenIdentities", () => {
       getLastListener(events.taskResultEvent)?.({
         payload: {
           taskId: "some-other-task",
-          resultType: "Token",
-          payload: ["aabbcc001122"],
+          result: {
+            type: "tokenFrozenIdentities",
+            identityIds: ["aabbcc001122"],
+          },
         },
       });
     });

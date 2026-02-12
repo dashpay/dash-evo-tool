@@ -96,7 +96,7 @@ function makeDetailWithTokens(): DataContractDto {
 
 const defaultProps: ContractTreePanelProps = {
   contracts: [],
-  selectedContractDetail: null,
+  contractDetails: {},
   selection: null,
   loading: false,
   onExpandContract: vi.fn(),
@@ -424,7 +424,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: "id1", alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: null,
+      contractDetails: {},
     });
 
     await user.click(screen.getByTestId("contract-toggle-id1"));
@@ -438,7 +438,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -451,7 +451,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -467,7 +467,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
       onSelectDocumentType,
     });
 
@@ -489,7 +489,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -505,7 +505,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -521,7 +521,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
       onSelectIndex,
     });
 
@@ -549,7 +549,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -568,7 +568,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -594,7 +594,7 @@ describe("ContractTreePanel", () => {
     ];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -613,7 +613,7 @@ describe("ContractTreePanel", () => {
     ];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -633,7 +633,7 @@ describe("ContractTreePanel", () => {
     ];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -651,27 +651,27 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
     expect(screen.getByTestId("contract-json-section")).toBeInTheDocument();
   });
 
-  it("shows JSON content when section is expanded", async () => {
+  it("calls onSelectContractJson when Contract JSON is clicked", async () => {
     const detail = makeDetail();
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
+    const onSelectContractJson = vi.fn();
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
+      onSelectContractJson,
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
     await user.click(screen.getByTestId("contract-json-toggle"));
 
-    const jsonContent = screen.getByTestId("contract-json-content");
-    expect(jsonContent).toBeInTheDocument();
-    expect(jsonContent.textContent).toContain("documentSchemas");
+    expect(onSelectContractJson).toHaveBeenCalledWith(detail.id);
   });
 
   // ─── Remove contract ─────────────────────────────────────────────
@@ -683,7 +683,7 @@ describe("ContractTreePanel", () => {
     ];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -695,7 +695,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -707,7 +707,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dashpay" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -721,7 +721,7 @@ describe("ContractTreePanel", () => {
     ];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
     });
 
     await user.click(screen.getByTestId(`contract-toggle-${detail.id}`));
@@ -743,7 +743,7 @@ describe("ContractTreePanel", () => {
     ];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
       onRemoveContract,
     });
 
@@ -765,7 +765,7 @@ describe("ContractTreePanel", () => {
     ];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
       onRemoveContract,
     });
 
@@ -787,7 +787,7 @@ describe("ContractTreePanel", () => {
     const contracts = [makeSummary({ id: detail.id, alias: "dpns" })];
     const { user } = renderPanel({
       contracts,
-      selectedContractDetail: detail,
+      contractDetails: { [detail.id]: detail },
       onCopyHex,
       onCopyJson,
     });

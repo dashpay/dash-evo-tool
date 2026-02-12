@@ -474,6 +474,57 @@ describe("WalletListPanel — lock/unlock", () => {
     await user.click(screen.getByText("Lock"));
     expect(onLockWallet).toHaveBeenCalledWith("lock1");
   });
+
+  it("passes password to onUnlockWallet when unlocking", async () => {
+    const onUnlockWallet = vi.fn().mockResolvedValue(null);
+    const { user } = setup({
+      hdWallets: [
+        makeHdWallet({
+          usesPassword: true,
+          seedHash: "pw1",
+          alias: "PW Wallet",
+        }),
+      ],
+      onUnlockWallet,
+    });
+    // Open menu and click Unlock
+    await user.click(screen.getByLabelText("Wallet actions"));
+    await user.click(screen.getByText("Unlock"));
+    // Type password in the dialog and submit
+    const input = await screen.findByPlaceholderText("Enter password");
+    await user.type(input, "mysecret");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    await waitFor(() => {
+      expect(onUnlockWallet).toHaveBeenCalledWith("pw1", "mysecret");
+    });
+  });
+
+  it("keeps dialog open and shows error when unlock fails", async () => {
+    const onUnlockWallet = vi
+      .fn()
+      .mockResolvedValue("Incorrect password");
+    const { user } = setup({
+      hdWallets: [
+        makeHdWallet({
+          usesPassword: true,
+          seedHash: "fail1",
+          alias: "Fail Wallet",
+        }),
+      ],
+      onUnlockWallet,
+    });
+    await user.click(screen.getByLabelText("Wallet actions"));
+    await user.click(screen.getByText("Unlock"));
+    const input = await screen.findByPlaceholderText("Enter password");
+    await user.type(input, "wrongpw");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    // Dialog should stay open with error
+    await waitFor(() => {
+      expect(screen.getByText("Incorrect password")).toBeInTheDocument();
+    });
+    // Dialog is still open (password field still visible)
+    expect(screen.getByPlaceholderText("Enter password")).toBeInTheDocument();
+  });
 });
 
 // ─── Mixed wallets ─────────────────────────────────────────────────

@@ -548,10 +548,9 @@ pub fn document_fetch_page(
 
     let start = input
         .start_after
-        .map(|hex| {
-            hex::decode(&hex)
-                .map(Start::StartAfter)
-                .map_err(|e| format!("Invalid start_after hex: {e}"))
+        .map(|id_str| {
+            parse_identifier(&id_str)
+                .map(|id| Start::StartAfter(id.to_buffer().to_vec()))
         })
         .transpose()?;
 

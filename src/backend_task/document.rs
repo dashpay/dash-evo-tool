@@ -134,7 +134,7 @@ impl AppContext {
                 }
 
                 // Determine if there's a next page
-                let has_next_page = batch_len == 100;
+                let has_next_page = batch_len > 0;
 
                 // If there's a next page, set the 'start' parameter for the next cursor
                 let next_cursor = if has_next_page {

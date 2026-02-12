@@ -1,15 +1,20 @@
 #!/bin/bash
+set -euo pipefail
 # Runs cargo in a sanitized environment without CI secrets.
-# This prevents build.rs scripts and proc macros from accessing
-# credentials via environment variables.
-exec env \
-    -u GITHUB_TOKEN \
-    -u CLAUDE_CODE_OAUTH_TOKEN \
-    -u CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK \
-    -u INPUT_CLAUDE_CODE_OAUTH_TOKEN \
-    -u INPUT_ANTHROPIC_API_KEY \
-    -u ANTHROPIC_API_KEY \
-    -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-    -u ACTIONS_ID_TOKEN_REQUEST_URL \
-    -u ACTIONS_RUNTIME_TOKEN \
+# Uses env -i (allowlist) instead of env -u (denylist) so that
+# any new secrets added in the future are stripped automatically.
+exec env -i \
+    HOME="$HOME" \
+    PATH="$PATH" \
+    USER="${USER:-}" \
+    SHELL="${SHELL:-/bin/bash}" \
+    TMPDIR="${TMPDIR:-/tmp}" \
+    LANG="${LANG:-C.UTF-8}" \
+    TERM="${TERM:-dumb}" \
+    CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
+    RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" \
+    PROTOC="${PROTOC:-}" \
+    CC="${CC:-}" \
+    CXX="${CXX:-}" \
+    PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-}" \
     cargo "$@"

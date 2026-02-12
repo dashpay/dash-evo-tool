@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/feedback";
 import { formatTokenBalance } from "@/components/token/MyTokensTable";
 import { toastError } from "@/lib/toastError";
+import { displayId } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -26,11 +27,6 @@ interface ClaimRecord {
 type FetchStatus = "idle" | "fetching" | "done" | "error";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function truncateId(id: string, chars = 8): string {
-  if (id.length <= chars * 2 + 3) return id;
-  return `${id.slice(0, chars)}...${id.slice(-chars)}`;
-}
 
 /**
  * Parse claim documents from the task result payload.
@@ -252,7 +248,7 @@ export function TokenViewClaimsScreen() {
           </h3>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <span className="font-mono">
-              {truncateId(tokenContext.tokenId)}
+              {displayId(tokenContext.tokenId)}
             </span>
           </div>
         </div>

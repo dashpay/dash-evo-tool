@@ -28,6 +28,7 @@ import { EmptyState } from "@/components/feedback/EmptyState";
 import { LoadingSpinner } from "@/components/feedback";
 import { CopyButton } from "@/components/shared/CopyButton";
 import { JsonViewer } from "@/components/shared/JsonViewer";
+import { displayId, hexToBase58 } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -79,13 +80,6 @@ export interface TokenSearchPanelProps {
   onBackToResults: () => void;
   /** Token name currently being added (for loading state). */
   addingTokenName: string | null;
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────
-
-function truncateId(id: string, chars = 8): string {
-  if (id.length <= chars * 2 + 3) return id;
-  return `${id.slice(0, chars)}...${id.slice(-chars)}`;
 }
 
 // ─── Search Bar ─────────────────────────────────────────────────────
@@ -188,11 +182,11 @@ function SearchResultsTable({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="font-mono text-sm cursor-default">
-                    {truncateId(result.contractId)}
+                    {displayId(result.contractId)}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent side="bottom">
-                  <p className="font-mono text-xs">{result.contractId}</p>
+                  <p className="font-mono text-xs">{hexToBase58(result.contractId)}</p>
                 </TooltipContent>
               </Tooltip>
             </TableCell>
@@ -312,8 +306,8 @@ function ContractDetailView({
         <h3 className="text-lg font-semibold">Contract Details</h3>
         <div className="flex items-center gap-2">
           <span className="text-sm text-muted-foreground">Contract ID:</span>
-          <span className="font-mono text-sm">{truncateId(detail.contractId, 12)}</span>
-          <CopyButton value={detail.contractId} />
+          <span className="font-mono text-sm">{displayId(detail.contractId)}</span>
+          <CopyButton value={hexToBase58(detail.contractId)} />
         </div>
         <p className="text-sm text-muted-foreground">
           {detail.description || "No description"}
@@ -365,9 +359,9 @@ function ContractDetailView({
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">ID:</span>
                 <span className="font-mono text-sm">
-                  {truncateId(token.tokenId, 12)}
+                  {displayId(token.tokenId)}
                 </span>
-                <CopyButton value={token.tokenId} />
+                <CopyButton value={hexToBase58(token.tokenId)} />
               </div>
               <p className="text-sm text-muted-foreground">
                 {token.description || "No description"}
@@ -518,7 +512,3 @@ export function TokenSearchPanel({
     </div>
   );
 }
-
-// ─── Exports ────────────────────────────────────────────────────────
-
-export { truncateId };

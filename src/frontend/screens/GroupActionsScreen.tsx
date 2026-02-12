@@ -37,6 +37,7 @@ import type {
 import { useIdentityStore } from "@/stores/identityStore";
 import { useContractStore } from "@/stores/contractStore";
 import { toastError } from "@/lib/toastError";
+import { displayId } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -77,12 +78,6 @@ function getContractsWithTokens(
   );
 }
 
-/** Truncate an action ID for display. */
-function truncateId(id: string, len = 16): string {
-  if (id.length <= len) return id;
-  return id.slice(0, len) + "…";
-}
-
 /** Format action type for display (e.g. "TokenMint" → "Mint"). */
 function formatActionType(actionType: string): string {
   return actionType.replace(/^Token/, "");
@@ -95,10 +90,10 @@ function formatActionInfo(details: Record<string, unknown>): string {
     parts.push(`Amount: ${String(details.amount)}`);
   }
   if (details.recipient !== undefined) {
-    parts.push(`To: ${truncateId(String(details.recipient))}`);
+    parts.push(`To: ${displayId(String(details.recipient))}`);
   }
   if (details.identity !== undefined) {
-    parts.push(`Identity: ${truncateId(String(details.identity))}`);
+    parts.push(`Identity: ${displayId(String(details.identity))}`);
   }
   if (details.note !== undefined && details.note !== null) {
     parts.push(`Note: ${String(details.note)}`);
@@ -346,8 +341,8 @@ export function GroupActionsScreen() {
                   {filteredContracts.map((c) => (
                     <SelectItem key={c.id} value={c.id}>
                       {c.alias
-                        ? `${c.alias} (${truncateId(c.id)})`
-                        : truncateId(c.id, 24)}
+                        ? `${c.alias} (${displayId(c.id)})`
+                        : displayId(c.id)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -481,7 +476,7 @@ export function GroupActionsScreen() {
                               className="font-mono text-xs"
                               title={action.actionId}
                             >
-                              {truncateId(action.actionId)}
+                              {displayId(action.actionId)}
                             </TableCell>
                             <TableCell>
                               <span className="inline-flex items-center rounded-md bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">

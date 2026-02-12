@@ -13,7 +13,7 @@ import {
   Globe,
   Loader2,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, hexToBase58 } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -229,14 +229,14 @@ export function IdentityDetailPanel({
               <Tooltip>
                 <TooltipTrigger asChild>
                   <code className="text-xs text-muted-foreground font-mono break-all select-all cursor-default">
-                    {identity.id}
+                    {hexToBase58(identity.id)}
                   </code>
                 </TooltipTrigger>
                 <TooltipContent>
-                  {identity.identityType === "user" ? "UserId (Base58)" : "ProTxHash (Hex)"}
+                  {identity.identityType === "user" ? "User ID" : "ProTxHash"}
                 </TooltipContent>
               </Tooltip>
-              <CopyButton value={identity.id} size="icon-xs" />
+              <CopyButton value={hexToBase58(identity.id)} size="icon-xs" />
             </div>
             <div className="flex items-center gap-1.5 mt-2 flex-wrap">
               <Badge variant="outline">{getTypeLabel(identity.identityType)}</Badge>
@@ -451,9 +451,9 @@ export function IdentityDetailPanel({
                   <dt className="text-xs text-muted-foreground shrink-0">Voter:</dt>
                   <dd className="flex items-center gap-1 min-w-0">
                     <code className="text-xs font-mono truncate">
-                      {identity.voterIdentityId}
+                      {hexToBase58(identity.voterIdentityId)}
                     </code>
-                    <CopyButton value={identity.voterIdentityId} size="icon-xs" />
+                    <CopyButton value={hexToBase58(identity.voterIdentityId)} size="icon-xs" />
                   </dd>
                 </div>
               )}
@@ -462,9 +462,9 @@ export function IdentityDetailPanel({
                   <dt className="text-xs text-muted-foreground shrink-0">Operator:</dt>
                   <dd className="flex items-center gap-1 min-w-0">
                     <code className="text-xs font-mono truncate">
-                      {identity.operatorIdentityId}
+                      {hexToBase58(identity.operatorIdentityId)}
                     </code>
-                    <CopyButton value={identity.operatorIdentityId} size="icon-xs" />
+                    <CopyButton value={hexToBase58(identity.operatorIdentityId)} size="icon-xs" />
                   </dd>
                 </div>
               )}

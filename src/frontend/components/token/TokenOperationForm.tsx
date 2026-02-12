@@ -32,7 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { cn, displayId, hexToBase58 } from "@/lib/utils";
 import { events } from "@/bindings";
 import type {
   QualifiedIdentityDto,
@@ -247,11 +247,6 @@ export function getSuccessTitle(
   if (groupAction.hasGroup && !groupAction.isUnilateral)
     return `Group ${actionName} Initiated`;
   return `${actionName} Successful`;
-}
-
-function truncateId(id: string, chars = 8): string {
-  if (id.length <= chars * 2 + 3) return id;
-  return `${id.slice(0, chars)}...${id.slice(-chars)}`;
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -633,11 +628,11 @@ export function TokenOperationForm({
             {tokenContext.name || "Unnamed Token"}
           </h3>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <span className="font-mono">{truncateId(tokenContext.tokenId)}</span>
+            <span className="font-mono">{displayId(tokenContext.tokenId)}</span>
             <button
               className="text-muted-foreground hover:text-foreground transition-colors"
               onClick={() => {
-                navigator.clipboard.writeText(tokenContext.tokenId);
+                navigator.clipboard.writeText(hexToBase58(tokenContext.tokenId));
                 toast.success("Token ID copied");
               }}
               aria-label="Copy token ID"
@@ -672,7 +667,7 @@ export function TokenOperationForm({
                 <p className="font-medium">Group Action Signing</p>
                 <p className="text-sm text-muted-foreground">
                   You are signing an existing group {actionName.toLowerCase()} action
-                  (ID: {truncateId(groupAction.groupActionId)}).
+                  (ID: {displayId(groupAction.groupActionId)}).
                 </p>
               </>
             ) : groupAction.isUnilateral ? (
@@ -717,7 +712,7 @@ export function TokenOperationForm({
               <SelectContent>
                 {identities.map((id) => (
                   <SelectItem key={id.id} value={id.id}>
-                    {id.alias || id.id.slice(0, 12) + "..."}
+                    {id.alias || displayId(id.id)}
                   </SelectItem>
                 ))}
               </SelectContent>

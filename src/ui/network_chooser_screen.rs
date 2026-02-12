@@ -5,7 +5,6 @@ use crate::backend_task::system_task::SystemTask;
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
-use crate::lock_helper::RwLockExt;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::component_trait::Component;
@@ -413,7 +412,7 @@ impl NetworkChooserScreen {
                         if let Some(local_app_context) = &self.local_app_context {
                             {
                                 // Overwrite the config field with the new password
-                                let mut cfg_lock = local_app_context.config.write_or_recover();
+                                let mut cfg_lock = local_app_context.config.write().unwrap();
                                 *cfg_lock = updated_local_config;
                             }
 

@@ -1,8 +1,8 @@
 {
   "permissions": {
     "deny": [
-      "Edit(.github/scripts/**)",
-      "Write(.github/scripts/**)",
+      "Edit(scripts/**)",
+      "Write(scripts/**)",
       "Edit(.github/workflows/**)",
       "Write(.github/workflows/**)"
     ]

@@ -37,5 +37,5 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
           claude_args: |
             --model opus
-            --allowedTools 'Bash(git fetch *),Bash(git merge *),Bash(git checkout *),Bash(git rebase *),Bash(git push *),Bash(.github/scripts/safe-cargo.sh build *),Bash(.github/scripts/safe-cargo.sh test *),Bash(.github/scripts/safe-cargo.sh clippy *),Bash(.github/scripts/safe-cargo.sh fmt *)'
+            --allowedTools 'Bash(git fetch *),Bash(git merge *),Bash(git checkout *),Bash(git rebase *),Bash(git push *),Bash(scripts/safe-cargo.sh build *),Bash(scripts/safe-cargo.sh test *),Bash(scripts/safe-cargo.sh clippy *),Bash(scripts/safe-cargo.sh +nightly fmt *),Bash(scripts/safe-cargo.sh fmt *)'
             --disallowedTools 'Bash(cargo *)'

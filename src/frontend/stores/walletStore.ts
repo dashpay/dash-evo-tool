@@ -5,6 +5,7 @@ import type {
   SingleKeyWalletDto,
   WalletRefDto,
   PlatformSyncModeDto,
+  TaskResultEvent,
 } from "../bindings";
 import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
@@ -182,7 +183,7 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
         set({ error: result.error, refreshing: false });
         return;
       }
-      // refreshing stays true — cleared when walletUpdatedEvent arrives
+      // refreshing stays true — cleared when taskResultEvent(walletCompleted) arrives
       timeouts.start(`refreshHd:${seedHash}`, () => {
         set({ refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
       });
@@ -204,7 +205,7 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
         set({ error: result.error, refreshing: false });
         return;
       }
-      // refreshing stays true — cleared when walletUpdatedEvent arrives
+      // refreshing stays true — cleared when taskResultEvent(walletCompleted) arrives
       timeouts.start(`refreshSk:${keyHash}`, () => {
         set({ refreshing: false, error: TIMEOUT_ERROR_MESSAGE });
       });
@@ -400,7 +401,8 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
   },
 
   subscribeToUpdates: async () => {
-    const unlisten = await events.walletUpdatedEvent.listen(async (event) => {
+    // ZMQ real-time balance updates (independent of explicit refresh)
+    const unlistenWallet = await events.walletUpdatedEvent.listen(async (event) => {
       const { walletSeedHash, network } = event.payload;
 
       // Ignore events from other networks
@@ -430,7 +432,37 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
         state.loadWallets();
       }
     });
-    return unlisten;
+
+    // Backend task completion — clears refresh state
+    const unlistenResult = await events.taskResultEvent.listen(
+      (event: { payload: TaskResultEvent }) => {
+        const { result } = event.payload;
+        if (result.type !== "walletCompleted") return;
+
+        timeouts.clearAll();
+        set({ refreshing: false });
+
+        // Reload wallet data
+        get().loadWallets();
+      },
+    );
+
+    // Backend task error — clears refresh state if we were refreshing
+    const unlistenError = await events.taskErrorEvent.listen(
+      (event: { payload: { taskId: string; domain: string; message: string } }) => {
+        if (event.payload.domain !== "core" && event.payload.domain !== "wallet") return;
+        if (!get().refreshing) return;
+
+        timeouts.clearAll();
+        set({ refreshing: false, error: event.payload.message });
+      },
+    );
+
+    return () => {
+      unlistenWallet();
+      unlistenResult();
+      unlistenError();
+    };
   },
 
   resetState: () => {

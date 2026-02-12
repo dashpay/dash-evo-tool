@@ -27,7 +27,7 @@ vi.mock("../bindings", () => {
 
 import { commands, events } from "../bindings";
 import { useWalletStore } from "./walletStore";
-import type { WalletRefDto } from "../bindings";
+import type { WalletRefDto, TaskResultEvent } from "../bindings";
 
 // ─── Test-local defaults ────────────────────────────────────────────
 // The centralized fixtures use different default hashes. These helpers
@@ -302,7 +302,7 @@ describe("walletStore", () => {
 
       resolveRefresh!({ status: "ok", data: { taskId: "t1" } });
       await promise;
-      // refreshing stays true — cleared by walletUpdatedEvent, not by the command returning
+      // refreshing stays true — cleared by taskResultEvent(walletCompleted), not by the command returning
       expect(useWalletStore.getState().refreshing).toBe(true);
     });
 
@@ -750,11 +750,13 @@ describe("walletStore", () => {
   });
 
   describe("subscribeToUpdates", () => {
-    it("subscribes to wallet update events", async () => {
-      const unlistenFn = vi.fn();
-      (events.walletUpdatedEvent.listen as Mock).mockResolvedValue(
-        unlistenFn,
-      );
+    it("subscribes to wallet, taskResult, and taskError events", async () => {
+      const unlistenWallet = vi.fn();
+      const unlistenResult = vi.fn();
+      const unlistenError = vi.fn();
+      (events.walletUpdatedEvent.listen as Mock).mockResolvedValue(unlistenWallet);
+      (events.taskResultEvent.listen as Mock).mockResolvedValue(unlistenResult);
+      (events.taskErrorEvent.listen as Mock).mockResolvedValue(unlistenError);
 
       const unlisten = await useWalletStore
         .getState()
@@ -763,10 +765,22 @@ describe("walletStore", () => {
       expect(events.walletUpdatedEvent.listen).toHaveBeenCalledWith(
         expect.any(Function),
       );
+      expect(events.taskResultEvent.listen).toHaveBeenCalledWith(
+        expect.any(Function),
+      );
+      expect(events.taskErrorEvent.listen).toHaveBeenCalledWith(
+        expect.any(Function),
+      );
       expect(typeof unlisten).toBe("function");
+
+      // Combined cleanup calls all three unsubscribes
+      unlisten();
+      expect(unlistenWallet).toHaveBeenCalled();
+      expect(unlistenResult).toHaveBeenCalled();
+      expect(unlistenError).toHaveBeenCalled();
     });
 
-    it("reloads HD wallet when update event received for known HD wallet", async () => {
+    it("reloads HD wallet when walletUpdatedEvent received for known HD wallet", async () => {
       const wallet = hw();
       useWalletStore.setState({ hdWallets: [wallet] });
 
@@ -777,6 +791,8 @@ describe("walletStore", () => {
           return Promise.resolve(() => {});
         },
       );
+      (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
       (commands.walletGetHd as Mock).mockResolvedValue({
         status: "ok",
         data: hw({ totalBalance: 777 }),
@@ -791,7 +807,7 @@ describe("walletStore", () => {
       });
     });
 
-    it("calls loadWallets when update event for unknown wallet", async () => {
+    it("calls loadWallets when walletUpdatedEvent for unknown wallet", async () => {
       useWalletStore.setState({ hdWallets: [] });
 
       let eventCallback: (event: { payload: { walletSeedHash: string; network: string } }) => void;
@@ -801,6 +817,8 @@ describe("walletStore", () => {
           return Promise.resolve(() => {});
         },
       );
+      (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
       (commands.walletListAll as Mock).mockResolvedValue({
         status: "ok",
         data: wl(),
@@ -812,6 +830,112 @@ describe("walletStore", () => {
       await vi.waitFor(() => {
         expect(commands.walletListAll).toHaveBeenCalled();
       });
+    });
+
+    it("clears refreshing on taskResultEvent(walletCompleted)", async () => {
+      useWalletStore.setState({ refreshing: true, hdWallets: [hw()] });
+
+      let resultCallback: (event: { payload: TaskResultEvent }) => void;
+      (events.walletUpdatedEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskResultEvent.listen as Mock).mockImplementation(
+        (cb: typeof resultCallback) => {
+          resultCallback = cb;
+          return Promise.resolve(() => {});
+        },
+      );
+      (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
+      (commands.walletListAll as Mock).mockResolvedValue({
+        status: "ok",
+        data: wl(),
+      });
+
+      await useWalletStore.getState().subscribeToUpdates();
+      resultCallback!({
+        payload: {
+          taskId: "t1",
+          result: { type: "walletCompleted" },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(useWalletStore.getState().refreshing).toBe(false);
+      });
+      expect(commands.walletListAll).toHaveBeenCalled();
+    });
+
+    it("ignores taskResultEvent with non-wallet result types", async () => {
+      useWalletStore.setState({ refreshing: true });
+
+      let resultCallback: (event: { payload: TaskResultEvent }) => void;
+      (events.walletUpdatedEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskResultEvent.listen as Mock).mockImplementation(
+        (cb: typeof resultCallback) => {
+          resultCallback = cb;
+          return Promise.resolve(() => {});
+        },
+      );
+      (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
+
+      await useWalletStore.getState().subscribeToUpdates();
+      resultCallback!({
+        payload: {
+          taskId: "t1",
+          result: { type: "identityCompleted", identityId: "id1" },
+        },
+      });
+
+      // refreshing should remain true — this event wasn't for us
+      expect(useWalletStore.getState().refreshing).toBe(true);
+      expect(commands.walletListAll).not.toHaveBeenCalled();
+    });
+
+    it("clears refreshing on taskErrorEvent with domain core", async () => {
+      useWalletStore.setState({ refreshing: true });
+
+      let errorCallback: (event: {
+        payload: { taskId: string; domain: string; message: string };
+      }) => void;
+      (events.walletUpdatedEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskErrorEvent.listen as Mock).mockImplementation(
+        (cb: typeof errorCallback) => {
+          errorCallback = cb;
+          return Promise.resolve(() => {});
+        },
+      );
+
+      await useWalletStore.getState().subscribeToUpdates();
+      errorCallback!({
+        payload: { taskId: "t1", domain: "core", message: "Connection lost" },
+      });
+
+      const state = useWalletStore.getState();
+      expect(state.refreshing).toBe(false);
+      expect(state.error).toBe("Connection lost");
+    });
+
+    it("ignores taskErrorEvent when not refreshing", async () => {
+      useWalletStore.setState({ refreshing: false, error: null });
+
+      let errorCallback: (event: {
+        payload: { taskId: string; domain: string; message: string };
+      }) => void;
+      (events.walletUpdatedEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskErrorEvent.listen as Mock).mockImplementation(
+        (cb: typeof errorCallback) => {
+          errorCallback = cb;
+          return Promise.resolve(() => {});
+        },
+      );
+
+      await useWalletStore.getState().subscribeToUpdates();
+      errorCallback!({
+        payload: { taskId: "t1", domain: "core", message: "Unrelated error" },
+      });
+
+      // Should not set error since we weren't refreshing
+      expect(useWalletStore.getState().error).toBeNull();
     });
   });
 

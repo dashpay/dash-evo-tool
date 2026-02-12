@@ -427,7 +427,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     walletGetPrivateKey: resolvesOk("walletGetPrivateKey", ""),
 
     // -- Contract --
-    contractFetch: dispatchOk("contractFetch"),
+    contractFetch: resolvesOk("contractFetch", { taskId: "mock-task-id", normalizedIds: [] }),
     contractFetchWithDescriptions: dispatchOk("contractFetchWithDescriptions"),
     contractFetchActiveGroupActions: dispatchOk("contractFetchActiveGroupActions"),
     contractRegister: dispatchOk("contractRegister"),

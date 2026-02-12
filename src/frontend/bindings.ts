@@ -861,7 +861,7 @@ async walletGetPrivateKey(input: GetPrivateKeyInput) : Promise<Result<string, st
  *
  * Dispatches `ContractTask::FetchContracts`. Result arrives via `TaskResultEvent`.
  */
-async contractFetch(input: FetchContractsInput) : Promise<Result<DispatchTaskResponse, string>> {
+async contractFetch(input: FetchContractsInput) : Promise<Result<FetchContractsResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("contract_fetch", { input }) };
 } catch (e) {
@@ -2718,6 +2718,19 @@ export type DispatchTaskResponse = {
  * this ID to receive the result.
  */
 taskId: string }
+/**
+ * Response from `contract_fetch` — includes the task ID and hex-normalised
+ * versions of every requested identifier so the frontend can match results
+ * regardless of whether the user typed hex or base58.
+ */
+export type FetchContractsResponse = {
+/**
+ * Unique task ID. Listen for `TaskResultEvent` or `TaskErrorEvent` with
+ * this ID to receive the result.
+ */
+taskId: string;
+/** The contract IDs normalised to lowercase hex (same order as input). */
+normalizedIds: string[] }
 /**
  * A DPNS name entry with its owning identity.
  */

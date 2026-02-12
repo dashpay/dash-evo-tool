@@ -111,6 +111,19 @@ pub struct SetContractAliasInput {
     pub alias: Option<String>,
 }
 
+/// Response from `contract_fetch` — includes the task ID and hex-normalised
+/// versions of every requested identifier so the frontend can match results
+/// regardless of whether the user typed hex or base58.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchContractsResponse {
+    /// Unique task ID. Listen for `TaskResultEvent` or `TaskErrorEvent` with
+    /// this ID to receive the result.
+    pub task_id: String,
+    /// The contract IDs normalised to lowercase hex (same order as input).
+    pub normalized_ids: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
@@ -181,11 +194,15 @@ pub fn contract_fetch(
     app_handle: AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
     input: FetchContractsInput,
-) -> Result<DispatchTaskResponse, String> {
+) -> Result<FetchContractsResponse, String> {
     let ids = parse_identifiers(&input.contract_ids)?;
+    let normalized_ids = ids.iter().map(|id| hex::encode(id.to_buffer())).collect();
     let task = BackendTask::ContractTask(Box::new(ContractTask::FetchContracts(ids)));
     let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
-    Ok(DispatchTaskResponse { task_id })
+    Ok(FetchContractsResponse {
+        task_id,
+        normalized_ids,
+    })
 }
 
 /// Fetch contracts from Platform with descriptions.

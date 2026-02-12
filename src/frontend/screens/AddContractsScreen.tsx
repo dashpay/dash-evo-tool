@@ -237,6 +237,8 @@ export function AddContractsScreen() {
       });
       if (result.status === "ok") {
         activeTaskIdRef.current = result.data.taskId;
+        // Use backend-normalized hex IDs for result matching
+        parsedIdsRef.current = result.data.normalizedIds;
       } else {
         setStatus({ type: "error", message: result.error });
         toastError(result.error);

@@ -79,11 +79,14 @@ describe("AddContractsScreen", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     resetStores();
-    // Default: contractFetch returns a task
-    vi.mocked(commands.contractFetch).mockResolvedValue({
-      status: "ok",
-      data: { taskId: "task-1" },
-    });
+    // Default: contractFetch returns a task with normalized hex IDs
+    vi.mocked(commands.contractFetch).mockImplementation(async (input) => ({
+      status: "ok" as const,
+      data: {
+        taskId: "task-1",
+        normalizedIds: input.contractIds.map((id) => id.toLowerCase()),
+      },
+    }));
     // Default: contractListLocal returns empty list
     vi.mocked(commands.contractListLocal).mockResolvedValue({
       status: "ok",

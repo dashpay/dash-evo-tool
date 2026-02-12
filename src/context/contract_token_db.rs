@@ -3,6 +3,8 @@ use crate::model::tokens::{IdentityTokenBalance, IdentityTokenIdentifier};
 use crate::model::wallet::WalletSeedHash;
 use bincode::config;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use rusqlite::Result;
@@ -73,7 +75,26 @@ impl AppContext {
         &self,
         contract_id: &Identifier,
     ) -> Result<Option<QualifiedContract>> {
-        // Get the contract from the database
+        // Check system contracts first (they are not stored in the database)
+        let system_contracts: &[(
+            &Arc<DataContract>,
+            &str,
+        )] = &[
+            (&self.dpns_contract, "dpns"),
+            (&self.token_history_contract, "token_history"),
+            (&self.withdraws_contract, "withdrawals"),
+            (&self.keyword_search_contract, "keyword_search"),
+            (&self.dashpay_contract, "dashpay"),
+        ];
+        for (contract_arc, alias) in system_contracts {
+            if contract_arc.id() == *contract_id {
+                return Ok(Some(QualifiedContract {
+                    contract: contract_arc.as_ref().clone(),
+                    alias: Some(alias.to_string()),
+                }));
+            }
+        }
+        // Fall back to the database
         self.db.get_contract_by_id(*contract_id, self)
     }
 
@@ -81,7 +102,20 @@ impl AppContext {
         &self,
         contract_id: &Identifier,
     ) -> Result<Option<DataContract>> {
-        // Get the contract from the database
+        // Check system contracts first (they are not stored in the database)
+        let system_contracts: &[&Arc<DataContract>] = &[
+            &self.dpns_contract,
+            &self.token_history_contract,
+            &self.withdraws_contract,
+            &self.keyword_search_contract,
+            &self.dashpay_contract,
+        ];
+        for contract_arc in system_contracts {
+            if contract_arc.id() == *contract_id {
+                return Ok(Some(contract_arc.as_ref().clone()));
+            }
+        }
+        // Fall back to the database
         self.db.get_unqualified_contract_by_id(*contract_id, self)
     }
 
@@ -190,10 +224,30 @@ impl AppContext {
         &self,
         token_id: &Identifier,
     ) -> Result<Option<QualifiedContract>> {
+        // Check system contracts first by scanning their token configurations
+        let system_contracts: &[(&Arc<DataContract>, &str)] = &[
+            (&self.dpns_contract, "dpns"),
+            (&self.token_history_contract, "token_history"),
+            (&self.withdraws_contract, "withdrawals"),
+            (&self.keyword_search_contract, "keyword_search"),
+            (&self.dashpay_contract, "dashpay"),
+        ];
+        for (contract_arc, alias) in system_contracts {
+            for (pos, _) in contract_arc.tokens().iter() {
+                let system_token_id = contract_arc.token_id(*pos);
+                if system_token_id == Some(*token_id) {
+                    return Ok(Some(QualifiedContract {
+                        contract: contract_arc.as_ref().clone(),
+                        alias: Some(alias.to_string()),
+                    }));
+                }
+            }
+        }
+        // Fall back to the database
         let contract_id = self
             .db
             .get_contract_id_by_token_id(token_id, self)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        self.db.get_contract_by_id(contract_id, self)
+        self.get_contract_by_id(&contract_id)
     }
 }

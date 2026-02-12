@@ -117,13 +117,43 @@ fn get_spv_status(state: tauri::State<'_, Arc<AppState>>) -> Vec<events::SpvStat
             dash_evo_tool::spv::SpvStatus::Stopped => events::SpvStatusDto::Stopped,
             dash_evo_tool::spv::SpvStatus::Error => events::SpvStatusDto::Error,
         };
-        let sync_pct = None::<f64>; // Not computable without a target height
+        let sync_pct = if snapshot.sync_percentage > 0.0 {
+            Some(snapshot.sync_percentage * 100.0)
+        } else {
+            None
+        };
         let header_height = snapshot.sync_progress.as_ref().map(|p| p.header_height);
+
+        // Per-category progress (0.0–100.0 scale), only when syncing
+        let is_syncing = matches!(
+            snapshot.status,
+            dash_evo_tool::spv::SpvStatus::Syncing
+                | dash_evo_tool::spv::SpvStatus::Starting
+                | dash_evo_tool::spv::SpvStatus::Running
+        );
+        let bd = &snapshot.sync_breakdown;
+        let (h_pct, mn_pct, fh_pct, f_pct, b_pct) = if is_syncing {
+            (
+                Some(bd.headers_pct * 100.0),
+                Some(bd.masternodes_pct * 100.0),
+                Some(bd.filter_headers_pct * 100.0),
+                Some(bd.filters_pct * 100.0),
+                Some(bd.blocks_pct * 100.0),
+            )
+        } else {
+            (None, None, None, None, None)
+        };
+
         statuses.push(events::SpvStatusEvent {
             network: network_dto,
             status,
             sync_progress_pct: sync_pct,
             header_height,
+            headers_progress_pct: h_pct,
+            masternodes_progress_pct: mn_pct,
+            filter_headers_progress_pct: fh_pct,
+            filters_progress_pct: f_pct,
+            blocks_progress_pct: b_pct,
             connected_peers: snapshot.connected_peers as u32,
             error: snapshot.last_error,
         });
@@ -205,6 +235,8 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::wallet::wallet_stop_spv,
             commands::wallet::wallet_clear_spv_data,
             commands::wallet::wallet_bootstrap_addresses,
+            commands::wallet::wallet_unlock,
+            commands::wallet::wallet_lock,
             commands::wallet::wallet_notify_unlocked,
             commands::wallet::wallet_notify_locked,
             commands::wallet::wallet_get_private_key,
@@ -253,6 +285,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::token::token_purchase,
             commands::token::token_set_direct_purchase_price,
             commands::token::token_register_contract,
+            commands::token::token_get_my_balances,
             commands::token::token_remove,
             commands::token::token_load_order,
             commands::token::token_save_order,
@@ -292,6 +325,8 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::contested::contested_clear_executed_scheduled_votes,
             commands::contested::contested_delete_scheduled_vote,
             commands::contested::contested_get_scheduled_votes,
+            commands::contested::contested_get_all_names,
+            commands::contested::contested_get_ongoing_names,
             // Visualizer commands
             commands::visualizer::parse_data_contract,
             commands::visualizer::parse_document,
@@ -421,14 +456,22 @@ fn main() {
                 }
                 Err(e) => {
                     tracing::error!("Failed to initialize AppState: {e}");
-                    eprintln!("FATAL: Failed to initialize AppState: {e}");
+                    return Err(format!("Failed to initialize AppState: {e}").into());
                 }
             }
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Dash Evo Tool");
+        .build(tauri::generate_context!())
+        .expect("error while building Dash Evo Tool")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
+                    tracing::info!("RunEvent::Exit — calling AppState::shutdown()");
+                    state.shutdown();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -492,22 +535,26 @@ mod tests {
         // TaskResultEvent
         let event = TaskResultEvent {
             task_id: "task-1".into(),
-            result_type: "Identity".into(),
-            payload: None,
+            result: dto::TaskResultPayloadDto::IdentityCompleted {
+                identity_id: Some("abc123".into()),
+            },
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"taskId\""));
-        assert!(json.contains("\"resultType\""));
+        assert!(json.contains("\"type\":\"identityCompleted\""));
+        assert!(json.contains("\"identityId\":\"abc123\""));
 
         // TaskErrorEvent
         let event = TaskErrorEvent {
             task_id: "task-2".into(),
+            domain: dto::TaskDomain::Identity,
             message: "Something failed".into(),
             details: "Full error trace".into(),
             recoverable: true,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"recoverable\":true"));
+        assert!(json.contains("\"domain\":\"identity\""));
 
         // SpvStatusEvent
         let event = SpvStatusEvent {
@@ -515,11 +562,17 @@ mod tests {
             status: events::SpvStatusDto::Syncing,
             sync_progress_pct: Some(42.5),
             header_height: Some(100000),
+            headers_progress_pct: Some(80.0),
+            masternodes_progress_pct: Some(50.0),
+            filter_headers_progress_pct: Some(30.0),
+            filters_progress_pct: Some(10.0),
+            blocks_progress_pct: Some(0.0),
             connected_peers: 8,
             error: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("\"syncProgressPct\":42.5"));
+        assert!(json.contains("\"headersProgressPct\":80.0"));
         assert!(json.contains("\"connectedPeers\":8"));
     }
 

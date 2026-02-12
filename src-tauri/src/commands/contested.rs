@@ -297,6 +297,118 @@ pub fn contested_get_scheduled_votes(
 }
 
 // ---------------------------------------------------------------------------
+// Contested name DTOs and read commands
+// ---------------------------------------------------------------------------
+
+/// State of a DPNS name contest (DTO).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ContestStateDto {
+    Unknown,
+    Joinable,
+    Ongoing,
+    WonBy { identity_id: IdentifierDto },
+    Locked,
+}
+
+/// A contestant vying for a contested DPNS name (DTO).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ContestantDto {
+    pub id: IdentifierDto,
+    pub name: String,
+    pub info: String,
+    pub votes: u32,
+    pub created_at: Option<u64>,
+    pub created_at_block_height: Option<u64>,
+    pub created_at_core_block_height: Option<u32>,
+    pub document_id: IdentifierDto,
+}
+
+/// A contested DPNS name with its voting state (DTO).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ContestedNameDto {
+    pub normalized_contested_name: String,
+    pub contestants: Option<Vec<ContestantDto>>,
+    pub locked_votes: Option<u32>,
+    pub abstain_votes: Option<u32>,
+    pub awarded_to: Option<IdentifierDto>,
+    pub end_time: Option<u64>,
+    pub state: ContestStateDto,
+    pub last_updated: Option<u64>,
+}
+
+/// Convert a backend `ContestedName` to a DTO.
+fn convert_contested_name(
+    cn: &dash_evo_tool::model::contested_name::ContestedName,
+) -> ContestedNameDto {
+    use dash_evo_tool::model::contested_name::ContestState;
+
+    let state = match &cn.state {
+        ContestState::Unknown => ContestStateDto::Unknown,
+        ContestState::Joinable => ContestStateDto::Joinable,
+        ContestState::Ongoing => ContestStateDto::Ongoing,
+        ContestState::WonBy(id) => ContestStateDto::WonBy {
+            identity_id: hex::encode(id.to_buffer()),
+        },
+        ContestState::Locked => ContestStateDto::Locked,
+    };
+
+    let contestants = cn.contestants.as_ref().map(|cs| {
+        cs.iter()
+            .map(|c| ContestantDto {
+                id: hex::encode(c.id.to_buffer()),
+                name: c.name.clone(),
+                info: c.info.clone(),
+                votes: c.votes,
+                created_at: c.created_at,
+                created_at_block_height: c.created_at_block_height,
+                created_at_core_block_height: c.created_at_core_block_height,
+                document_id: hex::encode(c.document_id.to_buffer()),
+            })
+            .collect()
+    });
+
+    ContestedNameDto {
+        normalized_contested_name: cn.normalized_contested_name.clone(),
+        contestants,
+        locked_votes: cn.locked_votes,
+        abstain_votes: cn.abstain_votes,
+        awarded_to: cn.awarded_to.map(|id| hex::encode(id.to_buffer())),
+        end_time: cn.end_time,
+        state,
+        last_updated: cn.last_updated,
+    }
+}
+
+/// Get all contested names (past + active) from the local database.
+#[tauri::command]
+#[specta::specta]
+pub fn contested_get_all_names(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<ContestedNameDto>, String> {
+    let ctx = state.current_context();
+    let names = ctx
+        .all_contested_names()
+        .map_err(|e| format!("Failed to load contested names: {e}"))?;
+    Ok(names.iter().map(convert_contested_name).collect())
+}
+
+/// Get only ongoing contested names from the local database.
+#[tauri::command]
+#[specta::specta]
+pub fn contested_get_ongoing_names(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<ContestedNameDto>, String> {
+    let ctx = state.current_context();
+    let names = ctx
+        .ongoing_contested_names()
+        .map_err(|e| format!("Failed to load ongoing contested names: {e}"))?;
+    Ok(names.iter().map(convert_contested_name).collect())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

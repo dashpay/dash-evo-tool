@@ -13,6 +13,7 @@ use crate::DispatchTaskResponse;
 
 use dash_evo_tool::backend_task::tokens::TokenTask;
 use dash_evo_tool::backend_task::BackendTask;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_evo_tool::model::tokens::IdentityTokenIdentifier;
 
 use dash_sdk::dpp::balances::credits::TokenAmount;
@@ -76,11 +77,20 @@ pub struct FetchTokenByTokenIdInput {
 }
 
 /// Input for saving a token locally.
+///
+/// Instead of opaque JSON, accepts individual fields. The `TokenConfiguration`
+/// is extracted server-side from the contract already in the local DB.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveTokenLocallyInput {
-    /// Token info as JSON (serialized TokenInfo).
-    pub token_info_json: serde_json::Value,
+    /// Token ID (hex).
+    pub token_id: IdentifierDto,
+    /// Contract ID (hex).
+    pub contract_id: IdentifierDto,
+    /// Token position within the contract.
+    pub token_position: u16,
+    /// Human-readable token name.
+    pub token_name: String,
 }
 
 /// Input for querying token pricing.
@@ -385,12 +395,69 @@ fn find_signing_key(
 }
 
 /// Parse optional GroupStateTransitionInfoStatus from JSON.
+///
+/// Expected JSON shapes:
+///   Proposer: `{ "type": "proposer", "groupContractPosition": <u16> }`
+///   Other signer: `{ "type": "otherSigner", "groupContractPosition": <u16>,
+///                    "actionId": "<hex>", "actionIsProposer": <bool> }`
 fn parse_group_info(
-    _json: Option<&serde_json::Value>,
+    json: Option<&serde_json::Value>,
 ) -> Result<Option<dash_sdk::dpp::group::GroupStateTransitionInfoStatus>, String> {
-    // TODO: GroupStateTransitionInfoStatus does not implement Deserialize.
-    // Implement manual parsing when group operations are needed from the frontend.
-    Ok(None)
+    use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
+
+    let json = match json {
+        Some(v) if !v.is_null() => v,
+        _ => return Ok(None),
+    };
+
+    let obj = json
+        .as_object()
+        .ok_or_else(|| "group_info must be a JSON object".to_string())?;
+
+    let type_str = obj
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "group_info missing 'type' field".to_string())?;
+
+    let group_contract_position = obj
+        .get("groupContractPosition")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "group_info missing 'groupContractPosition' field".to_string())?
+        as u16;
+
+    match type_str {
+        "proposer" => Ok(Some(
+            GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(
+                group_contract_position,
+            ),
+        )),
+        "otherSigner" => {
+            let action_id_hex = obj
+                .get("actionId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "otherSigner missing 'actionId' field".to_string())?;
+            let action_id = parse_identifier(action_id_hex)?;
+
+            let action_is_proposer = obj
+                .get("actionIsProposer")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            Ok(Some(
+                GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
+                    GroupStateTransitionInfo {
+                        group_contract_position,
+                        action_id,
+                        action_is_proposer,
+                    },
+                ),
+            ))
+        }
+        other => Err(format!(
+            "Unknown group_info type '{}'. Expected 'proposer' or 'otherSigner'.",
+            other
+        )),
+    }
 }
 
 /// Parse a Start cursor from optional hex.
@@ -530,15 +597,55 @@ pub fn token_fetch_by_token_id(
 
 /// Save a token to the local database.
 ///
-/// Dispatches `TokenTask::SaveTokenLocally`. Result via event.
+/// Synchronous — reconstructs `TokenConfiguration` from the contract
+/// already stored in the local DB, then inserts the token record.
 #[tauri::command]
 #[specta::specta]
 pub fn token_save_locally(
-    _app_handle: AppHandle,
-    _state: tauri::State<'_, Arc<AppState>>,
-    _input: SaveTokenLocallyInput,
-) -> Result<DispatchTaskResponse, String> {
-    Err("token_save_locally: TokenInfo deserialization not yet implemented. Use the task event system instead.".to_string())
+    state: tauri::State<'_, Arc<AppState>>,
+    input: SaveTokenLocallyInput,
+) -> Result<(), String> {
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+
+    let token_id = parse_identifier(&input.token_id)?;
+    let contract_id = parse_identifier(&input.contract_id)?;
+    let token_position = TokenContractPosition::from(input.token_position);
+
+    let ctx = state.current_context();
+
+    // Look up the contract — it must already be saved locally
+    let qc = ctx
+        .get_contract_by_id(&contract_id)
+        .map_err(|e| format!("Database error loading contract: {e}"))?
+        .ok_or_else(|| {
+            format!(
+                "Contract {} not found in local database. Save the contract first.",
+                input.contract_id
+            )
+        })?;
+
+    // Extract the token configuration at the specified position
+    let token_config = qc
+        .contract
+        .tokens()
+        .get(&token_position)
+        .ok_or_else(|| {
+            format!(
+                "Token at position {} not found in contract {}",
+                input.token_position, input.contract_id
+            )
+        })?
+        .clone();
+
+    // Insert into the local DB
+    ctx.insert_token(
+        &token_id,
+        &input.token_name,
+        token_config,
+        &contract_id,
+        input.token_position,
+    )
+    .map_err(|e| format!("Failed to save token: {e}"))
 }
 
 /// Query token pricing.
@@ -1235,6 +1342,56 @@ pub fn token_register_contract(
 // ---------------------------------------------------------------------------
 // Direct database commands (synchronous, return immediately)
 // ---------------------------------------------------------------------------
+
+/// Read all "my token balances" from the local database.
+///
+/// This is a synchronous read — no network calls. The backend task
+/// `QueryMyTokenBalances` writes balances to the DB; this command reads them back.
+#[tauri::command]
+#[specta::specta]
+pub fn token_get_my_balances(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<crate::dto::token::IdentityTokenBalanceDto>, String> {
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+
+    let ctx = state.current_context();
+    let balances = ctx
+        .identity_token_balances()
+        .map_err(|e| format!("Failed to read token balances: {e}"))?;
+
+    Ok(balances
+        .into_values()
+        .map(|b| {
+            let decimals = b.token_config.conventions().decimals();
+            crate::dto::token::IdentityTokenBalanceDto {
+                token_id: hex::encode(b.token_id.to_buffer()),
+                token_alias: b.token_alias,
+                identity_id: hex::encode(b.identity_id.to_buffer()),
+                balance: b.balance.to_string(),
+                estimated_unclaimed_rewards: b
+                    .estimated_unclaimed_rewards
+                    .map(|r| r.to_string()),
+                data_contract_id: hex::encode(b.data_contract_id.to_buffer()),
+                token_position: b.token_position,
+                decimals,
+                available_actions: crate::dto::token::IdentityTokenAvailableActionsDto {
+                    can_claim: false,
+                    can_estimate: false,
+                    can_mint: false,
+                    can_burn: false,
+                    can_freeze: false,
+                    can_unfreeze: false,
+                    can_destroy: false,
+                    can_do_emergency_action: false,
+                    can_maybe_purchase: false,
+                    can_set_price: false,
+                    can_transfer: false,
+                    can_update_config: false,
+                },
+            }
+        })
+        .collect())
+}
 
 /// Remove a token from the local database.
 #[tauri::command]

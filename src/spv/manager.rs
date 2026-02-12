@@ -9,7 +9,8 @@ use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::sync::SyncEvent;
 use dash_sdk::dash_spv::sync::SyncProgress as WatchSyncProgress;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, ValidationMode};
+use dash_sdk::dash_spv::sync::SyncState;
+use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, SyncStage, ValidationMode};
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -57,6 +58,16 @@ impl From<u8> for CoreBackendMode {
     }
 }
 
+/// Per-category sync progress percentages (all 0.0–1.0).
+#[derive(Debug, Clone, Default)]
+pub struct SpvSyncBreakdown {
+    pub headers_pct: f64,
+    pub masternodes_pct: f64,
+    pub filter_headers_pct: f64,
+    pub filters_pct: f64,
+    pub blocks_pct: f64,
+}
+
 /// High-level status of the SPV client runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpvStatus {
@@ -86,6 +97,10 @@ pub struct SpvStatusSnapshot {
     pub status: SpvStatus,
     pub sync_progress: Option<SyncProgress>,
     pub detailed_progress: Option<DetailedSyncProgress>,
+    /// Overall sync percentage (0.0–1.0) from the SPV progress watcher.
+    pub sync_percentage: f64,
+    /// Per-category sync progress breakdown.
+    pub sync_breakdown: SpvSyncBreakdown,
     pub last_error: Option<String>,
     pub started_at: Option<SystemTime>,
     pub last_updated: Option<SystemTime>,
@@ -127,6 +142,10 @@ pub struct SpvManager {
     started_at: Arc<RwLock<Option<SystemTime>>>,
     sync_progress_state: Arc<RwLock<Option<SyncProgress>>>,
     detailed_progress_state: Arc<RwLock<Option<DetailedSyncProgress>>>,
+    /// Overall sync percentage (0.0–1.0) derived from WatchSyncProgress::percentage().
+    sync_percentage_state: Arc<RwLock<f64>>,
+    /// Per-category sync progress breakdown.
+    sync_breakdown_state: Arc<RwLock<SpvSyncBreakdown>>,
     progress_updated_at: Arc<RwLock<Option<SystemTime>>>,
     // mapping DET wallet seed_hash -> SPV wallet identifier (if created)
     det_wallets: Arc<RwLock<std::collections::BTreeMap<[u8; 32], WalletId>>>,
@@ -291,6 +310,8 @@ impl SpvManager {
             started_at: Arc::new(RwLock::new(None)),
             sync_progress_state: Arc::new(RwLock::new(None)),
             detailed_progress_state: Arc::new(RwLock::new(None)),
+            sync_percentage_state: Arc::new(RwLock::new(0.0)),
+            sync_breakdown_state: Arc::new(RwLock::new(SpvSyncBreakdown::default())),
             progress_updated_at: Arc::new(RwLock::new(None)),
             det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             reconcile_tx: Mutex::new(None),
@@ -324,6 +345,12 @@ impl SpvManager {
         let started_at = self.read_started_at().unwrap_or(None);
         let sync_progress = self.read_sync_progress().unwrap_or(None);
         let detailed_progress = self.read_detailed_progress().unwrap_or(None);
+        let sync_percentage = self.sync_percentage_state.read().map(|g| *g).unwrap_or(0.0);
+        let sync_breakdown = self
+            .sync_breakdown_state
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         let last_updated = self
             .read_progress_updated_at()
             .unwrap_or(None)
@@ -334,6 +361,8 @@ impl SpvManager {
             status,
             sync_progress,
             detailed_progress,
+            sync_percentage,
+            sync_breakdown,
             last_error,
             started_at,
             last_updated,
@@ -349,6 +378,12 @@ impl SpvManager {
         let started_at = self.read_started_at().unwrap_or(None);
         let sync_progress = self.read_sync_progress().unwrap_or(None);
         let detailed_progress = self.read_detailed_progress().unwrap_or(None);
+        let sync_percentage = self.sync_percentage_state.read().map(|g| *g).unwrap_or(0.0);
+        let sync_breakdown = self
+            .sync_breakdown_state
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         let last_updated = self
             .read_progress_updated_at()
             .unwrap_or(None)
@@ -359,6 +394,8 @@ impl SpvManager {
             status,
             sync_progress,
             detailed_progress,
+            sync_percentage,
+            sync_breakdown,
             last_error,
             started_at,
             last_updated,
@@ -386,6 +423,12 @@ impl SpvManager {
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
         self.write_detailed_progress(None)
             .map_err(|e| e.to_string())?;
+        if let Ok(mut pct) = self.sync_percentage_state.write() {
+            *pct = 0.0;
+        }
+        if let Ok(mut bd) = self.sync_breakdown_state.write() {
+            *bd = SpvSyncBreakdown::default();
+        }
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
 
@@ -580,6 +623,12 @@ impl SpvManager {
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
         self.write_detailed_progress(None)
             .map_err(|e| e.to_string())?;
+        if let Ok(mut pct) = self.sync_percentage_state.write() {
+            *pct = 0.0;
+        }
+        if let Ok(mut bd) = self.sync_breakdown_state.write() {
+            *bd = SpvSyncBreakdown::default();
+        }
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
         self.write_started_at(None).map_err(|e| e.to_string())?;
@@ -1050,10 +1099,17 @@ impl SpvManager {
     ) {
         let status = Arc::clone(&self.status);
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
+        let sync_percentage_state = Arc::clone(&self.sync_percentage_state);
+        let sync_breakdown_state = Arc::clone(&self.sync_breakdown_state);
+        let detailed_progress_state = Arc::clone(&self.detailed_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
         self.subtasks.spawn_sync(async move {
+            // Track the first filter_header height seen when entering
+            // DownloadingFilterHeaders stage for session-relative progress.
+            let mut filter_headers_baseline: Option<u32> = None;
+
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1063,20 +1119,232 @@ impl SpvManager {
                         }
                         let watch_progress = progress_rx.borrow();
 
-                        // Convert sync::SyncProgress to types::SyncProgress for UI
+                        // Extract all available heights from WatchSyncProgress
                         let header_height = watch_progress
                             .headers()
                             .map(|h| h.current_height())
                             .unwrap_or(0);
+                        let masternode_height = watch_progress
+                            .masternodes()
+                            .map(|m| m.current_height())
+                            .unwrap_or(0);
+                        let filter_header_height = watch_progress
+                            .filter_headers()
+                            .map(|fh| fh.current_height())
+                            .unwrap_or(0);
 
                         let sync_progress = SyncProgress {
                             header_height,
+                            masternode_height,
+                            filter_header_height,
                             ..Default::default()
                         };
+
+                        // Build detailed progress with sync stage information
+                        let peer_best_height = watch_progress
+                            .headers()
+                            .map(|h| h.target_height())
+                            .unwrap_or(0);
+                        let sync_stage = Self::determine_sync_stage(&watch_progress);
+                        let detailed = DetailedSyncProgress {
+                            sync_progress: sync_progress.clone(),
+                            peer_best_height,
+                            percentage: if peer_best_height > 0 {
+                                (header_height as f64 / peer_best_height as f64 * 100.0)
+                                    .min(100.0)
+                            } else {
+                                0.0
+                            },
+                            headers_per_second: 0.0,
+                            bytes_per_second: 0,
+                            estimated_time_remaining: None,
+                            sync_stage: sync_stage.clone(),
+                            total_headers_processed: 0,
+                            total_bytes_downloaded: 0,
+                            sync_start_time: std::time::SystemTime::now(),
+                            last_update_time: std::time::SystemTime::now(),
+                        };
+
+                        // Compute per-category breakdown using SyncStage-aware
+                        // logic matching the egui calculate_*_progress() methods.
+
+                        // Headers: progress within the download window
+                        let headers_pct = match &sync_stage {
+                            SyncStage::DownloadingHeaders { start, end } => {
+                                if end > start {
+                                    let clamped =
+                                        header_height.clamp(*start, *end) - start;
+                                    (clamped as f64 / (end - start) as f64)
+                                        .clamp(0.0, 1.0)
+                                } else {
+                                    0.0
+                                }
+                            }
+                            SyncStage::ValidatingHeaders { .. }
+                            | SyncStage::StoringHeaders { .. }
+                            | SyncStage::DownloadingFilterHeaders { .. }
+                            | SyncStage::DownloadingFilters { .. }
+                            | SyncStage::DownloadingBlocks { .. }
+                            | SyncStage::Complete => 1.0,
+                            _ => 0.0,
+                        };
+
+                        // Masternodes (validating headers)
+                        let masternodes_pct = match &sync_stage {
+                            SyncStage::ValidatingHeaders { .. }
+                            | SyncStage::StoringHeaders { .. } => {
+                                if peer_best_height > 0 {
+                                    (masternode_height as f64
+                                        / peer_best_height as f64)
+                                        .clamp(0.0, 1.0)
+                                } else {
+                                    0.0
+                                }
+                            }
+                            SyncStage::DownloadingFilterHeaders { .. }
+                            | SyncStage::DownloadingFilters { .. }
+                            | SyncStage::DownloadingBlocks { .. }
+                            | SyncStage::Complete => 1.0,
+                            _ => 0.0,
+                        };
+
+                        // Filter headers: session-relative progress with baseline
+                        match &sync_stage {
+                            SyncStage::DownloadingFilterHeaders {
+                                current,
+                                target,
+                            } => {
+                                let baseline = (*current).min(*target);
+                                filter_headers_baseline = Some(
+                                    filter_headers_baseline.map_or(
+                                        baseline,
+                                        |existing| existing.min(*target),
+                                    ),
+                                );
+                            }
+                            _ => {
+                                filter_headers_baseline = None;
+                            }
+                        }
+                        let filter_headers_pct = match &sync_stage {
+                            SyncStage::DownloadingFilterHeaders {
+                                current,
+                                target,
+                            } => {
+                                if *target == 0 {
+                                    0.0
+                                } else {
+                                    let start = filter_headers_baseline
+                                        .unwrap_or(*current)
+                                        .min(*target);
+                                    let span = target.saturating_sub(start);
+                                    if span == 0 {
+                                        if current >= target {
+                                            1.0
+                                        } else {
+                                            0.0
+                                        }
+                                    } else {
+                                        (current.saturating_sub(start) as f64
+                                            / span as f64)
+                                            .clamp(0.0, 1.0)
+                                    }
+                                }
+                            }
+                            SyncStage::DownloadingFilters { .. }
+                            | SyncStage::DownloadingBlocks { .. }
+                            | SyncStage::Complete => {
+                                if peer_best_height > 0 {
+                                    (filter_header_height as f64
+                                        / peer_best_height as f64)
+                                        .clamp(0.0, 1.0)
+                                } else {
+                                    1.0
+                                }
+                            }
+                            _ => 0.0,
+                        };
+
+                        // Filters
+                        let filters_pct = match &sync_stage {
+                            SyncStage::DownloadingFilters {
+                                completed,
+                                total,
+                            } => {
+                                if *total == 0 {
+                                    0.0
+                                } else {
+                                    (*completed as f64 / *total as f64)
+                                        .clamp(0.0, 1.0)
+                                }
+                            }
+                            SyncStage::DownloadingBlocks { .. }
+                            | SyncStage::Complete => 1.0,
+                            _ => 0.0,
+                        };
+
+                        // Blocks
+                        let is_running = matches!(
+                            *status.read().unwrap_or_else(|e| e.into_inner()),
+                            SpvStatus::Running
+                        );
+                        let blocks_pct = if is_running {
+                            1.0
+                        } else {
+                            match &sync_stage {
+                                SyncStage::DownloadingBlocks { .. } => {
+                                    let processed = watch_progress
+                                        .blocks()
+                                        .map(|b| b.processed())
+                                        .unwrap_or(0);
+                                    let requested = watch_progress
+                                        .blocks()
+                                        .map(|b| b.requested())
+                                        .unwrap_or(0);
+                                    if requested > 0 {
+                                        (processed as f64 / requested as f64)
+                                            .clamp(0.0, 1.0)
+                                    } else {
+                                        0.0
+                                    }
+                                }
+                                SyncStage::Complete => 1.0,
+                                _ => 0.0,
+                            }
+                        };
+
+                        let breakdown = SpvSyncBreakdown {
+                            headers_pct,
+                            masternodes_pct,
+                            filter_headers_pct,
+                            filters_pct,
+                            blocks_pct,
+                        };
+
+                        tracing::debug!(
+                            ?sync_stage,
+                            headers = %headers_pct,
+                            masternodes = %masternodes_pct,
+                            filter_headers = %filter_headers_pct,
+                            filters = %filters_pct,
+                            blocks = %blocks_pct,
+                            "SPV sync breakdown"
+                        );
 
                         // Update sync progress state
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
                             *stored_sync = Some(sync_progress);
+                        }
+                        if let Ok(mut stored_detailed) = detailed_progress_state.write() {
+                            *stored_detailed = Some(detailed);
+                        }
+                        // Update overall sync percentage (0.0–1.0)
+                        if let Ok(mut pct) = sync_percentage_state.write() {
+                            *pct = watch_progress.percentage();
+                        }
+                        // Update per-category breakdown
+                        if let Ok(mut bd) = sync_breakdown_state.write() {
+                            *bd = breakdown;
                         }
                         if let Ok(mut updated_at) = progress_updated_at.write() {
                             *updated_at = Some(std::time::SystemTime::now());
@@ -1095,6 +1363,61 @@ impl SpvManager {
             }
             tracing::info!("SPV progress watcher exiting");
         });
+    }
+
+    /// Map the parallel WatchSyncProgress managers into a single UI-facing SyncStage.
+    ///
+    /// The parallel sync system has independent managers for headers, masternodes,
+    /// filter-headers, filters, and blocks. We map to a single stage by checking
+    /// which manager is actively syncing, preferring later pipeline stages.
+    fn determine_sync_stage(watch: &WatchSyncProgress) -> SyncStage {
+        // Check stages from latest to earliest in the pipeline
+        if let Ok(blocks) = watch.blocks()
+            && blocks.state() == SyncState::Syncing
+        {
+            return SyncStage::DownloadingBlocks {
+                pending: blocks.requested().saturating_sub(blocks.processed()) as usize,
+            };
+        }
+        if let Ok(filters) = watch.filters()
+            && filters.state() == SyncState::Syncing
+        {
+            return SyncStage::DownloadingFilters {
+                completed: filters.downloaded(),
+                total: filters
+                    .target_height()
+                    .saturating_sub(filters.current_height()),
+            };
+        }
+        if let Ok(fh) = watch.filter_headers()
+            && fh.state() == SyncState::Syncing
+        {
+            return SyncStage::DownloadingFilterHeaders {
+                current: fh.current_height(),
+                target: fh.target_height(),
+            };
+        }
+        if let Ok(mn) = watch.masternodes()
+            && mn.state() == SyncState::Syncing
+        {
+            return SyncStage::ValidatingHeaders {
+                batch_size: mn.diffs_processed() as usize,
+            };
+        }
+        if let Ok(headers) = watch.headers()
+            && headers.state() == SyncState::Syncing
+        {
+            return SyncStage::DownloadingHeaders {
+                start: 0,
+                end: headers.target_height(),
+            };
+        }
+
+        if watch.is_synced() {
+            SyncStage::Complete
+        } else {
+            SyncStage::Connecting
+        }
     }
 
     fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {

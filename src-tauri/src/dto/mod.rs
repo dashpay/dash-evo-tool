@@ -12,6 +12,7 @@ pub mod contract;
 pub mod document;
 pub mod fee;
 pub mod identity;
+pub mod task_result;
 pub mod token;
 pub mod wallet;
 
@@ -20,6 +21,7 @@ pub use contract::*;
 pub use document::*;
 pub use fee::*;
 pub use identity::*;
+pub use task_result::*;
 pub use token::*;
 pub use wallet::*;
 

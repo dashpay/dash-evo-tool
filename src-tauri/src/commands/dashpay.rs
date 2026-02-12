@@ -147,6 +147,42 @@ pub struct RegisterDashPayAddressesInput {
     pub identity_id: IdentifierDto,
 }
 
+/// Input for generating a QR auto-accept proof.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateAutoAcceptProofInput {
+    pub identity_id: IdentifierDto,
+    pub account_index: u32,
+    pub validity_hours: u32,
+}
+
+/// Result of QR auto-accept proof generation.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoAcceptProofResult {
+    pub qr_string: String,
+    pub identity_id: String,
+    pub account_reference: u32,
+    pub expires_at: u64,
+}
+
+/// Input for parsing a QR code string.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ParseAutoAcceptProofInput {
+    pub qr_data: String,
+}
+
+/// Parsed QR auto-accept proof data.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedAutoAcceptProofResult {
+    pub identity_id: String,
+    pub proof_key_hex: String,
+    pub account_reference: u32,
+    pub expires_at: u64,
+}
+
 // ---------------------------------------------------------------------------
 // DB-direct DTOs
 // ---------------------------------------------------------------------------
@@ -734,6 +770,54 @@ pub fn dashpay_db_save_avatar_bytes(
     let network_str = format!("{:?}", ctx.network());
     db.save_dashpay_profile_avatar_bytes(&identifier, &network_str, avatar_bytes.as_deref())
         .map_err(|e| format!("Failed to save avatar bytes: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// QR Code commands
+// ---------------------------------------------------------------------------
+
+/// Generate a QR auto-accept proof for sharing.
+#[tauri::command]
+#[specta::specta]
+pub fn dashpay_generate_auto_accept_proof(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: GenerateAutoAcceptProofInput,
+) -> Result<AutoAcceptProofResult, String> {
+    use dash_evo_tool::backend_task::dashpay::auto_accept_proof::generate_auto_accept_proof;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+    if input.validity_hours == 0 || input.validity_hours > 720 {
+        return Err("Validity hours must be between 1 and 720".into());
+    }
+
+    let qi = lookup_identity(&state, &input.identity_id)?;
+    let proof_data = generate_auto_accept_proof(&qi, input.account_index, input.validity_hours)?;
+
+    Ok(AutoAcceptProofResult {
+        qr_string: proof_data.to_qr_string(),
+        identity_id: proof_data.identity_id.to_string(Encoding::Base58),
+        account_reference: proof_data.account_reference,
+        expires_at: proof_data.expires_at,
+    })
+}
+
+/// Parse a QR code string into auto-accept proof data.
+#[tauri::command]
+#[specta::specta]
+pub fn dashpay_parse_auto_accept_proof(
+    input: ParseAutoAcceptProofInput,
+) -> Result<ParsedAutoAcceptProofResult, String> {
+    use dash_evo_tool::backend_task::dashpay::auto_accept_proof::AutoAcceptProofData;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+    let parsed = AutoAcceptProofData::from_qr_string(&input.qr_data)?;
+
+    Ok(ParsedAutoAcceptProofResult {
+        identity_id: parsed.identity_id.to_string(Encoding::Base58),
+        proof_key_hex: hex::encode(parsed.proof_key),
+        account_reference: parsed.account_reference,
+        expires_at: parsed.expires_at,
+    })
 }
 
 // ---------------------------------------------------------------------------

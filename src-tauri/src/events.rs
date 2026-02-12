@@ -7,7 +7,7 @@
 //! All event types derive `tauri_specta::Event` for automatic TypeScript
 //! type generation and type-safe event listeners.
 
-use crate::dto::NetworkDto;
+use crate::dto::{NetworkDto, TaskDomain, TaskResultPayloadDto};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri_specta::Event;
@@ -18,21 +18,16 @@ use tauri_specta::Event;
 
 /// Emitted when a backend task completes successfully.
 ///
-/// The `result_type` field is a discriminant string (e.g. "Identity", "Wallet",
-/// "Contract") that the frontend can match on. The `payload` is the serialized
-/// result data as JSON value. This design avoids needing to represent the entire
-/// `BackendTaskSuccessResult` enum in the TypeScript type system up front —
-/// individual domain result types will be defined as the IPC commands are
-/// implemented in phases 1.4–1.7.
+/// The `result` field is a discriminated union (`TaskResultPayloadDto`) with
+/// an internally-tagged `type` field. The frontend narrows via
+/// `result.type === "identityCompleted"` etc., with all fields fully typed.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskResultEvent {
     /// Unique task ID assigned at dispatch time.
     pub task_id: String,
-    /// The domain of the result (e.g. "Identity", "Wallet", "None", "Refresh").
-    pub result_type: String,
-    /// The serialized result payload. `null` for `None` and `Refresh` results.
-    pub payload: Option<serde_json::Value>,
+    /// Typed result payload.
+    pub result: TaskResultPayloadDto,
 }
 
 /// Emitted when a backend task fails.
@@ -41,6 +36,8 @@ pub struct TaskResultEvent {
 pub struct TaskErrorEvent {
     /// Unique task ID assigned at dispatch time.
     pub task_id: String,
+    /// Which domain this error belongs to, for targeted error handling.
+    pub domain: TaskDomain,
     /// User-friendly error message suitable for display.
     pub message: String,
     /// Technical error details for debugging.
@@ -134,6 +131,16 @@ pub struct SpvStatusEvent {
     pub sync_progress_pct: Option<f64>,
     /// Current header height, if known.
     pub header_height: Option<u32>,
+    /// Per-category progress: headers sync (0.0–100.0).
+    pub headers_progress_pct: Option<f64>,
+    /// Per-category progress: masternode list sync (0.0–100.0).
+    pub masternodes_progress_pct: Option<f64>,
+    /// Per-category progress: filter headers sync (0.0–100.0).
+    pub filter_headers_progress_pct: Option<f64>,
+    /// Per-category progress: filters sync (0.0–100.0).
+    pub filters_progress_pct: Option<f64>,
+    /// Per-category progress: blocks sync (0.0–100.0).
+    pub blocks_progress_pct: Option<f64>,
     /// Number of connected peers.
     pub connected_peers: u32,
     /// Error message, if status is Error.

@@ -25,6 +25,7 @@ use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::Qua
 use dash_evo_tool::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use dash_evo_tool::model::wallet::WalletSeedHash;
 
+use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -409,9 +410,9 @@ pub struct TransferToAddressesInput {
 
 /// Convert a backend `QualifiedIdentity` into a serializable DTO.
 ///
-/// Note: The `network` field is set to `Dash` by default since `QualifiedIdentity`
-/// does not carry network information. Callers should override if needed.
-pub fn qualified_identity_to_dto(qi: &QualifiedIdentity) -> QualifiedIdentityDto {
+/// The `network` parameter is required since `QualifiedIdentity` does not
+/// carry network information.
+pub fn qualified_identity_to_dto(qi: &QualifiedIdentity, network: Network) -> QualifiedIdentityDto {
     let identity = &qi.identity;
     let id_hex = hex::encode(identity.id().to_vec());
 
@@ -478,7 +479,7 @@ pub fn qualified_identity_to_dto(qi: &QualifiedIdentity) -> QualifiedIdentityDto
         wallet_index: qi.wallet_index,
         top_ups,
         status: IdentityStatusDto::Active, // If loaded, it's active
-        network: NetworkDto::Dash, // Network not available on QualifiedIdentity; callers override
+        network: NetworkDto::from_network(network),
         voter_identity_id: qi
             .associated_voter_identity
             .as_ref()
@@ -688,11 +689,26 @@ fn build_identity_keys(
     ))
 }
 
+/// Parse an address string with network validation.
+fn parse_address_checked(
+    addr_str: &str,
+    network: Network,
+) -> Result<dash_sdk::dpp::dashcore::Address, String> {
+    addr_str
+        .parse::<dash_sdk::dpp::dashcore::Address<
+            dash_sdk::dpp::dashcore::address::NetworkUnchecked,
+        >>()
+        .map_err(|e| format!("Invalid address: {e}"))?
+        .require_network(network)
+        .map_err(|e| format!("Address network mismatch: {e}"))
+}
+
 /// Parse a `RegisterIdentityFundingMethodDto` into the backend `RegisterIdentityFundingMethod`.
 fn parse_register_funding_method(
     dto: &RegisterIdentityFundingMethodDto,
     identity_index: u32,
     wallet_seed_hash_hex: &str,
+    network: Network,
 ) -> Result<RegisterIdentityFundingMethod, String> {
     use dash_sdk::dpp::dashcore::consensus::Decodable;
 
@@ -720,13 +736,7 @@ fn parse_register_funding_method(
                 dash_sdk::dpp::dashcore::Transaction::consensus_decode(&mut tx_bytes.as_slice())
                     .map_err(|e| format!("Failed to decode transaction: {e}"))?;
 
-            let addr =
-                address
-                    .parse::<dash_sdk::dpp::dashcore::Address<
-                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
-                    >>()
-                    .map_err(|e| format!("Invalid address: {e}"))?
-                    .assume_checked();
+            let addr = parse_address_checked(address, network)?;
 
             Ok(RegisterIdentityFundingMethod::UseAssetLock(
                 addr,
@@ -757,13 +767,7 @@ fn parse_register_funding_method(
                 script_pubkey,
             };
 
-            let addr =
-                address
-                    .parse::<dash_sdk::dpp::dashcore::Address<
-                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
-                    >>()
-                    .map_err(|e| format!("Invalid address: {e}"))?
-                    .assume_checked();
+            let addr = parse_address_checked(address, network)?;
 
             Ok(RegisterIdentityFundingMethod::FundWithUtxo(
                 outpoint,
@@ -778,13 +782,7 @@ fn parse_register_funding_method(
             let seed_hash = parse_wallet_seed_hash(wallet_seed_hash_hex)?;
             let mut platform_inputs = std::collections::BTreeMap::new();
             for pair in inputs {
-                let addr = pair
-                    .address
-                    .parse::<dash_sdk::dpp::dashcore::Address<
-                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
-                    >>()
-                    .map_err(|e| format!("Invalid platform address {}: {e}", pair.address))?
-                    .assume_checked();
+                let addr = parse_address_checked(&pair.address, network)?;
                 let platform_addr = PlatformAddress::try_from(addr)
                     .map_err(|e| format!("Invalid platform address: {e}"))?;
                 platform_inputs.insert(platform_addr, pair.amount as Credits);
@@ -801,6 +799,7 @@ fn parse_register_funding_method(
 fn parse_top_up_funding_method(
     dto: &TopUpIdentityFundingMethodDto,
     identity_index: u32,
+    network: Network,
 ) -> Result<TopUpIdentityFundingMethod, String> {
     use dash_sdk::dpp::dashcore::consensus::Decodable;
 
@@ -828,13 +827,7 @@ fn parse_top_up_funding_method(
                 dash_sdk::dpp::dashcore::Transaction::consensus_decode(&mut tx_bytes.as_slice())
                     .map_err(|e| format!("Failed to decode transaction: {e}"))?;
 
-            let addr =
-                address
-                    .parse::<dash_sdk::dpp::dashcore::Address<
-                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
-                    >>()
-                    .map_err(|e| format!("Invalid address: {e}"))?
-                    .assume_checked();
+            let addr = parse_address_checked(address, network)?;
 
             Ok(TopUpIdentityFundingMethod::UseAssetLock(
                 addr,
@@ -871,13 +864,7 @@ fn parse_top_up_funding_method(
                 script_pubkey,
             };
 
-            let addr =
-                address
-                    .parse::<dash_sdk::dpp::dashcore::Address<
-                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
-                    >>()
-                    .map_err(|e| format!("Invalid address: {e}"))?
-                    .assume_checked();
+            let addr = parse_address_checked(address, network)?;
 
             Ok(TopUpIdentityFundingMethod::FundWithUtxo(
                 outpoint,
@@ -893,6 +880,7 @@ fn parse_top_up_funding_method(
 /// Parse platform address pairs into a BTreeMap for backend consumption.
 fn parse_platform_address_credits(
     pairs: &[PlatformAddressCreditsPair],
+    network: Network,
 ) -> Result<
     std::collections::BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
     String,
@@ -901,13 +889,7 @@ fn parse_platform_address_credits(
 
     let mut map = std::collections::BTreeMap::new();
     for pair in pairs {
-        let addr = pair
-            .address
-            .parse::<dash_sdk::dpp::dashcore::Address<
-                dash_sdk::dpp::dashcore::address::NetworkUnchecked,
-            >>()
-            .map_err(|e| format!("Invalid platform address {}: {e}", pair.address))?
-            .assume_checked();
+        let addr = parse_address_checked(&pair.address, network)?;
         let platform_addr = PlatformAddress::try_from(addr)
             .map_err(|e| format!("Invalid platform address: {e}"))?;
         map.insert(platform_addr, pair.amount as Credits);
@@ -1078,16 +1060,10 @@ pub fn identity_withdraw(
     input: WithdrawFromIdentityInput,
 ) -> Result<DispatchTaskResponse, String> {
     let qi = lookup_identity(&state, &input.identity_id)?;
+    let network = state.current_context().network();
     let to_address = input
         .to_address
-        .map(|addr_str| {
-            addr_str
-                    .parse::<dash_sdk::dpp::dashcore::Address<
-                        dash_sdk::dpp::dashcore::address::NetworkUnchecked,
-                    >>()
-                    .map_err(|e| format!("Invalid address: {e}"))
-                    .map(|a| a.assume_checked())
-        })
+        .map(|addr_str| parse_address_checked(&addr_str, network))
         .transpose()?;
     let key_id: Option<KeyID> = input.key_id.map(|id| id as KeyID);
 
@@ -1267,10 +1243,12 @@ pub fn identity_register(
     )?;
 
     // Parse funding method
+    let network = state.current_context().network();
     let funding_method = parse_register_funding_method(
         &input.funding_method,
         input.identity_index,
         &input.wallet_seed_hash,
+        network,
     )?;
 
     // Look up wallet Arc reference
@@ -1304,8 +1282,9 @@ pub fn identity_top_up(
 ) -> Result<DispatchTaskResponse, String> {
     let qi = lookup_identity(&state, &input.identity_id)?;
     let wallet_arc_ref = lookup_wallet_arc_ref(&state, &input.wallet_seed_hash)?;
+    let network = state.current_context().network();
 
-    let funding_method = parse_top_up_funding_method(&input.funding_method, input.identity_index)?;
+    let funding_method = parse_top_up_funding_method(&input.funding_method, input.identity_index, network)?;
 
     let top_up_info = IdentityTopUpInfo {
         qualified_identity: qi,
@@ -1330,7 +1309,8 @@ pub fn identity_top_up_from_platform_addresses(
 ) -> Result<DispatchTaskResponse, String> {
     let qi = lookup_identity(&state, &input.identity_id)?;
     let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
-    let inputs = parse_platform_address_credits(&input.inputs)?;
+    let network = state.current_context().network();
+    let inputs = parse_platform_address_credits(&input.inputs, network)?;
 
     let task = BackendTask::IdentityTask(IdentityTask::TopUpIdentityFromPlatformAddresses {
         identity: qi,
@@ -1352,7 +1332,8 @@ pub fn identity_transfer_to_addresses(
     input: TransferToAddressesInput,
 ) -> Result<DispatchTaskResponse, String> {
     let qi = lookup_identity(&state, &input.identity_id)?;
-    let outputs = parse_platform_address_credits(&input.outputs)?;
+    let network = state.current_context().network();
+    let outputs = parse_platform_address_credits(&input.outputs, network)?;
     let key_id: Option<KeyID> = input.key_id.map(|id| id as KeyID);
 
     let task = BackendTask::IdentityTask(IdentityTask::TransferToAddresses {
@@ -1375,11 +1356,15 @@ pub fn identity_list_local(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<QualifiedIdentityDto>, String> {
     let ctx = state.current_context();
+    let network = ctx.network();
     let identities = ctx
         .load_local_qualified_identities()
         .map_err(|e| format!("Failed to load identities: {e}"))?;
 
-    Ok(identities.iter().map(qualified_identity_to_dto).collect())
+    Ok(identities
+        .iter()
+        .map(|qi| qualified_identity_to_dto(qi, network))
+        .collect())
 }
 
 /// Load all local user identities (non-masternode/evonode).
@@ -1389,11 +1374,15 @@ pub fn identity_list_user(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<QualifiedIdentityDto>, String> {
     let ctx = state.current_context();
+    let network = ctx.network();
     let identities = ctx
         .load_local_user_identities()
         .map_err(|e| format!("Failed to load user identities: {e}"))?;
 
-    Ok(identities.iter().map(qualified_identity_to_dto).collect())
+    Ok(identities
+        .iter()
+        .map(|qi| qualified_identity_to_dto(qi, network))
+        .collect())
 }
 
 /// Load all local voting identities.
@@ -1403,11 +1392,15 @@ pub fn identity_list_voting(
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<Vec<QualifiedIdentityDto>, String> {
     let ctx = state.current_context();
+    let network = ctx.network();
     let identities = ctx
         .load_local_voting_identities()
         .map_err(|e| format!("Failed to load voting identities: {e}"))?;
 
-    Ok(identities.iter().map(qualified_identity_to_dto).collect())
+    Ok(identities
+        .iter()
+        .map(|qi| qualified_identity_to_dto(qi, network))
+        .collect())
 }
 
 /// Get a single identity by its ID.
@@ -1419,11 +1412,14 @@ pub fn identity_get_by_id(
 ) -> Result<Option<QualifiedIdentityDto>, String> {
     let identifier = parse_identifier(&identity_id)?;
     let ctx = state.current_context();
+    let network = ctx.network();
     let identity = ctx
         .get_identity_by_id(&identifier)
         .map_err(|e| format!("Failed to get identity: {e}"))?;
 
-    Ok(identity.as_ref().map(qualified_identity_to_dto))
+    Ok(identity
+        .as_ref()
+        .map(|qi| qualified_identity_to_dto(qi, network)))
 }
 
 /// Set the alias for an identity.

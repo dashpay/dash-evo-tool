@@ -176,6 +176,24 @@ pub struct SelectWalletInput {
     pub selected: Option<WalletRefDto>,
 }
 
+/// Input for unlocking a password-protected wallet.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletUnlockInput {
+    /// Which wallet to unlock (HD by seed hash, or single-key by key hash).
+    pub wallet_ref: WalletRefDto,
+    /// The password to decrypt the wallet seed/key.
+    pub password: String,
+}
+
+/// Input for locking an unlocked wallet.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletLockInput {
+    /// Which wallet to lock (HD by seed hash, or single-key by key hash).
+    pub wallet_ref: WalletRefDto,
+}
+
 /// Input for creating a new HD wallet.
 ///
 /// The mnemonic is generated client-side (including entropy gathering from the user)
@@ -238,6 +256,20 @@ pub struct ImportPrivateKeyInput {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Parse an address string with network validation.
+fn parse_address_checked(
+    addr_str: &str,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> Result<dash_sdk::dpp::dashcore::Address, String> {
+    addr_str
+        .parse::<dash_sdk::dpp::dashcore::Address<
+            dash_sdk::dpp::dashcore::address::NetworkUnchecked,
+        >>()
+        .map_err(|e| format!("Invalid address: {e}"))?
+        .require_network(network)
+        .map_err(|e| format!("Address network mismatch: {e}"))
+}
 
 fn parse_wallet_seed_hash(hex_str: &str) -> Result<[u8; 32], String> {
     let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid wallet seed hash hex: {e}"))?;
@@ -470,16 +502,13 @@ pub fn wallet_transfer_platform_credits(
 
     let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
     let ctx = state.current_context();
+    let network = ctx.network();
     ctx.wallet_by_seed_hash(&seed_hash)
         .ok_or_else(|| format!("Wallet not found for seed hash {}", input.wallet_seed_hash))?;
 
     let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
     for item in &input.inputs {
-        let addr = item
-            .address
-            .parse::<dash_sdk::dpp::dashcore::Address<dash_sdk::dpp::dashcore::address::NetworkUnchecked>>()
-            .map_err(|e| format!("Invalid input address {}: {e}", item.address))?
-            .assume_checked();
+        let addr = parse_address_checked(&item.address, network)?;
         let platform_addr = PlatformAddress::try_from(addr)
             .map_err(|e| format!("Invalid platform address {}: {e}", item.address))?;
         inputs.insert(platform_addr, item.amount);
@@ -487,11 +516,7 @@ pub fn wallet_transfer_platform_credits(
 
     let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
     for item in &input.outputs {
-        let addr = item
-            .address
-            .parse::<dash_sdk::dpp::dashcore::Address<dash_sdk::dpp::dashcore::address::NetworkUnchecked>>()
-            .map_err(|e| format!("Invalid output address {}: {e}", item.address))?
-            .assume_checked();
+        let addr = parse_address_checked(&item.address, network)?;
         let platform_addr = PlatformAddress::try_from(addr)
             .map_err(|e| format!("Invalid platform address {}: {e}", item.address))?;
         outputs.insert(platform_addr, item.amount);
@@ -524,16 +549,13 @@ pub fn wallet_withdraw_from_platform_address(
 
     let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
     let ctx = state.current_context();
+    let network = ctx.network();
     ctx.wallet_by_seed_hash(&seed_hash)
         .ok_or_else(|| format!("Wallet not found for seed hash {}", input.wallet_seed_hash))?;
 
     let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
     for item in &input.inputs {
-        let addr = item
-            .address
-            .parse::<dash_sdk::dpp::dashcore::Address<dash_sdk::dpp::dashcore::address::NetworkUnchecked>>()
-            .map_err(|e| format!("Invalid input address {}: {e}", item.address))?
-            .assume_checked();
+        let addr = parse_address_checked(&item.address, network)?;
         let platform_addr = PlatformAddress::try_from(addr)
             .map_err(|e| format!("Invalid platform address {}: {e}", item.address))?;
         inputs.insert(platform_addr, item.amount);
@@ -568,14 +590,11 @@ pub fn wallet_fund_platform_address_from_utxos(
 
     let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
     let ctx = state.current_context();
+    let network = ctx.network();
     ctx.wallet_by_seed_hash(&seed_hash)
         .ok_or_else(|| format!("Wallet not found for seed hash {}", input.wallet_seed_hash))?;
 
-    let dest_addr = input
-        .destination
-        .parse::<dash_sdk::dpp::dashcore::Address<dash_sdk::dpp::dashcore::address::NetworkUnchecked>>()
-        .map_err(|e| format!("Invalid destination address: {e}"))?
-        .assume_checked();
+    let dest_addr = parse_address_checked(&input.destination, network)?;
     let destination = PlatformAddress::try_from(dest_addr)
         .map_err(|e| format!("Invalid platform address: {e}"))?;
 
@@ -641,11 +660,8 @@ pub fn wallet_fund_platform_from_asset_lock(
             .map_err(|e| format!("Invalid Bech32m address: {e}"))?;
         addr
     } else {
-        let addr = input
-            .destination_address
-            .parse::<dash_sdk::dpp::dashcore::Address<NetworkUnchecked>>()
-            .map_err(|e| format!("Invalid address {}: {e}", input.destination_address))?
-            .assume_checked();
+        let network = ctx.network();
+        let addr = parse_address_checked(&input.destination_address, network)?;
         PlatformAddress::try_from(addr).map_err(|e| format!("Invalid platform address: {e}"))?
     };
 
@@ -1324,6 +1340,113 @@ pub fn wallet_bootstrap_addresses(
     Ok(())
 }
 
+/// Unlock a password-protected wallet by decrypting its seed/key.
+///
+/// Supports both HD wallets (by seed hash) and single-key wallets (by key hash).
+///
+/// For HD wallets:
+/// 1. Acquire write lock, call `wallet_seed.open(&password)` to decrypt
+/// 2. Drop the write lock, then trigger SPV load via `handle_wallet_unlocked()`
+///
+/// For single-key wallets:
+/// 1. Acquire write lock, call `open(&password)` to decrypt the private key
+///
+/// On decryption failure, returns an error message (with password hint for HD wallets).
+#[tauri::command]
+#[specta::specta]
+pub async fn wallet_unlock(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: WalletUnlockInput,
+) -> Result<(), String> {
+    let ctx = state.current_context().clone();
+
+    match input.wallet_ref {
+        WalletRefDto::Hd { ref seed_hash } => {
+            let seed_hash = parse_wallet_seed_hash(seed_hash)?;
+            let wallet_arc = ctx
+                .wallet_by_seed_hash(&seed_hash)
+                .ok_or_else(|| "Wallet not found".to_string())?;
+
+            // Scoped write lock: decrypt the seed
+            {
+                let mut wallet = wallet_arc
+                    .write()
+                    .map_err(|e| format!("Failed to lock wallet: {}", e))?;
+
+                if wallet.is_open() {
+                    return Ok(());
+                }
+
+                wallet.wallet_seed.open(&input.password).map_err(|e| {
+                    let hint = wallet.password_hint().clone();
+                    match hint {
+                        Some(h) => format!("{}. Hint: {}", e, h),
+                        None => e,
+                    }
+                })?;
+            }
+            // Write lock dropped — now trigger SPV load
+            ctx.handle_wallet_unlocked(&wallet_arc);
+        }
+        WalletRefDto::SingleKey { ref key_hash } => {
+            let key_hash = parse_single_key_hash(key_hash)?;
+            let wallet_arc = ctx
+                .single_key_wallet_by_hash(&key_hash)
+                .ok_or_else(|| "Single-key wallet not found".to_string())?;
+
+            let mut wallet = wallet_arc
+                .write()
+                .map_err(|e| format!("Failed to lock wallet: {}", e))?;
+
+            wallet.open(&input.password)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Lock a wallet by securely erasing the decrypted seed/key.
+///
+/// Supports both HD wallets (triggers SPV unload) and single-key wallets.
+#[tauri::command]
+#[specta::specta]
+pub async fn wallet_lock(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: WalletLockInput,
+) -> Result<(), String> {
+    let ctx = state.current_context().clone();
+
+    match input.wallet_ref {
+        WalletRefDto::Hd { ref seed_hash } => {
+            let seed_hash = parse_wallet_seed_hash(seed_hash)?;
+            let wallet_arc = ctx
+                .wallet_by_seed_hash(&seed_hash)
+                .ok_or_else(|| "Wallet not found".to_string())?;
+
+            {
+                let mut wallet = wallet_arc
+                    .write()
+                    .map_err(|e| format!("Failed to lock wallet: {}", e))?;
+                wallet.wallet_seed.close();
+            }
+            ctx.handle_wallet_locked(&wallet_arc);
+        }
+        WalletRefDto::SingleKey { ref key_hash } => {
+            let key_hash = parse_single_key_hash(key_hash)?;
+            let wallet_arc = ctx
+                .single_key_wallet_by_hash(&key_hash)
+                .ok_or_else(|| "Single-key wallet not found".to_string())?;
+
+            let mut wallet = wallet_arc
+                .write()
+                .map_err(|e| format!("Failed to lock wallet: {}", e))?;
+            wallet.private_key_data.close();
+        }
+    }
+
+    Ok(())
+}
+
 /// Notify the backend that a wallet has been unlocked (triggers SPV wallet load).
 #[tauri::command]
 #[specta::specta]
@@ -1406,6 +1529,45 @@ pub fn wallet_get_private_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wallet_unlock_input_hd_serializes() {
+        let input = WalletUnlockInput {
+            wallet_ref: WalletRefDto::Hd {
+                seed_hash: "aa".repeat(32),
+            },
+            password: "mypassword".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"walletRef\""));
+        assert!(json.contains("\"type\":\"hd\""));
+        assert!(json.contains("\"password\":\"mypassword\""));
+    }
+
+    #[test]
+    fn wallet_unlock_input_single_key_serializes() {
+        let input = WalletUnlockInput {
+            wallet_ref: WalletRefDto::SingleKey {
+                key_hash: "bb".repeat(32),
+            },
+            password: "secret".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"type\":\"singleKey\""));
+        assert!(json.contains("\"password\":\"secret\""));
+    }
+
+    #[test]
+    fn wallet_lock_input_serializes() {
+        let input = WalletLockInput {
+            wallet_ref: WalletRefDto::Hd {
+                seed_hash: "cc".repeat(32),
+            },
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"walletRef\""));
+        assert!(json.contains("\"type\":\"hd\""));
+    }
 
     #[test]
     fn generate_receive_address_input_serializes() {

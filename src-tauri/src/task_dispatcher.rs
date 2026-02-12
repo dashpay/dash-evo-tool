@@ -19,22 +19,32 @@
 //!    forwarded as Tauri events from background loops.
 
 use crate::commands::system::{convert_mn_list_diff, convert_qr_info};
-use crate::dto::NetworkDto;
+use crate::dto::{
+    ContractTokenInfoDto, ContractWithTokensDto, TaskChainLockSigDto, NetworkDto,
+    ProfileSearchResultDto, TaskDomain, TaskResultPayloadDto, TokenSearchResultDto,
+};
 use crate::events::{
     ScheduledVoteExecutedEvent, SpvStatusDto, SpvStatusEvent, TaskErrorEvent, TaskResultEvent,
-    ZmqChainLockedBlockEvent, ZmqConnectionStatusEvent, ZmqIsLockedTransactionEvent,
+    WalletUpdatedEvent, ZmqChainLockedBlockEvent, ZmqConnectionStatusEvent,
+    ZmqIsLockedTransactionEvent,
 };
 use crate::state::AppState;
 use dash_evo_tool::app::TaskResult;
+use dash_evo_tool::backend_task::contract::ContractResult;
 use dash_evo_tool::backend_task::dashpay::DashPayResult;
+use dash_evo_tool::backend_task::document::DocumentResult;
+use dash_evo_tool::backend_task::identity::IdentityResult;
 use dash_evo_tool::backend_task::mnlist::MnListResult;
 use dash_evo_tool::backend_task::platform_info::{PlatformInfoTaskResult, PlatformResult};
+use dash_evo_tool::backend_task::tokens::TokenResult;
+use dash_evo_tool::backend_task::wallet::WalletResult;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::BackendTaskSuccessResult;
 use dash_evo_tool::components::core_zmq_listener::{ZMQConnectionEvent, ZMQMessage};
 use dash_evo_tool::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::dashcore::consensus::Encodable;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -60,6 +70,7 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
     let app_context = app_state.current_context().clone();
     let handle = app_handle.clone();
     let tid = task_id.clone();
+    let domain = task_domain(&task);
 
     // Create a headless sender — no egui context needed in Tauri.
     // The channel forwards intermediate progress messages from the backend
@@ -67,64 +78,89 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
     let (tx, mut rx) = tokiompsc::channel::<TaskResult>(64);
     let sender = SenderAsync::new_headless(tx);
 
-    // Forward intermediate progress/refresh messages as events
+    // Forward intermediate progress/refresh messages as events.
+    // Only Refresh is handled here — final Success/Error results come from
+    // the outer completion handler below, avoiding duplicate emissions.
     let handle_progress = handle.clone();
     let tid_progress = tid.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(task_result) = rx.recv().await {
             match task_result {
                 TaskResult::Refresh => {
-                    let _ = TaskResultEvent {
+                    if let Err(e) = (TaskResultEvent {
                         task_id: tid_progress.clone(),
-                        result_type: "Refresh".to_string(),
-                        payload: None,
+                        result: TaskResultPayloadDto::Refresh,
+                    })
+                    .emit(&handle_progress)
+                    {
+                        tracing::error!(task_id = %tid_progress, error = %e, "Failed to emit Refresh event");
                     }
-                    .emit(&handle_progress);
                 }
-                TaskResult::Success(result) => {
-                    let (result_type, payload) = classify_success_result(&result);
-                    let _ = TaskResultEvent {
-                        task_id: tid_progress.clone(),
-                        result_type,
-                        payload,
-                    }
-                    .emit(&handle_progress);
-                }
-                TaskResult::Error(error) => {
-                    let _ = TaskErrorEvent {
-                        task_id: tid_progress.clone(),
-                        message: error.user_message(),
-                        details: error.technical_details(),
-                        recoverable: error.is_recoverable(),
-                    }
-                    .emit(&handle_progress);
-                }
+                // Success and Error are handled by the outer completion handler;
+                // ignore them here to prevent duplicate event emission.
+                TaskResult::Success(_) | TaskResult::Error(_) => {}
             }
         }
     });
 
-    // Spawn the actual task
+    // Spawn the actual task inside a nested tokio::spawn so we can catch panics
     tauri::async_runtime::spawn(async move {
-        let result = app_context.run_backend_task(task, sender).await;
+        let inner = tokio::spawn(async move {
+            app_context.run_backend_task(task, sender).await
+        });
 
-        match result {
-            Ok(success) => {
-                let (result_type, payload) = classify_success_result(&success);
-                let _ = TaskResultEvent {
-                    task_id: tid,
-                    result_type,
-                    payload,
+        match inner.await {
+            Ok(Ok(success)) => {
+                let payload = classify_success_result(&success);
+                tracing::info!(task_id = %tid, domain = ?domain, result_type = ?std::mem::discriminant(&payload), "Emitting TaskResultEvent");
+                if let Err(e) = (TaskResultEvent {
+                    task_id: tid.clone(),
+                    result: payload,
+                })
+                .emit(&handle)
+                {
+                    tracing::error!(task_id = %tid, error = %e, "Failed to emit TaskResultEvent");
                 }
-                .emit(&handle);
             }
-            Err(error) => {
-                let _ = TaskErrorEvent {
-                    task_id: tid,
+            Ok(Err(error)) => {
+                tracing::info!(task_id = %tid, domain = ?domain, message = %error.user_message(), "Emitting TaskErrorEvent");
+                if let Err(e) = (TaskErrorEvent {
+                    task_id: tid.clone(),
+                    domain,
                     message: error.user_message(),
                     details: error.technical_details(),
                     recoverable: error.is_recoverable(),
+                })
+                .emit(&handle)
+                {
+                    tracing::error!(task_id = %tid, error = %e, "Failed to emit TaskErrorEvent");
                 }
-                .emit(&handle);
+            }
+            Err(join_error) => {
+                // Task panicked or was cancelled
+                let panic_msg = if join_error.is_panic() {
+                    match join_error.into_panic().downcast::<String>() {
+                        Ok(s) => *s,
+                        Err(p) => match p.downcast::<&str>() {
+                            Ok(s) => s.to_string(),
+                            Err(_) => "Unknown panic".to_string(),
+                        },
+                    }
+                } else {
+                    "Task was cancelled".to_string()
+                };
+                tracing::error!(task_id = %tid, panic = %panic_msg, "Backend task panicked");
+                if let Err(e) = (TaskErrorEvent {
+                    task_id: tid.clone(),
+                    domain,
+                    message: format!("Internal error: {}", panic_msg),
+                    details: panic_msg,
+                    recoverable: false,
+                })
+                .emit(&handle)
+                {
+                    tracing::error!(task_id = %tid, error = %e, "Failed to emit TaskErrorEvent after panic");
+                }
             }
         }
     });
@@ -132,59 +168,111 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
     task_id
 }
 
-/// Classify a `BackendTaskSuccessResult` into a type discriminant and optional
-/// JSON payload for the event system.
+/// Derive the task domain from the input `BackendTask`.
 ///
-/// NOTE: Full payload serialization will be implemented as domain DTOs are built
-/// in tasks 1.4–1.7. For now we serialize what we can and use the type string
-/// as a discriminant for the frontend to match on.
-fn classify_success_result(
-    result: &BackendTaskSuccessResult,
-) -> (String, Option<serde_json::Value>) {
+/// This is captured before the task is moved into the spawned future so
+/// that error events can carry the correct domain discriminant.
+fn task_domain(task: &BackendTask) -> TaskDomain {
+    match task {
+        BackendTask::IdentityTask(_) => TaskDomain::Identity,
+        BackendTask::WalletTask(_) => TaskDomain::Wallet,
+        BackendTask::ContractTask(_) => TaskDomain::Contract,
+        BackendTask::DocumentTask(_) => TaskDomain::Document,
+        BackendTask::TokenTask(_) => TaskDomain::Token,
+        BackendTask::ContestedResourceTask(_) => TaskDomain::Contest,
+        BackendTask::DashPayTask(_) => TaskDomain::DashPay,
+        BackendTask::PlatformInfo(_) => TaskDomain::Platform,
+        BackendTask::MnListTask(_) => TaskDomain::MnList,
+        BackendTask::CoreTask(_) => TaskDomain::Core,
+        BackendTask::SystemTask(_) => TaskDomain::System,
+        BackendTask::GroveSTARKTask(_) => TaskDomain::GroveStark,
+        BackendTask::BroadcastStateTransition(_) => TaskDomain::General,
+        BackendTask::None => TaskDomain::General,
+    }
+}
+
+/// Classify a `BackendTaskSuccessResult` into a typed `TaskResultPayloadDto`.
+fn classify_success_result(result: &BackendTaskSuccessResult) -> TaskResultPayloadDto {
     match result {
-        BackendTaskSuccessResult::None => ("None".to_string(), None),
-        BackendTaskSuccessResult::Refresh => ("Refresh".to_string(), None),
-        BackendTaskSuccessResult::Message(msg) => (
-            "Message".to_string(),
-            Some(serde_json::Value::String(msg.clone())),
-        ),
-        BackendTaskSuccessResult::Identity(_) => ("Identity".to_string(), None),
-        BackendTaskSuccessResult::Wallet(_) => ("Wallet".to_string(), None),
-        BackendTaskSuccessResult::Core(_) => ("Core".to_string(), None),
-        BackendTaskSuccessResult::Document(_) => ("Document".to_string(), None),
-        BackendTaskSuccessResult::Contract(_) => ("Contract".to_string(), None),
-        BackendTaskSuccessResult::Contest(_) => ("Contest".to_string(), None),
-        BackendTaskSuccessResult::System(_) => ("System".to_string(), None),
+        BackendTaskSuccessResult::None => TaskResultPayloadDto::None,
+        BackendTaskSuccessResult::Refresh => TaskResultPayloadDto::Refresh,
+        BackendTaskSuccessResult::Message(msg) => TaskResultPayloadDto::Message {
+            text: msg.clone(),
+        },
+        BackendTaskSuccessResult::Identity(identity_result) => {
+            classify_identity_result(identity_result)
+        }
+        BackendTaskSuccessResult::Wallet(wallet_result) => {
+            classify_wallet_result(wallet_result)
+        }
+        BackendTaskSuccessResult::Core(_) => TaskResultPayloadDto::CoreCompleted,
+        BackendTaskSuccessResult::Document(doc_result) => classify_document_result(doc_result),
+        BackendTaskSuccessResult::Contract(contract_result) => {
+            classify_contract_result(contract_result)
+        }
+        BackendTaskSuccessResult::Contest(_) => TaskResultPayloadDto::ContestCompleted,
+        BackendTaskSuccessResult::System(_) => TaskResultPayloadDto::SystemCompleted,
         BackendTaskSuccessResult::Platform(platform_result) => {
-            let payload = classify_platform_result(platform_result);
-            ("Platform".to_string(), Some(payload))
+            classify_platform_result(platform_result)
         }
         BackendTaskSuccessResult::DashPay(dashpay_result) => {
-            let payload = classify_dashpay_result(dashpay_result);
-            ("DashPay".to_string(), payload)
+            classify_dashpay_result(dashpay_result)
         }
-        BackendTaskSuccessResult::GroveSTARK(_) => ("GroveSTARK".to_string(), None),
-        BackendTaskSuccessResult::MnList(mnlist_result) => {
-            let payload = classify_mnlist_result(mnlist_result);
-            ("MnList".to_string(), Some(payload))
+        BackendTaskSuccessResult::GroveSTARK(_) => TaskResultPayloadDto::GroveStarkCompleted,
+        BackendTaskSuccessResult::MnList(mnlist_result) => classify_mnlist_result(mnlist_result),
+        BackendTaskSuccessResult::Token(token_result) => {
+            classify_token_result(token_result)
         }
-        BackendTaskSuccessResult::Token(_) => ("Token".to_string(), None),
         BackendTaskSuccessResult::BroadcastedStateTransition => {
-            ("BroadcastedStateTransition".to_string(), None)
+            TaskResultPayloadDto::BroadcastedStateTransition
         }
     }
 }
 
-/// Classify a `DashPayResult` into an optional JSON payload for the event system.
+/// Extract the identity ID (if available) from an `IdentityResult`.
+fn classify_identity_result(result: &IdentityResult) -> TaskResultPayloadDto {
+    let identity_id = match result {
+        IdentityResult::RegisteredIdentity(qi, _)
+        | IdentityResult::ToppedUpIdentity(qi, _)
+        | IdentityResult::RefreshedIdentity(qi)
+        | IdentityResult::LoadedIdentity(qi)
+        | IdentityResult::DisabledKeys(qi, _)
+        | IdentityResult::ReplacedKey(qi, _) => {
+            Some(hex::encode(qi.identity.id().to_buffer()))
+        }
+        IdentityResult::AddedKeyToIdentity(_)
+        | IdentityResult::TransferredCredits(_)
+        | IdentityResult::WithdrewFromIdentity(_)
+        | IdentityResult::RegisteredDpnsName { .. } => None,
+    };
+    TaskResultPayloadDto::IdentityCompleted { identity_id }
+}
+
+/// Classify a `WalletResult` into a typed payload.
+///
+/// `GeneratedReceiveAddress` carries the real address for the frontend.
+/// All other wallet results signal generic completion.
+fn classify_wallet_result(result: &WalletResult) -> TaskResultPayloadDto {
+    match result {
+        WalletResult::GeneratedReceiveAddress { address, .. } => {
+            TaskResultPayloadDto::WalletGeneratedAddress {
+                address: address.clone(),
+            }
+        }
+        _ => TaskResultPayloadDto::WalletCompleted,
+    }
+}
+
+/// Classify a `DashPayResult` into a typed payload.
 ///
 /// Most DashPay results trigger a generic reload from the local database.
 /// `ProfileSearchResults` is special — the results are transient (not stored in DB),
 /// so we serialize them here for the frontend to consume directly.
-fn classify_dashpay_result(result: &DashPayResult) -> Option<serde_json::Value> {
+fn classify_dashpay_result(result: &DashPayResult) -> TaskResultPayloadDto {
     use dash_sdk::dpp::document::{Document, DocumentV0Getters};
     match result {
         DashPayResult::ProfileSearchResults(results) => {
-            let items: Vec<serde_json::Value> = results
+            let items: Vec<ProfileSearchResultDto> = results
                 .iter()
                 .map(|(identity_id, profile_doc, username)| {
                     let (display_name, public_message, avatar_url) =
@@ -210,31 +298,146 @@ fn classify_dashpay_result(result: &DashPayResult) -> Option<serde_json::Value> 
                             (None, None, None)
                         };
 
-                    serde_json::json!({
-                        "identityId": hex::encode(identity_id.to_buffer()),
-                        "username": username,
-                        "displayName": display_name,
-                        "publicMessage": public_message,
-                        "avatarUrl": avatar_url,
-                    })
+                    ProfileSearchResultDto {
+                        identity_id: hex::encode(identity_id.to_buffer()),
+                        username: username.clone(),
+                        display_name,
+                        public_message,
+                        avatar_url,
+                    }
                 })
                 .collect();
-            Some(serde_json::json!({
-                "type": "ProfileSearchResults",
-                "results": items
-            }))
+            TaskResultPayloadDto::DashPayProfileSearchResults { results: items }
         }
-        _ => None,
+        _ => TaskResultPayloadDto::DashPayCompleted,
     }
 }
 
-/// Serialize a `PlatformResult` into a JSON payload for the event system.
+/// Classify a `TokenResult` into a typed payload.
 ///
-/// Most platform info results are pre-formatted text strings from the backend.
-/// `BasicPlatformInfo` is formatted here since `PlatformVersion` is a static ref
-/// that cannot easily be serialized. All results are wrapped in a JSON object
-/// with `type` and `data` fields so the frontend can distinguish them.
-fn classify_platform_result(result: &PlatformResult) -> serde_json::Value {
+/// Transient results (pricing, search, estimates) carry their data directly.
+/// Mutation results (mint, burn, etc.) signal generic completion for re-fetch.
+fn classify_token_result(result: &TokenResult) -> TaskResultPayloadDto {
+    match result {
+        TokenResult::FrozenIdentities(ids) => {
+            let identity_ids: Vec<String> =
+                ids.iter().map(|id| hex::encode(id.to_buffer())).collect();
+            TaskResultPayloadDto::TokenFrozenIdentities { identity_ids }
+        }
+        TokenResult::TokenPricing { token_id, prices } => {
+            TaskResultPayloadDto::TokenPricing {
+                token_id: hex::encode(token_id.to_buffer()),
+                prices: prices
+                    .as_ref()
+                    .and_then(|p| serde_json::to_value(p).ok()),
+            }
+        }
+        TokenResult::EstimatedDistributionRewards(iti, amount, explanation) => {
+            TaskResultPayloadDto::TokenRewardEstimate {
+                token_id: hex::encode(iti.token_id.to_buffer()),
+                identity_id: hex::encode(iti.identity_id.to_buffer()),
+                amount: amount.to_string(),
+                explanation: explanation.detailed_explanation(),
+            }
+        }
+        TokenResult::DescriptionsByKeyword(descriptions, cursor) => {
+            let results: Vec<TokenSearchResultDto> = descriptions
+                .iter()
+                .map(|desc| TokenSearchResultDto {
+                    contract_id: hex::encode(desc.data_contract_id.to_buffer()),
+                    description: desc.description.clone(),
+                })
+                .collect();
+            TaskResultPayloadDto::TokenSearchResults {
+                results,
+                has_more: cursor.is_some(),
+            }
+        }
+        TokenResult::TokenNotFound => TaskResultPayloadDto::TokenNotFound,
+        TokenResult::FetchedTokenBalances => TaskResultPayloadDto::TokenBalancesLoaded,
+        _ => TaskResultPayloadDto::TokenCompleted,
+    }
+}
+
+/// Classify a `ContractResult` into a typed payload.
+///
+/// `WithDescriptions` carries transient data (not stored in DB).
+/// All other contract results signal generic completion.
+fn classify_contract_result(result: &ContractResult) -> TaskResultPayloadDto {
+    match result {
+        ContractResult::WithDescriptions(map) => {
+            let contracts: Vec<ContractWithTokensDto> = map
+                .iter()
+                .map(|(contract_id, (desc_info, tokens))| {
+                    let description = desc_info.as_ref().map(|d| d.description.clone());
+                    let token_dtos: Vec<ContractTokenInfoDto> = tokens
+                        .iter()
+                        .map(|t| {
+                            let config_json =
+                                serde_json::to_value(&t.token_configuration).ok();
+                            ContractTokenInfoDto {
+                                token_id: hex::encode(t.token_id.to_buffer()),
+                                name: t.token_name.clone(),
+                                description: t.description.clone(),
+                                token_position: t.token_position,
+                                configuration_json: config_json,
+                            }
+                        })
+                        .collect();
+
+                    ContractWithTokensDto {
+                        contract_id: hex::encode(contract_id.to_buffer()),
+                        description,
+                        tokens: token_dtos,
+                    }
+                })
+                .collect();
+
+            TaskResultPayloadDto::ContractWithDescriptions { contracts }
+        }
+        _ => TaskResultPayloadDto::ContractCompleted,
+    }
+}
+
+/// Classify a `DocumentResult` into a typed payload.
+///
+/// `Page` and `Fetched` results carry documents for direct frontend consumption.
+/// Other document results (Broadcasted, Deleted, etc.) just signal completion.
+fn classify_document_result(result: &DocumentResult) -> TaskResultPayloadDto {
+    fn serialize_doc_page<'a>(
+        entries: impl Iterator<
+            Item = (
+                &'a dash_sdk::platform::Identifier,
+                &'a Option<dash_sdk::platform::Document>,
+            ),
+        >,
+        has_more: bool,
+    ) -> TaskResultPayloadDto {
+        let documents: Vec<serde_json::Value> = entries
+            .filter_map(|(_, doc_opt)| {
+                doc_opt
+                    .as_ref()
+                    .and_then(|doc| serde_json::to_value(doc).ok())
+            })
+            .collect();
+
+        TaskResultPayloadDto::DocumentPage {
+            documents,
+            has_more,
+        }
+    }
+
+    match result {
+        DocumentResult::Page(page_docs, next_cursor) => {
+            serialize_doc_page(page_docs.iter(), next_cursor.is_some())
+        }
+        DocumentResult::Fetched(docs) => serialize_doc_page(docs.iter(), false),
+        _ => TaskResultPayloadDto::DocumentCompleted,
+    }
+}
+
+/// Classify a `PlatformResult` into a typed payload.
+fn classify_platform_result(result: &PlatformResult) -> TaskResultPayloadDto {
     match result {
         PlatformResult::Info(info) => match info {
             PlatformInfoTaskResult::BasicPlatformInfo {
@@ -264,44 +467,38 @@ fn classify_platform_result(result: &PlatformResult) -> serde_json::Value {
                     network,
                     core_chain_lock_height.map_or("Not available".to_string(), |h| h.to_string())
                 );
-                serde_json::json!({
-                    "type": "text",
-                    "title": "Basic Platform Information",
-                    "data": text
-                })
+                TaskResultPayloadDto::PlatformText {
+                    title: "Basic Platform Information".to_string(),
+                    data: text,
+                }
             }
             PlatformInfoTaskResult::TextResult(text) => {
-                // Extract title from the text (first line before \n\n)
                 let title = text
                     .split("\n\n")
                     .next()
                     .map(|s| s.trim_end_matches(':'))
                     .unwrap_or("Platform Information")
                     .to_string();
-                serde_json::json!({
-                    "type": "text",
-                    "title": title,
-                    "data": text
-                })
+                TaskResultPayloadDto::PlatformText {
+                    title,
+                    data: text.clone(),
+                }
             }
             PlatformInfoTaskResult::AddressBalance {
                 address,
                 balance,
                 nonce,
-            } => {
-                serde_json::json!({
-                    "type": "addressBalance",
-                    "address": address,
-                    "balance": balance,
-                    "nonce": nonce
-                })
-            }
+            } => TaskResultPayloadDto::PlatformAddressBalance {
+                address: address.clone(),
+                balance: *balance,
+                nonce: *nonce,
+            },
         },
     }
 }
 
-/// Serialize a `MnListResult` into a JSON payload for the event system.
-fn classify_mnlist_result(result: &MnListResult) -> serde_json::Value {
+/// Classify a `MnListResult` into a typed payload.
+fn classify_mnlist_result(result: &MnListResult) -> TaskResultPayloadDto {
     match result {
         MnListResult::FetchedDiff {
             base_height,
@@ -309,35 +506,28 @@ fn classify_mnlist_result(result: &MnListResult) -> serde_json::Value {
             diff,
         } => {
             let diff_dto = convert_mn_list_diff(diff);
-            serde_json::json!({
-                "type": "FetchedDiff",
-                "baseHeight": base_height,
-                "height": height,
-                "diff": serde_json::to_value(&diff_dto).unwrap_or_default()
-            })
+            TaskResultPayloadDto::MnListFetchedDiff {
+                base_height: *base_height,
+                height: *height,
+                diff: serde_json::to_value(&diff_dto).unwrap_or_default(),
+            }
         }
         MnListResult::FetchedQrInfo { qr_info } => {
             let qr_info_dto = convert_qr_info(qr_info);
-            serde_json::json!({
-                "type": "FetchedQrInfo",
-                "qrInfo": serde_json::to_value(&qr_info_dto).unwrap_or_default()
-            })
+            TaskResultPayloadDto::MnListFetchedQrInfo {
+                qr_info: serde_json::to_value(&qr_info_dto).unwrap_or_default(),
+            }
         }
         MnListResult::ChainLockSigs { entries } => {
-            let items: Vec<serde_json::Value> = entries
+            let items: Vec<TaskChainLockSigDto> = entries
                 .iter()
-                .map(|((height, hash), sig)| {
-                    serde_json::json!({
-                        "height": height,
-                        "blockHash": hash.to_string(),
-                        "signature": sig.as_ref().map(|s| hex::encode(s.as_bytes()))
-                    })
+                .map(|((height, hash), sig)| TaskChainLockSigDto {
+                    height: *height,
+                    block_hash: hash.to_string(),
+                    signature: sig.as_ref().map(|s| hex::encode(s.as_bytes())),
                 })
                 .collect();
-            serde_json::json!({
-                "type": "ChainLockSigs",
-                "entries": items
-            })
+            TaskResultPayloadDto::MnListChainLockSigs { entries: items }
         }
         MnListResult::FetchedDiffs { items } => {
             let diffs: Vec<serde_json::Value> = items
@@ -351,10 +541,7 @@ fn classify_mnlist_result(result: &MnListResult) -> serde_json::Value {
                     })
                 })
                 .collect();
-            serde_json::json!({
-                "type": "FetchedDiffs",
-                "diffs": diffs
-            })
+            TaskResultPayloadDto::MnListFetchedDiffs { diffs }
         }
     }
 }
@@ -383,6 +570,7 @@ pub fn start_zmq_forwarding(
                     // Process the transaction finality in the backend
                     match ctx.received_transaction_finality(tx, Some(is_lock.clone()), None) {
                         Ok(utxos) => {
+                            emit_wallet_updated_events(&handle_msg, &ctx, &utxos, net_dto);
                             let txid = format!("{}", tx.txid());
                             let _ = ZmqIsLockedTransactionEvent {
                                 network: net_dto,
@@ -400,8 +588,13 @@ pub fn start_zmq_forwarding(
                     }
                 }
                 ZMQMessage::ChainLockedLockedTransaction(ref tx, height) => {
-                    if let Err(e) = ctx.received_transaction_finality(tx, None, Some(height)) {
-                        tracing::error!("Failed to process chain-locked transaction: {}", e);
+                    match ctx.received_transaction_finality(tx, None, Some(height)) {
+                        Ok(utxos) => {
+                            emit_wallet_updated_events(&handle_msg, &ctx, &utxos, net_dto);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to process chain-locked transaction: {}", e);
+                        }
                     }
                 }
                 ZMQMessage::ChainLockedBlock(ref block, ref chain_lock) => {
@@ -508,8 +701,13 @@ pub fn start_scheduled_vote_polling(app_handle: AppHandle, app_state: Arc<AppSta
                     );
 
                     // Create a headless sender for the task
-                    let (tx, _rx) = tokiompsc::channel::<TaskResult>(16);
+                    let (tx, mut rx) = tokiompsc::channel::<TaskResult>(64);
                     let sender = SenderAsync::new_headless(tx);
+
+                    // Drain intermediate progress — scheduled votes run headless
+                    tauri::async_runtime::spawn(async move {
+                        while rx.recv().await.is_some() {}
+                    });
 
                     let ctx_clone = ctx.clone();
                     let handle = app_handle.clone();
@@ -572,16 +770,45 @@ pub fn start_spv_status_polling(app_handle: AppHandle, app_state: Arc<AppState>)
 
                 let status = convert_spv_status(snapshot.status);
 
-                // SyncProgress from dash-spv has `header_height` (absolute height)
-                // rather than a total/current pair — we report it as-is.
-                let sync_pct = None::<f64>; // Not computable without a target height
+                // Use the overall sync percentage from the SPV progress watcher
+                // (average of headers + filter_headers + filters, each 0.0–1.0).
+                let sync_pct = if snapshot.sync_percentage > 0.0 {
+                    Some(snapshot.sync_percentage * 100.0)
+                } else {
+                    None
+                };
                 let header_height = snapshot.sync_progress.as_ref().map(|p| p.header_height);
+
+                // Per-category progress (0.0–100.0 scale), only when syncing
+                let is_syncing = matches!(
+                    snapshot.status,
+                    dash_evo_tool::spv::SpvStatus::Syncing
+                        | dash_evo_tool::spv::SpvStatus::Starting
+                        | dash_evo_tool::spv::SpvStatus::Running
+                );
+                let bd = &snapshot.sync_breakdown;
+                let (h_pct, mn_pct, fh_pct, f_pct, b_pct) = if is_syncing {
+                    (
+                        Some(bd.headers_pct * 100.0),
+                        Some(bd.masternodes_pct * 100.0),
+                        Some(bd.filter_headers_pct * 100.0),
+                        Some(bd.filters_pct * 100.0),
+                        Some(bd.blocks_pct * 100.0),
+                    )
+                } else {
+                    (None, None, None, None, None)
+                };
 
                 let _ = SpvStatusEvent {
                     network: network_dto,
                     status,
                     sync_progress_pct: sync_pct,
                     header_height,
+                    headers_progress_pct: h_pct,
+                    masternodes_progress_pct: mn_pct,
+                    filter_headers_progress_pct: fh_pct,
+                    filters_progress_pct: f_pct,
+                    blocks_progress_pct: b_pct,
                     connected_peers: snapshot.connected_peers as u32,
                     error: snapshot.last_error,
                 }
@@ -601,6 +828,39 @@ fn convert_spv_status(status: dash_evo_tool::spv::SpvStatus) -> SpvStatusDto {
         dash_evo_tool::spv::SpvStatus::Stopping => SpvStatusDto::Stopping,
         dash_evo_tool::spv::SpvStatus::Stopped => SpvStatusDto::Stopped,
         dash_evo_tool::spv::SpvStatus::Error => SpvStatusDto::Error,
+    }
+}
+
+/// Emit `WalletUpdatedEvent` for each wallet that owns any of the given addresses.
+fn emit_wallet_updated_events(
+    app_handle: &AppHandle,
+    ctx: &dash_evo_tool::context::AppContext,
+    utxos: &[(dash_sdk::dpp::dashcore::OutPoint, dash_sdk::dpp::dashcore::TxOut, dash_sdk::dpp::dashcore::Address)],
+    net_dto: NetworkDto,
+) {
+    use std::collections::BTreeSet;
+
+    if utxos.is_empty() {
+        return;
+    }
+
+    let addresses: BTreeSet<_> = utxos.iter().map(|(_, _, addr)| addr).collect();
+
+    for (seed_hash, wallet_arc) in ctx.loaded_wallets() {
+        let wallet = match wallet_arc.read() {
+            Ok(w) => w,
+            Err(_) => continue,
+        };
+        let affected = addresses
+            .iter()
+            .any(|addr| wallet.known_addresses.contains_key(addr));
+        if affected {
+            let _ = WalletUpdatedEvent {
+                wallet_seed_hash: hex::encode(seed_hash),
+                network: net_dto,
+            }
+            .emit(app_handle);
+        }
     }
 }
 
@@ -634,31 +894,38 @@ mod tests {
 
     #[test]
     fn classify_none_result() {
-        let (ty, payload) = classify_success_result(&BackendTaskSuccessResult::None);
-        assert_eq!(ty, "None");
-        assert!(payload.is_none());
+        let result = classify_success_result(&BackendTaskSuccessResult::None);
+        assert!(matches!(result, TaskResultPayloadDto::None));
     }
 
     #[test]
     fn classify_refresh_result() {
-        let (ty, payload) = classify_success_result(&BackendTaskSuccessResult::Refresh);
-        assert_eq!(ty, "Refresh");
-        assert!(payload.is_none());
+        let result = classify_success_result(&BackendTaskSuccessResult::Refresh);
+        assert!(matches!(result, TaskResultPayloadDto::Refresh));
     }
 
     #[test]
     fn classify_message_result() {
-        let (ty, payload) =
+        let result =
             classify_success_result(&BackendTaskSuccessResult::Message("hello".into()));
-        assert_eq!(ty, "Message");
-        assert_eq!(payload.unwrap(), serde_json::Value::String("hello".into()));
+        match result {
+            TaskResultPayloadDto::Message { text } => assert_eq!(text, "hello"),
+            other => panic!("Expected Message, got {:?}", other),
+        }
     }
 
     #[test]
     fn classify_broadcast_result() {
-        let (ty, payload) =
+        let result =
             classify_success_result(&BackendTaskSuccessResult::BroadcastedStateTransition);
-        assert_eq!(ty, "BroadcastedStateTransition");
-        assert!(payload.is_none());
+        assert!(matches!(
+            result,
+            TaskResultPayloadDto::BroadcastedStateTransition
+        ));
+    }
+
+    #[test]
+    fn task_domain_maps_correctly() {
+        assert_eq!(task_domain(&BackendTask::None), TaskDomain::General);
     }
 }

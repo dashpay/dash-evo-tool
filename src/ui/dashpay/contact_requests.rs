@@ -1196,12 +1196,12 @@ impl ScreenLike for ContactRequests {
                 let unresolved = self.resolve_names_from_local_cache();
                 self.pending_profile_fetches.extend(unresolved);
             }
-            BackendTaskSuccessResult::DashPay(DashPayResult::ContactProfile(Some(doc))) => {
+            BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // A profile was fetched for an identity — update any matching requests
                 let contact_id = doc.owner_id();
                 self.update_names_from_profile(contact_id, &doc);
             }
-            BackendTaskSuccessResult::DashPay(DashPayResult::ContactProfile(None)) => {
+            BackendTaskSuccessResult::DashPayContactProfile(None) => {
                 // No profile found for this identity — nothing to update
             }
             BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {

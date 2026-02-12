@@ -1,5 +1,5 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::{DashPayResult, DashPayTask};
+use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -14,7 +14,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use egui::{RichText, ScrollArea, TextEdit, Ui};
+use egui::{Color32, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
 const PRIVATE_CONTACT_INFO_TEXT: &str = "About Private Contact Information:\n\n\
@@ -410,7 +410,7 @@ impl ContactDetailsScreen {
                         if info.is_hidden {
                             ui.label(
                                 RichText::new("⚠️ This contact is hidden")
-                                    .color(DashColors::WARNING_ORANGE),
+                                    .color(Color32::from_rgb(200, 150, 50)),
                             );
                         }
 
@@ -594,7 +594,7 @@ impl ScreenLike for ContactDetailsScreen {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPay(DashPayResult::ContactProfile(Some(doc))) => {
+            BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Update contact info with fresh profile data from Platform
                 use dash_sdk::dpp::document::DocumentV0Getters;
                 let properties = doc.properties();
@@ -653,12 +653,12 @@ impl ScreenLike for ContactDetailsScreen {
                     });
                 }
             }
-            BackendTaskSuccessResult::DashPay(DashPayResult::ContactInfoUpdated(contact_id)) => {
+            BackendTaskSuccessResult::DashPayContactInfoUpdated(contact_id) => {
                 if contact_id == self.contact_id {
                     self.display_message("Contact info saved to Platform", MessageType::Success);
                 }
             }
-            BackendTaskSuccessResult::DashPay(DashPayResult::ContactsWithInfo(contacts_data)) => {
+            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
                 // If a full contacts reload happened, update our contact if present
                 for contact_data in contacts_data {
                     if contact_data.identity_id == self.contact_id {

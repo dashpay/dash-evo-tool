@@ -21,6 +21,7 @@ import {
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import type { WalletDto, SingleKeyWalletDto, WalletRefDto } from "@/bindings";
 import { formatAmount } from "@/components/shared/AmountInput";
 
@@ -346,10 +347,7 @@ const SingleKeyWalletCard = memo(function SingleKeyWalletCard({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" onCloseAutoFocus={(e) => e.preventDefault()}>
-            <DropdownMenuItem
-              onClick={() => setIsRenaming(true)}
-              onSelect={() => setIsRenaming(true)}
-            >
+            <DropdownMenuItem onClick={() => setIsRenaming(true)}>
               <Pencil className="h-4 w-4 mr-2" />
               Rename
             </DropdownMenuItem>
@@ -410,26 +408,26 @@ export function WalletListPanel({
   }, [removeTarget, onRemoveHdWallet, onRemoveSingleKeyWallet]);
 
   const handleUnlockResult = useCallback(
-    async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {
-      if (result.status === "unlocked" && unlockTarget && onUnlockWallet) {
+    async (result: WalletUnlockResult) => {
+      if (result.status !== "unlocked" || !unlockTarget || !onUnlockWallet) {
         setUnlockError(null);
-        setUnlockLoading(true);
-        try {
-          const error = await onUnlockWallet(unlockTarget.seedHash, result.password);
-          if (error) {
-            setUnlockError(error);
-            setUnlockLoading(false);
-            return; // Keep dialog open on error
-          }
-        } catch (e) {
-          setUnlockError(e instanceof Error ? e.message : String(e));
-          setUnlockLoading(false);
-          return; // Keep dialog open on error
-        }
-        setUnlockLoading(false);
+        setUnlockTarget(null);
+        return;
       }
       setUnlockError(null);
-      setUnlockTarget(null);
+      setUnlockLoading(true);
+      try {
+        const error = await onUnlockWallet(unlockTarget.seedHash, result.password);
+        if (error) {
+          setUnlockError(error);
+          return; // Keep dialog open on error
+        }
+        setUnlockTarget(null);
+      } catch (e) {
+        setUnlockError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setUnlockLoading(false);
+      }
     },
     [unlockTarget, onUnlockWallet],
   );

@@ -152,12 +152,12 @@ interface DashPayActions {
   loadContactRequests: () => Promise<void>;
   /** Refresh contact requests from Platform. */
   refreshContactRequests: () => Promise<void>;
-  /** Send a new contact request (async task dispatch). */
+  /** Send a new contact request (async task dispatch). Returns taskId or null on IPC error. */
   sendContactRequest: (input: {
     signingKeyId: number;
     toUsername: string;
     accountLabel: string | null;
-  }) => Promise<void>;
+  }) => Promise<string | null>;
   /** Accept an incoming contact request (async task dispatch). */
   acceptContactRequest: (requestId: string) => Promise<void>;
   /** Reject an incoming contact request (async task dispatch). */
@@ -168,12 +168,12 @@ interface DashPayActions {
   loadPayments: (limit?: number) => Promise<void>;
   /** Refresh payment history from Platform. */
   refreshPayments: () => Promise<void>;
-  /** Send a payment to a contact (async task dispatch). */
+  /** Send a payment to a contact (async task dispatch). Returns taskId or null on IPC error. */
   sendPayment: (input: {
     contactId: string;
     amountDash: number;
     memo: string | null;
-  }) => Promise<void>;
+  }) => Promise<string | null>;
 
   // ── Contact info actions ──
   /** Load private info for a specific contact. */
@@ -252,9 +252,23 @@ const initialState: DashPayState = {
   pendingOps: new Set(),
 };
 
-// ─── Task timeout manager ────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────
 
 const timeouts = new TaskTimeoutManager();
+
+/** Remove an op from pendingOps and set an error on a specific slice. */
+function failOp(
+  set: (fn: (s: DashPayState) => Partial<DashPayState>) => void,
+  opKey: string,
+  errorKey: keyof Pick<DashPayState, "requestsError" | "paymentsError">,
+  message: string,
+): void {
+  set((s) => {
+    const next = new Set(s.pendingOps);
+    next.delete(opKey);
+    return { [errorKey]: message, pendingOps: next };
+  });
+}
 
 // ─── Store ──────────────────────────────────────────────────────────
 
@@ -523,7 +537,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
 
   sendContactRequest: async ({ signingKeyId, toUsername, accountLabel }) => {
     const { selectedIdentityId } = get();
-    if (!selectedIdentityId) return;
+    if (!selectedIdentityId) return null;
 
     set((s) => ({
       requestsError: null,
@@ -537,10 +551,16 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
         accountLabel,
       });
       if (result.status === "error") {
-        set({ requestsError: result.error });
+        failOp(set, "sendRequest", "requestsError", result.error);
+        return null;
       }
+      timeouts.start("sendRequest", () => {
+        failOp(set, "sendRequest", "requestsError", TIMEOUT_ERROR_MESSAGE);
+      });
+      return result.data.taskId;
     } catch (e) {
-      set({ requestsError: e instanceof Error ? e.message : String(e) });
+      failOp(set, "sendRequest", "requestsError", e instanceof Error ? e.message : String(e));
+      return null;
     }
   },
 
@@ -687,9 +707,12 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
 
   sendPayment: async ({ contactId, amountDash, memo }) => {
     const { selectedIdentityId } = get();
-    if (!selectedIdentityId) return;
+    if (!selectedIdentityId) return null;
 
-    set({ paymentsError: null });
+    set((s) => ({
+      paymentsError: null,
+      pendingOps: new Set(s.pendingOps).add("sendPayment"),
+    }));
     try {
       const result = await commands.dashpaySendPaymentToContact({
         identityId: selectedIdentityId,
@@ -698,10 +721,16 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
         memo,
       });
       if (result.status === "error") {
-        set({ paymentsError: result.error });
+        failOp(set, "sendPayment", "paymentsError", result.error);
+        return null;
       }
+      timeouts.start("sendPayment", () => {
+        failOp(set, "sendPayment", "paymentsError", TIMEOUT_ERROR_MESSAGE);
+      });
+      return result.data.taskId;
     } catch (e) {
-      set({ paymentsError: e instanceof Error ? e.message : String(e) });
+      failOp(set, "sendPayment", "paymentsError", e instanceof Error ? e.message : String(e));
+      return null;
     }
   },
 
@@ -853,7 +882,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
             state.loadContacts();
           }
         }
-        if (ops.has("payments")) {
+        if (ops.has("payments") || ops.has("sendPayment")) {
           set({ paymentsRefreshing: false });
           if (state.selectedIdentityId) state.loadPayments();
         }
@@ -886,17 +915,40 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
 
         timeouts.clearAll();
 
-        set({
-          profileSaving: false,
-          contactsRefreshing: false,
-          requestsRefreshing: false,
-          paymentsRefreshing: false,
-          searchLoading: false,
-          acceptingIds: new Set(),
-          rejectingIds: new Set(),
-          pendingOps: new Set(),
-          profileError: event.payload.message,
-        });
+        const state = get();
+        const ops = state.pendingOps;
+        const msg = event.payload.message;
+
+        // Route error to the correct slice based on which operation was pending
+        const updates: Partial<DashPayState> = { pendingOps: new Set() };
+
+        if (ops.has("profile") || ops.size === 0) {
+          updates.profileSaving = false;
+          updates.profileError = msg;
+        }
+        if (ops.has("contacts")) {
+          updates.contactsRefreshing = false;
+          updates.contactsError = msg;
+        }
+        if (ops.has("requests") || ops.has("sendRequest")) {
+          updates.requestsRefreshing = false;
+          updates.requestsError = msg;
+        }
+        if (ops.has("accept") || ops.has("reject")) {
+          updates.acceptingIds = new Set();
+          updates.rejectingIds = new Set();
+          updates.requestsError = msg;
+        }
+        if (ops.has("payments") || ops.has("sendPayment")) {
+          updates.paymentsRefreshing = false;
+          updates.paymentsError = msg;
+        }
+        if (ops.has("search")) {
+          updates.searchLoading = false;
+          updates.searchError = msg;
+        }
+
+        set(updates);
       },
     );
 

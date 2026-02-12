@@ -6,6 +6,7 @@ import { useDashPayStore } from "@/stores/dashpayStore";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
 import { renderWithProviders } from "@/test/router-utils";
+import { events } from "@/bindings";
 import type { QualifiedIdentityDto, WalletDto, StoredContactDto } from "@/bindings";
 
 // ─── Mock Tauri bindings ──────────────────────────────────────────
@@ -90,6 +91,22 @@ function makeContact(overrides: Partial<StoredContactDto> = {}): StoredContactDt
     lastSeen: null,
     ...overrides,
   };
+}
+
+// ─── Event helpers ──────────────────────────────────────────────
+
+function emitTaskResult(taskId: string) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload: { taskId, result: { type: "dashPayCompleted" } } });
+  }
+}
+
+function emitTaskError(taskId: string, message: string) {
+  const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload: { taskId, domain: "dashPay", message, details: "", recoverable: false } });
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -509,7 +526,7 @@ describe("SendPaymentScreen", () => {
 
     it("shows success screen after payment sent", async () => {
       const user = userEvent.setup();
-      const sendPaymentMock = vi.fn().mockResolvedValue(undefined);
+      const sendPaymentMock = vi.fn().mockResolvedValue("task-pay-1");
       setupWithIdentity();
       useDashPayStore.setState({ sendPayment: sendPaymentMock });
       renderScreen();
@@ -519,15 +536,25 @@ describe("SendPaymentScreen", () => {
       await user.click(screen.getByRole("button", { name: /Send Payment/i }));
       await user.click(screen.getByRole("button", { name: "Send Payment" }));
 
+      // Screen stays in "sending" until task event arrives
+      await waitFor(() => {
+        expect(screen.getByText("Sending...")).toBeInTheDocument();
+      });
+
+      emitTaskResult("task-pay-1");
+
       await waitFor(() => {
         expect(screen.getByText("Payment Sent!")).toBeInTheDocument();
       });
       expect(screen.getByText(/1\.50000000 DASH sent to Bob/)).toBeInTheDocument();
     });
 
-    it("shows error when sendPayment throws", async () => {
+    it("shows error when sendPayment returns null (IPC failure)", async () => {
       const user = userEvent.setup();
-      const sendPaymentMock = vi.fn().mockRejectedValue(new Error("Network error"));
+      const sendPaymentMock = vi.fn().mockImplementation(async () => {
+        useDashPayStore.setState({ paymentsError: "Network error" });
+        return null;
+      });
       setupWithIdentity();
       useDashPayStore.setState({ sendPayment: sendPaymentMock });
       renderScreen();
@@ -541,6 +568,25 @@ describe("SendPaymentScreen", () => {
         expect(screen.getByText("Network error")).toBeInTheDocument();
       });
     });
+
+    it("shows error when task event reports failure", async () => {
+      const user = userEvent.setup();
+      const sendPaymentMock = vi.fn().mockResolvedValue("task-pay-err");
+      setupWithIdentity();
+      useDashPayStore.setState({ sendPayment: sendPaymentMock });
+      renderScreen();
+
+      const input = screen.getByPlaceholderText("Enter amount in Dash");
+      await user.type(input, "1.0");
+      await user.click(screen.getByRole("button", { name: /Send Payment/i }));
+      await user.click(screen.getByRole("button", { name: "Send Payment" }));
+
+      emitTaskError("task-pay-err", "Insufficient funds");
+
+      await waitFor(() => {
+        expect(screen.getByText("Insufficient funds")).toBeInTheDocument();
+      });
+    });
   });
 
   // ── Success screen ──
@@ -548,7 +594,7 @@ describe("SendPaymentScreen", () => {
   describe("success screen", () => {
     async function navigateToSuccess() {
       const user = userEvent.setup();
-      const sendPaymentMock = vi.fn().mockResolvedValue(undefined);
+      const sendPaymentMock = vi.fn().mockResolvedValue("task-pay-success");
       setupWithIdentity();
       useDashPayStore.setState({ sendPayment: sendPaymentMock });
       renderScreen();
@@ -558,6 +604,8 @@ describe("SendPaymentScreen", () => {
       await user.click(screen.getByRole("button", { name: /Send Payment/i }));
       // Confirm in dialog
       await user.click(screen.getByRole("button", { name: "Send Payment" }));
+
+      emitTaskResult("task-pay-success");
 
       await waitFor(() => {
         expect(screen.getByText("Payment Sent!")).toBeInTheDocument();

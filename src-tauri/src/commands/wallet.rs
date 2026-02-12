@@ -271,30 +271,19 @@ fn parse_address_checked(
         .map_err(|e| format!("Address network mismatch: {e}"))
 }
 
+/// Parse a 32-byte hex-encoded hash, returning a descriptive error on failure.
+fn parse_hash_32(hex_str: &str, label: &str) -> Result<[u8; 32], String> {
+    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid {label} hex: {e}"))?;
+    <[u8; 32]>::try_from(bytes.as_slice())
+        .map_err(|_| format!("{label} must be 32 bytes, got {}", bytes.len()))
+}
+
 fn parse_wallet_seed_hash(hex_str: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid wallet seed hash hex: {e}"))?;
-    if bytes.len() != 32 {
-        return Err(format!(
-            "Wallet seed hash must be 32 bytes, got {}",
-            bytes.len()
-        ));
-    }
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&bytes);
-    Ok(hash)
+    parse_hash_32(hex_str, "wallet seed hash")
 }
 
 fn parse_single_key_hash(hex_str: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid single-key hash hex: {e}"))?;
-    if bytes.len() != 32 {
-        return Err(format!(
-            "Single-key hash must be 32 bytes, got {}",
-            bytes.len()
-        ));
-    }
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&bytes);
-    Ok(hash)
+    parse_hash_32(hex_str, "single-key hash")
 }
 
 /// Convert an HD `Wallet` to its DTO representation (no private key data).

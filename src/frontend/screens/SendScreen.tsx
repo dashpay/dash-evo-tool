@@ -19,6 +19,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { useWalletStore } from "@/stores/walletStore";
 import { commands, events } from "@/bindings";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import type {
   WalletDto,
   SingleKeyWalletDto,
@@ -379,33 +380,34 @@ export function SendScreen() {
   }, []);
 
   const [unlockLoading, setUnlockLoading] = useState(false);
+  const storeUnlockWallet = useWalletStore((s) => s.unlockWallet);
 
   const handleUnlockResult = useCallback(
-    async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {
-      if (result.status === "unlocked" && wallet) {
-        setUnlockError(null);
-        setUnlockLoading(true);
-        try {
-          const res = await commands.walletUnlock({
-            walletRef: { type: "hd", seedHash: wallet.seedHash },
-            password: result.password,
-          });
-          if (res.status === "error") {
-            setUnlockError(res.error);
-            setUnlockLoading(false);
-            return; // Keep dialog open on error
-          }
-          setWalletUnlocked(true);
-        } catch (e) {
-          setUnlockError(e instanceof Error ? e.message : String(e));
-          setUnlockLoading(false);
+    async (result: WalletUnlockResult) => {
+      if (result.status !== "unlocked" || !wallet) {
+        setUnlockOpen(false);
+        return;
+      }
+      setUnlockError(null);
+      setUnlockLoading(true);
+      try {
+        const err = await storeUnlockWallet(
+          { type: "hd", seedHash: wallet.seedHash },
+          result.password,
+        );
+        if (err) {
+          setUnlockError(err);
           return; // Keep dialog open on error
         }
+        setWalletUnlocked(true);
+        setUnlockOpen(false);
+      } catch (e) {
+        setUnlockError(e instanceof Error ? e.message : String(e));
+      } finally {
         setUnlockLoading(false);
       }
-      setUnlockOpen(false);
     },
-    [wallet],
+    [wallet, storeUnlockWallet],
   );
 
   // ─── Simple mode send ──────────────────────────────────────────

@@ -1,4 +1,6 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useTaskListener } from "@/hooks/useTaskListener";
+import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import {
   ArrowLeft,
   Loader2,
@@ -57,7 +59,7 @@ export function QRScannerScreen() {
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [showWalletUnlock, setShowWalletUnlock] = useState(false);
-
+  const [taskId, setTaskId] = useState<string | null>(null);
 
   // Identity options
   const identityOptions: IdentityOption[] = useMemo(
@@ -98,7 +100,6 @@ export function QRScannerScreen() {
   const walletNeedsPassword = associatedWallet?.usesPassword ?? false;
   const walletAlias = associatedWallet?.alias ?? "Wallet";
 
-
   // Handlers
   const handleIdentityChange = useCallback((id: string) => {
     setIdentityId(id);
@@ -136,11 +137,38 @@ export function QRScannerScreen() {
     }
   }, [qrDataInput]);
 
+  // Listen for task completion/error
+  useTaskListener(
+    taskId,
+    useCallback((_event: TaskResultEvent) => {
+      setSuccessMsg("Contact request sent successfully! The contact will be automatically accepted.");
+      setScreenState("success");
+      setTaskId(null);
+    }, []),
+    useCallback((event: TaskErrorEvent) => {
+      setError(event.message);
+      setScreenState("error");
+      setTaskId(null);
+    }, []),
+  );
+
+  // Timeout for QR contact requests (120s) — this screen bypasses the store
+  useEffect(() => {
+    if (!taskId) return;
+    const timer = setTimeout(() => {
+      setError("Operation timed out. The task may still complete in the background.");
+      setScreenState("error");
+      setTaskId(null);
+    }, 120_000);
+    return () => clearTimeout(timer);
+  }, [taskId]);
+
   const handleClear = useCallback(() => {
     setQrDataInput("");
     setParsedData(null);
     setError(null);
     setSuccessMsg(null);
+    setTaskId(null);
     setScreenState("form");
   }, []);
 
@@ -175,8 +203,8 @@ export function QRScannerScreen() {
         proofExpiresAt: parsedData.expiresAt,
       });
       if (result.status === "ok") {
-        setScreenState("success");
-        setSuccessMsg("Contact request sent successfully! The contact will be automatically accepted.");
+        // Task dispatched — stay in "sending", wait for task event
+        setTaskId(result.data.taskId);
       } else {
         setScreenState("error");
         setError(result.error);

@@ -11,9 +11,10 @@ import {
 } from "@/components/wallet";
 import type { ReceiveAddress } from "@/components/wallet/ReceiveDialog";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { useWalletStore } from "@/stores/walletStore";
 import { commands, events } from "@/bindings";
-import type { WalletDto, SingleKeyWalletDto, TaskResultEvent, TaskErrorEvent } from "@/bindings";
+import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toastError";
 
@@ -295,7 +296,7 @@ export function WalletsScreen() {
   );
 
   const handleViewKeyUnlockResult = useCallback(
-    async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {
+    async (result: WalletUnlockResult) => {
       if (result.status === "unlocked" && viewKeyUnlock) {
         const err = await unlockWallet(
           { type: "hd", seedHash: viewKeyUnlock.seedHash },
@@ -372,23 +373,27 @@ export function WalletsScreen() {
 
   // ─── Receive dialog addresses ────────────────────────────────────
 
-  const receiveWalletName = selectedHdWallet
-    ? (selectedHdWallet.alias?.trim() || "Unnamed Wallet")
-    : selectedSingleKeyWallet
-      ? (selectedSingleKeyWallet.alias?.trim() || "Unnamed Key")
-      : "Wallet";
+  let receiveWalletName: string;
+  let receiveCoreAddresses: ReceiveAddress[];
+  let receivePlatformAddresses: ReceiveAddress[];
+  let receiveWalletType: "hd" | "singleKey";
 
-  const receiveCoreAddresses: ReceiveAddress[] = selectedHdWallet
-    ? buildCoreAddresses(selectedHdWallet)
-    : selectedSingleKeyWallet
-      ? buildSingleKeyCoreAddresses(selectedSingleKeyWallet)
-      : [];
-
-  const receivePlatformAddresses: ReceiveAddress[] = selectedHdWallet
-    ? buildPlatformAddresses(selectedHdWallet)
-    : [];
-
-  const receiveWalletType = selectedHdWallet ? "hd" as const : "singleKey" as const;
+  if (selectedHdWallet) {
+    receiveWalletName = selectedHdWallet.alias?.trim() || "Unnamed Wallet";
+    receiveCoreAddresses = buildCoreAddresses(selectedHdWallet);
+    receivePlatformAddresses = buildPlatformAddresses(selectedHdWallet);
+    receiveWalletType = "hd";
+  } else if (selectedSingleKeyWallet) {
+    receiveWalletName = selectedSingleKeyWallet.alias?.trim() || "Unnamed Key";
+    receiveCoreAddresses = buildSingleKeyCoreAddresses(selectedSingleKeyWallet);
+    receivePlatformAddresses = [];
+    receiveWalletType = "singleKey";
+  } else {
+    receiveWalletName = "Wallet";
+    receiveCoreAddresses = [];
+    receivePlatformAddresses = [];
+    receiveWalletType = "singleKey";
+  }
 
   // ─── Render ──────────────────────────────────────────────────────
 

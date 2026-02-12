@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   ArrowLeft,
   Loader2,
@@ -31,6 +31,8 @@ import {
 import { useDashPayStore } from "@/stores/dashpayStore";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
+import { useTaskListener } from "@/hooks/useTaskListener";
+import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { cn } from "@/lib/utils";
 
 // ─── Constants ────────────────────────────────────────────────────────
@@ -78,6 +80,7 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
   const [sentAmount, setSentAmount] = useState<string>("");
   const [sentAddress, setSentAddress] = useState<string>("");
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [taskId, setTaskId] = useState<string | null>(null);
 
   const { value: amountValue, setValue: setAmountValue, parsedAmount, isValid: isAmountValid } =
     useAmountInput(8);
@@ -181,27 +184,49 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
 
     setScreenState("sending");
     setSentAmount(formatAmount(parsedAmount, 8));
+    setSendError(null);
 
-    try {
-      await sendPayment({
-        contactId,
-        amountDash,
-        memo: memo.trim() || null,
-      });
-      setSentAddress(`Sent to ${contactDisplayName}`);
-      setScreenState("success");
-    } catch (e) {
-      setSendError(e instanceof Error ? e.message : String(e));
+    const id = await sendPayment({
+      contactId,
+      amountDash,
+      memo: memo.trim() || null,
+    });
+
+    if (!id) {
+      // IPC dispatch failed — store already has paymentsError
+      const storeError = useDashPayStore.getState().paymentsError;
+      setSendError(storeError ?? "Failed to send payment.");
       setScreenState("error");
+      return;
     }
+
+    // Task dispatched — stay in "sending", wait for task event
+    setTaskId(id);
   }, [
     selectedIdentityId,
     parsedAmount,
     memo,
     contactId,
-    contactDisplayName,
     sendPayment,
   ]);
+
+  // Listen for task completion/error
+  const contactDisplayNameRef = useRef(contactDisplayName);
+  contactDisplayNameRef.current = contactDisplayName;
+
+  useTaskListener(
+    taskId,
+    useCallback((_event: TaskResultEvent) => {
+      setSentAddress(`Sent to ${contactDisplayNameRef.current}`);
+      setScreenState("success");
+      setTaskId(null);
+    }, []),
+    useCallback((event: TaskErrorEvent) => {
+      setSendError(event.message);
+      setScreenState("error");
+      setTaskId(null);
+    }, []),
+  );
 
   const handleSendAnother = useCallback(() => {
     setAmountValue("");
@@ -209,6 +234,7 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
     setSendError(null);
     setSentAmount("");
     setSentAddress("");
+    setTaskId(null);
     setScreenState("form");
   }, [setAmountValue]);
 

@@ -241,23 +241,25 @@ export function TokenAddByIdScreen() {
 
       setAddingTokenId(token.tokenId);
 
-      const tokenInfo = {
-        token_id: token.tokenId,
-        token_name: token.name ?? "Unnamed Token",
-        data_contract_id: token.contractId,
-        token_position: token.tokenPosition,
-        token_configuration: token.configurationJson ?? {},
-        description: token.description,
-      };
-
-      commands.tokenSaveLocally({ tokenInfoJson: tokenInfo }).then((result) => {
-        if (result.status !== "ok") {
-          setAddingTokenId(null);
-          toastError(result.error);
-        }
-      });
+      commands
+        .tokenSaveLocally({
+          tokenId: token.tokenId,
+          contractId: token.contractId,
+          tokenPosition: token.tokenPosition,
+          tokenName: token.name ?? "Unnamed Token",
+        })
+        .then((result) => {
+          if (result.status === "ok") {
+            toast.success(`"${token.name ?? "Unnamed Token"}" added to My Tokens`);
+            setAddingTokenId(null);
+            loadMyTokenBalances();
+          } else {
+            setAddingTokenId(null);
+            toastError(result.error);
+          }
+        });
     },
-    [],
+    [loadMyTokenBalances],
   );
 
   const handleMoreInfo = useCallback((token: FoundToken) => {

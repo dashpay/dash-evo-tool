@@ -6,7 +6,7 @@ import { useDashPayStore } from "@/stores/dashpayStore";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
 import { renderWithProviders } from "@/test/router-utils";
-import { commands } from "@/bindings";
+import { commands, events } from "@/bindings";
 import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
 // ─── Mock Tauri bindings ──────────────────────────────────────────
@@ -89,6 +89,15 @@ const PARSED_RESULT = {
   accountReference: 0,
   expiresAt: Math.floor(Date.now() / 1000) + 86400,
 };
+
+// ─── Event helpers ──────────────────────────────────────────────
+
+function emitTaskResult(taskId: string) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload: { taskId, result: { type: "dashPayCompleted" } } });
+  }
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
@@ -419,6 +428,13 @@ describe("QRScannerScreen", () => {
 
       await user.click(screen.getByText("Add Contact"));
 
+      // Screen stays in "sending" until task event
+      await waitFor(() => {
+        expect(screen.getByText("Sending contact request...")).toBeInTheDocument();
+      });
+
+      emitTaskResult("123");
+
       await waitFor(() => {
         expect(screen.getByText("Contact Added!")).toBeInTheDocument();
       });
@@ -441,6 +457,8 @@ describe("QRScannerScreen", () => {
       });
 
       await user.click(screen.getByText("Add Contact"));
+
+      emitTaskResult("123");
 
       await waitFor(() => {
         expect(screen.getByText("Scan Another")).toBeInTheDocument();

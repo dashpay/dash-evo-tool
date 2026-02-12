@@ -6,6 +6,7 @@ import { useDashPayStore } from "@/stores/dashpayStore";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
 import { renderWithProviders } from "@/test/router-utils";
+import { events } from "@/bindings";
 import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
 // ─── Mock Tauri bindings ──────────────────────────────────────────
@@ -72,6 +73,15 @@ function makeIdentity(
     operatorIdentityId: null,
     ...overrides,
   };
+}
+
+// ─── Event helpers ──────────────────────────────────────────────
+
+function emitTaskResult(taskId: string) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload: { taskId, result: { type: "dashPayCompleted" } } });
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -388,7 +398,7 @@ describe("AddContactScreen", () => {
     it("shows success screen after successful send", async () => {
       setupWithIdentity();
       useDashPayStore.setState({
-        sendContactRequest: vi.fn().mockResolvedValue(undefined),
+        sendContactRequest: vi.fn().mockResolvedValue("task-cr-1"),
         requestsError: null,
       });
       renderScreen();
@@ -396,6 +406,13 @@ describe("AddContactScreen", () => {
 
       await user.type(screen.getByTestId("username-input"), "bob.dash");
       await user.click(screen.getByTestId("send-button"));
+
+      // Screen stays in "sending" until task event
+      await waitFor(() => {
+        expect(screen.getByText("Sending contact request...")).toBeInTheDocument();
+      });
+
+      emitTaskResult("task-cr-1");
 
       await waitFor(() => {
         expect(
@@ -627,7 +644,7 @@ describe("AddContactScreen", () => {
     it("navigates to contacts on success Back to Contacts button", async () => {
       setupWithIdentity();
       useDashPayStore.setState({
-        sendContactRequest: vi.fn().mockResolvedValue(undefined),
+        sendContactRequest: vi.fn().mockResolvedValue("task-cr-nav"),
         requestsError: null,
       });
       renderScreen();
@@ -635,6 +652,8 @@ describe("AddContactScreen", () => {
 
       await user.type(screen.getByTestId("username-input"), "bob.dash");
       await user.click(screen.getByTestId("send-button"));
+
+      emitTaskResult("task-cr-nav");
 
       await waitFor(() => {
         expect(
@@ -657,7 +676,7 @@ describe("AddContactScreen", () => {
     it("shows Send Another Request button", async () => {
       setupWithIdentity();
       useDashPayStore.setState({
-        sendContactRequest: vi.fn().mockResolvedValue(undefined),
+        sendContactRequest: vi.fn().mockResolvedValue("task-cr-btn"),
         requestsError: null,
       });
       renderScreen();
@@ -665,6 +684,8 @@ describe("AddContactScreen", () => {
 
       await user.type(screen.getByTestId("username-input"), "bob.dash");
       await user.click(screen.getByTestId("send-button"));
+
+      emitTaskResult("task-cr-btn");
 
       await waitFor(() => {
         expect(
@@ -680,7 +701,7 @@ describe("AddContactScreen", () => {
     it("resets form on Send Another Request", async () => {
       setupWithIdentity();
       useDashPayStore.setState({
-        sendContactRequest: vi.fn().mockResolvedValue(undefined),
+        sendContactRequest: vi.fn().mockResolvedValue("task-cr-reset"),
         requestsError: null,
       });
       renderScreen();
@@ -689,6 +710,8 @@ describe("AddContactScreen", () => {
       await user.type(screen.getByTestId("username-input"), "bob.dash");
       await user.type(screen.getByTestId("label-input"), "Friend");
       await user.click(screen.getByTestId("send-button"));
+
+      emitTaskResult("task-cr-reset");
 
       await waitFor(() => {
         expect(

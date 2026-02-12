@@ -1,4 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
+import { useTaskListener } from "@/hooks/useTaskListener";
+import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import {
   UserPlus,
   ArrowLeft,
@@ -217,7 +219,7 @@ export function AddContactScreen() {
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [screenState, setScreenState] = useState<ScreenState>("form");
-  const [sendDispatched, setSendDispatched] = useState(false);
+  const [taskId, setTaskId] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [trackedIdentityId, setTrackedIdentityId] =
     useState(selectedIdentityId);
@@ -232,7 +234,7 @@ export function AddContactScreen() {
     setSelectedKeyId(null);
     setLocalError(null);
     setScreenState("form");
-    setSendDispatched(false);
+    setTaskId(null);
   }
 
   // Auto-select key if none selected yet
@@ -247,14 +249,6 @@ export function AddContactScreen() {
     } else if (signingKeys.length > 0) {
       setSelectedKeyId(signingKeys[0]!.keyId);
     }
-  }
-
-  // Detect send completion: sendDispatched was true but store cleared the loading flag
-  // The store sets requestsError on failure, clears it on success (plus task events reload data)
-  if (sendDispatched && !useDashPayStore.getState().requestsError && screenState === "sending") {
-    // Check if the error was set after we dispatched — wait a tick for store to settle
-    // Use a simple approach: if requestsError is null and we dispatched, it succeeded
-    // (the store sets error synchronously on dispatch failure)
   }
 
   // ── Validation ──
@@ -312,25 +306,23 @@ export function AddContactScreen() {
 
     setLocalError(null);
     setScreenState("sending");
-    setSendDispatched(true);
 
-    await sendContactRequest({
+    const id = await sendContactRequest({
       signingKeyId: selectedKeyId,
       toUsername: usernameOrId.trim(),
       accountLabel: accountLabel.trim() || null,
     });
 
-    // After dispatch, check if the store has an error
-    // (sendContactRequest sets requestsError synchronously on failure)
-    const storeError = useDashPayStore.getState().requestsError;
-    if (storeError) {
+    if (!id) {
+      // IPC dispatch failed — store already has requestsError
+      const storeError = useDashPayStore.getState().requestsError;
+      setLocalError(storeError ?? "Failed to send contact request.");
       setScreenState("form");
-      setSendDispatched(false);
-    } else {
-      // Request dispatched successfully — show success
-      setScreenState("success");
-      setSendDispatched(false);
+      return;
     }
+
+    // Task dispatched — stay in "sending", wait for task event
+    setTaskId(id);
   }, [
     usernameOrId,
     accountLabel,
@@ -339,19 +331,33 @@ export function AddContactScreen() {
     sendContactRequest,
   ]);
 
+  // Listen for task completion/error
+  useTaskListener(
+    taskId,
+    useCallback((_event: TaskResultEvent) => {
+      setScreenState("success");
+      setTaskId(null);
+    }, []),
+    useCallback((event: TaskErrorEvent) => {
+      setLocalError(event.message);
+      setScreenState("form");
+      setTaskId(null);
+    }, []),
+  );
+
   const handleRetry = useCallback(() => {
     setLocalError(null);
     clearErrors();
+    setTaskId(null);
     setScreenState("form");
-    setSendDispatched(false);
   }, [clearErrors]);
 
   const handleSendAnother = useCallback(() => {
     setUsernameOrId("");
     setAccountLabel("");
     setLocalError(null);
+    setTaskId(null);
     setScreenState("form");
-    setSendDispatched(false);
   }, []);
 
   const handleBack = useCallback(() => {

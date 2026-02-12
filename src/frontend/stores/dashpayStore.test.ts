@@ -1106,11 +1106,12 @@ describe("dashpayStore", () => {
       expect(commands.dashpayDbLoadProfile).not.toHaveBeenCalled();
     });
 
-    it("sets error on task error event", async () => {
+    it("sets error on task error event routed by pendingOps", async () => {
       useDashPayStore.setState({
         profileSaving: true,
         contactsRefreshing: true,
         acceptingIds: new Set([1]),
+        pendingOps: new Set(["profile", "contacts", "accept"]),
       });
 
       let errorCallback: (event: {
@@ -1131,9 +1132,39 @@ describe("dashpayStore", () => {
 
       const state = useDashPayStore.getState();
       expect(state.profileSaving).toBe(false);
-      expect(state.contactsRefreshing).toBe(false);
-      expect(state.acceptingIds.size).toBe(0);
       expect(state.profileError).toBe("Task failed");
+      expect(state.contactsRefreshing).toBe(false);
+      expect(state.contactsError).toBe("Task failed");
+      expect(state.acceptingIds.size).toBe(0);
+      expect(state.requestsError).toBe("Task failed");
+    });
+
+    it("routes error to profileError when no pendingOps", async () => {
+      useDashPayStore.setState({
+        pendingOps: new Set(),
+      });
+
+      let errorCallback: (event: {
+        payload: { taskId: string; domain: string; message: string; details: string; recoverable: boolean };
+      }) => void;
+      (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskErrorEvent.listen as Mock).mockImplementation(
+        (cb: typeof errorCallback) => {
+          errorCallback = cb;
+          return Promise.resolve(() => {});
+        },
+      );
+
+      await useDashPayStore.getState().subscribeToUpdates();
+      errorCallback!({
+        payload: { taskId: "t1", domain: "dashPay", message: "Unknown error", details: "", recoverable: false },
+      });
+
+      const state = useDashPayStore.getState();
+      expect(state.profileError).toBe("Unknown error");
+      expect(state.contactsError).toBeNull();
+      expect(state.requestsError).toBeNull();
+      expect(state.paymentsError).toBeNull();
     });
   });
 

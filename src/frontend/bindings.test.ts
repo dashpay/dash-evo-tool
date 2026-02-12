@@ -159,7 +159,7 @@ describe("Bindings: commands object", () => {
     expect(coreCmds.length).toBe(10);
   });
 
-  it("contains all 24 wallet commands", () => {
+  it("contains all 26 wallet commands", () => {
     const cmds = commands as unknown as Record<string, unknown>;
     const walletCmds = [
       "walletGenerateReceiveAddress",

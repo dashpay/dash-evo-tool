@@ -43,7 +43,7 @@ In GitHub Actions (Claude Code workflow), use `.github/scripts/safe-cargo.sh` in
 .github/scripts/safe-cargo.sh build --all-features
 .github/scripts/safe-cargo.sh test --all-features --workspace
 .github/scripts/safe-cargo.sh clippy --all-features --all-targets -- -D warnings
-.github/scripts/safe-cargo.sh fmt --all
+.github/scripts/safe-cargo.sh +nightly fmt --all
 ```
 
 ## Architecture Overview

@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Branching
+
+- `master` is a **release-only** branch, updated every few months. Do not use it as a base for diffs or PRs during active development.
+- `v1.0-dev` is the current active development branch. Use it as the base for general diffs, comparisons, and new feature branches.
+- PR and commits should follow conventional commit naming rules.
+
 ## Build Commands
 
 ```bash
@@ -26,6 +32,8 @@ Test locations:
 - Unit tests: inline in source files (`#[test]`)
 - UI integration: `tests/kittest/`
 - E2E: `tests/e2e/`
+
+Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 
 ## Architecture Overview
 

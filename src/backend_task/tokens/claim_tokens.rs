@@ -79,7 +79,10 @@ impl AppContext {
                         && let Err(e) =
                             self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
                     {
-                        eprintln!("Failed to update token balance from claim document: {}", e);
+                        tracing::error!(
+                            "Failed to update token balance from claim document: {}",
+                            e
+                        );
                     }
                 }
 
@@ -93,7 +96,7 @@ impl AppContext {
                         && let Err(e) =
                             self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
                     {
-                        eprintln!(
+                        tracing::error!(
                             "Failed to update token balance from group action document: {}",
                             e
                         );

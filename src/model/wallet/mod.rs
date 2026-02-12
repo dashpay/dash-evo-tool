@@ -2431,3 +2431,984 @@ impl AddressProvider for WalletAddressProvider {
         self.highest_found
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+
+    /// Helper: create a minimal open wallet for testing.
+    /// Uses a deterministic 64-byte seed and derives the BIP44 master public key.
+    fn test_wallet() -> Wallet {
+        let seed = [42u8; 64];
+        let network = Network::Testnet;
+        let secp = Secp256k1::new();
+
+        // Derive master private key from seed
+        let master_private_key =
+            ExtendedPrivKey::new_master(network, &seed).expect("master key derivation");
+
+        // Derive BIP44 account 0 path: m/44'/1'/0'
+        let bip44_account_path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let bip44_account_private = master_private_key
+            .derive_priv(&secp, &bip44_account_path)
+            .expect("bip44 derivation");
+        let master_bip44_ecdsa_extended_public_key =
+            ExtendedPubKey::from_priv(&secp, &bip44_account_private);
+
+        let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
+
+        Wallet {
+            wallet_seed: WalletSeed::Open(OpenWalletSeed {
+                seed,
+                wallet_info: ClosedKeyItem {
+                    seed_hash,
+                    encrypted_seed: seed.to_vec(),
+                    salt: vec![],
+                    nonce: vec![],
+                    password_hint: None,
+                },
+            }),
+            uses_password: false,
+            master_bip44_ecdsa_extended_public_key,
+            address_balances: BTreeMap::new(),
+            address_total_received: BTreeMap::new(),
+            known_addresses: BTreeMap::new(),
+            watched_addresses: BTreeMap::new(),
+            unused_asset_locks: Vec::new(),
+            alias: Some("Test Wallet".to_string()),
+            identities: HashMap::new(),
+            utxos: HashMap::new(),
+            transactions: Vec::new(),
+            is_main: true,
+            confirmed_balance: 0,
+            unconfirmed_balance: 0,
+            total_balance: 0,
+            platform_address_info: BTreeMap::new(),
+        }
+    }
+
+    /// Helper: create a test address on Testnet
+    fn test_address(index: u8) -> Address {
+        use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
+        let secp = Secp256k1::new();
+        let mut sk_bytes = [0u8; 32];
+        sk_bytes[0] = if index == 0 { 1 } else { index };
+        let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
+        let inner = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+        let pubkey = PublicKey::from_slice(&inner.serialize()).expect("valid pubkey");
+        Address::p2pkh(&pubkey, Network::Testnet)
+    }
+
+    /// Helper: create an OutPoint with a deterministic txid
+    fn test_outpoint(tx_index: u8, vout: u32) -> OutPoint {
+        let mut txid_bytes = [0u8; 32];
+        txid_bytes[0] = tx_index;
+        OutPoint::new(Txid::from_slice(&txid_bytes).unwrap(), vout)
+    }
+
+    /// Helper: add a UTXO to a wallet
+    fn add_utxo(wallet: &mut Wallet, address: &Address, tx_index: u8, vout: u32, value: u64) {
+        let outpoint = test_outpoint(tx_index, vout);
+        let tx_out = TxOut {
+            value,
+            script_pubkey: address.script_pubkey(),
+        };
+        wallet
+            .utxos
+            .entry(address.clone())
+            .or_default()
+            .insert(outpoint, tx_out);
+    }
+
+    // ========================================================================
+    // Balance calculation tests
+    // ========================================================================
+
+    #[test]
+    fn test_max_balance_empty_wallet() {
+        let wallet = test_wallet();
+        assert_eq!(wallet.max_balance(), 0);
+    }
+
+    #[test]
+    fn test_max_balance_with_utxos() {
+        let mut wallet = test_wallet();
+        let addr1 = test_address(1);
+        let addr2 = test_address(2);
+
+        add_utxo(&mut wallet, &addr1, 1, 0, 50_000);
+        add_utxo(&mut wallet, &addr1, 2, 0, 30_000);
+        add_utxo(&mut wallet, &addr2, 3, 0, 20_000);
+
+        assert_eq!(wallet.max_balance(), 100_000);
+    }
+
+    #[test]
+    fn test_confirmed_balance_uses_spv_when_set() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+
+        // With SPV balances set, confirmed_balance should return the SPV value
+        wallet.update_spv_balances(75_000, 5_000, 80_000);
+        assert_eq!(wallet.confirmed_balance_duffs(), 75_000);
+    }
+
+    #[test]
+    fn test_confirmed_balance_falls_back_to_max_balance() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+
+        // Without SPV balances, falls back to max_balance()
+        assert_eq!(wallet.confirmed_balance_duffs(), 50_000);
+    }
+
+    #[test]
+    fn test_unconfirmed_balance() {
+        let mut wallet = test_wallet();
+        wallet.update_spv_balances(100_000, 25_000, 125_000);
+        assert_eq!(wallet.unconfirmed_balance_duffs(), 25_000);
+    }
+
+    #[test]
+    fn test_total_balance_uses_spv_when_set() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+
+        wallet.update_spv_balances(75_000, 5_000, 80_000);
+        assert_eq!(wallet.total_balance_duffs(), 80_000);
+    }
+
+    #[test]
+    fn test_total_balance_falls_back_to_max_balance() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+
+        assert_eq!(wallet.total_balance_duffs(), 50_000);
+    }
+
+    #[test]
+    fn test_has_balance() {
+        let mut wallet = test_wallet();
+        assert!(!wallet.has_balance());
+
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+        // has_balance checks confirmed_balance_duffs() > 0 || unconfirmed > 0
+        // Without SPV, confirmed falls back to max_balance = 50_000
+        assert!(wallet.has_balance());
+    }
+
+    #[test]
+    fn test_has_balance_with_only_unconfirmed() {
+        let mut wallet = test_wallet();
+        wallet.update_spv_balances(0, 1000, 1000);
+        assert!(wallet.has_balance());
+    }
+
+    #[test]
+    fn test_update_spv_balances() {
+        let mut wallet = test_wallet();
+        wallet.update_spv_balances(100, 50, 150);
+        assert_eq!(wallet.confirmed_balance, 100);
+        assert_eq!(wallet.unconfirmed_balance, 50);
+        assert_eq!(wallet.total_balance, 150);
+    }
+
+    // ========================================================================
+    // take_unspent_utxos_for tests
+    // ========================================================================
+
+    #[test]
+    fn test_take_utxos_exact_amount() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
+
+        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
+        assert!(result.is_some());
+        let (utxos, change) = result.unwrap();
+        assert_eq!(utxos.len(), 1);
+        assert!(change.is_none()); // exact amount, no change
+        // UTXO should be removed from wallet
+        assert!(wallet.utxos.is_empty());
+    }
+
+    #[test]
+    fn test_take_utxos_with_change() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 200_000);
+
+        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
+        assert!(result.is_some());
+        let (utxos, change) = result.unwrap();
+        assert_eq!(utxos.len(), 1);
+        assert_eq!(change, Some(100_000)); // 200k - 90k - 10k = 100k change
+        assert!(wallet.utxos.is_empty());
+    }
+
+    #[test]
+    fn test_take_utxos_insufficient_funds() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+
+        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
+        assert!(result.is_none());
+        // UTXOs should NOT be removed on failure
+        assert!(!wallet.utxos.is_empty());
+    }
+
+    #[test]
+    fn test_take_utxos_multiple_utxos_needed() {
+        let mut wallet = test_wallet();
+        let addr1 = test_address(1);
+        let addr2 = test_address(2);
+        add_utxo(&mut wallet, &addr1, 1, 0, 30_000);
+        add_utxo(&mut wallet, &addr2, 2, 0, 40_000);
+        add_utxo(&mut wallet, &addr1, 3, 0, 50_000);
+
+        let result = wallet.take_unspent_utxos_for(100_000, 10_000, false);
+        assert!(result.is_some());
+        let (utxos, change) = result.unwrap();
+        // Should have collected enough UTXOs to cover 110_000
+        let total_collected: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
+        assert!(total_collected >= 110_000);
+        if let Some(change_amount) = change {
+            assert_eq!(total_collected, 100_000 + 10_000 + change_amount);
+        }
+    }
+
+    #[test]
+    fn test_take_utxos_allow_take_fee_from_amount() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        // Wallet has exactly enough for the amount but not the fee
+        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
+
+        // Request 100k amount + 10k fee = 110k total, but only 100k available
+        // With allow_take_fee_from_amount=true, should still succeed since total >= amount
+        let result = wallet.take_unspent_utxos_for(100_000, 10_000, true);
+        assert!(result.is_some());
+        let (_utxos, change) = result.unwrap();
+        assert!(change.is_none());
+    }
+
+    #[test]
+    fn test_take_utxos_allow_take_fee_but_not_enough_for_amount() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+
+        // Request 100k amount + 10k fee = 110k, only 50k available
+        // Even with take_fee_from_amount, 50k < 100k amount, so should fail
+        let result = wallet.take_unspent_utxos_for(100_000, 10_000, true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_take_utxos_zero_amount() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 50_000);
+
+        let result = wallet.take_unspent_utxos_for(0, 0, false);
+        assert!(result.is_some());
+        let (utxos, change) = result.unwrap();
+        assert!(utxos.is_empty());
+        assert!(change.is_none());
+    }
+
+    #[test]
+    fn test_take_utxos_removes_from_wallet() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
+        add_utxo(&mut wallet, &addr, 2, 0, 200_000);
+
+        assert_eq!(wallet.max_balance(), 300_000);
+
+        // Take only enough for 100k
+        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
+        assert!(result.is_some());
+
+        // Remaining wallet should have reduced UTXOs
+        let remaining_balance = wallet.max_balance();
+        assert!(remaining_balance < 300_000);
+    }
+
+    #[test]
+    fn test_take_utxos_cleans_empty_address_entries() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+        add_utxo(&mut wallet, &addr, 1, 0, 100_000);
+
+        let result = wallet.take_unspent_utxos_for(90_000, 10_000, false);
+        assert!(result.is_some());
+
+        // The address entry should be removed since it has no more UTXOs
+        assert!(!wallet.utxos.contains_key(&addr));
+    }
+
+    // ========================================================================
+    // Platform address info tests
+    // ========================================================================
+
+    #[test]
+    fn test_total_platform_balance_empty() {
+        let wallet = test_wallet();
+        assert_eq!(wallet.total_platform_balance(), 0);
+    }
+
+    #[test]
+    fn test_total_platform_balance_with_entries() {
+        let mut wallet = test_wallet();
+        let addr1 = test_address(1);
+        let addr2 = test_address(2);
+
+        wallet.platform_address_info.insert(
+            addr1,
+            PlatformAddressInfo {
+                balance: 1_000_000,
+                nonce: 0,
+                last_full_sync_balance: None,
+            },
+        );
+        wallet.platform_address_info.insert(
+            addr2,
+            PlatformAddressInfo {
+                balance: 2_000_000,
+                nonce: 1,
+                last_full_sync_balance: None,
+            },
+        );
+
+        assert_eq!(wallet.total_platform_balance(), 3_000_000);
+    }
+
+    #[test]
+    fn test_set_platform_address_info_from_sync() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+
+        wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
+
+        let info = wallet.platform_address_info.get(&addr).unwrap();
+        assert_eq!(info.balance, 500_000);
+        assert_eq!(info.nonce, 3);
+        assert_eq!(info.last_full_sync_balance, Some(500_000));
+    }
+
+    #[test]
+    fn test_set_platform_address_info_preserves_sync_balance() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+
+        // First set via sync (establishes last_full_sync_balance)
+        wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
+
+        // Then update via non-sync (should preserve last_full_sync_balance)
+        wallet.set_platform_address_info(addr.clone(), 600_000, 4);
+
+        let info = wallet.platform_address_info.get(&addr).unwrap();
+        assert_eq!(info.balance, 600_000);
+        assert_eq!(info.nonce, 4);
+        assert_eq!(info.last_full_sync_balance, Some(500_000));
+    }
+
+    #[test]
+    fn test_get_platform_address_info_direct_lookup() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+
+        wallet.platform_address_info.insert(
+            addr.clone(),
+            PlatformAddressInfo {
+                balance: 100_000,
+                nonce: 1,
+                last_full_sync_balance: None,
+            },
+        );
+
+        let info = wallet.get_platform_address_info(&addr);
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().balance, 100_000);
+    }
+
+    #[test]
+    fn test_get_platform_address_info_not_found() {
+        let wallet = test_wallet();
+        let addr = test_address(1);
+        assert!(wallet.get_platform_address_info(&addr).is_none());
+    }
+
+    // ========================================================================
+    // WalletTransaction tests
+    // ========================================================================
+
+    #[test]
+    fn test_wallet_transaction_incoming() {
+        let tx = WalletTransaction {
+            txid: Txid::from_slice(&[0u8; 32]).unwrap(),
+            transaction: Transaction {
+                version: 2,
+                lock_time: 0,
+                input: vec![],
+                output: vec![],
+                special_transaction_payload: None,
+            },
+            timestamp: 1000,
+            height: Some(100),
+            block_hash: None,
+            net_amount: 50_000,
+            fee: Some(226),
+            label: None,
+            is_ours: true,
+        };
+
+        assert!(tx.is_incoming());
+        assert!(!tx.is_outgoing());
+        assert!(tx.is_confirmed());
+        assert_eq!(tx.amount_abs(), 50_000);
+    }
+
+    #[test]
+    fn test_wallet_transaction_outgoing() {
+        let tx = WalletTransaction {
+            txid: Txid::from_slice(&[0u8; 32]).unwrap(),
+            transaction: Transaction {
+                version: 2,
+                lock_time: 0,
+                input: vec![],
+                output: vec![],
+                special_transaction_payload: None,
+            },
+            timestamp: 1000,
+            height: None,
+            block_hash: None,
+            net_amount: -30_000,
+            fee: Some(226),
+            label: None,
+            is_ours: true,
+        };
+
+        assert!(!tx.is_incoming());
+        assert!(tx.is_outgoing());
+        assert!(!tx.is_confirmed());
+        assert_eq!(tx.amount_abs(), 30_000);
+    }
+
+    #[test]
+    fn test_wallet_transaction_zero_amount() {
+        let tx = WalletTransaction {
+            txid: Txid::from_slice(&[0u8; 32]).unwrap(),
+            transaction: Transaction {
+                version: 2,
+                lock_time: 0,
+                input: vec![],
+                output: vec![],
+                special_transaction_payload: None,
+            },
+            timestamp: 1000,
+            height: None,
+            block_hash: None,
+            net_amount: 0,
+            fee: None,
+            label: None,
+            is_ours: false,
+        };
+
+        assert!(!tx.is_incoming());
+        assert!(!tx.is_outgoing());
+        assert_eq!(tx.amount_abs(), 0);
+    }
+
+    // ========================================================================
+    // Wallet state tests
+    // ========================================================================
+
+    #[test]
+    fn test_wallet_is_open() {
+        let wallet = test_wallet();
+        assert!(wallet.is_open());
+    }
+
+    #[test]
+    fn test_wallet_seed_hash_consistent() {
+        let wallet = test_wallet();
+        let hash1 = wallet.seed_hash();
+        let hash2 = wallet.seed_hash();
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_wallet_seed_bytes_available_when_open() {
+        let wallet = test_wallet();
+        assert!(wallet.seed_bytes().is_ok());
+        assert_eq!(wallet.seed_bytes().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn test_wallet_has_unused_asset_lock() {
+        let mut wallet = test_wallet();
+        assert!(!wallet.has_unused_asset_lock());
+
+        // Add a dummy asset lock
+        wallet.unused_asset_locks.push((
+            Transaction {
+                version: 2,
+                lock_time: 0,
+                input: vec![],
+                output: vec![],
+                special_transaction_payload: None,
+            },
+            test_address(1),
+            100_000,
+            None,
+            None,
+        ));
+        assert!(wallet.has_unused_asset_lock());
+    }
+
+    // ========================================================================
+    // Derivation path helpers tests
+    // ========================================================================
+
+    #[test]
+    fn test_is_bip44_mainnet() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 5 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        assert!(path.is_bip44(Network::Dash));
+        assert!(!path.is_bip44(Network::Testnet));
+    }
+
+    #[test]
+    fn test_is_bip44_testnet() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        assert!(path.is_bip44(Network::Testnet));
+        assert!(path.is_bip44(Network::Devnet));
+        assert!(!path.is_bip44(Network::Dash));
+    }
+
+    #[test]
+    fn test_is_bip44_external() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 }, // external
+            ChildNumber::Normal { index: 5 },
+        ]);
+        assert!(path.is_bip44_external(Network::Testnet));
+        assert!(!path.is_bip44_change(Network::Testnet));
+    }
+
+    #[test]
+    fn test_is_bip44_change() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 1 }, // change
+            ChildNumber::Normal { index: 3 },
+        ]);
+        assert!(!path.is_bip44_external(Network::Testnet));
+        assert!(path.is_bip44_change(Network::Testnet));
+    }
+
+    #[test]
+    fn test_is_asset_lock_funding() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 9 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 5 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        assert!(path.is_asset_lock_funding(Network::Testnet));
+        assert!(!path.is_asset_lock_funding(Network::Dash));
+    }
+
+    #[test]
+    fn test_is_platform_payment() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 9 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 17 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        assert!(path.is_platform_payment(Network::Testnet));
+        assert!(!path.is_platform_payment(Network::Dash));
+    }
+
+    #[test]
+    fn test_platform_payment_path_construction() {
+        let path = DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 5);
+        assert!(path.is_platform_payment(Network::Testnet));
+
+        let components = path.as_ref();
+        assert_eq!(components.len(), 6);
+        assert_eq!(components[0], ChildNumber::Hardened { index: 9 });
+        assert_eq!(components[1], ChildNumber::Hardened { index: 1 }); // testnet coin_type
+        assert_eq!(components[2], ChildNumber::Hardened { index: 17 });
+        assert_eq!(components[3], ChildNumber::Hardened { index: 0 }); // account
+        assert_eq!(components[4], ChildNumber::Hardened { index: 0 }); // key_class
+        assert_eq!(components[5], ChildNumber::Normal { index: 5 }); // index
+    }
+
+    #[test]
+    fn test_bip44_account_index() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 7 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        assert_eq!(path.bip44_account_index(), Some(7));
+    }
+
+    #[test]
+    fn test_bip44_address_index() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 42 },
+        ]);
+        assert_eq!(path.bip44_address_index(), Some(42));
+    }
+
+    // ========================================================================
+    // DerivationPathReference tests
+    // ========================================================================
+
+    #[test]
+    fn test_derivation_path_reference_try_from_valid() {
+        assert_eq!(
+            DerivationPathReference::try_from(0u32).unwrap(),
+            DerivationPathReference::Unknown
+        );
+        assert_eq!(
+            DerivationPathReference::try_from(2u32).unwrap(),
+            DerivationPathReference::BIP44
+        );
+        assert_eq!(
+            DerivationPathReference::try_from(16u32).unwrap(),
+            DerivationPathReference::PlatformPayment
+        );
+        assert_eq!(
+            DerivationPathReference::try_from(255u32).unwrap(),
+            DerivationPathReference::Root
+        );
+    }
+
+    #[test]
+    fn test_derivation_path_reference_try_from_invalid() {
+        assert!(DerivationPathReference::try_from(17u32).is_err());
+        assert!(DerivationPathReference::try_from(100u32).is_err());
+        assert!(DerivationPathReference::try_from(254u32).is_err());
+    }
+
+    // ========================================================================
+    // networks_address_compatible tests
+    // ========================================================================
+
+    #[test]
+    fn test_networks_address_compatible() {
+        assert!(networks_address_compatible(&Network::Dash, &Network::Dash));
+        assert!(networks_address_compatible(
+            &Network::Testnet,
+            &Network::Testnet
+        ));
+        assert!(networks_address_compatible(
+            &Network::Testnet,
+            &Network::Devnet
+        ));
+        assert!(networks_address_compatible(
+            &Network::Devnet,
+            &Network::Regtest
+        ));
+        assert!(!networks_address_compatible(
+            &Network::Dash,
+            &Network::Testnet
+        ));
+        assert!(!networks_address_compatible(
+            &Network::Testnet,
+            &Network::Dash
+        ));
+    }
+
+    // ========================================================================
+    // Wallet address derivation tests
+    // ========================================================================
+
+    #[test]
+    fn test_derive_bip44_address_deterministic() {
+        let wallet = test_wallet();
+        let addr1 = wallet
+            .derive_bip44_address(Network::Testnet, false, 0)
+            .unwrap();
+        let addr2 = wallet
+            .derive_bip44_address(Network::Testnet, false, 0)
+            .unwrap();
+        assert_eq!(addr1, addr2, "Same derivation should produce same address");
+    }
+
+    #[test]
+    fn test_derive_bip44_address_different_indices() {
+        let wallet = test_wallet();
+        let addr0 = wallet
+            .derive_bip44_address(Network::Testnet, false, 0)
+            .unwrap();
+        let addr1 = wallet
+            .derive_bip44_address(Network::Testnet, false, 1)
+            .unwrap();
+        assert_ne!(
+            addr0, addr1,
+            "Different indices should produce different addresses"
+        );
+    }
+
+    #[test]
+    fn test_derive_bip44_address_external_vs_change() {
+        let wallet = test_wallet();
+        let external = wallet
+            .derive_bip44_address(Network::Testnet, false, 0)
+            .unwrap();
+        let change = wallet
+            .derive_bip44_address(Network::Testnet, true, 0)
+            .unwrap();
+        assert_ne!(
+            external, change,
+            "External and change addresses should differ"
+        );
+    }
+
+    #[test]
+    fn test_receive_address_returns_first_unused() {
+        let mut wallet = test_wallet();
+        // With no watched addresses, should derive address at index 0
+        let addr = wallet
+            .receive_address(Network::Testnet, false, None)
+            .unwrap();
+        assert!(!addr.to_string().is_empty());
+    }
+
+    /// Helper: manually register an address in watched_addresses so the wallet
+    /// considers it "known" (normally done by register_address with AppContext).
+    fn register_address_locally(
+        wallet: &mut Wallet,
+        address: &Address,
+        derivation_path: &DerivationPath,
+    ) {
+        wallet
+            .known_addresses
+            .insert(address.clone(), derivation_path.clone());
+        wallet.watched_addresses.insert(
+            derivation_path.clone(),
+            AddressInfo {
+                address: address.clone(),
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::BIP44,
+            },
+        );
+    }
+
+    #[test]
+    fn test_receive_address_skip_known_with_no_funds() {
+        let mut wallet = test_wallet();
+
+        // Derive address at index 0 and register it locally
+        let addr0 = wallet
+            .derive_bip44_address(Network::Testnet, false, 0)
+            .unwrap();
+        let path0 = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        register_address_locally(&mut wallet, &addr0, &path0);
+
+        // With skip=false, should return the same known zero-balance address
+        let addr_same = wallet
+            .receive_address(Network::Testnet, false, None)
+            .unwrap();
+        assert_eq!(addr0, addr_same);
+
+        // With skip=true, should skip the known zero-balance address and get a new one
+        let addr_next = wallet
+            .receive_address(Network::Testnet, true, None)
+            .unwrap();
+        assert_ne!(addr0, addr_next);
+    }
+
+    #[test]
+    fn test_receive_address_skips_funded_addresses() {
+        let mut wallet = test_wallet();
+
+        // Derive and register address at index 0
+        let addr0 = wallet
+            .derive_bip44_address(Network::Testnet, false, 0)
+            .unwrap();
+        let path0 = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        register_address_locally(&mut wallet, &addr0, &path0);
+
+        // Fund it
+        wallet.address_balances.insert(addr0.clone(), 100_000);
+
+        // With skip=false, should skip funded address and derive next index
+        let addr_next = wallet
+            .receive_address(Network::Testnet, false, None)
+            .unwrap();
+        assert_ne!(addr0, addr_next, "Should skip funded address");
+    }
+
+    // ========================================================================
+    // WalletSeed tests
+    // ========================================================================
+
+    #[test]
+    fn test_wallet_seed_open_already_open() {
+        let mut wallet = test_wallet();
+        // Already open, should succeed with no-op
+        assert!(wallet.wallet_seed.open("any_password").is_ok());
+    }
+
+    #[test]
+    fn test_wallet_seed_close_and_reopen() {
+        let mut wallet = test_wallet();
+        let original_hash = wallet.seed_hash();
+
+        wallet.wallet_seed.close();
+        assert!(!wallet.is_open());
+
+        // After closing, seed_bytes should fail
+        assert!(wallet.seed_bytes().is_err());
+
+        // Reopen without password (test wallet has no encryption)
+        wallet.wallet_seed.open_no_password().unwrap();
+        assert!(wallet.is_open());
+        assert_eq!(wallet.seed_hash(), original_hash);
+    }
+
+    // ========================================================================
+    // utxos_by_address tests
+    // ========================================================================
+
+    #[test]
+    fn test_utxos_by_address_empty() {
+        let wallet = test_wallet();
+        assert!(wallet.utxos_by_address().is_empty());
+    }
+
+    #[test]
+    fn test_utxos_by_address_with_entries() {
+        let mut wallet = test_wallet();
+        let addr1 = test_address(1);
+        let addr2 = test_address(2);
+
+        add_utxo(&mut wallet, &addr1, 1, 0, 50_000);
+        add_utxo(&mut wallet, &addr1, 2, 0, 30_000);
+        add_utxo(&mut wallet, &addr2, 3, 0, 20_000);
+
+        let utxos = wallet.utxos_by_address();
+        assert_eq!(utxos.len(), 2);
+
+        let addr1_balance: u64 = utxos
+            .iter()
+            .filter(|(a, _)| a == &addr1)
+            .map(|(_, b)| b)
+            .sum();
+        assert_eq!(addr1_balance, 80_000);
+
+        let addr2_balance: u64 = utxos
+            .iter()
+            .filter(|(a, _)| a == &addr2)
+            .map(|(_, b)| b)
+            .sum();
+        assert_eq!(addr2_balance, 20_000);
+    }
+
+    // ========================================================================
+    // WalletArcRef tests
+    // ========================================================================
+
+    #[test]
+    fn test_wallet_arc_ref_equality() {
+        let wallet = test_wallet();
+        let seed_hash = wallet.seed_hash();
+        let arc1 = Arc::new(RwLock::new(wallet.clone()));
+        let arc2 = Arc::new(RwLock::new(wallet));
+
+        let ref1 = WalletArcRef::from(arc1);
+        let ref2 = WalletArcRef::from(arc2);
+
+        // Same seed hash means equal
+        assert_eq!(ref1, ref2);
+        assert_eq!(ref1.seed_hash, seed_hash);
+    }
+
+    // ========================================================================
+    // find_in_arc_rw_lock_slice tests
+    // ========================================================================
+
+    #[test]
+    fn test_find_in_arc_rw_lock_slice_found() {
+        let wallet = test_wallet();
+        let seed_hash = wallet.seed_hash();
+        let arc = Arc::new(RwLock::new(wallet));
+        let slice = vec![arc];
+
+        let result = Wallet::find_in_arc_rw_lock_slice(&slice, seed_hash);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_find_in_arc_rw_lock_slice_not_found() {
+        let wallet = test_wallet();
+        let arc = Arc::new(RwLock::new(wallet));
+        let slice = vec![arc];
+
+        let result = Wallet::find_in_arc_rw_lock_slice(&slice, [0u8; 32]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_in_arc_rw_lock_slice_empty() {
+        let result = Wallet::find_in_arc_rw_lock_slice(&[], [0u8; 32]);
+        assert!(result.is_none());
+    }
+}

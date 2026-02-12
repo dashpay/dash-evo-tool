@@ -356,8 +356,8 @@ pub async fn load_payment_history(
     // TODO: Query local database for payment records
     // Filter by identity_id and optionally by contact_id
 
-    eprintln!(
-        "DEBUG: Would load payment history for identity {} with contact filter: {:?}",
+    tracing::debug!(
+        "Would load payment history for identity {} with contact filter: {:?}",
         identity_id.to_string(Encoding::Base58),
         contact_id.map(|id| id.to_string(Encoding::Base58))
     );
@@ -373,9 +373,11 @@ pub async fn update_payment_status(
     tx_id: Option<String>,
 ) -> Result<(), String> {
     // TODO: Update payment record in database
-    eprintln!(
-        "DEBUG: Would update payment {} status to {:?} with tx_id {:?}",
-        payment_id, status, tx_id
+    tracing::debug!(
+        "Would update payment {} status to {:?} with tx_id {:?}",
+        payment_id,
+        status,
+        tx_id
     );
     Ok(())
 }

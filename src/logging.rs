@@ -42,9 +42,9 @@ fn initialize_logger_internal() {
                 .finish();
             let set = tracing::subscriber::set_global_default(subscriber).is_ok();
             if set {
-                eprintln!(
-                    "Warning: Could not create log file, logging to stderr: {}",
-                    e
+                tracing::warn!(
+                    error = %e,
+                    "Could not create log file, logging to stderr"
                 );
             }
             (set, None)
@@ -60,10 +60,14 @@ fn initialize_logger_internal() {
     let default_panic_hook = panic::take_hook();
 
     panic::set_hook(Box::new(move |panic_info| {
-        let message = panic_info
-            .payload()
-            .downcast_ref::<&str>()
-            .unwrap_or(&"unknown panic");
+        let payload = panic_info.payload();
+        let message = if let Some(s) = payload.downcast_ref::<&str>() {
+            *s
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            s.as_str()
+        } else {
+            "unknown panic"
+        };
 
         let location = panic_info
             .location()

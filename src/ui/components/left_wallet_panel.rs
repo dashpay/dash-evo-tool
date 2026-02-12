@@ -5,6 +5,7 @@ use eframe::epaint::{Color32, Margin};
 use egui::{Context, Frame, Image, SidePanel, TextureHandle};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
+use tracing::error;
 
 #[derive(RustEmbed)]
 #[folder = "icons/"] // Adjust the folder path if necessary
@@ -27,11 +28,11 @@ fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
                 Default::default(),
             ))
         } else {
-            eprintln!("Failed to load image from embedded data at path: {}", path);
+            error!("Failed to load image from embedded data at path: {}", path);
             None
         }
     } else {
-        eprintln!("Image not found in embedded assets at path: {}", path);
+        error!("Image not found in embedded assets at path: {}", path);
         None
     }
 }

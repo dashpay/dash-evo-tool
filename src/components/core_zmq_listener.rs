@@ -105,7 +105,7 @@ impl CoreZMQListener {
                 .set_subscribe(CHAIN_LOCKED_BLOCK_MSG)
                 .expect("Failed to subscribe to rawchainlock");
 
-            println!("Subscribed to ZMQ at {}", endpoint);
+            tracing::info!("Subscribed to ZMQ at {}", endpoint);
 
             let mut items = [
                 socket.as_poll_item(zmq::POLLIN),
@@ -130,7 +130,7 @@ impl CoreZMQListener {
                                 // Receive the data part of the message
                                 let mut data_message = zmq::Message::new();
                                 if let Err(e) = socket.recv(&mut data_message, 0) {
-                                    eprintln!("Error receiving data part: {}", e);
+                                    tracing::error!("Error receiving data part: {}", e);
                                     continue;
                                 }
 
@@ -156,14 +156,14 @@ impl CoreZMQListener {
                                                             ),
                                                             network,
                                                         )) {
-                                                            eprintln!(
+                                                            tracing::error!(
                                                                 "Error sending data to main thread: {}",
                                                                 e
                                                             );
                                                         }
                                                     }
                                                     Err(e) => {
-                                                        eprintln!(
+                                                        tracing::error!(
                                                             "Error deserializing InstantLock: {}",
                                                             e
                                                         );
@@ -171,7 +171,7 @@ impl CoreZMQListener {
                                                 }
                                             }
                                             Err(e) => {
-                                                eprintln!(
+                                                tracing::error!(
                                                     "Error deserializing chain locked block: bytes({}) error: {}",
                                                     hex::encode(data_bytes),
                                                     e
@@ -199,14 +199,14 @@ impl CoreZMQListener {
                                                             ),
                                                             network,
                                                         )) {
-                                                            eprintln!(
+                                                            tracing::error!(
                                                                 "Error sending data to main thread: {}",
                                                                 e
                                                             );
                                                         }
                                                     }
                                                     Err(e) => {
-                                                        eprintln!(
+                                                        tracing::error!(
                                                             "Error deserializing InstantLock: {}",
                                                             e
                                                         );
@@ -214,12 +214,15 @@ impl CoreZMQListener {
                                                 }
                                             }
                                             Err(e) => {
-                                                eprintln!("Error deserializing transaction: {}", e);
+                                                tracing::error!(
+                                                    "Error deserializing transaction: {}",
+                                                    e
+                                                );
                                             }
                                         }
                                     }
                                     _ => {
-                                        println!("Received unknown topic: {}", topic);
+                                        tracing::warn!("Received unknown topic: {}", topic);
                                     }
                                 }
                             }
@@ -230,7 +233,7 @@ impl CoreZMQListener {
                                 thread::sleep(Duration::from_millis(100));
                                 continue;
                             } else {
-                                eprintln!("Error receiving message: {}", e);
+                                tracing::error!("Error receiving message: {}", e);
                                 break;
                             }
                         }
@@ -256,7 +259,7 @@ impl CoreZMQListener {
                         match zmq::SocketEvent::from_raw(event_number) {
                             zmq::SocketEvent::CONNECTED => {
                                 if let Some(ref tx) = tx_zmq_status {
-                                    println!("ZMQ Socket connected to {}", endpoint);
+                                    tracing::info!("ZMQ Socket connected to {}", endpoint);
                                     tx.send(ZMQConnectionEvent::Connected)
                                         .expect("Failed to send connected event");
                                 }
@@ -264,7 +267,7 @@ impl CoreZMQListener {
                             }
                             zmq::SocketEvent::DISCONNECTED => {
                                 if let Some(ref tx) = tx_zmq_status {
-                                    println!("ZMQ Socket disconnected from {}", endpoint);
+                                    tracing::info!("ZMQ Socket disconnected from {}", endpoint);
                                     tx.send(ZMQConnectionEvent::Disconnected)
                                         .expect("Failed to send connected event");
                                 }
@@ -274,12 +277,12 @@ impl CoreZMQListener {
                             _ => {}
                         }
                     } else {
-                        println!("Invalid event message received");
+                        tracing::warn!("Invalid event message received");
                     }
                 }
             }
 
-            println!("Listener is stopping.");
+            tracing::info!("Listener is stopping.");
             // Clean up socket (optional, as it will be dropped here).
             drop(socket);
         });
@@ -326,7 +329,7 @@ impl CoreZMQListener {
                     .await
                     .expect("Failed to subscribe to rawchainlock");
 
-                println!("Subscribed to ZMQ at {}", endpoint);
+                tracing::info!("Subscribed to ZMQ at {}", endpoint);
                 while !should_stop_clone.load(Ordering::SeqCst) {
                     match timeout(Duration::from_secs(30), socket.recv()).await {
                         Ok(Ok(msg)) => {
@@ -353,14 +356,14 @@ impl CoreZMQListener {
                                                                 ),
                                                                 network,
                                                             )) {
-                                                                eprintln!(
+                                                                tracing::error!(
                                                                     "Error sending data to main thread: {}",
                                                                     e
                                                                 );
                                                             }
                                                         }
                                                         Err(e) => {
-                                                            eprintln!(
+                                                            tracing::error!(
                                                                 "Error deserializing ChainLock: {}",
                                                                 e
                                                             );
@@ -368,7 +371,7 @@ impl CoreZMQListener {
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!(
+                                                    tracing::error!(
                                                         "Error deserializing chain locked block: {}",
                                                         e
                                                     );
@@ -394,14 +397,14 @@ impl CoreZMQListener {
                                                                 ),
                                                                 network,
                                                             )) {
-                                                                eprintln!(
+                                                                tracing::error!(
                                                                     "Error sending data to main thread: {}",
                                                                     e
                                                                 );
                                                             }
                                                         }
                                                         Err(e) => {
-                                                            eprintln!(
+                                                            tracing::error!(
                                                                 "Error deserializing InstantLock: {}",
                                                                 e
                                                             );
@@ -409,7 +412,7 @@ impl CoreZMQListener {
                                                     }
                                                 }
                                                 Err(e) => {
-                                                    eprintln!(
+                                                    tracing::error!(
                                                         "Error deserializing transaction: {}",
                                                         e
                                                     );
@@ -417,7 +420,7 @@ impl CoreZMQListener {
                                             }
                                         }
                                         _ => {
-                                            println!("Received unknown topic: {}", topic);
+                                            tracing::warn!("Received unknown topic: {}", topic);
                                         }
                                     }
                                 }
@@ -425,7 +428,7 @@ impl CoreZMQListener {
                         },
                         Ok(Err(e)) => {
                             // Handle recv error
-                            eprintln!("Error receiving message: {}", e);
+                            tracing::error!("Error receiving message: {}", e);
                             // Sleep briefly before retrying
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         },
@@ -439,7 +442,7 @@ impl CoreZMQListener {
                     }
                 }
 
-                println!("Listener is stopping.");
+                tracing::info!("Listener is stopping.");
                 // The socket will be dropped here
             });
         });

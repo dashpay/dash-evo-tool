@@ -66,7 +66,7 @@ function resetStores() {
   useContractStore.setState({
     contracts: [],
     selectedContractId: null,
-    selectedContractDetail: null,
+    contractDetails: {},
     loading: false,
     fetching: false,
     error: null,
@@ -410,8 +410,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -443,8 +442,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -475,8 +473,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -515,8 +512,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -553,8 +549,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -587,8 +582,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -628,8 +622,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -670,8 +663,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -710,8 +702,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -747,8 +738,10 @@ describe("AddContractsScreen", () => {
 
     fireTaskError({
       taskId: "task-1",
+      domain: "contract",
       message: "Network connection failed",
       details: "timeout",
+      recoverable: false,
     });
 
     await waitFor(() => {
@@ -836,8 +829,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -877,8 +869,7 @@ describe("AddContractsScreen", () => {
     // Fire an Identity result — should be ignored
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Identity",
-      payload: null,
+      result: { type: "identityCompleted", identityId: null },
     });
 
     // Should still show loading
@@ -903,8 +894,7 @@ describe("AddContractsScreen", () => {
     // Fire a Contract result with different task ID
     fireTaskResult({
       taskId: "different-task",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     // Should still show loading
@@ -940,8 +930,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {
@@ -982,8 +971,7 @@ describe("AddContractsScreen", () => {
 
     fireTaskResult({
       taskId: "task-1",
-      resultType: "Contract",
-      payload: null,
+      result: { type: "contractCompleted" },
     });
 
     await waitFor(() => {

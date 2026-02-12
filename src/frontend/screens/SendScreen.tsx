@@ -244,56 +244,47 @@ export function SendScreen() {
     };
   }, [sendStatus.state, sendingStartTime]);
 
-  // Listen for task result/error events
+  // Track the active task ID in a ref so the listener effect doesn't re-subscribe
+  const activeTaskIdRef = useRef<string | null>(null);
   useEffect(() => {
-    let resultCleanup: (() => void) | undefined;
-    let errorCleanup: (() => void) | undefined;
+    activeTaskIdRef.current =
+      sendStatus.state === "sending" ? (sendStatus.taskId ?? null) : null;
+  }, [sendStatus]);
 
-    events.taskResultEvent
-      .listen((event) => {
-        if (
-          sendStatus.state === "sending" &&
-          sendStatus.taskId &&
-          event.payload.taskId === sendStatus.taskId
-        ) {
-          // Derive a message from the result type
-          let message = "Transaction sent successfully!";
-          if (event.payload.resultType === "Wallet") {
-            message = "Transaction completed successfully!";
-          } else if (event.payload.resultType === "Identity") {
-            message = "Identity operation completed successfully!";
-          }
-          setSendStatus({ state: "complete", message });
-        }
-      })
-      .then((unsub) => {
-        resultCleanup = unsub;
-      })
-      .catch(() => {});
+  // Listen for task result/error events (subscribe once)
+  useEffect(() => {
+    let cancelled = false;
+    let cleanupResult: (() => void) | undefined;
+    let cleanupError: (() => void) | undefined;
 
-    events.taskErrorEvent
-      .listen((event) => {
-        if (
-          sendStatus.state === "sending" &&
-          sendStatus.taskId &&
-          event.payload.taskId === sendStatus.taskId
-        ) {
-          setSendStatus({
-            state: "error",
-            message: event.payload.message,
-          });
+    const subscribe = async () => {
+      cleanupResult = await events.taskResultEvent.listen((event) => {
+        if (cancelled) return;
+        const tid = activeTaskIdRef.current;
+        if (!tid || event.payload.taskId !== tid) return;
+        let message = "Transaction sent successfully!";
+        if (event.payload.result.type === "walletCompleted") {
+          message = "Transaction completed successfully!";
+        } else if (event.payload.result.type === "identityCompleted") {
+          message = "Identity operation completed successfully!";
         }
-      })
-      .then((unsub) => {
-        errorCleanup = unsub;
-      })
-      .catch(() => {});
+        setSendStatus({ state: "complete", message });
+      });
+      cleanupError = await events.taskErrorEvent.listen((event) => {
+        if (cancelled) return;
+        const tid = activeTaskIdRef.current;
+        if (!tid || event.payload.taskId !== tid) return;
+        setSendStatus({ state: "error", message: event.payload.message });
+      });
+    };
+    subscribe().catch(console.error);
 
     return () => {
-      resultCleanup?.();
-      errorCleanup?.();
+      cancelled = true;
+      cleanupResult?.();
+      cleanupError?.();
     };
-  }, [sendStatus]);
+  }, []); // Subscribe once on mount
 
   // ─── Derived values ─────────────────────────────────────────────
 
@@ -387,17 +378,30 @@ export function SendScreen() {
     setAdvFeeStrategy("deductFromFirstInput");
   }, []);
 
+  const [unlockLoading, setUnlockLoading] = useState(false);
+
   const handleUnlockResult = useCallback(
     async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {
       if (result.status === "unlocked" && wallet) {
         setUnlockError(null);
+        setUnlockLoading(true);
         try {
-          await commands.walletNotifyUnlocked(wallet.seedHash);
+          const res = await commands.walletUnlock({
+            walletRef: { type: "hd", seedHash: wallet.seedHash },
+            password: result.password,
+          });
+          if (res.status === "error") {
+            setUnlockError(res.error);
+            setUnlockLoading(false);
+            return; // Keep dialog open on error
+          }
           setWalletUnlocked(true);
         } catch (e) {
           setUnlockError(e instanceof Error ? e.message : String(e));
-          return;
+          setUnlockLoading(false);
+          return; // Keep dialog open on error
         }
+        setUnlockLoading(false);
       }
       setUnlockOpen(false);
     },
@@ -1562,6 +1566,7 @@ export function SendScreen() {
           walletAlias={walletAlias}
           passwordHint={wallet.passwordHint ?? null}
           error={unlockError}
+          loading={unlockLoading}
           onResult={handleUnlockResult}
         />
       )}

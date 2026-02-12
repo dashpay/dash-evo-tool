@@ -322,9 +322,11 @@ export function UpdateContractScreen() {
   // Subscribe to identity updates
   useEffect(() => {
     let cleanup: (() => void) | undefined;
-    subscribeIdentityUpdates().then((unsub) => {
-      cleanup = unsub;
-    });
+    subscribeIdentityUpdates()
+      .then((unsub) => {
+        cleanup = unsub;
+      })
+      .catch((e) => console.error("Failed to subscribe to identity events:", e));
     return () => {
       cleanup?.();
     };
@@ -357,8 +359,8 @@ export function UpdateContractScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType } = event.payload;
-          if (resultType !== "Contract") return;
+          const { taskId, result } = event.payload;
+          if (result.type !== "contractCompleted") return;
           if (activeTaskIdRef.current !== taskId) return;
 
           activeTaskIdRef.current = null;

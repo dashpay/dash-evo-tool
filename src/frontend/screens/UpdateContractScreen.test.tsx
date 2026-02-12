@@ -165,7 +165,7 @@ function resetStores() {
   useContractStore.setState({
     contracts: [],
     selectedContractId: null,
-    selectedContractDetail: null,
+    contractDetails: {},
     loading: false,
     fetching: false,
     error: null,
@@ -787,8 +787,7 @@ describe("UpdateContractScreen", () => {
 
       fireTaskResult({
         taskId: "task-1",
-        resultType: "Contract",
-        payload: null,
+        result: { type: "contractCompleted" },
       });
 
       expect(
@@ -838,7 +837,10 @@ describe("UpdateContractScreen", () => {
 
       fireTaskError({
         taskId: "task-1",
+        domain: "contract",
         message: "Insufficient balance",
+        details: "",
+        recoverable: false,
       });
 
       expect(screen.getByText("Update Failed")).toBeInTheDocument();
@@ -972,8 +974,7 @@ describe("UpdateContractScreen", () => {
 
       fireTaskResult({
         taskId: "wrong-task",
-        resultType: "Contract",
-        payload: null,
+        result: { type: "contractCompleted" },
       });
 
       // Should still be in broadcasting state
@@ -1020,8 +1021,7 @@ describe("UpdateContractScreen", () => {
 
       fireTaskResult({
         taskId: "task-1",
-        resultType: "Identity",
-        payload: null,
+        result: { type: "identityCompleted", identityId: null },
       });
 
       expect(
@@ -1119,8 +1119,7 @@ describe("UpdateContractScreen", () => {
 
       fireTaskResult({
         taskId: "task-1",
-        resultType: "Contract",
-        payload: null,
+        result: { type: "contractCompleted" },
       });
 
       expect(
@@ -1172,8 +1171,7 @@ describe("UpdateContractScreen", () => {
 
       fireTaskResult({
         taskId: "task-1",
-        resultType: "Contract",
-        payload: null,
+        result: { type: "contractCompleted" },
       });
 
       // Click back (in success screen, not header)
@@ -1223,8 +1221,7 @@ describe("UpdateContractScreen", () => {
 
       fireTaskResult({
         taskId: "task-1",
-        resultType: "Contract",
-        payload: null,
+        result: { type: "contractCompleted" },
       });
 
       await user.click(

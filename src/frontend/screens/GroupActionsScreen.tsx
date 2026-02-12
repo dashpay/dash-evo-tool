@@ -208,15 +208,15 @@ export function GroupActionsScreen() {
     const setup = async () => {
       unlistenResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
+          const { taskId, result } = event.payload;
 
           // Only handle our task
           if (taskId !== taskIdRef.current) return;
-          if (resultType !== "Contract") return;
+          if (result.type !== "contractCompleted") return;
 
-          // Parse group actions from payload
+          // Parse group actions from result
           try {
-            const actions = parseGroupActions(payload);
+            const actions = parseGroupActions(result);
             setStatus({ type: "fetched", actions });
           } catch {
             const msg = "Failed to parse group actions result";

@@ -105,20 +105,18 @@ export function TokenUnfreezeScreen() {
     : undefined;
 
   // Build group info
-  const buildGroupInfo = useCallback(
-    (identityId: string, keyId: number) => {
-      if (groupActionId) {
-        return {
-          type: "other_signer",
-          action_id: groupActionId,
-          signer_identity_id: identityId,
-          signer_key_id: keyId,
-        };
-      }
-      return null;
-    },
-    [groupActionId],
-  );
+  const buildGroupInfo = useCallback(() => {
+    const groupPos = Number(search.groupPosition ?? "0");
+    if (groupActionId) {
+      return {
+        type: "otherSigner",
+        groupContractPosition: groupPos,
+        actionId: groupActionId,
+        actionIsProposer: false,
+      };
+    }
+    return null;
+  }, [groupActionId, search.groupPosition]);
 
   // Submit
   const handleSubmit = useCallback(
@@ -127,7 +125,7 @@ export function TokenUnfreezeScreen() {
       keyId: number;
       publicNote: string | null;
     }) => {
-      const groupInfo = buildGroupInfo(params.identityId, params.keyId);
+      const groupInfo = buildGroupInfo();
       return commands.tokenUnfreeze({
         operation: {
           identityId: params.identityId,
@@ -137,7 +135,7 @@ export function TokenUnfreezeScreen() {
           publicNote: params.publicNote,
         },
         unfreezeIdentityId,
-        groupInfo: groupInfo as unknown as null,
+        groupInfo: groupInfo,
       });
     },
     [
@@ -163,7 +161,7 @@ export function TokenUnfreezeScreen() {
       validationMessage={validationMessage}
       confirmation={confirmation}
       onSubmit={handleSubmit}
-      resultType="Token"
+      resultEventType="tokenCompleted"
       successMessage="Identity tokens unfrozen successfully."
       doAnotherLabel="Unfreeze Another"
       onDoAnother={handleDoAnother}

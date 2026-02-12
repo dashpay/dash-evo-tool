@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { vi, describe, it, expect, beforeEach } from "vitest";
 import { NetworkChooserScreen } from "./NetworkChooserScreen";
 
@@ -35,7 +35,7 @@ vi.mock("@/bindings", async () => {
   return mockBindingsModule(createMockBindings());
 });
 
-import { commands } from "@/bindings";
+import { commands, events } from "@/bindings";
 
 describe("NetworkChooserScreen", () => {
   beforeEach(() => {
@@ -378,6 +378,120 @@ describe("NetworkChooserScreen", () => {
       expect(screen.getByText("Clear Database")).toBeInTheDocument();
       expect(
         screen.getByText(/permanently deletes all local database entries/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("shows success feedback only after taskResultEvent fires for database wipe", async () => {
+    vi.mocked(commands.systemWipePlatformData).mockResolvedValue({
+      taskId: "wipe-1",
+    });
+
+    render(<NetworkChooserScreen />);
+    await waitFor(() => {
+      expect(screen.getByTestId("advanced-settings-toggle")).toBeInTheDocument();
+    });
+
+    // Open advanced settings and click clear database
+    fireEvent.click(screen.getByTestId("advanced-settings-toggle"));
+    fireEvent.click(screen.getByTestId("clear-database-button"));
+
+    // Confirm the dialog
+    await waitFor(() => {
+      expect(screen.getByText("Delete Data")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Delete Data"));
+
+    // Wait for dispatch
+    await waitFor(() => {
+      expect(commands.systemWipePlatformData).toHaveBeenCalled();
+    });
+
+    // No success feedback yet — task is still running
+    expect(screen.queryByTestId("feedback-success")).not.toBeInTheDocument();
+
+    // Simulate backend completing the task
+    await act(async () => {
+      const listeners = vi.mocked(events.taskResultEvent.listen).mock.calls;
+      const lastCb = listeners[listeners.length - 1][0];
+      lastCb({ payload: { taskId: "wipe-1", result: { type: "systemCompleted" } } });
+    });
+
+    // Now the success feedback should appear
+    await waitFor(() => {
+      expect(screen.getByTestId("feedback-success")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Cleared Testnet database/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("shows error feedback when database wipe task fails", async () => {
+    vi.mocked(commands.systemWipePlatformData).mockResolvedValue({
+      taskId: "wipe-2",
+    });
+
+    render(<NetworkChooserScreen />);
+    await waitFor(() => {
+      expect(screen.getByTestId("advanced-settings-toggle")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("advanced-settings-toggle"));
+    fireEvent.click(screen.getByTestId("clear-database-button"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Delete Data")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Delete Data"));
+
+    await waitFor(() => {
+      expect(commands.systemWipePlatformData).toHaveBeenCalled();
+    });
+
+    // Simulate backend error
+    await act(async () => {
+      const listeners = vi.mocked(events.taskErrorEvent.listen).mock.calls;
+      const lastCb = listeners[listeners.length - 1][0];
+      lastCb({
+        payload: {
+          taskId: "wipe-2",
+          domain: "system",
+          message: "Database locked",
+          details: "",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("feedback-error")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Failed to clear database: Database locked/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("shows error feedback when IPC dispatch itself fails", async () => {
+    vi.mocked(commands.systemWipePlatformData).mockRejectedValue(
+      new Error("IPC unavailable"),
+    );
+
+    render(<NetworkChooserScreen />);
+    await waitFor(() => {
+      expect(screen.getByTestId("advanced-settings-toggle")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("advanced-settings-toggle"));
+    fireEvent.click(screen.getByTestId("clear-database-button"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Delete Data")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Delete Data"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("feedback-error")).toBeInTheDocument();
+      expect(
+        screen.getByText(/Failed to clear database/),
       ).toBeInTheDocument();
     });
   });

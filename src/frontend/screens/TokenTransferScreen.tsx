@@ -99,7 +99,7 @@ export function TokenTransferScreen() {
       validationMessage={validationMessage}
       confirmation={confirmation}
       onSubmit={handleSubmit}
-      resultType="Token"
+      resultEventType="tokenCompleted"
       successMessage="Tokens transferred successfully."
       doAnotherLabel="Transfer More"
       onDoAnother={handleDoAnother}

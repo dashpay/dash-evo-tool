@@ -26,6 +26,14 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { commands, events } from "@/bindings";
+import { useTaskListener } from "@/hooks/useTaskListener";
+import { useWalletStore } from "@/stores/walletStore";
+import { useIdentityStore } from "@/stores/identityStore";
+import { useTokenStore } from "@/stores/tokenStore";
+import { useContractStore } from "@/stores/contractStore";
+import { useContestStore } from "@/stores/contestStore";
+import { useDashPayStore } from "@/stores/dashpayStore";
+import { useDocumentStore } from "@/stores/documentStore";
 import type {
   NetworkDto,
   CoreBackendModeDto,
@@ -89,6 +97,7 @@ export function NetworkChooserScreen() {
     useState<FeedbackMessage | null>(null);
   const [connectLoading, setConnectLoading] = useState(false);
   const [dashQtPathError, setDashQtPathError] = useState<string | null>(null);
+  const [wipeTaskId, setWipeTaskId] = useState<string | null>(null);
 
   // Polling ref
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -96,9 +105,11 @@ export function NetworkChooserScreen() {
   // Load initial state
   useEffect(() => {
     async function loadState() {
+      let activeNetwork: NetworkDto = currentNetwork;
       try {
         const networkInfo = await commands.getNetworkInfo();
-        setCurrentNetwork(networkInfo.activeNetwork);
+        activeNetwork = networkInfo.activeNetwork;
+        setCurrentNetwork(activeNetwork);
         setAvailableNetworks(networkInfo.availableNetworks);
       } catch {
         // Backend not available
@@ -159,16 +170,19 @@ export function NetworkChooserScreen() {
         // Backend not available
       }
 
-      // Load SPV status
+      // Load SPV status — use the fetched activeNetwork, not the stale
+      // closure value of currentNetwork (which is still the initial default).
       try {
         const statuses = await commands.getSpvStatus();
         if (Array.isArray(statuses)) {
-          const current = statuses.find((s) => s.network === currentNetwork);
+          const current = statuses.find((s) => s.network === activeNetwork);
           if (current) {
             setSpvStatus(current.status);
             setSpvProgress(current);
             setConnected(
-              current.status === "running" || current.status === "syncing",
+              current.status === "running" ||
+                current.status === "syncing" ||
+                current.status === "starting",
             );
           }
         }
@@ -182,43 +196,38 @@ export function NetworkChooserScreen() {
 
   // Listen for SPV status events
   useEffect(() => {
+    let cancelled = false;
     let cleanup: (() => void) | undefined;
-    events.spvStatusEvent
-      .listen((event: { payload: SpvStatusEvent }) => {
-        if (event.payload.network === currentNetwork) {
-          setSpvStatus(event.payload.status);
-          setSpvProgress(event.payload);
-          setConnected(
-            event.payload.status === "running" ||
-              event.payload.status === "syncing",
-          );
-        }
-      })
-      .then((unlisten) => {
-        cleanup = unlisten;
-      })
-      .catch(() => {
-        // Events not available
+    const subscribe = async () => {
+      cleanup = await events.spvStatusEvent.listen((event: { payload: SpvStatusEvent }) => {
+        if (cancelled || event.payload.network !== currentNetwork) return;
+        setSpvStatus(event.payload.status);
+        setSpvProgress(event.payload);
+        setConnected(
+          event.payload.status === "running" ||
+            event.payload.status === "syncing" ||
+            event.payload.status === "starting",
+        );
       });
-    return () => cleanup?.();
+    };
+    subscribe().catch(console.error);
+    return () => { cancelled = true; cleanup?.(); };
   }, [currentNetwork]);
 
   // Listen for ZMQ connection status for RPC mode
   useEffect(() => {
+    let cancelled = false;
     let cleanup: (() => void) | undefined;
-    events.zmqConnectionStatusEvent
-      .listen((event: { payload: { network: NetworkDto; connected: boolean } }) => {
-        if (event.payload.network === currentNetwork) {
+    const subscribe = async () => {
+      cleanup = await events.zmqConnectionStatusEvent.listen(
+        (event: { payload: { network: NetworkDto; connected: boolean } }) => {
+          if (cancelled || event.payload.network !== currentNetwork) return;
           setConnected(event.payload.connected);
-        }
-      })
-      .then((unlisten) => {
-        cleanup = unlisten;
-      })
-      .catch(() => {
-        // Events not available
-      });
-    return () => cleanup?.();
+        },
+      );
+    };
+    subscribe().catch(console.error);
+    return () => { cancelled = true; cleanup?.(); };
   }, [currentNetwork]);
 
   // Poll chain locks for RPC connection check (every 3s)
@@ -249,6 +258,26 @@ export function NetworkChooserScreen() {
     };
   }, [backendMode, currentNetwork]);
 
+  // Listen for async database wipe completion
+  useTaskListener(
+    wipeTaskId,
+    (event) => {
+      if (event.result.type !== "systemCompleted") return;
+      setWipeTaskId(null);
+      setDbClearFeedback({
+        type: "success",
+        text: `Cleared ${networkLabels[currentNetwork]} database. Restart or resync to rebuild state.`,
+      });
+    },
+    (event) => {
+      setWipeTaskId(null);
+      setDbClearFeedback({
+        type: "error",
+        text: `Failed to clear database: ${event.message}`,
+      });
+    },
+  );
+
   // === Handlers ===
 
   const handleNetworkSwitch = useCallback(
@@ -256,6 +285,15 @@ export function NetworkChooserScreen() {
       try {
         const result = await commands.switchNetwork(network);
         if (result.status === "ok") {
+          // Reset all store state for the new network
+          useWalletStore.getState().resetState();
+          useIdentityStore.getState().resetState();
+          useTokenStore.getState().resetState();
+          useContractStore.getState().resetState();
+          useContestStore.getState().resetState();
+          useDashPayStore.getState().resetState();
+          useDocumentStore.getState().resetState();
+
           setCurrentNetwork(network);
           toast.success(`Switched to ${networkLabels[network]}`);
         } else {
@@ -291,6 +329,12 @@ export function NetworkChooserScreen() {
         const result = await commands.walletStartSpv();
         if (result.status === "error") {
           toastError(result.error);
+        } else {
+          // Optimistically update UI — the polling loop will refine the
+          // status within ~2 seconds, but this prevents the "flash back"
+          // to the Connect button in the interim.
+          setSpvStatus("starting");
+          setConnected(true);
         }
       } else {
         // RPC mode: start Dash-Qt
@@ -315,60 +359,73 @@ export function NetworkChooserScreen() {
   const handleDisconnect = useCallback(async () => {
     try {
       await commands.walletStopSpv();
-    } catch {
-      // Ignore disconnect errors
+      setSpvStatus("stopping");
+      setConnected(false);
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
   const handleSaveOverwriteDashConf = useCallback(
     async (value: boolean) => {
+      const prev = overwriteDashConf;
       setOverwriteDashConf(value);
       try {
         await commands.settingsUpdateDashCore({
           customDashQtPath: dashQtPath,
           overwriteDashConf: value,
         });
-      } catch {
-        // Ignore save errors
+      } catch (e) {
+        setOverwriteDashConf(prev);
+        toastError(e instanceof Error ? e.message : "Failed to save setting");
       }
     },
-    [dashQtPath],
+    [dashQtPath, overwriteDashConf],
   );
 
   const handleSaveDisableZmq = useCallback(async (value: boolean) => {
+    const prev = disableZmq;
     setDisableZmq(value);
     try {
       await commands.settingsUpdateDisableZmq(value);
-    } catch {
-      // Ignore save errors
+    } catch (e) {
+      setDisableZmq(prev);
+      toastError(e instanceof Error ? e.message : "Failed to save setting");
     }
-  }, []);
+  }, [disableZmq]);
 
   const handleSaveCloseDashQt = useCallback(async (value: boolean) => {
+    const prev = closeDashQtOnExit;
     setCloseDashQtOnExit(value);
     try {
       await commands.settingsUpdateCloseDashQtOnExit(value);
-    } catch {
-      // Ignore save errors
+    } catch (e) {
+      setCloseDashQtOnExit(prev);
+      toastError(e instanceof Error ? e.message : "Failed to save setting");
     }
-  }, []);
+  }, [closeDashQtOnExit]);
 
   const handleSaveAutoStartSpv = useCallback(async (value: boolean) => {
+    const prev = autoStartSpv;
     setAutoStartSpv(value);
     try {
       await commands.settingsUpdateAutoStartSpv(value);
-    } catch {
-      // Ignore save errors
+    } catch (e) {
+      setAutoStartSpv(prev);
+      toastError(e instanceof Error ? e.message : "Failed to save setting");
     }
-  }, []);
+  }, [autoStartSpv]);
 
   const handleDeveloperModeToggle = useCallback(
     async (enabled: boolean) => {
+      const prev = developerMode;
       setDeveloperMode(enabled);
       try {
         await commands.contextEnableDeveloperMode(enabled);
-      } catch {
-        // Ignore errors
+      } catch (e) {
+        setDeveloperMode(prev);
+        toastError(e instanceof Error ? e.message : "Failed to save setting");
+        return;
       }
 
       // When disabling developer mode, switch to RPC and stop SPV
@@ -377,12 +434,12 @@ export function NetworkChooserScreen() {
           await commands.contextSetCoreBackendMode("rpc");
           setBackendMode("rpc");
           await commands.walletStopSpv();
-        } catch {
-          // Ignore errors
+        } catch (e) {
+          toastError(e instanceof Error ? e.message : "Failed to update backend mode");
         }
       }
     },
-    [backendMode],
+    [backendMode, developerMode],
   );
 
   const handleClearSpvData = useCallback(async () => {
@@ -409,23 +466,19 @@ export function NetworkChooserScreen() {
 
   const handleClearDatabase = useCallback(async () => {
     try {
-      await commands.systemWipePlatformData();
-      setDbClearFeedback({
-        type: "success",
-        text: `Cleared ${networkLabels[currentNetwork]} database. Restart or resync to rebuild state.`,
-      });
+      const { taskId } = await commands.systemWipePlatformData();
+      setWipeTaskId(taskId);
     } catch (e) {
       setDbClearFeedback({
         type: "error",
         text: `Failed to clear database: ${e}`,
       });
     }
-  }, [currentNetwork]);
+  }, []);
 
   const handleSaveLocalPassword = useCallback(async () => {
     // TODO: This would need a dedicated IPC command to save the local network password
-    // For now, show a toast indicating it's not yet implemented
-    toast.info("Local network password saved (changes take effect on restart)");
+    toast.warning("Not yet implemented — local network password saving is coming soon.");
   }, []);
 
   const isSpvActive =
@@ -603,8 +656,7 @@ export function NetworkChooserScreen() {
           </div>
 
           {/* SPV Sync Progress */}
-          {developerMode &&
-            backendMode === "spv" &&
+          {backendMode === "spv" &&
             (spvStatus === "syncing" || spvStatus === "starting") &&
             spvProgress && (
               <div className="mt-4 border-t pt-4">
@@ -819,7 +871,7 @@ export function NetworkChooserScreen() {
                     size="sm"
                     onClick={async () => {
                       // TODO: Implement clear platform addresses IPC
-                      toast.info("Platform addresses cleared");
+                      toast.warning("Not yet implemented — clear platform addresses is coming soon.");
                     }}
                     data-testid="clear-platform-addresses"
                   >
@@ -1048,9 +1100,8 @@ function SpvConnectionStatus({ status }: { status: SpvStatusDto }) {
   }
 }
 
-/** SPV sync progress bars */
+/** SPV sync progress bars — 5 per-category bars matching the egui layout. */
 function SpvSyncProgress({ progress }: { progress: SpvStatusEvent }) {
-  const pct = progress.syncProgressPct ?? 0;
   const peerCount = progress.connectedPeers;
 
   return (
@@ -1070,10 +1121,34 @@ function SpvSyncProgress({ progress }: { progress: SpvStatusEvent }) {
         <p className="text-xs text-destructive">{progress.error}</p>
       )}
 
-      {/* Overall progress */}
+      {/* Per-category progress bars */}
       <ProgressBar
-        value={pct}
-        label="Overall Progress"
+        value={progress.headersProgressPct ?? 0}
+        label="Headers"
+        showPercent
+        variant="primary"
+      />
+      <ProgressBar
+        value={progress.masternodesProgressPct ?? 0}
+        label="Masternode Lists"
+        showPercent
+        variant="primary"
+      />
+      <ProgressBar
+        value={progress.filterHeadersProgressPct ?? 0}
+        label="Filter Headers"
+        showPercent
+        variant="primary"
+      />
+      <ProgressBar
+        value={progress.filtersProgressPct ?? 0}
+        label="Filters"
+        showPercent
+        variant="primary"
+      />
+      <ProgressBar
+        value={progress.blocksProgressPct ?? 0}
+        label="Blocks"
         showPercent
         variant="primary"
       />

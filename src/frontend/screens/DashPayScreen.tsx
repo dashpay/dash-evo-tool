@@ -116,9 +116,7 @@ export function DashPayScreen() {
       .then((unsub) => {
         unsubscribe = unsub;
       })
-      .catch(() => {
-        // Events not available in browser mode
-      });
+      .catch((e) => console.error("Failed to subscribe to DashPay events:", e));
     return () => unsubscribe?.();
   }, [subscribeToUpdates]);
 

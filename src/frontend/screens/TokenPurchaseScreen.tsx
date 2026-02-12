@@ -80,30 +80,22 @@ export function TokenPurchaseScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
+          const { taskId, result } = event.payload;
           if (pricingTaskIdRef.current !== taskId) return;
-          if (resultType !== "Token") return;
+          if (result.type !== "tokenPricing") return;
 
           pricingTaskIdRef.current = null;
           setFetchingPricing(false);
           setPricingFetched(true);
 
-          // Payload is { token_id, prices: <schedule or null> }
-          if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-            const obj = payload as Record<string, unknown>;
-            const prices = obj.prices;
-            if (prices && typeof prices === "object") {
-              setPricingSchedule(prices as PricingSchedule);
-              setPricingError(null);
-            } else {
-              setPricingSchedule(null);
-              setPricingError(
-                "This token is not available for direct purchase. No pricing has been set.",
-              );
-            }
+          if (result.prices && typeof result.prices === "object") {
+            setPricingSchedule(result.prices as PricingSchedule);
+            setPricingError(null);
           } else {
             setPricingSchedule(null);
-            setPricingError("Unexpected pricing response format.");
+            setPricingError(
+              "This token is not available for direct purchase. No pricing has been set.",
+            );
           }
         },
       );
@@ -328,7 +320,7 @@ export function TokenPurchaseScreen() {
       validationMessage={validationMessage}
       confirmation={confirmation}
       onSubmit={handleSubmit}
-      resultType="Token"
+      resultEventType="tokenCompleted"
       successMessage="Tokens purchased successfully!"
       doAnotherLabel="Purchase More"
       onDoAnother={handleDoAnother}

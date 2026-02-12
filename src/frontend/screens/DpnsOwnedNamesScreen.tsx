@@ -32,9 +32,11 @@ export function DpnsOwnedNamesScreen() {
   // Subscribe to real-time updates (Identity results reload local names)
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
-    subscribeToUpdates().then((unsub) => {
-      unsubscribe = unsub;
-    });
+    subscribeToUpdates()
+      .then((unsub) => {
+        unsubscribe = unsub;
+      })
+      .catch((e) => console.error("Failed to subscribe to DPNS events:", e));
     return () => {
       unsubscribe?.();
     };

@@ -402,8 +402,7 @@ describe("TokenUpdateConfigScreen", () => {
         listener?.({
           payload: {
             taskId: "task-config-1",
-            resultType: "Token",
-            payload: null,
+            result: { type: "tokenCompleted" },
           },
         });
       });
@@ -432,6 +431,7 @@ describe("TokenUpdateConfigScreen", () => {
         listener?.({
           payload: {
             taskId: "task-config-1",
+            domain: "token",
             message: "Config update failed",
             details: null,
             recoverable: false,
@@ -461,8 +461,7 @@ describe("TokenUpdateConfigScreen", () => {
         listener?.({
           payload: {
             taskId: "task-config-1",
-            resultType: "Token",
-            payload: null,
+            result: { type: "tokenCompleted" },
           },
         });
       });
@@ -510,8 +509,10 @@ describe("TokenUpdateConfigScreen", () => {
       expect(mockTokenUpdateConfig).toHaveBeenCalledWith(
         expect.objectContaining({
           groupInfo: expect.objectContaining({
-            type: "other_signer",
-            action_id: "group-action-abc",
+            type: "otherSigner",
+            groupContractPosition: 0,
+            actionId: "group-action-abc",
+            actionIsProposer: false,
           }),
         }),
       );

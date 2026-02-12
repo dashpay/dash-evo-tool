@@ -62,6 +62,7 @@ export function TransitionVisualizerScreen() {
   const navigate = useNavigate();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeTaskIdRef = useRef<string | null>(null);
+  const contractFetchTaskIdRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Elapsed time counter for broadcast
@@ -110,24 +111,50 @@ export function TransitionVisualizerScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          if (!activeTaskIdRef.current) return;
-          if (event.payload.taskId !== activeTaskIdRef.current) return;
-          activeTaskIdRef.current = null;
-          setBroadcastStatus({ type: "success", timestamp: Date.now() });
+          const { taskId } = event.payload;
+          // Handle broadcast task completion
+          if (activeTaskIdRef.current && taskId === activeTaskIdRef.current) {
+            activeTaskIdRef.current = null;
+            setBroadcastStatus({ type: "success", timestamp: Date.now() });
+            return;
+          }
+          // Handle contract fetch task completion
+          if (contractFetchTaskIdRef.current && taskId === contractFetchTaskIdRef.current) {
+            const contractId = contractFetchTaskIdRef.current;
+            contractFetchTaskIdRef.current = null;
+            setContractFetchMessage({
+              text: `Contract ${selectedContractId?.slice(0, 8) ?? contractId.slice(0, 8)}... fetched successfully`,
+              timestamp: Date.now(),
+            });
+            return;
+          }
         },
       );
 
       cleanupError = await events.taskErrorEvent.listen(
         (event: { payload: TaskErrorEvent }) => {
-          if (!activeTaskIdRef.current) return;
-          if (event.payload.taskId !== activeTaskIdRef.current) return;
-          activeTaskIdRef.current = null;
-          setBroadcastStatus({
-            type: "error",
-            message: event.payload.message,
-            timestamp: Date.now(),
-          });
-          toastError(event.payload.message);
+          const { taskId, message } = event.payload;
+          // Handle broadcast task error
+          if (activeTaskIdRef.current && taskId === activeTaskIdRef.current) {
+            activeTaskIdRef.current = null;
+            setBroadcastStatus({
+              type: "error",
+              message,
+              timestamp: Date.now(),
+            });
+            toastError(message);
+            return;
+          }
+          // Handle contract fetch task error
+          if (contractFetchTaskIdRef.current && taskId === contractFetchTaskIdRef.current) {
+            contractFetchTaskIdRef.current = null;
+            setContractFetchMessage({
+              text: `Failed to fetch contract: ${message}`,
+              timestamp: Date.now(),
+            });
+            toastError(message);
+            return;
+          }
         },
       );
     };
@@ -257,8 +284,10 @@ export function TransitionVisualizerScreen() {
         contractIds: [selectedContractId],
       });
       if (result.status === "ok") {
+        // Store task ID — success message shown when task completes via event
+        contractFetchTaskIdRef.current = result.data.taskId;
         setContractFetchMessage({
-          text: `Contract ${selectedContractId.slice(0, 8)}... fetched successfully`,
+          text: `Fetching contract ${selectedContractId.slice(0, 8)}...`,
           timestamp: Date.now(),
         });
       } else {
@@ -335,22 +364,37 @@ export function TransitionVisualizerScreen() {
           </div>
         )}
 
-        {/* Contract fetch success message */}
+        {/* Contract fetch message */}
         {contractFetchMessage && (
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="size-4 text-green-600 dark:text-green-400" />
-            <span className="text-sm text-green-700 dark:text-green-300">
+            {contractFetchTaskIdRef.current ? (
+              <Loader2 className="size-4 animate-spin text-muted-foreground" />
+            ) : contractFetchMessage.text.startsWith("Failed") || contractFetchMessage.text.startsWith("Error") ? (
+              <AlertCircle className="size-4 text-destructive" />
+            ) : (
+              <CheckCircle2 className="size-4 text-green-600 dark:text-green-400" />
+            )}
+            <span className={cn(
+              "text-sm",
+              contractFetchMessage.text.startsWith("Failed") || contractFetchMessage.text.startsWith("Error")
+                ? "text-destructive"
+                : contractFetchTaskIdRef.current
+                  ? "text-muted-foreground"
+                  : "text-green-700 dark:text-green-300",
+            )}>
               {contractFetchMessage.text}
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleViewInContracts}
-              className="ml-2"
-            >
-              <ExternalLink className="mr-1.5 size-3.5" />
-              View in Contracts
-            </Button>
+            {!contractFetchTaskIdRef.current && !contractFetchMessage.text.startsWith("Failed") && !contractFetchMessage.text.startsWith("Error") && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleViewInContracts}
+                className="ml-2"
+              >
+                <ExternalLink className="mr-1.5 size-3.5" />
+                View in Contracts
+              </Button>
+            )}
           </div>
         )}
 

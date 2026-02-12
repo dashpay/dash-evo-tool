@@ -141,11 +141,7 @@ async function fetchPricingWithSinglePrice(
   await act(async () => {
     emitTaskResult({
       taskId: "task-pricing-1",
-      resultType: "Token",
-      payload: {
-        token_id: "token-purchase-111",
-        prices: { SinglePrice: pricePerSmallestUnit },
-      },
+      result: { type: "tokenPricing", prices: { SinglePrice: pricePerSmallestUnit } },
     });
   });
 }
@@ -159,11 +155,7 @@ async function fetchPricingWithTieredPricing(
   await act(async () => {
     emitTaskResult({
       taskId: "task-pricing-1",
-      resultType: "Token",
-      payload: {
-        token_id: "token-purchase-111",
-        prices: { SetPrices: tiers },
-      },
+      result: { type: "tokenPricing", prices: { SetPrices: tiers } },
     });
   });
 }
@@ -280,11 +272,7 @@ describe("TokenPurchaseScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-pricing-1",
-          resultType: "Token",
-          payload: {
-            token_id: "token-purchase-111",
-            prices: null,
-          },
+          result: { type: "tokenPricing", prices: null },
         });
       });
 
@@ -300,6 +288,7 @@ describe("TokenPurchaseScreen", () => {
       await act(async () => {
         emitTaskError({
           taskId: "task-pricing-1",
+          domain: "token",
           message: "Network timeout",
           details: null,
           recoverable: false,
@@ -488,8 +477,7 @@ describe("TokenPurchaseScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-purchase-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         });
       });
 
@@ -514,6 +502,7 @@ describe("TokenPurchaseScreen", () => {
       await act(async () => {
         emitTaskError({
           taskId: "task-purchase-1",
+          domain: "token",
           message: "Insufficient balance",
           details: null,
           recoverable: false,
@@ -539,8 +528,7 @@ describe("TokenPurchaseScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-purchase-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         });
       });
 

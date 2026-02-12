@@ -555,12 +555,13 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {
+          result: {
+            type: "documentPage",
             documents: [
               { $id: "doc-id-1", label: "alice" },
               { $id: "doc-id-2", label: "bob" },
             ],
+            hasMore: false,
           },
         },
       });
@@ -584,8 +585,11 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: { documents: [] },
+          result: {
+            type: "documentPage",
+            documents: [],
+            hasMore: false,
+          },
         },
       });
 
@@ -607,9 +611,10 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {
+          result: {
+            type: "documentPage",
             documents: [{ $id: "doc-select-id", label: "test" }],
+            hasMore: false,
           },
         },
       });
@@ -636,9 +641,10 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {
+          result: {
+            type: "documentPage",
             documents: [{ $id: "view-doc-id", label: "viewable" }],
+            hasMore: false,
           },
         },
       });
@@ -740,8 +746,7 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: { fee_result: { processing: 1000 } },
+          result: { type: "documentCompleted" },
         },
       });
 
@@ -763,7 +768,10 @@ describe("DocumentActionScreen", () => {
       errorListener?.({
         payload: {
           taskId: "mock-task-id",
+          domain: "document",
           message: "Document not found on platform",
+          details: "",
+          recoverable: false,
         },
       });
 
@@ -840,8 +848,8 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {
+          result: {
+            type: "documentPage",
             documents: [
               {
                 $id: "doc-replace-id",
@@ -850,6 +858,7 @@ describe("DocumentActionScreen", () => {
                 priority: 42,
               },
             ],
+            hasMore: false,
           },
         },
       });
@@ -871,8 +880,11 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: { documents: [] },
+          result: {
+            type: "documentPage",
+            documents: [],
+            hasMore: false,
+          },
         },
       });
 
@@ -891,8 +903,8 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {
+          result: {
+            type: "documentPage",
             documents: [
               {
                 $id: "doc-replace-id",
@@ -901,6 +913,7 @@ describe("DocumentActionScreen", () => {
                 priority: 1,
               },
             ],
+            hasMore: false,
           },
         },
       });
@@ -989,9 +1002,10 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {
+          result: {
+            type: "documentPage",
             documents: [{ $id: "purchasable-doc", $price: 50000, title: "item" }],
+            hasMore: false,
           },
         },
       });
@@ -1012,8 +1026,11 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: { documents: [] },
+          result: {
+            type: "documentPage",
+            documents: [],
+            hasMore: false,
+          },
         },
       });
 
@@ -1032,9 +1049,10 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {
+          result: {
+            type: "documentPage",
             documents: [{ $id: "purchasable-doc", $price: 50000, title: "item" }],
+            hasMore: false,
           },
         },
       });
@@ -1362,8 +1380,7 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {},
+          result: { type: "documentCompleted" },
         },
       });
 
@@ -1394,8 +1411,7 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "mock-task-id",
-          resultType: "Document",
-          payload: {},
+          result: { type: "documentCompleted" },
         },
       });
 
@@ -1579,8 +1595,7 @@ describe("DocumentActionScreen", () => {
       listener?.({
         payload: {
           taskId: "wrong-task-id",
-          resultType: "Document",
-          payload: {},
+          result: { type: "documentCompleted" },
         },
       });
 

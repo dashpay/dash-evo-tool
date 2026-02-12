@@ -861,9 +861,8 @@ describe("MasternodeListDiffScreen", () => {
       act(() => {
         mocks.emitMockEvent("taskResultEvent", {
           taskId: "task-10",
-          resultType: "MnList",
-          payload: {
-            type: "FetchedDiff",
+          result: {
+            type: "mnListFetchedDiff",
             baseHeight: 0,
             height: 100,
             diff: {
@@ -924,9 +923,8 @@ describe("MasternodeListDiffScreen", () => {
       act(() => {
         mocks.emitMockEvent("taskResultEvent", {
           taskId: "task-11",
-          resultType: "MnList",
-          payload: {
-            type: "FetchedDiff",
+          result: {
+            type: "mnListFetchedDiff",
             baseHeight: 0,
             height: 200,
             diff: {

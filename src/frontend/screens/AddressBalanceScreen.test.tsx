@@ -195,9 +195,8 @@ describe("AddressBalanceScreen", () => {
 
     fireTaskResult({
       taskId: "mock-task-id",
-      resultType: "Platform",
-      payload: {
-        type: "addressBalance",
+      result: {
+        type: "platformAddressBalance",
         address: "evo1abc123",
         balance: 1000000000000,
         nonce: 42,
@@ -229,9 +228,8 @@ describe("AddressBalanceScreen", () => {
 
     fireTaskResult({
       taskId: "mock-task-id",
-      resultType: "Platform",
-      payload: {
-        type: "addressBalance",
+      result: {
+        type: "platformAddressBalance",
         address: "evo1abc123",
         balance: 500,
         nonce: 0,
@@ -296,9 +294,8 @@ describe("AddressBalanceScreen", () => {
 
     fireTaskResult({
       taskId: "mock-task-id",
-      resultType: "Platform",
-      payload: {
-        type: "addressBalance",
+      result: {
+        type: "platformAddressBalance",
         address: "evo1abc123",
         balance: 100,
         nonce: 1,
@@ -355,8 +352,7 @@ describe("AddressBalanceScreen", () => {
     // Fire an Identity result — should be ignored
     fireTaskResult({
       taskId: "mock-task-id",
-      resultType: "Identity",
-      payload: null,
+      result: { type: "identityCompleted", identityId: null },
     });
 
     // Should still be loading

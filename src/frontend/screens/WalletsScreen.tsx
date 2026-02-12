@@ -12,10 +12,49 @@ import {
 import type { ReceiveAddress } from "@/components/wallet/ReceiveDialog";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
 import { useWalletStore } from "@/stores/walletStore";
-import { commands } from "@/bindings";
-import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
+import { commands, events } from "@/bindings";
+import type { WalletDto, SingleKeyWalletDto, TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toastError";
+
+/** Wait for a dispatched backend task to complete. Resolves on success, rejects on error. */
+async function waitForTask(taskId: string, timeoutMs = 30000): Promise<void> {
+  return new Promise<void>(async (resolve, reject) => {
+    let resolved = false;
+
+    const timer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      unsubResult();
+      unsubError();
+      reject(new Error("Task timed out"));
+    }, timeoutMs);
+
+    const done = (fn: () => void) => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      unsubResult();
+      unsubError();
+      fn();
+    };
+
+    const unsubResult = await events.taskResultEvent.listen((event) => {
+      if (event.payload.taskId !== taskId) return;
+      done(() => resolve());
+    });
+    const unsubError = await events.taskErrorEvent.listen((event) => {
+      if (event.payload.taskId !== taskId) return;
+      done(() => reject(new Error(event.payload.message)));
+    });
+
+    // If already resolved (e.g. by timeout) before listeners were set up, clean up
+    if (resolved) {
+      unsubResult();
+      unsubError();
+    }
+  });
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
@@ -67,6 +106,8 @@ export function WalletsScreen() {
     removeSingleKeyWallet,
     notifyUnlocked,
     notifyLocked,
+    unlockWallet,
+    lockWallet,
     subscribeToUpdates,
     clearError,
   } = useWalletStore();
@@ -91,6 +132,7 @@ export function WalletsScreen() {
     passwordHint: string | null;
     address: string;
     derivationPath: string;
+    error?: string | null;
   } | null>(null);
 
   // Load wallets and developer mode on mount
@@ -111,7 +153,7 @@ export function WalletsScreen() {
       .then((unsub) => {
         cleanup = unsub;
       })
-      .catch(() => {});
+      .catch((e) => console.error("Failed to subscribe to wallet events:", e));
     return () => cleanup?.();
   }, [subscribeToUpdates]);
 
@@ -169,8 +211,9 @@ export function WalletsScreen() {
         walletSeedHash: selectedHdWallet.seedHash,
       });
       if (result.status === "ok") {
+        // Wait for the backend task to actually complete before reloading
+        await waitForTask(result.data.taskId);
         toast.success("New address generated");
-        // Reload the wallet to get the new address
         await useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
       } else {
         toastError(result.error);
@@ -197,6 +240,7 @@ export function WalletsScreen() {
         walletSeedHash: selectedHdWallet.seedHash,
       });
       if (result.status === "ok") {
+        await waitForTask(result.data.taskId);
         toast.success("New receiving address added");
         await useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
       } else {
@@ -253,7 +297,14 @@ export function WalletsScreen() {
   const handleViewKeyUnlockResult = useCallback(
     async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {
       if (result.status === "unlocked" && viewKeyUnlock) {
-        await notifyUnlocked(viewKeyUnlock.seedHash);
+        const err = await unlockWallet(
+          { type: "hd", seedHash: viewKeyUnlock.seedHash },
+          result.password,
+        );
+        if (err) {
+          setViewKeyUnlock((prev) => prev ? { ...prev, error: err } : null);
+          return;
+        }
         await fetchAndShowPrivateKey(
           viewKeyUnlock.seedHash,
           viewKeyUnlock.address,
@@ -262,7 +313,7 @@ export function WalletsScreen() {
       }
       setViewKeyUnlock(null);
     },
-    [viewKeyUnlock, notifyUnlocked, fetchAndShowPrivateKey],
+    [viewKeyUnlock, unlockWallet, fetchAndShowPrivateKey],
   );
 
   // ─── Asset lock callbacks ────────────────────────────────────────
@@ -298,7 +349,7 @@ export function WalletsScreen() {
     async (_assetLockIndex: number) => {
       if (!selectedHdWallet) return;
       // TODO: Implement fund-from-asset-lock flow (requires destination address input)
-      toast.info("Fund from asset lock — coming in a future task");
+      toast.warning("Not yet implemented — fund from asset lock requires a destination address input.");
     },
     [selectedHdWallet],
   );
@@ -306,17 +357,17 @@ export function WalletsScreen() {
   // ─── Wallet lock/unlock callbacks ────────────────────────────────
 
   const handleUnlockWallet = useCallback(
-    async (seedHash: string) => {
-      await notifyUnlocked(seedHash);
+    async (seedHash: string, password: string): Promise<string | null> => {
+      return unlockWallet({ type: "hd", seedHash }, password);
     },
-    [notifyUnlocked],
+    [unlockWallet],
   );
 
   const handleLockWallet = useCallback(
     async (seedHash: string) => {
-      await notifyLocked(seedHash);
+      await lockWallet({ type: "hd", seedHash });
     },
-    [notifyLocked],
+    [lockWallet],
   );
 
   // ─── Receive dialog addresses ────────────────────────────────────
@@ -434,6 +485,7 @@ export function WalletsScreen() {
           }}
           walletAlias={viewKeyUnlock.alias ?? "Wallet"}
           passwordHint={viewKeyUnlock.passwordHint}
+          error={viewKeyUnlock.error}
           onResult={handleViewKeyUnlockResult}
         />
       )}

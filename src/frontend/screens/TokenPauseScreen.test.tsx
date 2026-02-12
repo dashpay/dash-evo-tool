@@ -242,7 +242,7 @@ describe("TokenPauseScreen", () => {
         listener?.({
           payload: {
             taskId: "task-pause-1",
-            resultType: "Token",
+            result: { type: "tokenCompleted" },
             payload: null,
           },
         });
@@ -268,7 +268,7 @@ describe("TokenPauseScreen", () => {
         listener?.({
           payload: {
             taskId: "task-pause-1",
-            resultType: "Token",
+            result: { type: "tokenCompleted" },
             payload: null,
           },
         });
@@ -337,8 +337,10 @@ describe("TokenPauseScreen", () => {
       expect(mockTokenPause).toHaveBeenCalledWith(
         expect.objectContaining({
           groupInfo: expect.objectContaining({
-            type: "other_signer",
-            action_id: "group-action-pause-1",
+            type: "otherSigner",
+            groupContractPosition: 0,
+            actionId: "group-action-pause-1",
+            actionIsProposer: false,
           }),
         }),
       );

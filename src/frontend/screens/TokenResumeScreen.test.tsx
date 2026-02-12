@@ -233,7 +233,7 @@ describe("TokenResumeScreen", () => {
         listener?.({
           payload: {
             taskId: "task-resume-1",
-            resultType: "Token",
+            result: { type: "tokenCompleted" },
             payload: null,
           },
         });
@@ -259,7 +259,7 @@ describe("TokenResumeScreen", () => {
         listener?.({
           payload: {
             taskId: "task-resume-1",
-            resultType: "Token",
+            result: { type: "tokenCompleted" },
             payload: null,
           },
         });
@@ -328,8 +328,10 @@ describe("TokenResumeScreen", () => {
       expect(mockTokenResume).toHaveBeenCalledWith(
         expect.objectContaining({
           groupInfo: expect.objectContaining({
-            type: "other_signer",
-            action_id: "group-action-resume-1",
+            type: "otherSigner",
+            groupContractPosition: 0,
+            actionId: "group-action-resume-1",
+            actionIsProposer: false,
           }),
         }),
       );

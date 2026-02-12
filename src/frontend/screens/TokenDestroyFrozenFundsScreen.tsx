@@ -107,20 +107,18 @@ export function TokenDestroyFrozenFundsScreen() {
     : undefined;
 
   // Build group info
-  const buildGroupInfo = useCallback(
-    (identityId: string, keyId: number) => {
-      if (groupActionId) {
-        return {
-          type: "other_signer",
-          action_id: groupActionId,
-          signer_identity_id: identityId,
-          signer_key_id: keyId,
-        };
-      }
-      return null;
-    },
-    [groupActionId],
-  );
+  const buildGroupInfo = useCallback(() => {
+    const groupPos = Number(search.groupPosition ?? "0");
+    if (groupActionId) {
+      return {
+        type: "otherSigner",
+        groupContractPosition: groupPos,
+        actionId: groupActionId,
+        actionIsProposer: false,
+      };
+    }
+    return null;
+  }, [groupActionId, search.groupPosition]);
 
   // Submit
   const handleSubmit = useCallback(
@@ -129,7 +127,7 @@ export function TokenDestroyFrozenFundsScreen() {
       keyId: number;
       publicNote: string | null;
     }) => {
-      const groupInfo = buildGroupInfo(params.identityId, params.keyId);
+      const groupInfo = buildGroupInfo();
       return commands.tokenDestroyFrozenFunds({
         operation: {
           identityId: params.identityId,
@@ -139,7 +137,7 @@ export function TokenDestroyFrozenFundsScreen() {
           publicNote: params.publicNote,
         },
         frozenIdentityId,
-        groupInfo: groupInfo as unknown as null,
+        groupInfo: groupInfo,
       });
     },
     [
@@ -165,7 +163,7 @@ export function TokenDestroyFrozenFundsScreen() {
       validationMessage={validationMessage}
       confirmation={confirmation}
       onSubmit={handleSubmit}
-      resultType="Token"
+      resultEventType="tokenCompleted"
       successMessage="Frozen funds destroyed successfully."
       doAnotherLabel="Destroy More"
       onDoAnother={handleDoAnother}

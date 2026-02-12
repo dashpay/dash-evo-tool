@@ -63,9 +63,11 @@ export function DpnsActiveContestsScreen() {
   // Subscribe to real-time updates
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
-    subscribeToUpdates().then((unsub) => {
-      unsubscribe = unsub;
-    });
+    subscribeToUpdates()
+      .then((unsub) => {
+        unsubscribe = unsub;
+      })
+      .catch((e) => console.error("Failed to subscribe to contest events:", e));
     return () => {
       unsubscribe?.();
     };

@@ -109,20 +109,28 @@ export function TokenAddByIdScreen() {
     }
   }, []);
 
-  // Listen for task result events
+  // Track mutable state in refs so the listener doesn't re-subscribe
+  const statusRef = useRef(status);
+  const addingTokenIdRef = useRef(addingTokenId);
+  const foundTokensRef = useRef(foundTokens);
+  useEffect(() => { statusRef.current = status; }, [status]);
+  useEffect(() => { addingTokenIdRef.current = addingTokenId; }, [addingTokenId]);
+  useEffect(() => { foundTokensRef.current = foundTokens; }, [foundTokens]);
+
+  // Listen for task result events (subscribe once)
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     let unlistenError: (() => void) | undefined;
 
-    events.taskResultEvent
-      .listen((event: { payload: TaskResultEvent }) => {
+    const subscribe = async () => {
+      unlisten = await events.taskResultEvent.listen((event: { payload: TaskResultEvent }) => {
         if (cancelled) return;
-        const { resultType, payload } = event.payload;
+        const { result } = event.payload;
 
-        // Handle token fetch results
-        if (resultType === "Token" && status === "searching") {
+        if (result.type === "tokenCompleted" && statusRef.current === "searching") {
           stopTimer();
+          const payload = "data" in result ? result.data : undefined;
           const tokens = extractFoundTokens(payload);
           if (tokens.length > 0) {
             setFoundTokens(tokens);
@@ -133,41 +141,33 @@ export function TokenAddByIdScreen() {
           }
         }
 
-        // Handle "Add to My Tokens" confirmation
-        if (resultType === "Token" && addingTokenId !== null) {
-          const token = foundTokens.find((t) => t.tokenId === addingTokenId);
-          toast.success(
-            `"${token?.name ?? "Token"}" added to My Tokens`,
-          );
+        if (result.type === "tokenCompleted" && addingTokenIdRef.current !== null) {
+          const token = foundTokensRef.current.find((t) => t.tokenId === addingTokenIdRef.current);
+          toast.success(`"${token?.name ?? "Token"}" added to My Tokens`);
           setAddingTokenId(null);
           loadMyTokenBalances();
         }
-      })
-      .then((unsub) => {
-        unlisten = unsub;
       });
 
-    events.taskErrorEvent
-      .listen(
+      unlistenError = await events.taskErrorEvent.listen(
         (event: { payload: { taskId: string; message: string } }) => {
           if (cancelled) return;
-          if (status === "searching") {
+          if (statusRef.current === "searching") {
             stopTimer();
             setErrorMessage(event.payload.message);
             setStatus("error");
           }
         },
-      )
-      .then((unsub) => {
-        unlistenError = unsub;
-      });
+      );
+    };
+    subscribe().catch(console.error);
 
     return () => {
       cancelled = true;
       unlisten?.();
       unlistenError?.();
     };
-  }, [status, addingTokenId, foundTokens, stopTimer, loadMyTokenBalances]);
+  }, [stopTimer, loadMyTokenBalances]);
 
   // Handlers
   const handleSearch = useCallback(() => {

@@ -65,21 +65,14 @@ export function TokenClaimScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
+          const { taskId, result } = event.payload;
           if (estimateTaskIdRef.current !== taskId) return;
-          if (resultType !== "Token") return;
+          if (result.type !== "tokenRewardEstimate") return;
 
           estimateTaskIdRef.current = null;
           setEstimating(false);
 
-          // Payload contains the estimate explanation
-          if (payload && typeof payload === "string") {
-            setEstimatedRewards(payload);
-          } else if (payload && typeof payload === "object") {
-            setEstimatedRewards(JSON.stringify(payload, null, 2));
-          } else {
-            setEstimatedRewards("Estimate received (no details)");
-          }
+          setEstimatedRewards(result.explanation);
         },
       );
 
@@ -188,7 +181,7 @@ export function TokenClaimScreen() {
       validationMessage={validationMessage}
       confirmation={confirmation}
       onSubmit={handleSubmit}
-      resultType="Token"
+      resultEventType="tokenCompleted"
       successMessage="Tokens claimed successfully!"
       doAnotherLabel="Claim More"
       onDoAnother={() => {

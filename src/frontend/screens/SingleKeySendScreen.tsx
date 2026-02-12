@@ -241,63 +241,52 @@ export function SingleKeySendScreen() {
     };
   }, [sendStatus.state, sendingStartTime]);
 
-  // Listen for task result/error events
+  // Track the active task ID in a ref so the listener effect doesn't re-subscribe
+  const activeTaskIdRef = useRef<string | null>(null);
   useEffect(() => {
-    let resultCleanup: (() => void) | undefined;
-    let errorCleanup: (() => void) | undefined;
+    activeTaskIdRef.current =
+      sendStatus.state === "sending" ? (sendStatus.taskId ?? null) : null;
+  }, [sendStatus]);
 
-    events.taskResultEvent
-      .listen((event) => {
-        if (
-          sendStatus.state === "sending" &&
-          sendStatus.taskId &&
-          event.payload.taskId === sendStatus.taskId
-        ) {
-          pendingRequestRef.current = null;
-          const message = "Transaction completed successfully!";
-          setSendStatus({ state: "complete", message });
-        }
-      })
-      .then((unsub) => {
-        resultCleanup = unsub;
-      })
-      .catch(() => {});
+  // Listen for task result/error events (subscribe once)
+  useEffect(() => {
+    let cancelled = false;
+    let cleanupResult: (() => void) | undefined;
+    let cleanupError: (() => void) | undefined;
 
-    events.taskErrorEvent
-      .listen((event) => {
-        if (
-          sendStatus.state === "sending" &&
-          sendStatus.taskId &&
-          event.payload.taskId === sendStatus.taskId
-        ) {
-          // Check for min relay fee error — show fee confirmation dialog instead of error
-          const requiredFee = parseMinRelayFeeError(event.payload.message);
-          if (requiredFee !== null && pendingRequestRef.current) {
-            // Extract estimated fee from the error (the number before '<')
-            const match = event.payload.message.match(/(\d+)\s*</);
-            const estimatedFee = match ? parseInt(match[1] ?? "", 10) : 0;
-            setFeeDialogEstimated(estimatedFee);
-            setFeeDialogRequired(requiredFee);
-            setFeeDialogOpen(true);
-            // Keep sending state — user must confirm or cancel
-            return;
-          }
-          setSendStatus({
-            state: "error",
-            message: event.payload.message,
-          });
+    const subscribe = async () => {
+      cleanupResult = await events.taskResultEvent.listen((event) => {
+        if (cancelled) return;
+        const tid = activeTaskIdRef.current;
+        if (!tid || event.payload.taskId !== tid) return;
+        pendingRequestRef.current = null;
+        setSendStatus({ state: "complete", message: "Transaction completed successfully!" });
+      });
+      cleanupError = await events.taskErrorEvent.listen((event) => {
+        if (cancelled) return;
+        const tid = activeTaskIdRef.current;
+        if (!tid || event.payload.taskId !== tid) return;
+        // Check for min relay fee error — show fee confirmation dialog instead of error
+        const requiredFee = parseMinRelayFeeError(event.payload.message);
+        if (requiredFee !== null && pendingRequestRef.current) {
+          const match = event.payload.message.match(/(\d+)\s*</);
+          const estimatedFee = match ? parseInt(match[1] ?? "", 10) : 0;
+          setFeeDialogEstimated(estimatedFee);
+          setFeeDialogRequired(requiredFee);
+          setFeeDialogOpen(true);
+          return;
         }
-      })
-      .then((unsub) => {
-        errorCleanup = unsub;
-      })
-      .catch(() => {});
+        setSendStatus({ state: "error", message: event.payload.message });
+      });
+    };
+    subscribe().catch(console.error);
 
     return () => {
-      resultCleanup?.();
-      errorCleanup?.();
+      cancelled = true;
+      cleanupResult?.();
+      cleanupError?.();
     };
-  }, [sendStatus]);
+  }, []); // Subscribe once on mount
 
   // ─── Derived values ─────────────────────────────────────────────
 
@@ -397,21 +386,25 @@ export function SingleKeySendScreen() {
     setSendStatus({ state: "idle" });
   }, []);
 
+  const unlockWallet = useWalletStore((s) => s.unlockWallet);
+
   const handleUnlockResult = useCallback(
     async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {
       if (result.status === "unlocked" && wallet) {
         setUnlockError(null);
-        try {
-          await commands.walletNotifyUnlocked(wallet.keyHash);
-          setWalletUnlocked(true);
-        } catch (e) {
-          setUnlockError(e instanceof Error ? e.message : String(e));
+        const error = await unlockWallet(
+          { type: "singleKey", keyHash: wallet.keyHash },
+          result.password,
+        );
+        if (error) {
+          setUnlockError(error);
           return;
         }
+        setWalletUnlocked(true);
       }
       setUnlockOpen(false);
     },
-    [wallet],
+    [wallet, unlockWallet],
   );
 
   // ─── Send ─────────────────────────────────────────────────────────

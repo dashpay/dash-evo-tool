@@ -169,8 +169,7 @@ async function completeFrozenQuery(frozenIds: string[]) {
   await act(async () => {
     emitTaskResult({
       taskId: "frozen-query-1",
-      resultType: "Token",
-      payload: frozenIds,
+      result: { type: "tokenFrozenIdentities", identityIds: frozenIds },
     });
   });
 }
@@ -445,8 +444,7 @@ describe("TokenDestroyFrozenFundsScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-destroy-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         });
       });
 
@@ -478,6 +476,7 @@ describe("TokenDestroyFrozenFundsScreen", () => {
       await act(async () => {
         emitTaskError({
           taskId: "task-destroy-1",
+          domain: "token",
           message: "Destroy operation failed",
           details: null,
           recoverable: false,
@@ -510,8 +509,7 @@ describe("TokenDestroyFrozenFundsScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-destroy-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         });
       });
 
@@ -558,8 +556,10 @@ describe("TokenDestroyFrozenFundsScreen", () => {
         expect.objectContaining({
           frozenIdentityId: "frozen-victim-id",
           groupInfo: expect.objectContaining({
-            type: "other_signer",
-            action_id: "group-action-789",
+            type: "otherSigner",
+            groupContractPosition: 0,
+            actionId: "group-action-789",
+            actionIsProposer: false,
           }),
         }),
       );

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout";
 import { AmountInput, formatAmount } from "@/components/shared/AmountInput";
@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useWalletStore } from "@/stores/walletStore";
+import { useTaskListener } from "@/hooks/useTaskListener";
 import { commands, events } from "@/bindings";
 import type { WalletDto, QualifiedIdentityDto } from "@/bindings";
 import {
@@ -88,6 +89,7 @@ export function CreateAssetLockScreen() {
   // Funding
   const [fundingAddress, setFundingAddress] = useState<string | null>(null);
   const [generatingAddress, setGeneratingAddress] = useState(false);
+  const [addressTaskId, setAddressTaskId] = useState<string | null>(null);
 
   // Asset lock creation tracking
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -133,51 +135,69 @@ export function CreateAssetLockScreen() {
   );
 
   // Listen for task events
-  useEffect(() => {
-    let resultCleanup: (() => void) | undefined;
-    let errorCleanup: (() => void) | undefined;
+  const taskIdRef = useRef<string | null>(null);
+  const stepRef = useRef(step);
+  useEffect(() => { taskIdRef.current = taskId; }, [taskId]);
+  useEffect(() => { stepRef.current = step; }, [step]);
 
-    events.taskResultEvent
-      .listen((event) => {
-        if (taskId && event.payload.taskId === taskId) {
-          // Extract TX ID from message if present
-          const msg = typeof event.payload.payload === "string" ? event.payload.payload : "";
+  useEffect(() => {
+    let cancelled = false;
+    let cleanupResult: (() => void) | undefined;
+    let cleanupError: (() => void) | undefined;
+
+    const subscribe = async () => {
+      cleanupResult = await events.taskResultEvent.listen((event) => {
+        if (cancelled) return;
+        const tid = taskIdRef.current;
+        if (tid && event.payload.taskId === tid) {
+          const msg = event.payload.result.type === "message" ? event.payload.result.text : "";
           const txIdMatch = msg.match(/TX ID:\s*(\S+)/);
           const extractedTxId = txIdMatch ? txIdMatch[1] : null;
           setAssetLockTxId(extractedTxId ?? "created");
           setStep("success");
-        } else if (step === "funding") {
-          // Check for UTXO received event at our funding address
-          const msg = typeof event.payload.payload === "string" ? event.payload.payload : "";
-          if (msg.includes("UTXO") || event.payload.resultType === "Core") {
-            // Funds may have arrived — trigger asset lock creation
+        } else if (stepRef.current === "funding") {
+          const msg = event.payload.result.type === "message" ? event.payload.result.text : "";
+          if (msg.includes("UTXO") || event.payload.result.type === "coreCompleted") {
             handleCreateAssetLock();
           }
         }
-      })
-      .then((unsub) => {
-        resultCleanup = unsub;
-      })
-      .catch(() => {});
-
-    events.taskErrorEvent
-      .listen((event) => {
-        if (taskId && event.payload.taskId === taskId) {
+      });
+      cleanupError = await events.taskErrorEvent.listen((event) => {
+        if (cancelled) return;
+        const tid = taskIdRef.current;
+        if (tid && event.payload.taskId === tid) {
           setError(event.payload.message);
           setStep("configure");
         }
-      })
-      .then((unsub) => {
-        errorCleanup = unsub;
-      })
-      .catch(() => {});
+      });
+    };
+    subscribe().catch(console.error);
 
     return () => {
-      resultCleanup?.();
-      errorCleanup?.();
+      cancelled = true;
+      cleanupResult?.();
+      cleanupError?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId, step, fundingAddress]);
+  }, []);
+
+  // Listen for the address generation task result
+  useTaskListener(
+    addressTaskId,
+    (event) => {
+      if (event.result.type === "walletGeneratedAddress") {
+        setFundingAddress(event.result.address);
+        setStep("funding");
+        setGeneratingAddress(false);
+        setAddressTaskId(null);
+      }
+    },
+    (event) => {
+      setError(event.message);
+      setGeneratingAddress(false);
+      setAddressTaskId(null);
+    },
+  );
 
   // ─── Handlers ─────────────────────────────────────────────────────
 
@@ -211,14 +231,13 @@ export function CreateAssetLockScreen() {
         walletSeedHash: wallet.seedHash,
       });
       if (result.status === "ok") {
-        setFundingAddress(result.data.taskId);
-        setStep("funding");
+        setAddressTaskId(result.data.taskId);
       } else {
         setError(result.error);
+        setGeneratingAddress(false);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
       setGeneratingAddress(false);
     }
   }, [wallet]);

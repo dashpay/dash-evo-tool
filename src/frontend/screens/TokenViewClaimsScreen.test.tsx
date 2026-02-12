@@ -54,27 +54,20 @@ function setup(searchOverrides?: Partial<Record<string, string>>) {
   };
 }
 
-const sampleClaims = [
-  [
-    "key1",
+const sampleClaims = {
+  documents: [
     {
       amount: 1000,
       $createdAt: 1700000000000,
       $createdAtBlockHeight: 12345,
       note: "First claim",
     },
-  ],
-  [
-    "key2",
     {
       amount: 2500,
       $createdAt: 1700100000000,
       $createdAtBlockHeight: 12400,
       note: "",
     },
-  ],
-  [
-    "key3",
     {
       amount: 500,
       $createdAt: 1700200000000,
@@ -82,7 +75,8 @@ const sampleClaims = [
       note: "Third claim note",
     },
   ],
-];
+  hasMore: false,
+};
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -196,8 +190,7 @@ describe("TokenViewClaimsScreen", () => {
         listener?.({
           payload: {
             taskId: "task-vc-1",
-            resultType: "Document",
-            payload: sampleClaims,
+            result: { type: "documentPage", ...sampleClaims },
           },
         });
       });
@@ -217,8 +210,7 @@ describe("TokenViewClaimsScreen", () => {
         listener?.({
           payload: {
             taskId: "task-vc-1",
-            resultType: "Document",
-            payload: sampleClaims,
+            result: { type: "documentPage", ...sampleClaims },
           },
         });
       });
@@ -250,8 +242,7 @@ describe("TokenViewClaimsScreen", () => {
         listener?.({
           payload: {
             taskId: "task-vc-1",
-            resultType: "Document",
-            payload: sampleClaims,
+            result: { type: "documentPage", ...sampleClaims },
           },
         });
       });
@@ -273,8 +264,7 @@ describe("TokenViewClaimsScreen", () => {
         listener?.({
           payload: {
             taskId: "task-vc-1",
-            resultType: "Document",
-            payload: sampleClaims,
+            result: { type: "documentPage", ...sampleClaims },
           },
         });
       });
@@ -296,8 +286,7 @@ describe("TokenViewClaimsScreen", () => {
         listener?.({
           payload: {
             taskId: "task-vc-1",
-            resultType: "Document",
-            payload: [],
+            result: { type: "documentPage", documents: [], hasMore: false },
           },
         });
       });
@@ -394,10 +383,13 @@ describe("TokenViewClaimsScreen", () => {
         listener?.({
           payload: {
             taskId: "task-vc-1",
-            resultType: "Document",
-            payload: [
-              ["key1", { amount: 100, $createdAt: 1700000000000, $createdAtBlockHeight: 1 }],
-            ],
+            result: {
+              type: "documentPage",
+              documents: [
+                { amount: 100, $createdAt: 1700000000000, $createdAtBlockHeight: 1 },
+              ],
+              hasMore: false,
+            },
           },
         });
       });

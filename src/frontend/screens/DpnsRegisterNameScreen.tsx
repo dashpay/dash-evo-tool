@@ -102,9 +102,11 @@ export function DpnsRegisterNameScreen() {
   // Subscribe to identity updates
   useEffect(() => {
     let cleanup: (() => void) | undefined;
-    subscribeIdentityUpdates().then((unsub) => {
-      cleanup = unsub;
-    });
+    subscribeIdentityUpdates()
+      .then((unsub) => {
+        cleanup = unsub;
+      })
+      .catch((e) => console.error("Failed to subscribe to identity events:", e));
     return () => {
       cleanup?.();
     };

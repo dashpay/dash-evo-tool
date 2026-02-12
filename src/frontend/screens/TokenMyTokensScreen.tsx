@@ -117,10 +117,10 @@ export function TokenMyTokensScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
+          const { taskId, result } = event.payload;
           const key = estimateTaskMapRef.current.get(taskId);
           if (!key) return;
-          if (resultType !== "Token") return;
+          if (result.type !== "tokenRewardEstimate") return;
 
           estimateTaskMapRef.current.delete(taskId);
           setEstimatingRewards((prev) => {
@@ -129,27 +129,12 @@ export function TokenMyTokensScreen() {
             return next;
           });
 
-          // Extract reward info from payload
-          let amount = "—";
-          let explanation = "";
-          if (payload && typeof payload === "string") {
-            explanation = payload;
-            // Try to extract amount from first line
-            const firstLine = payload.split("\n")[0];
-            amount = firstLine || payload;
-          } else if (payload && typeof payload === "object") {
-            explanation = JSON.stringify(payload, null, 2);
-            const p = payload as Record<string, unknown>;
-            if (typeof p.total_amount === "number" || typeof p.total_amount === "string") {
-              amount = String(p.total_amount);
-            } else {
-              amount = "See details";
-            }
-          }
-
           setRewardEstimates((prev) => {
             const next = new Map(prev);
-            next.set(key, { amount, explanation });
+            next.set(key, {
+              amount: result.amount,
+              explanation: result.explanation,
+            });
             return next;
           });
         },
@@ -216,9 +201,11 @@ export function TokenMyTokensScreen() {
   // Subscribe to real-time updates
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
-    subscribeToUpdates().then((unsub) => {
-      unsubscribe = unsub;
-    });
+    subscribeToUpdates()
+      .then((unsub) => {
+        unsubscribe = unsub;
+      })
+      .catch((e) => console.error("Failed to subscribe to token events:", e));
     return () => {
       unsubscribe?.();
     };

@@ -34,6 +34,7 @@ import {
 import { WalletUnlockDialog, type WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
+import { useNavigate } from "@tanstack/react-router";
 import { commands, events } from "@/bindings";
 import type {
   QualifiedIdentityDto,
@@ -97,6 +98,9 @@ export function IdentitiesScreen() {
   const singleKeyWallets = useWalletStore((s) => s.singleKeyWallets);
   const loadWallets = useWalletStore((s) => s.loadWallets);
 
+  // Router navigation
+  const navigate = useNavigate();
+
   // Sub-view navigation
   const [subView, setSubView] = useState<SubView>({ type: "detail" });
 
@@ -121,6 +125,22 @@ export function IdentitiesScreen() {
   const [loadIdentityStatus, setLoadIdentityStatus] =
     useState<LoadIdentityStatus>({ type: "form" });
   const loadIdentityTaskIdRef = useRef<string | null>(null);
+
+  // Active operation task tracking (for async dispatch operations)
+  type ActiveOpType =
+    | "createIdentity"
+    | "topUp"
+    | "withdraw"
+    | "transferToIdentity"
+    | "transferToAddress"
+    | "addKey"
+    | "disableKey"
+    | "replaceKey"
+    | "registerDpns";
+  const activeOpTaskIdRef = useRef<string | null>(null);
+  const activeOpTypeRef = useRef<ActiveOpType | null>(null);
+  // Store the identity ID associated with the active operation for reload on success
+  const activeOpIdentityIdRef = useRef<string | null>(null);
 
   // Add key state
   const [addKeyStatus, setAddKeyStatus] = useState<AddKeyStatus>({
@@ -160,73 +180,166 @@ export function IdentitiesScreen() {
       .then((unsub) => {
         cleanup = unsub;
       })
-      .catch(() => {});
+      .catch((e) => console.error("Failed to subscribe to identity events:", e));
     return () => cleanup?.();
   }, [subscribeToUpdates]);
 
-  // Subscribe to task progress messages and errors for load identity operations
+  // Subscribe to task progress messages and errors for load identity and async operations
   useEffect(() => {
-    let cleanupResult: (() => void) | undefined;
-    let cleanupError: (() => void) | undefined;
+    let cancelled = false;
+    const cleanups: (() => void)[] = [];
 
     const subscribe = async () => {
-      cleanupResult = await events.taskResultEvent.listen(
+      const unResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
-          if (!loadIdentityTaskIdRef.current) return;
-          if (taskId !== loadIdentityTaskIdRef.current) return;
+          if (cancelled) return;
+          const { taskId, result } = event.payload;
 
-          if (resultType === "Message" && typeof payload === "string") {
-            // Check if this is a final success message or a progress update
-            if (
-              payload.startsWith("Successfully loaded") ||
-              payload.startsWith("Finished loading")
-            ) {
+          // Handle load identity task results
+          if (loadIdentityTaskIdRef.current && taskId === loadIdentityTaskIdRef.current) {
+            if (result.type === "message") {
+              if (
+                result.text.startsWith("Successfully loaded") ||
+                result.text.startsWith("Finished loading")
+              ) {
+                setLoadIdentityStatus({
+                  type: "success",
+                  message: result.text,
+                });
+                loadIdentityTaskIdRef.current = null;
+                useIdentityStore.getState().loadIdentities();
+              } else {
+                setLoadIdentityStatus((prev) =>
+                  prev.type === "loading"
+                    ? { ...prev, progressMessage: result.text }
+                    : prev,
+                );
+              }
+            } else if (result.type === "identityCompleted") {
               setLoadIdentityStatus({
                 type: "success",
-                message: payload,
+                message: "Identity loaded successfully",
               });
               loadIdentityTaskIdRef.current = null;
-              loadIdentities();
-            } else {
-              // Intermediate progress update
-              setLoadIdentityStatus((prev) =>
-                prev.type === "loading"
-                  ? { ...prev, progressMessage: payload }
-                  : prev,
-              );
+              useIdentityStore.getState().loadIdentities();
             }
-          } else if (resultType === "Identity") {
-            // Final identity result
-            setLoadIdentityStatus({
-              type: "success",
-              message: "Identity loaded successfully",
-            });
-            loadIdentityTaskIdRef.current = null;
-            loadIdentities();
+            return;
+          }
+
+          // Handle active operation task results
+          if (activeOpTaskIdRef.current && taskId === activeOpTaskIdRef.current) {
+            const opType = activeOpTypeRef.current;
+            const identityId = activeOpIdentityIdRef.current;
+            activeOpTaskIdRef.current = null;
+            activeOpTypeRef.current = null;
+            activeOpIdentityIdRef.current = null;
+
+            switch (opType) {
+              case "createIdentity":
+                setCreateIdentityStatus({ type: "success" });
+                useIdentityStore.getState().loadIdentities();
+                break;
+              case "topUp":
+                setTopUpStatus({ type: "success" });
+                if (identityId) reloadIdentity(identityId);
+                break;
+              case "withdraw":
+                setWithdrawStatus({ type: "success" });
+                if (identityId) reloadIdentity(identityId);
+                break;
+              case "transferToIdentity":
+              case "transferToAddress":
+                setTransferStatus({ type: "success" });
+                if (identityId) reloadIdentity(identityId);
+                break;
+              case "addKey":
+                setAddKeyStatus({ type: "success" });
+                if (identityId) reloadIdentity(identityId);
+                break;
+              case "disableKey":
+                setKeyInfoState({ isSubmitting: false, error: null, success: "Key disabled successfully" });
+                if (identityId) reloadIdentity(identityId);
+                break;
+              case "replaceKey":
+                setKeyInfoState({ isSubmitting: false, error: null, success: "Key replaced successfully" });
+                if (identityId) reloadIdentity(identityId);
+                break;
+              case "registerDpns":
+                setRegisterDpnsStatus({
+                  type: "success",
+                  contested: false,
+                  feeEstimated: null,
+                  feeActual: null,
+                });
+                if (identityId) reloadIdentity(identityId);
+                break;
+            }
           }
         },
       );
+      if (cancelled) { unResult(); return; }
+      cleanups.push(unResult);
 
-      cleanupError = await events.taskErrorEvent.listen(
+      const unError = await events.taskErrorEvent.listen(
         (event: { payload: TaskErrorEvent }) => {
+          if (cancelled) return;
           const { taskId, message } = event.payload;
-          if (!loadIdentityTaskIdRef.current) return;
-          if (taskId !== loadIdentityTaskIdRef.current) return;
 
-          setLoadIdentityStatus({ type: "error", message });
-          loadIdentityTaskIdRef.current = null;
+          // Handle load identity task errors
+          if (loadIdentityTaskIdRef.current && taskId === loadIdentityTaskIdRef.current) {
+            setLoadIdentityStatus({ type: "error", message });
+            loadIdentityTaskIdRef.current = null;
+            return;
+          }
+
+          // Handle active operation task errors
+          if (activeOpTaskIdRef.current && taskId === activeOpTaskIdRef.current) {
+            const opType = activeOpTypeRef.current;
+            activeOpTaskIdRef.current = null;
+            activeOpTypeRef.current = null;
+            activeOpIdentityIdRef.current = null;
+
+            switch (opType) {
+              case "createIdentity":
+                setCreateIdentityStatus({ type: "error", message });
+                break;
+              case "topUp":
+                setTopUpStatus({ type: "error", message });
+                break;
+              case "withdraw":
+                setWithdrawStatus({ type: "error", message });
+                break;
+              case "transferToIdentity":
+              case "transferToAddress":
+                setTransferStatus({ type: "error", message });
+                break;
+              case "addKey":
+                setAddKeyStatus({ type: "error", message });
+                break;
+              case "disableKey":
+                setKeyInfoState({ isSubmitting: false, error: message, success: null });
+                break;
+              case "replaceKey":
+                setKeyInfoState({ isSubmitting: false, error: message, success: null });
+                break;
+              case "registerDpns":
+                setRegisterDpnsStatus({ type: "error", message });
+                break;
+            }
+          }
         },
       );
+      if (cancelled) { unError(); return; }
+      cleanups.push(unError);
     };
 
-    subscribe().catch(() => {});
+    subscribe().catch(console.error);
 
     return () => {
-      cleanupResult?.();
-      cleanupError?.();
+      cancelled = true;
+      cleanups.forEach((fn) => fn());
     };
-  }, [loadIdentities]);
+  }, [reloadIdentity]);
 
   // Show toast on error
   useEffect(() => {
@@ -245,6 +358,9 @@ export function IdentitiesScreen() {
     setTopUpStatus({ type: "form" });
     setLoadIdentityStatus({ type: "form" });
     loadIdentityTaskIdRef.current = null;
+    activeOpTaskIdRef.current = null;
+    activeOpTypeRef.current = null;
+    activeOpIdentityIdRef.current = null;
     setAddKeyStatus({ type: "idle" });
     setRegisterDpnsStatus({ type: "form" });
     setKeyInfoState({ isSubmitting: false, error: null, success: null });
@@ -383,9 +499,8 @@ export function IdentitiesScreen() {
   }, []);
 
   const handleNavigateToWallet = useCallback((_seedHash: string) => {
-    // TODO: Navigate to wallet screen (requires cross-screen navigation)
-    toast.info("Navigate to wallet — coming in a future task");
-  }, []);
+    navigate({ to: "/wallets" });
+  }, [navigate]);
 
   const handleBackToDetail = useCallback(() => {
     setSubView({ type: "detail" });
@@ -423,9 +538,10 @@ export function IdentitiesScreen() {
           fundingMethod: params.fundingMethod,
         });
         if (result.status === "ok") {
-          setCreateIdentityStatus({ type: "success" });
-          // Reload identities to pick up the new one
-          loadIdentities();
+          // Store task ID — success/error comes via event listener
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "createIdentity";
+          activeOpIdentityIdRef.current = null;
         } else {
           setCreateIdentityStatus({ type: "error", message: result.error });
         }
@@ -436,7 +552,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [loadIdentities],
+    [],
   );
 
   // ─── Top-up callbacks ──────────────────────────────────────────
@@ -457,8 +573,9 @@ export function IdentitiesScreen() {
           fundingMethod: params.fundingMethod,
         });
         if (result.status === "ok") {
-          setTopUpStatus({ type: "success" });
-          reloadIdentity(params.identityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "topUp";
+          activeOpIdentityIdRef.current = params.identityId;
         } else {
           setTopUpStatus({ type: "error", message: result.error });
         }
@@ -469,7 +586,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [reloadIdentity],
+    [],
   );
 
   const handleTopUpFromPlatformAddress = useCallback(
@@ -486,8 +603,9 @@ export function IdentitiesScreen() {
           inputs: params.outputs,
         });
         if (result.status === "ok") {
-          setTopUpStatus({ type: "success" });
-          reloadIdentity(params.identityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "topUp";
+          activeOpIdentityIdRef.current = params.identityId;
         } else {
           setTopUpStatus({ type: "error", message: result.error });
         }
@@ -498,7 +616,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [reloadIdentity],
+    [],
   );
 
   // ─── Load identity callbacks ──────────────────────────────────
@@ -624,16 +742,9 @@ export function IdentitiesScreen() {
           name: params.name,
         });
         if (result.status === "ok") {
-          // The actual result comes via TaskResultEvent — but we set a
-          // preliminary success here. The identityStore subscription will
-          // reload the identity when the event arrives.
-          setRegisterDpnsStatus({
-            type: "success",
-            contested: isContestedName(params.name),
-            feeEstimated: null,
-            feeActual: null,
-          });
-          reloadIdentity(params.identityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "registerDpns";
+          activeOpIdentityIdRef.current = params.identityId;
         } else {
           setRegisterDpnsStatus({ type: "error", message: result.error });
         }
@@ -644,7 +755,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [reloadIdentity],
+    [],
   );
 
   // ─── Withdraw callbacks ─────────────────────────────────────────
@@ -665,9 +776,9 @@ export function IdentitiesScreen() {
           keyId: params.keyId,
         });
         if (result.status === "ok") {
-          setWithdrawStatus({ type: "success" });
-          // Reload the identity to reflect the new balance
-          reloadIdentity(params.identityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "withdraw";
+          activeOpIdentityIdRef.current = params.identityId;
         } else {
           setWithdrawStatus({ type: "error", message: result.error });
         }
@@ -678,7 +789,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [reloadIdentity],
+    [],
   );
 
   // ─── Transfer callbacks ─────────────────────────────────────────
@@ -699,8 +810,9 @@ export function IdentitiesScreen() {
           keyId: params.keyId,
         });
         if (result.status === "ok") {
-          setTransferStatus({ type: "success" });
-          reloadIdentity(params.fromIdentityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "transferToIdentity";
+          activeOpIdentityIdRef.current = params.fromIdentityId;
         } else {
           setTransferStatus({ type: "error", message: result.error });
         }
@@ -711,7 +823,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [reloadIdentity],
+    [],
   );
 
   const handleTransferToAddress = useCallback(
@@ -729,8 +841,9 @@ export function IdentitiesScreen() {
           keyId: params.keyId,
         });
         if (result.status === "ok") {
-          setTransferStatus({ type: "success" });
-          reloadIdentity(params.identityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "transferToAddress";
+          activeOpIdentityIdRef.current = params.identityId;
         } else {
           setTransferStatus({ type: "error", message: result.error });
         }
@@ -741,7 +854,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [reloadIdentity],
+    [],
   );
 
   // ─── Add key callbacks ──────────────────────────────────────────
@@ -784,8 +897,9 @@ export function IdentitiesScreen() {
           contractBounds,
         });
         if (result.status === "ok") {
-          setAddKeyStatus({ type: "success" });
-          reloadIdentity(selectedIdentityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "addKey";
+          activeOpIdentityIdRef.current = selectedIdentityId;
         } else {
           setAddKeyStatus({ type: "error", message: result.error });
         }
@@ -796,7 +910,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [selectedIdentityId, reloadIdentity],
+    [selectedIdentityId],
   );
 
   // ─── Key info callbacks ──────────────────────────────────────────
@@ -811,12 +925,9 @@ export function IdentitiesScreen() {
           keyIds: [keyId],
         });
         if (result.status === "ok") {
-          setKeyInfoState({
-            isSubmitting: false,
-            error: null,
-            success: "Key disabled successfully",
-          });
-          reloadIdentity(selectedIdentityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "disableKey";
+          activeOpIdentityIdRef.current = selectedIdentityId;
         } else {
           setKeyInfoState({
             isSubmitting: false,
@@ -832,7 +943,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [selectedIdentityId, reloadIdentity],
+    [selectedIdentityId],
   );
 
   const handleReplaceKey = useCallback(
@@ -849,12 +960,9 @@ export function IdentitiesScreen() {
           newPrivateKeyHex,
         });
         if (result.status === "ok") {
-          setKeyInfoState({
-            isSubmitting: false,
-            error: null,
-            success: "Key replaced successfully",
-          });
-          reloadIdentity(selectedIdentityId);
+          activeOpTaskIdRef.current = result.data.taskId;
+          activeOpTypeRef.current = "replaceKey";
+          activeOpIdentityIdRef.current = selectedIdentityId;
         } else {
           setKeyInfoState({
             isSubmitting: false,
@@ -870,7 +978,7 @@ export function IdentitiesScreen() {
         });
       }
     },
-    [selectedIdentityId, reloadIdentity],
+    [selectedIdentityId],
   );
 
   const handleSignMessage = useCallback(

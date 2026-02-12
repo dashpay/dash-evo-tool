@@ -170,21 +170,18 @@ export function TokenMintScreen() {
     : undefined;
 
   // Build group info JSON for the IPC call
-  const buildGroupInfo = useCallback(
-    (identityId: string, keyId: number) => {
-      if (groupActionId) {
-        // Signing an existing group action
-        return {
-          type: "other_signer",
-          action_id: groupActionId,
-          signer_identity_id: identityId,
-          signer_key_id: keyId,
-        };
-      }
-      return null;
-    },
-    [groupActionId],
-  );
+  const buildGroupInfo = useCallback(() => {
+    const groupPos = Number(search.groupPosition ?? "0");
+    if (groupActionId) {
+      return {
+        type: "otherSigner",
+        groupContractPosition: groupPos,
+        actionId: groupActionId,
+        actionIsProposer: false,
+      };
+    }
+    return null;
+  }, [groupActionId, search.groupPosition]);
 
   // Submit handler
   const handleSubmit = useCallback(
@@ -193,7 +190,7 @@ export function TokenMintScreen() {
       keyId: number;
       publicNote: string | null;
     }) => {
-      const groupInfo = buildGroupInfo(params.identityId, params.keyId);
+      const groupInfo = buildGroupInfo();
       return commands.tokenMint({
         operation: {
           identityId: params.identityId,
@@ -204,7 +201,7 @@ export function TokenMintScreen() {
         },
         amount,
         recipientId: recipientId || null,
-        groupInfo: groupInfo as unknown as null,
+        groupInfo: groupInfo,
       });
     },
     [
@@ -243,7 +240,7 @@ export function TokenMintScreen() {
       validationMessage={validationMessage}
       confirmation={confirmation}
       onSubmit={handleSubmit}
-      resultType="Token"
+      resultEventType="tokenCompleted"
       successMessage="Tokens minted successfully."
       doAnotherLabel="Mint More"
       onDoAnother={handleDoAnother}

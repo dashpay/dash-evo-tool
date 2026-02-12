@@ -365,9 +365,8 @@ describe("TokenAddByIdScreen — results display", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               {
                 tokenId: "token123abc",
@@ -378,7 +377,7 @@ describe("TokenAddByIdScreen — results display", () => {
                 tokenPosition: 0,
               },
             ],
-          },
+          } },
         },
       });
     });
@@ -409,14 +408,13 @@ describe("TokenAddByIdScreen — results display", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               { tokenId: "tok1", contractId: VALID_HEX_64, name: "Token A" },
               { tokenId: "tok2", contractId: VALID_HEX_64, name: "Token B" },
             ],
-          },
+          } },
         },
       });
     });
@@ -447,9 +445,8 @@ describe("TokenAddByIdScreen — results display", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: { tokens: [] },
+          result: { type: "tokenCompleted", data: { tokens: [] } },
         },
       });
     });
@@ -487,9 +484,8 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               {
                 tokenId: "tok1",
@@ -497,7 +493,7 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
                 name: "My Token",
               },
             ],
-          },
+          } },
         },
       });
     });
@@ -528,9 +524,8 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               {
                 tokenId: "tok1",
@@ -540,7 +535,7 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
                 tokenPosition: 0,
               },
             ],
-          },
+          } },
         },
       });
     });
@@ -597,13 +592,12 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               { tokenId: "tok1", contractId: VALID_HEX_64, name: "My Token" },
             ],
-          },
+          } },
         },
       });
     });
@@ -644,9 +638,8 @@ describe("TokenAddByIdScreen — More Info dialog", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               {
                 tokenId: "tok1",
@@ -656,7 +649,7 @@ describe("TokenAddByIdScreen — More Info dialog", () => {
                 decimals: 8,
               },
             ],
-          },
+          } },
         },
       });
     });
@@ -769,13 +762,12 @@ describe("TokenAddByIdScreen — token result card display", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               { tokenId: "tok1", contractId: VALID_HEX_64, name: null },
             ],
-          },
+          } },
         },
       });
     });
@@ -804,9 +796,8 @@ describe("TokenAddByIdScreen — token result card display", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               {
                 tokenId: "tok1",
@@ -815,7 +806,7 @@ describe("TokenAddByIdScreen — token result card display", () => {
                 paused: true,
               },
             ],
-          },
+          } },
         },
       });
     });
@@ -844,9 +835,8 @@ describe("TokenAddByIdScreen — token result card display", () => {
     await act(async () => {
       listener?.({
         payload: {
-          resultType: "Token",
           taskId: "mock-task-id",
-          payload: {
+          result: { type: "tokenCompleted", data: {
             tokens: [
               {
                 tokenId: VALID_HEX_64,
@@ -854,7 +844,7 @@ describe("TokenAddByIdScreen — token result card display", () => {
                 name: "Display Token",
               },
             ],
-          },
+          } },
         },
       });
     });

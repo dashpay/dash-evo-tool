@@ -257,7 +257,7 @@ describe("TokenFreezeScreen", () => {
         listener?.({
           payload: {
             taskId: "task-freeze-1",
-            resultType: "Token",
+            result: { type: "tokenCompleted" },
             payload: null,
           },
         });
@@ -314,7 +314,7 @@ describe("TokenFreezeScreen", () => {
         listener?.({
           payload: {
             taskId: "task-freeze-1",
-            resultType: "Token",
+            result: { type: "tokenCompleted" },
             payload: null,
           },
         });
@@ -371,8 +371,10 @@ describe("TokenFreezeScreen", () => {
         expect.objectContaining({
           freezeIdentityId: "frozen-target-id",
           groupInfo: expect.objectContaining({
-            type: "other_signer",
-            action_id: "group-action-123",
+            type: "otherSigner",
+            groupContractPosition: 0,
+            actionId: "group-action-123",
+            actionIsProposer: false,
           }),
         }),
       );

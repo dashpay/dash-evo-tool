@@ -364,8 +364,10 @@ describe("TokenMintScreen", () => {
         expect(mockTokenMint).toHaveBeenCalledWith(
           expect.objectContaining({
             groupInfo: expect.objectContaining({
-              type: "other_signer",
-              action_id: "group-action-123",
+              type: "otherSigner",
+              groupContractPosition: 0,
+              actionId: "group-action-123",
+              actionIsProposer: false,
             }),
           }),
         );
@@ -402,8 +404,7 @@ describe("TokenMintScreen", () => {
         listener?.({
           payload: {
             taskId: "task-mint-1",
-            resultType: "Token",
-            result: {},
+            result: { type: "tokenCompleted" },
           },
         });
       });
@@ -455,8 +456,7 @@ describe("TokenMintScreen", () => {
         listener?.({
           payload: {
             taskId: "task-mint-1",
-            resultType: "Token",
-            result: {},
+            result: { type: "tokenCompleted" },
           },
         });
       });

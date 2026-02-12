@@ -413,6 +413,17 @@ describe("TransitionVisualizerScreen", () => {
       });
     });
 
+    // Shows "Fetching..." while waiting for task completion
+    await waitFor(() => {
+      expect(screen.getByText(/Fetching contract/)).toBeInTheDocument();
+    });
+
+    // Simulate the task completing
+    mocks.emitMockEvent("taskResultEvent", {
+      taskId: "task-123",
+      result: { type: "contractCompleted" },
+    });
+
     await waitFor(() => {
       expect(screen.getByText(/fetched successfully/)).toBeInTheDocument();
     });
@@ -449,6 +460,12 @@ describe("TransitionVisualizerScreen", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "Yes, Fetch" }));
+
+    // Simulate the task completing
+    mocks.emitMockEvent("taskResultEvent", {
+      taskId: "task-456",
+      result: { type: "contractCompleted" },
+    });
 
     await waitFor(() => {
       expect(screen.getByText(/View in Contracts/)).toBeInTheDocument();

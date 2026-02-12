@@ -54,9 +54,11 @@ export function TokenSearchScreen() {
   // Subscribe to updates
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
-    subscribeToUpdates().then((unsub) => {
-      unsubscribe = unsub;
-    });
+    subscribeToUpdates()
+      .then((unsub) => {
+        unsubscribe = unsub;
+      })
+      .catch((e) => console.error("Failed to subscribe to token events:", e));
     return () => {
       unsubscribe?.();
     };
@@ -70,67 +72,54 @@ export function TokenSearchScreen() {
     }
   }, [error, clearError]);
 
-  // Contract detail event listener
+  // Contract detail event listener — use refs to avoid re-subscribing
+  const contractDetailLoadingRef = useRef(contractDetailLoading);
+  const addingTokenNameRef = useRef(addingTokenName);
+  useEffect(() => { contractDetailLoadingRef.current = contractDetailLoading; }, [contractDetailLoading]);
+  useEffect(() => { addingTokenNameRef.current = addingTokenName; }, [addingTokenName]);
+
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
 
-    events.taskResultEvent
-      .listen((event: { payload: TaskResultEvent }) => {
+    const subscribe = async () => {
+      unlisten = await events.taskResultEvent.listen((event: { payload: TaskResultEvent }) => {
         if (cancelled) return;
-        const { resultType, payload } = event.payload;
+        const { result } = event.payload;
 
-        // Handle contract fetch results for the detail view
-        if (resultType === "Contract" && contractDetailLoading) {
-          const p = payload as Record<string, unknown>;
-          // Extract contracts from the payload
-          const contracts = (p.contracts ?? p.data ?? []) as unknown[];
+        if (result.type === "contractWithDescriptions" && contractDetailLoadingRef.current) {
+          const contracts = result.contracts ?? [];
           if (contracts.length > 0) {
-            const contract = contracts[0] as Record<string, unknown>;
-            const tokens = ((contract.tokens ?? []) as unknown[]).map(
-              (t: unknown) => {
-                const tk = t as Record<string, unknown>;
-                return {
-                  tokenId: (tk.tokenId ?? tk.token_id ?? "") as string,
-                  name: (tk.name ?? tk.token_name ?? "Unnamed Token") as string,
-                  description: (tk.description ?? null) as string | null,
-                  configurationJson:
-                    tk.configurationJson ??
-                    tk.configuration_json ??
-                    tk.token_configuration ??
-                    undefined,
-                };
-              },
+            const contract = contracts[0];
+            const tokens = (contract.tokens ?? []).map(
+              (tk) => ({
+                tokenId: tk.tokenId ?? "",
+                name: tk.name ?? "Unnamed Token",
+                description: tk.description ?? null,
+                tokenPosition: tk.tokenPosition ?? 0,
+                configurationJson: tk.configurationJson ?? undefined,
+              }),
             );
 
             setContractDetail({
-              contractId: (contract.contractId ??
-                contract.contract_id ??
-                "") as string,
-              description: (contract.description ?? "") as string,
+              contractId: contract.contractId ?? "",
+              description: contract.description ?? "",
               tokens,
             });
           }
           setContractDetailLoading(false);
         }
 
-        // Handle token save results
-        if (resultType === "Token" && addingTokenName !== null) {
-          toast.success(`"${addingTokenName}" added to My Tokens`);
-          setAddingTokenName(null);
-          // Refresh token list
-          loadMyTokenBalances();
-        }
-      })
-      .then((unsub) => {
-        unlisten = unsub;
+        // Token save is now synchronous — no event listener needed
       });
+    };
+    subscribe().catch(console.error);
 
     return () => {
       cancelled = true;
       unlisten?.();
     };
-  }, [contractDetailLoading, addingTokenName, loadMyTokenBalances]);
+  }, [loadMyTokenBalances]);
 
   // Handlers
   const handleSearch = useCallback(
@@ -202,22 +191,23 @@ export function TokenSearchScreen() {
 
       setAddingTokenName(token.name);
 
-      // Build token info JSON matching the backend's expected structure
-      const tokenInfo = {
-        token_id: token.tokenId,
-        token_name: token.name,
-        data_contract_id: contractDetail?.contractId ?? "",
-        token_position: 0,
-        token_configuration: token.configurationJson ?? {},
-        description: token.description,
-      };
-
-      commands.tokenSaveLocally({ tokenInfoJson: tokenInfo }).then((result) => {
-        if (result.status !== "ok") {
-          setAddingTokenName(null);
-          toastError(result.error);
-        }
-      });
+      commands
+        .tokenSaveLocally({
+          tokenId: token.tokenId,
+          contractId: contractDetail?.contractId ?? "",
+          tokenPosition: token.tokenPosition ?? 0,
+          tokenName: token.name,
+        })
+        .then((result) => {
+          if (result.status === "ok") {
+            toast.success(`"${token.name}" added to My Tokens`);
+            setAddingTokenName(null);
+            loadMyTokenBalances();
+          } else {
+            setAddingTokenName(null);
+            toastError(result.error);
+          }
+        });
     },
     [contractDetail],
   );

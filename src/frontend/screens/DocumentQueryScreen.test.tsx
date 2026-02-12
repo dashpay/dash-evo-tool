@@ -76,7 +76,7 @@ function resetStores() {
   useContractStore.setState({
     contracts: [],
     selectedContractId: null,
-    selectedContractDetail: null,
+    contractDetails: {},
     loading: false,
     fetching: false,
     error: null,
@@ -123,8 +123,12 @@ describe("DocumentQueryScreen", () => {
   });
 
   it("shows action buttons in toolbar", async () => {
+    const user = userEvent.setup();
     renderWithProviders(<DocumentQueryScreen />);
+    // "Load Contracts" is always visible
     expect(screen.getByTestId("action-load-contracts")).toBeInTheDocument();
+    // Other actions are inside the "Actions" dropdown
+    await user.click(screen.getByTestId("action-more-menu"));
     expect(screen.getByTestId("action-register-contract")).toBeInTheDocument();
     expect(screen.getByTestId("action-update-contract")).toBeInTheDocument();
     expect(screen.getByTestId("action-create-document")).toBeInTheDocument();

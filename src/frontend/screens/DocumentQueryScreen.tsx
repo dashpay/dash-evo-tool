@@ -369,9 +369,12 @@ export function DocumentQueryScreen() {
   // Load contracts and subscribe to events on mount
   useEffect(() => {
     loadContracts();
-    const unsubPromises = [subscribeContractUpdates(), subscribeDocumentUpdates()];
+    const unsubPromises = [
+      subscribeContractUpdates().catch((e) => console.error("Failed to subscribe to contract events:", e)),
+      subscribeDocumentUpdates().catch((e) => console.error("Failed to subscribe to document events:", e)),
+    ];
     return () => {
-      unsubPromises.forEach((p) => p.then((unsub) => unsub()));
+      unsubPromises.forEach((p) => p.then((unsub) => unsub?.()));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

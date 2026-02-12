@@ -110,20 +110,14 @@ export function PlatformInfoScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
+          const { taskId, result } = event.payload;
 
-          // Only handle Platform results for our active task
-          if (resultType !== "Platform") return;
+          // Only handle Platform text results for our active task
+          if (result.type !== "platformText") return;
           if (activeTaskIdRef.current !== taskId) return;
 
-          // Parse the platform result payload
-          if (payload && typeof payload === "object") {
-            const p = payload as Record<string, unknown>;
-            if (p.type === "text") {
-              setResultTitle((p.title as string) || "Platform Information");
-              setResultText((p.data as string) || "");
-            }
-          }
+          setResultTitle(result.title || "Platform Information");
+          setResultText(result.data || "");
 
           setLoadingId(null);
           setErrorMessage(null);

@@ -1449,39 +1449,41 @@ export function MasternodeListDiffScreen() {
     const subscribe = async () => {
       cleanup = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
-          if (resultType !== "MnList" || !payload) return;
+          const { taskId, result } = event.payload;
           if (!pendingTaskIds.current.has(taskId)) return;
           pendingTaskIds.current.delete(taskId);
 
-          const data = payload as unknown as MnListPayload;
-          switch (data.type) {
-            case "FetchedDiff":
+          switch (result.type) {
+            case "mnListFetchedDiff":
               setFetchedDiffs((prev) => [
                 ...prev,
-                { baseHeight: data.baseHeight, height: data.height, diff: data.diff },
+                { baseHeight: result.baseHeight, height: result.height, diff: result.diff },
               ]);
-              setMessage({ text: `Fetched diff: ${data.baseHeight} → ${data.height}`, type: "success" });
+              setMessage({ text: `Fetched diff: ${result.baseHeight} → ${result.height}`, type: "success" });
               break;
-            case "FetchedQrInfo":
+            case "mnListFetchedQrInfo":
               // Extract diffs from QR info
               setMessage({ text: "Fetched QR info successfully", type: "success" });
               break;
-            case "ChainLockSigs":
-              setChainLockSigs((prev) => [...prev, ...data.entries]);
-              setMessage({ text: `Fetched ${data.entries.length} chain lock signatures`, type: "success" });
+            case "mnListChainLockSigs":
+              setChainLockSigs((prev) => [...prev, ...result.entries]);
+              setMessage({ text: `Fetched ${result.entries.length} chain lock signatures`, type: "success" });
               break;
-            case "FetchedDiffs":
+            case "mnListFetchedDiffs": {
+              const diffs = result.diffs as unknown as Array<{ baseHeight: number; height: number; diff: MnListDiffDto }>;
               setFetchedDiffs((prev) => [
                 ...prev,
-                ...data.diffs.map((d) => ({
+                ...diffs.map((d) => ({
                   baseHeight: d.baseHeight,
                   height: d.height,
                   diff: d.diff,
                 })),
               ]);
-              setMessage({ text: `Fetched ${data.diffs.length} diffs`, type: "success" });
+              setMessage({ text: `Fetched ${diffs.length} diffs`, type: "success" });
               break;
+            }
+            default:
+              return; // Not an MnList result, ignore
           }
           setPendingOp(null);
         },

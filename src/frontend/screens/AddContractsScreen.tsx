@@ -117,8 +117,8 @@ export function AddContractsScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType } = event.payload;
-          if (resultType !== "Contract") return;
+          const { taskId, result } = event.payload;
+          if (result.type !== "contractCompleted") return;
           if (activeTaskIdRef.current !== taskId) return;
 
           // Contract fetch completed — reload contracts from DB to check which were found

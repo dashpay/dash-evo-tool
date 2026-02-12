@@ -120,21 +120,20 @@ function setStoreData(
   useContractStore.setState({
     contracts,
     selectedContractId: null,
-    selectedContractDetail: null,
+    contractDetails: {},
     loading: false,
     fetching: false,
     error: null,
   });
 }
 
-function emitTaskResult(taskId: string, payload: unknown) {
+function emitTaskResult(taskId: string, actions: unknown) {
   const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
   const listener = calls[calls.length - 1]?.[0];
   listener?.({
     payload: {
       taskId,
-      resultType: "Contract",
-      payload,
+      result: { type: "contractCompleted", actions },
     },
   });
 }
@@ -143,7 +142,7 @@ function emitTaskError(taskId: string, message: string) {
   const calls = vi.mocked(events.taskErrorEvent.listen).mock.calls;
   const listener = calls[calls.length - 1]?.[0];
   listener?.({
-    payload: { taskId, message },
+    payload: { taskId, domain: "contract", message, details: "", recoverable: false },
   });
 }
 
@@ -615,8 +614,7 @@ describe("GroupActionsScreen", () => {
         listener?.({
           payload: {
             taskId: "mock-task-id",
-            resultType: "Identity",
-            payload: [makeGroupAction()],
+            result: { type: "identityCompleted", identityId: null },
           },
         });
       });

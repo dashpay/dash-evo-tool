@@ -57,7 +57,7 @@ export function WelcomeScreen() {
   );
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-background">
+    <div data-testid="welcome-screen" className="flex h-screen w-screen items-center justify-center bg-background">
       <div className="flex flex-col items-center gap-6">
         {/* Logo */}
         <img src={dashLogo} alt="Dash" className="h-14 w-auto" />

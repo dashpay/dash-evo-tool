@@ -560,14 +560,8 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
   // ─── Handlers ────────────────────────────────────────────────────
 
   const handleFetchResult = useCallback(
-    (payload: JsonValue | undefined) => {
-      if (!payload) {
-        setStatus({ type: "error", message: "No documents returned." });
-        return;
-      }
-
-      const data = payload as Record<string, unknown>;
-      const documents = data.documents as JsonValue[] | undefined;
+    (payload: { documents: JsonValue[]; hasMore: boolean }) => {
+      const documents = payload.documents;
 
       if (actionType === "purchase") {
         // Extract price from first document
@@ -645,20 +639,15 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
     (async () => {
       unlistenResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
-          if (taskId !== currentTaskId || resultType !== "Document") return;
+          const { taskId, result } = event.payload;
+          if (taskId !== currentTaskId) return;
+          if (result.type !== "documentPage" && result.type !== "documentCompleted") return;
 
-          if (status.type === "fetching") {
+          if (status.type === "fetching" && result.type === "documentPage") {
             // Handle fetch results
-            handleFetchResult(payload);
+            handleFetchResult(result);
           } else {
-            // Handle broadcast results
-            const fee = payload
-              ? (payload as Record<string, unknown>).fee_result
-              : null;
-            if (fee) {
-              setFeeResult(JSON.stringify(fee));
-            }
+            // Handle broadcast/completed results
             setStatus({ type: "success" });
           }
         },

@@ -169,8 +169,7 @@ async function completeFrozenQuery(frozenIds: string[]) {
   await act(async () => {
     emitTaskResult({
       taskId: "frozen-query-1",
-      resultType: "Token",
-      payload: frozenIds,
+      result: { type: "tokenFrozenIdentities", identityIds: frozenIds },
     });
   });
 }
@@ -433,8 +432,7 @@ describe("TokenUnfreezeScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-unfreeze-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         });
       });
 
@@ -464,6 +462,7 @@ describe("TokenUnfreezeScreen", () => {
       await act(async () => {
         emitTaskError({
           taskId: "task-unfreeze-1",
+          domain: "token",
           message: "Unfreeze failed",
           details: null,
           recoverable: false,
@@ -496,8 +495,7 @@ describe("TokenUnfreezeScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-unfreeze-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         });
       });
 
@@ -546,8 +544,10 @@ describe("TokenUnfreezeScreen", () => {
         expect.objectContaining({
           unfreezeIdentityId: "target-frozen-id",
           groupInfo: expect.objectContaining({
-            type: "other_signer",
-            action_id: "group-action-456",
+            type: "otherSigner",
+            groupContractPosition: 0,
+            actionId: "group-action-456",
+            actionIsProposer: false,
           }),
         }),
       );

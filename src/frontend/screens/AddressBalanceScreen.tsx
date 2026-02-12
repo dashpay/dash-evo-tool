@@ -54,21 +54,16 @@ export function AddressBalanceScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
+          const { taskId, result } = event.payload;
 
-          if (resultType !== "Platform") return;
+          if (result.type !== "platformAddressBalance") return;
           if (activeTaskIdRef.current !== taskId) return;
 
-          if (payload && typeof payload === "object") {
-            const p = payload as Record<string, unknown>;
-            if (p.type === "addressBalance") {
-              setResult({
-                address: p.address as string,
-                balance: p.balance as number,
-                nonce: p.nonce as number,
-              });
-            }
-          }
+          setResult({
+            address: result.address,
+            balance: result.balance,
+            nonce: result.nonce,
+          });
 
           setIsLoading(false);
           setErrorMessage(null);

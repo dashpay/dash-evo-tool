@@ -118,22 +118,18 @@ export function TokenSetPriceScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
+          const { taskId, result } = event.payload;
           if (pricingTaskIdRef.current !== taskId) return;
-          if (resultType !== "Token") return;
+          if (result.type !== "tokenPricing") return;
 
           pricingTaskIdRef.current = null;
           setCurrentPricingLoading(false);
           setCurrentPricingFetched(true);
 
-          if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-            const obj = payload as Record<string, unknown>;
-            const prices = obj.prices;
-            if (prices && typeof prices === "object") {
-              setCurrentPricing(prices as PricingSchedule);
-            } else {
-              setCurrentPricing(null);
-            }
+          if (result.prices && typeof result.prices === "object") {
+            setCurrentPricing(result.prices as PricingSchedule);
+          } else {
+            setCurrentPricing(null);
           }
         },
       );
@@ -383,20 +379,18 @@ export function TokenSetPriceScreen() {
   }, [isValid, pricingType, singlePrice, tiers, isGroupSigning]);
 
   // ── Group info builder ────────────────────────────────────────────────
-  const buildGroupInfo = useCallback(
-    (identityId: string, keyId: number) => {
-      if (groupActionId) {
-        return {
-          type: "other_signer",
-          action_id: groupActionId,
-          signer_identity_id: identityId,
-          signer_key_id: keyId,
-        };
-      }
-      return null;
-    },
-    [groupActionId],
-  );
+  const buildGroupInfo = useCallback(() => {
+    const groupPos = Number(search.groupPosition ?? "0");
+    if (groupActionId) {
+      return {
+        type: "otherSigner",
+        groupContractPosition: groupPos,
+        actionId: groupActionId,
+        actionIsProposer: false,
+      };
+    }
+    return null;
+  }, [groupActionId, search.groupPosition]);
 
   // ── Submit ────────────────────────────────────────────────────────────
   const handleSubmit = useCallback(
@@ -405,7 +399,7 @@ export function TokenSetPriceScreen() {
       keyId: number;
       publicNote: string | null;
     }) => {
-      const groupInfo = buildGroupInfo(params.identityId, params.keyId);
+      const groupInfo = buildGroupInfo();
       const { schedule } = buildPricingSchedule();
 
       return commands.tokenSetDirectPurchasePrice({
@@ -417,7 +411,7 @@ export function TokenSetPriceScreen() {
           publicNote: params.publicNote,
         },
         tokenPricingSchedule: schedule as null,
-        groupInfo: groupInfo as unknown as null,
+        groupInfo: groupInfo,
       });
     },
     [
@@ -473,7 +467,7 @@ export function TokenSetPriceScreen() {
       validationMessage={validationMessage}
       confirmation={confirmation}
       onSubmit={handleSubmit}
-      resultType="Token"
+      resultEventType="tokenCompleted"
       successMessage="Token pricing schedule updated successfully."
       doAnotherLabel="Set Price Again"
       onDoAnother={handleDoAnother}

@@ -238,9 +238,8 @@ describe("TokenSetPriceScreen", () => {
       await act(async () => {
         emitTaskResult({
             taskId: "pricing-query-1",
-            resultType: "Token",
-            payload: {
-              token_id: "token-setprice-111",
+            result: { type: "tokenPricing",
+              tokenId: "token-setprice-111",
               prices: { SinglePrice: 1 },
             },
         });
@@ -266,10 +265,7 @@ describe("TokenSetPriceScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "pricing-query-1",
-          resultType: "Token",
-          payload: {
-            token_id: "token-setprice-111",
-            prices: {
+          result: { type: "tokenPricing", prices: {
               SetPrices: {
                 "100000000": 1,
                 "1000000000": 0,
@@ -303,11 +299,7 @@ describe("TokenSetPriceScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "pricing-query-1",
-          resultType: "Token",
-          payload: {
-            token_id: "token-setprice-111",
-            prices: null,
-          },
+          result: { type: "tokenPricing", prices: null },
         });
       });
 
@@ -332,6 +324,7 @@ describe("TokenSetPriceScreen", () => {
       await act(async () => {
         emitTaskError({
           taskId: "pricing-query-1",
+          domain: "token",
           message: "Network error",
           details: null,
           recoverable: false,
@@ -573,8 +566,7 @@ describe("TokenSetPriceScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-setprice-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         });
       });
 
@@ -598,6 +590,7 @@ describe("TokenSetPriceScreen", () => {
       await act(async () => {
         emitTaskError({
           taskId: "task-setprice-1",
+          domain: "token",
           message: "Set price failed: permission denied",
           details: null,
           recoverable: false,
@@ -624,8 +617,7 @@ describe("TokenSetPriceScreen", () => {
       await act(async () => {
         emitTaskResult({
           taskId: "task-setprice-1",
-          resultType: "Token",
-          payload: null,
+          result: { type: "tokenCompleted" },
         });
       });
 
@@ -682,8 +674,10 @@ describe("TokenSetPriceScreen", () => {
       expect(mockTokenSetDirectPurchasePrice).toHaveBeenCalledWith(
         expect.objectContaining({
           groupInfo: expect.objectContaining({
-            type: "other_signer",
-            action_id: "group-action-456",
+            type: "otherSigner",
+            groupContractPosition: 0,
+            actionId: "group-action-456",
+            actionIsProposer: false,
           }),
         }),
       );

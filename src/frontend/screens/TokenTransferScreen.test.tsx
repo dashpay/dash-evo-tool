@@ -298,8 +298,7 @@ describe("TokenTransferScreen", () => {
         listener?.({
           payload: {
             taskId: "task-transfer-1",
-            resultType: "Token",
-            result: {},
+            result: { type: "tokenCompleted" },
           },
         });
       });
@@ -328,7 +327,10 @@ describe("TokenTransferScreen", () => {
         listener?.({
           payload: {
             taskId: "task-transfer-1",
+            domain: "token",
             message: "Network timeout",
+            details: "",
+            recoverable: false,
           },
         });
       });
@@ -356,8 +358,7 @@ describe("TokenTransferScreen", () => {
         listener?.({
           payload: {
             taskId: "task-transfer-1",
-            resultType: "Token",
-            result: {},
+            result: { type: "tokenCompleted" },
           },
         });
       });

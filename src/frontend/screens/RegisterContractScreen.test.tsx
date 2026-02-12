@@ -147,7 +147,7 @@ function resetStores() {
   useContractStore.setState({
     contracts: [],
     selectedContractId: null,
-    selectedContractDetail: null,
+    contractDetails: {},
     loading: false,
     fetching: false,
     error: null,
@@ -659,8 +659,7 @@ describe("RegisterContractScreen", () => {
       // Fire success event
       fireTaskResult({
         taskId: "task-1",
-        resultType: "Contract",
-        payload: null,
+        result: { type: "contractCompleted" },
       });
 
       await waitFor(() => {
@@ -697,6 +696,7 @@ describe("RegisterContractScreen", () => {
 
       fireTaskError({
         taskId: "task-1",
+        domain: "contract",
         message: "Insufficient balance for contract registration",
         details: "",
         recoverable: false,
@@ -797,8 +797,7 @@ describe("RegisterContractScreen", () => {
       // Fire event with wrong task ID
       fireTaskResult({
         taskId: "wrong-task-id",
-        resultType: "Contract",
-        payload: null,
+        result: { type: "contractCompleted" },
       });
 
       // Should still be broadcasting
@@ -834,8 +833,7 @@ describe("RegisterContractScreen", () => {
 
       fireTaskResult({
         taskId: "task-1",
-        resultType: "Document",
-        payload: null,
+        result: { type: "documentCompleted" },
       });
 
       // Should still be broadcasting
@@ -913,8 +911,7 @@ describe("RegisterContractScreen", () => {
 
       fireTaskResult({
         taskId: "task-1",
-        resultType: "Contract",
-        payload: null,
+        result: { type: "contractCompleted" },
       });
 
       await waitFor(() => {

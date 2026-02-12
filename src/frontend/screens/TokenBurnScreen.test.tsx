@@ -317,8 +317,10 @@ describe("TokenBurnScreen", () => {
         expect(mockTokenBurn).toHaveBeenCalledWith(
           expect.objectContaining({
             groupInfo: expect.objectContaining({
-              type: "other_signer",
-              action_id: "group-burn-123",
+              type: "otherSigner",
+              groupContractPosition: 0,
+              actionId: "group-burn-123",
+              actionIsProposer: false,
             }),
           }),
         );
@@ -356,8 +358,7 @@ describe("TokenBurnScreen", () => {
         listener?.({
           payload: {
             taskId: "task-burn-1",
-            resultType: "Token",
-            result: {},
+            result: { type: "tokenCompleted" },
           },
         });
       });
@@ -409,8 +410,7 @@ describe("TokenBurnScreen", () => {
         listener?.({
           payload: {
             taskId: "task-burn-1",
-            resultType: "Token",
-            result: {},
+            result: { type: "tokenCompleted" },
           },
         });
       });
@@ -436,8 +436,7 @@ describe("TokenBurnScreen", () => {
         listener?.({
           payload: {
             taskId: "task-burn-1",
-            resultType: "Token",
-            result: {},
+            result: { type: "tokenCompleted" },
           },
         });
       });

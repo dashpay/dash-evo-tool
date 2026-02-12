@@ -192,9 +192,8 @@ describe("PlatformInfoScreen", () => {
 
     fireTaskResult({
       taskId: "mock-task-id",
-      resultType: "Platform",
-      payload: {
-        type: "text",
+      result: {
+        type: "platformText",
         title: "Basic Platform Information",
         data: "Platform Version Information:\n\n• Protocol Version: 4",
       },
@@ -221,6 +220,7 @@ describe("PlatformInfoScreen", () => {
 
     fireTaskError({
       taskId: "mock-task-id",
+      domain: "platform",
       message: "Network connection failed",
       details: "timeout",
       recoverable: true,
@@ -254,9 +254,8 @@ describe("PlatformInfoScreen", () => {
 
     fireTaskResult({
       taskId: "mock-task-id",
-      resultType: "Platform",
-      payload: {
-        type: "text",
+      result: {
+        type: "platformText",
         title: "Basic Platform Information",
         data: "Test result",
       },
@@ -281,6 +280,7 @@ describe("PlatformInfoScreen", () => {
 
     fireTaskError({
       taskId: "mock-task-id",
+      domain: "platform",
       message: "Some error",
       details: "",
       recoverable: false,
@@ -324,8 +324,7 @@ describe("PlatformInfoScreen", () => {
     // Fire an Identity result — should be ignored
     fireTaskResult({
       taskId: "mock-task-id",
-      resultType: "Identity",
-      payload: null,
+      result: { type: "identityCompleted", identityId: null },
     });
 
     // Card should still be disabled (waiting for Platform result)

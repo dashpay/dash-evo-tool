@@ -18,7 +18,7 @@ vi.mock("@/bindings", async () => {
   return mockBindingsModule(createMockBindings());
 });
 
-import { commands } from "@/bindings";
+import { commands, events } from "@/bindings";
 
 let walletStoreState: Record<string, unknown> = {};
 vi.mock("@/stores/walletStore", () => ({
@@ -26,6 +26,14 @@ vi.mock("@/stores/walletStore", () => ({
 }));
 
 // ─── Helpers ────────────────────────────────────────────────────────
+
+/** Emit a task result event to all registered listeners. */
+function emitTaskResult(payload: unknown) {
+  const calls = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of calls) {
+    cb?.({ payload } as { payload: unknown });
+  }
+}
 
 function makeHdWallet(overrides: Record<string, unknown> = {}) {
   return {
@@ -219,15 +227,30 @@ describe("CreateAssetLockScreen", () => {
   });
 
   describe("funding step", () => {
-    it("generates funding address on button click", async () => {
-      const user = userEvent.setup();
-      setupWallet();
+    async function generateAddressAndEmitResult(user: ReturnType<typeof userEvent.setup>) {
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: { taskId: "yGenerated123Address456" },
+        status: "ok", data: { taskId: "task-addr-1" },
       });
       render(<CreateAssetLockScreen />);
       await user.click(screen.getByText("Registration"));
       await user.click(screen.getByText("Generate Funding Address"));
+
+      // Wait for the command to resolve and task listener to be set up
+      await waitFor(() => {
+        expect(commands.walletGenerateReceiveAddress).toHaveBeenCalled();
+      });
+
+      // Emit the real address via the task event system
+      emitTaskResult({
+        taskId: "task-addr-1",
+        result: { type: "walletGeneratedAddress", address: "yRealDashAddress123" },
+      });
+    }
+
+    it("generates funding address on button click", async () => {
+      const user = userEvent.setup();
+      setupWallet();
+      await generateAddressAndEmitResult(user);
 
       await waitFor(() => {
         expect(screen.getByText("Fund This Address")).toBeInTheDocument();
@@ -237,27 +260,17 @@ describe("CreateAssetLockScreen", () => {
     it("shows the generated address", async () => {
       const user = userEvent.setup();
       setupWallet();
-      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: { taskId: "yGenerated123Address456" },
-      });
-      render(<CreateAssetLockScreen />);
-      await user.click(screen.getByText("Registration"));
-      await user.click(screen.getByText("Generate Funding Address"));
+      await generateAddressAndEmitResult(user);
 
       await waitFor(() => {
-        expect(screen.getByText("yGenerated123Address456")).toBeInTheDocument();
+        expect(screen.getByText("yRealDashAddress123")).toBeInTheDocument();
       });
     });
 
     it("shows waiting for funds indicator", async () => {
       const user = userEvent.setup();
       setupWallet();
-      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: { taskId: "yGenerated123Address456" },
-      });
-      render(<CreateAssetLockScreen />);
-      await user.click(screen.getByText("Registration"));
-      await user.click(screen.getByText("Generate Funding Address"));
+      await generateAddressAndEmitResult(user);
 
       await waitFor(() => {
         expect(screen.getByText("Waiting for funds...")).toBeInTheDocument();
@@ -267,12 +280,7 @@ describe("CreateAssetLockScreen", () => {
     it("shows manual create button", async () => {
       const user = userEvent.setup();
       setupWallet();
-      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: { taskId: "yGenerated123Address456" },
-      });
-      render(<CreateAssetLockScreen />);
-      await user.click(screen.getByText("Registration"));
-      await user.click(screen.getByText("Generate Funding Address"));
+      await generateAddressAndEmitResult(user);
 
       await waitFor(() => {
         expect(screen.getByText("Create Asset Lock Now")).toBeInTheDocument();
@@ -296,19 +304,32 @@ describe("CreateAssetLockScreen", () => {
   });
 
   describe("asset lock creation", () => {
-    it("dispatches registration asset lock", async () => {
-      const user = userEvent.setup();
-      setupWallet();
+    async function goToFundingStep(user: ReturnType<typeof userEvent.setup>) {
       vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: { taskId: "yGenerated123Address456" },
-      });
-      vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
-        status: "ok", data: { taskId: "task-lock-123" },
+        status: "ok", data: { taskId: "task-addr-1" },
       });
       render(<CreateAssetLockScreen />);
       await user.click(screen.getByText("Registration"));
       await user.click(screen.getByText("Generate Funding Address"));
-      await waitFor(() => { expect(screen.getByText("Create Asset Lock Now")).toBeInTheDocument(); });
+      await waitFor(() => {
+        expect(commands.walletGenerateReceiveAddress).toHaveBeenCalled();
+      });
+      emitTaskResult({
+        taskId: "task-addr-1",
+        result: { type: "walletGeneratedAddress", address: "yRealDashAddress123" },
+      });
+      await waitFor(() => {
+        expect(screen.getByText("Create Asset Lock Now")).toBeInTheDocument();
+      });
+    }
+
+    it("dispatches registration asset lock", async () => {
+      const user = userEvent.setup();
+      setupWallet();
+      vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
+        status: "ok", data: { taskId: "task-lock-123" },
+      });
+      await goToFundingStep(user);
       await user.click(screen.getByText("Create Asset Lock Now"));
 
       await waitFor(() => {
@@ -323,16 +344,10 @@ describe("CreateAssetLockScreen", () => {
     it("shows creating state", async () => {
       const user = userEvent.setup();
       setupWallet();
-      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: { taskId: "yGenerated123Address456" },
-      });
       vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
         status: "ok", data: { taskId: "task-lock-123" },
       });
-      render(<CreateAssetLockScreen />);
-      await user.click(screen.getByText("Registration"));
-      await user.click(screen.getByText("Generate Funding Address"));
-      await waitFor(() => { expect(screen.getByText("Create Asset Lock Now")).toBeInTheDocument(); });
+      await goToFundingStep(user);
       await user.click(screen.getByText("Create Asset Lock Now"));
 
       await waitFor(() => {
@@ -343,16 +358,10 @@ describe("CreateAssetLockScreen", () => {
     it("shows error when creation fails", async () => {
       const user = userEvent.setup();
       setupWallet();
-      vi.mocked(commands.walletGenerateReceiveAddress).mockResolvedValue({
-        status: "ok", data: { taskId: "yGenerated123Address456" },
-      });
       vi.mocked(commands.coreCreateRegistrationAssetLock).mockResolvedValue({
         status: "error", error: "Creation failed",
       });
-      render(<CreateAssetLockScreen />);
-      await user.click(screen.getByText("Registration"));
-      await user.click(screen.getByText("Generate Funding Address"));
-      await waitFor(() => { expect(screen.getByText("Create Asset Lock Now")).toBeInTheDocument(); });
+      await goToFundingStep(user);
       await user.click(screen.getByText("Create Asset Lock Now"));
 
       await waitFor(() => {

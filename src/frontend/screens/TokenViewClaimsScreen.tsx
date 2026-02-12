@@ -40,15 +40,17 @@ function truncateId(id: string, chars = 8): string {
  * like "amount", "$createdAt", "$createdAtBlockHeight", "note".
  */
 function parseClaimDocuments(payload: unknown): ClaimRecord[] {
-  if (!Array.isArray(payload)) return [];
+  if (!payload || typeof payload !== "object") return [];
+
+  // Payload shape: { documents: [flat_dpp_doc, ...], hasMore }
+  const pageData = payload as Record<string, unknown>;
+  const documents = pageData.documents;
+  if (!Array.isArray(documents)) return [];
 
   const claims: ClaimRecord[] = [];
-  for (const entry of payload) {
-    // Each entry is [key, document | null]
-    const doc = Array.isArray(entry) ? entry[1] : entry;
-    if (!doc || typeof doc !== "object") continue;
-
-    const d = doc as Record<string, unknown>;
+  for (const entry of documents) {
+    if (!entry || typeof entry !== "object") continue;
+    const d = entry as Record<string, unknown>;
 
     // Amount
     let amount = "0";
@@ -147,12 +149,12 @@ export function TokenViewClaimsScreen() {
     const subscribe = async () => {
       cleanupResult = await events.taskResultEvent.listen(
         (event: { payload: TaskResultEvent }) => {
-          const { taskId, resultType, payload } = event.payload;
+          const { taskId, result } = event.payload;
           if (activeTaskIdRef.current !== taskId) return;
-          if (resultType !== "Document") return;
+          if (result.type !== "documentPage") return;
 
           activeTaskIdRef.current = null;
-          const parsed = parseClaimDocuments(payload);
+          const parsed = parseClaimDocuments(result);
           setClaims(parsed);
           setFetchStatus("done");
 

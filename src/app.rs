@@ -698,13 +698,39 @@ impl AppState {
     pub fn current_app_context(&self) -> &Arc<AppContext> {
         match self.chosen_network {
             Network::Dash => &self.mainnet_app_context,
-            Network::Testnet => self.testnet_app_context.as_ref().expect("expected testnet"),
-            Network::Devnet => self.devnet_app_context.as_ref().expect("expected devnet"),
-            Network::Regtest => self.local_app_context.as_ref().expect("expected local"),
-            _ => unreachable!(
-                "Unknown network variant {:?} in current_app_context",
-                self.chosen_network
-            ),
+            Network::Testnet => {
+                if let Some(ctx) = self.testnet_app_context.as_ref() {
+                    ctx
+                } else {
+                    tracing::warn!("Testnet app context not available, falling back to mainnet");
+                    &self.mainnet_app_context
+                }
+            }
+            Network::Devnet => {
+                if let Some(ctx) = self.devnet_app_context.as_ref() {
+                    ctx
+                } else {
+                    tracing::warn!("Devnet app context not available, falling back to mainnet");
+                    &self.mainnet_app_context
+                }
+            }
+            Network::Regtest => {
+                if let Some(ctx) = self.local_app_context.as_ref() {
+                    ctx
+                } else {
+                    tracing::warn!(
+                        "Local/Regtest app context not available, falling back to mainnet"
+                    );
+                    &self.mainnet_app_context
+                }
+            }
+            _ => {
+                tracing::warn!(
+                    "Unknown network variant {:?} in current_app_context, falling back to mainnet",
+                    self.chosen_network
+                );
+                &self.mainnet_app_context
+            }
         }
     }
 

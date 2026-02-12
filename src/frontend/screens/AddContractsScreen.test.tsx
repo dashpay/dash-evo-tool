@@ -2,6 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AddContractsScreen } from "./AddContractsScreen";
 import { useContractStore } from "@/stores/contractStore";
+import { hexToBase58 } from "@/lib/utils";
 
 // ─── Centralized mock bindings ──────────────────────────────────
 
@@ -449,7 +450,7 @@ describe("AddContractsScreen", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(CONTRACT_ID_1)).toBeInTheDocument();
+      expect(screen.getByText(hexToBase58(CONTRACT_ID_1))).toBeInTheDocument();
     });
   });
 

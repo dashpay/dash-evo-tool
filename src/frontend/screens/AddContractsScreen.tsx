@@ -17,6 +17,7 @@ import { commands, events } from "@/bindings";
 import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { useContractStore } from "@/stores/contractStore";
 import { toastError } from "@/lib/toastError";
+import { hexToBase58 } from "@/lib/utils";
 import { toast } from "sonner";
 
 const MAX_CONTRACTS = 10;
@@ -456,7 +457,9 @@ export function AddContractsScreen() {
                     Found and added the following contracts:
                   </h4>
                   <div className="space-y-3">
-                    {status.foundIds.map((contractId) => (
+                    {status.foundIds.map((contractId) => {
+                      const displayId = hexToBase58(contractId);
+                      return (
                       <div
                         key={contractId}
                         className="rounded-lg border bg-card p-4"
@@ -464,9 +467,9 @@ export function AddContractsScreen() {
                         <div className="flex items-center gap-3 mb-3">
                           <Check className="size-4 text-success shrink-0" />
                           <code className="text-sm font-mono text-success truncate">
-                            {contractId}
+                            {displayId}
                           </code>
-                          <CopyButton value={contractId} />
+                          <CopyButton value={displayId} />
                         </div>
                         <div className="flex items-center gap-2">
                           <Input
@@ -498,7 +501,8 @@ export function AddContractsScreen() {
                           </p>
                         )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

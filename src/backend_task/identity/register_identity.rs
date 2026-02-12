@@ -320,10 +320,11 @@ impl AppContext {
             Err(e) => return Err(format!("Error fetching identity: {}", e)),
         };
 
-        let identity = existing_identity.clone().unwrap_or_else(|| {
-            Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
-                .expect("expected to make identity")
-        });
+        let identity = match existing_identity.clone() {
+            Some(id) => id,
+            None => Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
+                .map_err(|e| format!("Failed to create identity: {}", e))?,
+        };
 
         let wallet_seed_hash = { wallet.read().unwrap().seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
@@ -602,21 +603,24 @@ impl AppContext {
                                 );
                             }
 
-                            let identity_create_transition =
-                                IdentityCreateTransition::try_from_identity_with_signer(
-                                    identity,
-                                    asset_lock_proof,
-                                    asset_lock_proof_private_key.inner.as_ref(),
-                                    &qualified_identity,
-                                    &NativeBlsModule,
-                                    0,
-                                    self.platform_version(),
-                                )
-                                .expect("expected to make transition");
-                            format!(
-                                "error: {}, transaction is {:?}",
-                                e, identity_create_transition
-                            )
+                            match IdentityCreateTransition::try_from_identity_with_signer(
+                                identity,
+                                asset_lock_proof,
+                                asset_lock_proof_private_key.inner.as_ref(),
+                                &qualified_identity,
+                                &NativeBlsModule,
+                                0,
+                                self.platform_version(),
+                            ) {
+                                Ok(transition) => format!(
+                                    "error: {}, transaction is {:?}",
+                                    e, transition
+                                ),
+                                Err(transition_err) => format!(
+                                    "error: {}, also failed to recreate transition for debugging: {}",
+                                    e, transition_err
+                                ),
+                            }
                         })
                 } else {
                     Err(e.to_string())

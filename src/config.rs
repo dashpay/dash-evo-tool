@@ -319,14 +319,20 @@ impl NetworkConfig {
     }
 
     /// List of DAPI addresses
-    pub fn dapi_address_list(&self) -> AddressList {
-        AddressList::from_str(&self.dapi_addresses).expect("Could not parse DAPI addresses")
+    pub fn dapi_address_list(&self) -> Result<AddressList, String> {
+        AddressList::from_str(&self.dapi_addresses).map_err(|e| {
+            format!(
+                "Could not parse DAPI addresses '{}': {}",
+                self.dapi_addresses, e
+            )
+        })
     }
 
     /// Insight API URI
     #[allow(dead_code)] // May be used for insight API access
-    pub fn insight_api_uri(&self) -> Uri {
-        Uri::from_str(&self.insight_api_url).expect("invalid insight API URL")
+    pub fn insight_api_uri(&self) -> Result<Uri, String> {
+        Uri::from_str(&self.insight_api_url)
+            .map_err(|e| format!("Invalid insight API URL '{}': {}", self.insight_api_url, e))
     }
 
     /// Update just the `core_rpc_password` in a builder-like manner.
@@ -426,7 +432,7 @@ mod tests {
             "https://insight.dash.org/insight-api",
             9998,
         );
-        let list = config.dapi_address_list();
+        let list = config.dapi_address_list().unwrap();
         assert_eq!(list.len(), 1);
     }
 
@@ -437,15 +443,20 @@ mod tests {
             "https://insight.dash.org/insight-api",
             9998,
         );
-        let list = config.dapi_address_list();
+        let list = config.dapi_address_list().unwrap();
         assert_eq!(list.len(), 3);
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse DAPI addresses")]
-    fn test_dapi_address_list_empty_panics() {
+    fn test_dapi_address_list_empty_returns_error() {
         let config = make_network_config("", "https://insight.dash.org/insight-api", 9998);
-        let _list = config.dapi_address_list();
+        let result = config.dapi_address_list();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Could not parse DAPI addresses")
+        );
     }
 
     // ── NetworkConfig::insight_api_uri ───────────────────────────────
@@ -457,15 +468,15 @@ mod tests {
             "https://insight.dash.org/insight-api",
             9998,
         );
-        let uri = config.insight_api_uri();
+        let uri = config.insight_api_uri().unwrap();
         assert_eq!(uri.to_string(), "https://insight.dash.org/insight-api");
     }
 
     #[test]
-    #[should_panic(expected = "invalid insight API URL")]
-    fn test_insight_api_uri_invalid_panics() {
+    fn test_insight_api_uri_invalid_returns_error() {
         let config = make_network_config("https://127.0.0.1:443", "not a valid url \x00", 9998);
-        let _uri = config.insight_api_uri();
+        let result = config.insight_api_uri();
+        assert!(result.is_err());
     }
 
     #[test]

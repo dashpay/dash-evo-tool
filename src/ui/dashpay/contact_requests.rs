@@ -1136,8 +1136,9 @@ impl ScreenLike for ContactRequests {
                         None, // to_username
                         request.account_label.as_deref(),
                         "received",
+                        Some(id),
                     ) {
-                        Ok(id) => tracing::debug!("Saved incoming contact request with id {}", id),
+                        Ok(row_id) => tracing::debug!("Saved incoming contact request with row id {}", row_id),
                         Err(e) => tracing::error!("Failed to save incoming contact request: {}", e),
                     }
                 }
@@ -1189,8 +1190,9 @@ impl ScreenLike for ContactRequests {
                         None, // to_username
                         request.account_label.as_deref(),
                         "sent",
+                        Some(id),
                     ) {
-                        Ok(id) => tracing::debug!("Saved outgoing contact request with id {}", id),
+                        Ok(row_id) => tracing::debug!("Saved outgoing contact request with row id {}", row_id),
                         Err(e) => tracing::error!("Failed to save outgoing contact request: {}", e),
                     }
                 }

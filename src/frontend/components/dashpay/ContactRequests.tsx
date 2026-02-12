@@ -16,22 +16,18 @@ import { LoadingSpinner } from "@/components/feedback/LoadingSpinner";
 import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import { useDashPayStore } from "@/stores/dashpayStore";
 import type { StoredContactRequestDto } from "@/bindings";
+import { displayId } from "@/lib/utils";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
-
-function truncateId(id: string, chars = 6): string {
-  if (id.length <= chars * 2 + 3) return id;
-  return `${id.slice(0, chars)}...${id.slice(-chars)}`;
-}
 
 function getRequestDisplayName(
   request: StoredContactRequestDto,
   direction: "incoming" | "outgoing",
 ): string {
   if (direction === "incoming") {
-    return request.toUsername || truncateId(request.fromIdentityId);
+    return request.toUsername || displayId(request.fromIdentityId);
   }
-  return request.toUsername || truncateId(request.toIdentityId);
+  return request.toUsername || displayId(request.toIdentityId);
 }
 
 function getRequestIdentityId(
@@ -263,11 +259,16 @@ export function ContactRequests({ onAddContact }: ContactRequestsProps) {
   const handleConfirmResult = useCallback(
     (status: "confirmed" | "canceled") => {
       if (status === "confirmed" && confirmDialog.request) {
-        const requestId = String(confirmDialog.request.id);
+        const platformId = confirmDialog.request.platformDocumentId;
+        if (!platformId) {
+          // Old DB row without platform document ID — cannot proceed
+          return;
+        }
+        const dbRowId = confirmDialog.request.id;
         if (confirmDialog.type === "accept") {
-          acceptContactRequest(requestId);
+          acceptContactRequest(dbRowId, platformId);
         } else {
-          rejectContactRequest(requestId);
+          rejectContactRequest(dbRowId, platformId);
         }
       }
       setConfirmDialog({ open: false, type: "accept", request: null });

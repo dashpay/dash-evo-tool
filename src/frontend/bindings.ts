@@ -4410,7 +4410,12 @@ export type StoredContactDto = { ownerIdentityId: string; contactIdentityId: str
 /**
  * Stored contact request from local database.
  */
-export type StoredContactRequestDto = { id: number; fromIdentityId: string; toIdentityId: string; toUsername: string | null; accountLabel: string | null; requestType: string; status: string; createdAt: number; respondedAt: number | null; expiresAt: number | null }
+export type StoredContactRequestDto = { id: number; fromIdentityId: string; toIdentityId: string; toUsername: string | null; accountLabel: string | null; requestType: string; status: string; createdAt: number; respondedAt: number | null; expiresAt: number | null;
+/**
+ * The Platform document ID for this contact request (hex-encoded).
+ * Needed for accept/reject operations. May be null for old DB rows.
+ */
+platformDocumentId: string | null }
 /**
  * Stored payment record from local database.
  */

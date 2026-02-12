@@ -46,6 +46,8 @@ pub struct StoredContactRequest {
     pub created_at: i64,
     pub responded_at: Option<i64>,
     pub expires_at: Option<i64>,
+    /// The Platform document ID for this contact request (needed for accept/reject).
+    pub platform_document_id: Option<Vec<u8>>,
 }
 
 /// DashPay payment/transaction record
@@ -131,7 +133,8 @@ impl crate::database::Database {
                 status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'expired')),
                 created_at INTEGER DEFAULT (unixepoch()),
                 responded_at INTEGER,
-                expires_at INTEGER
+                expires_at INTEGER,
+                platform_document_id BLOB
             )",
             [],
         )?;
@@ -429,6 +432,7 @@ impl crate::database::Database {
 
     // Contact request operations
 
+    #[allow(clippy::too_many_arguments)]
     pub fn save_contact_request(
         &self,
         from_identity_id: &Identifier,
@@ -437,12 +441,15 @@ impl crate::database::Database {
         to_username: Option<&str>,
         account_label: Option<&str>,
         request_type: &str,
+        platform_document_id: Option<&Identifier>,
     ) -> rusqlite::Result<i64> {
         let sql = "
             INSERT INTO dashpay_contact_requests
-            (from_identity_id, to_identity_id, network, to_username, account_label, request_type)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            (from_identity_id, to_identity_id, network, to_username, account_label, request_type, platform_document_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
         ";
+
+        let platform_doc_id_bytes = platform_document_id.map(|id| id.to_buffer().to_vec());
 
         let conn = self.conn.lock_or_recover();
         conn.execute(
@@ -454,6 +461,7 @@ impl crate::database::Database {
                 to_username,
                 account_label,
                 request_type,
+                platform_doc_id_bytes,
             ],
         )?;
 
@@ -484,13 +492,13 @@ impl crate::database::Database {
         let conn = self.conn.lock_or_recover();
         let sql = if request_type == "sent" {
             "SELECT id, from_identity_id, to_identity_id, to_username, account_label,
-                    request_type, status, created_at, responded_at, expires_at
+                    request_type, status, created_at, responded_at, expires_at, platform_document_id
              FROM dashpay_contact_requests
              WHERE from_identity_id = ?1 AND network = ?2 AND request_type = 'sent' AND status = 'pending'
              ORDER BY created_at DESC"
         } else {
             "SELECT id, from_identity_id, to_identity_id, to_username, account_label,
-                    request_type, status, created_at, responded_at, expires_at
+                    request_type, status, created_at, responded_at, expires_at, platform_document_id
              FROM dashpay_contact_requests
              WHERE to_identity_id = ?1 AND network = ?2 AND request_type = 'received' AND status = 'pending'
              ORDER BY created_at DESC"
@@ -510,6 +518,7 @@ impl crate::database::Database {
                     created_at: row.get(7)?,
                     responded_at: row.get(8)?,
                     expires_at: row.get(9)?,
+                    platform_document_id: row.get(10)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1086,7 +1095,7 @@ mod tests {
         let to = random_id();
 
         let request_id = db
-            .save_contact_request(&from, &to, "testnet", Some("bob"), Some("Default"), "sent")
+            .save_contact_request(&from, &to, "testnet", Some("bob"), Some("Default"), "sent", None)
             .unwrap();
         assert!(request_id > 0);
 
@@ -1105,7 +1114,7 @@ mod tests {
         let to = random_id();
 
         let request_id = db
-            .save_contact_request(&from, &to, "testnet", None, None, "sent")
+            .save_contact_request(&from, &to, "testnet", None, None, "sent", None)
             .unwrap();
         db.update_contact_request_status(request_id, "accepted")
             .unwrap();
@@ -1280,7 +1289,7 @@ mod tests {
             .unwrap();
         db.save_dashpay_contact(&id, &other, "testnet", None, None, None, None, "pending")
             .unwrap();
-        db.save_contact_request(&id, &other, "testnet", None, None, "sent")
+        db.save_contact_request(&id, &other, "testnet", None, None, "sent", None)
             .unwrap();
         db.save_payment("tx_1", &id, &other, 100, None, "sent")
             .unwrap();

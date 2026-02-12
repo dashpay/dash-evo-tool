@@ -230,6 +230,9 @@ pub struct StoredContactRequestDto {
     pub created_at: i64,
     pub responded_at: Option<i64>,
     pub expires_at: Option<i64>,
+    /// The Platform document ID for this contact request (hex-encoded).
+    /// Needed for accept/reject operations. May be null for old DB rows.
+    pub platform_document_id: Option<IdentifierDto>,
 }
 
 /// Stored payment record from local database.
@@ -667,6 +670,7 @@ pub fn dashpay_db_load_pending_requests(
             created_at: r.created_at,
             responded_at: r.responded_at,
             expires_at: r.expires_at,
+            platform_document_id: r.platform_document_id.map(|bytes| hex::encode(&bytes)),
         })
         .collect())
 }

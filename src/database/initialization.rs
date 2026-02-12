@@ -5,7 +5,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 27;
+pub const DEFAULT_DB_VERSION: u16 = 28;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -52,6 +52,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            28 => {
+                self.add_platform_document_id_to_contact_requests(tx)?;
+            }
             27 => {
                 self.add_network_indexes(tx)?;
             }
@@ -857,6 +860,38 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
             [],
         )?;
+        Ok(())
+    }
+
+    /// Migration: Add platform_document_id column to dashpay_contact_requests (version 28).
+    /// Stores the Platform document Identifier so the frontend can pass it to accept/reject.
+    fn add_platform_document_id_to_contact_requests(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='dashpay_contact_requests'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            let has_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('dashpay_contact_requests') WHERE name='platform_document_id'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_column {
+                conn.execute(
+                    "ALTER TABLE dashpay_contact_requests ADD COLUMN platform_document_id BLOB",
+                    [],
+                )?;
+            }
+        }
+
         Ok(())
     }
 }

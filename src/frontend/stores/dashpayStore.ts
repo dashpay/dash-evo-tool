@@ -159,9 +159,9 @@ interface DashPayActions {
     accountLabel: string | null;
   }) => Promise<string | null>;
   /** Accept an incoming contact request (async task dispatch). */
-  acceptContactRequest: (requestId: string) => Promise<void>;
+  acceptContactRequest: (dbRowId: number, platformDocId: string) => Promise<void>;
   /** Reject an incoming contact request (async task dispatch). */
-  rejectContactRequest: (requestId: string) => Promise<void>;
+  rejectContactRequest: (dbRowId: number, platformDocId: string) => Promise<void>;
 
   // ── Payment actions ──
   /** Load payment history from local DB. */
@@ -564,13 +564,12 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     }
   },
 
-  acceptContactRequest: async (requestId) => {
+  acceptContactRequest: async (dbRowId, platformDocId) => {
     const { selectedIdentityId } = get();
     if (!selectedIdentityId) return;
 
-    const numericId = parseInt(requestId, 10);
     set((state) => ({
-      acceptingIds: new Set(state.acceptingIds).add(numericId),
+      acceptingIds: new Set(state.acceptingIds).add(dbRowId),
       requestsError: null,
       pendingOps: new Set(state.pendingOps).add("accept"),
     }));
@@ -578,19 +577,19 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     try {
       const result = await commands.dashpayAcceptContactRequest({
         identityId: selectedIdentityId,
-        requestId,
+        requestId: platformDocId,
       });
       if (result.status === "error") {
         set((state) => {
           const newIds = new Set(state.acceptingIds);
-          newIds.delete(numericId);
+          newIds.delete(dbRowId);
           return { acceptingIds: newIds, requestsError: result.error };
         });
       } else {
-        timeouts.start(`accept:${requestId}`, () => {
+        timeouts.start(`accept:${dbRowId}`, () => {
           set((s) => {
             const newIds = new Set(s.acceptingIds);
-            newIds.delete(numericId);
+            newIds.delete(dbRowId);
             return { acceptingIds: newIds, requestsError: TIMEOUT_ERROR_MESSAGE };
           });
         });
@@ -599,7 +598,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     } catch (e) {
       set((state) => {
         const newIds = new Set(state.acceptingIds);
-        newIds.delete(numericId);
+        newIds.delete(dbRowId);
         return {
           acceptingIds: newIds,
           requestsError: e instanceof Error ? e.message : String(e),
@@ -608,13 +607,12 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     }
   },
 
-  rejectContactRequest: async (requestId) => {
+  rejectContactRequest: async (dbRowId, platformDocId) => {
     const { selectedIdentityId } = get();
     if (!selectedIdentityId) return;
 
-    const numericId = parseInt(requestId, 10);
     set((state) => ({
-      rejectingIds: new Set(state.rejectingIds).add(numericId),
+      rejectingIds: new Set(state.rejectingIds).add(dbRowId),
       requestsError: null,
       pendingOps: new Set(state.pendingOps).add("reject"),
     }));
@@ -622,19 +620,19 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     try {
       const result = await commands.dashpayRejectContactRequest({
         identityId: selectedIdentityId,
-        requestId,
+        requestId: platformDocId,
       });
       if (result.status === "error") {
         set((state) => {
           const newIds = new Set(state.rejectingIds);
-          newIds.delete(numericId);
+          newIds.delete(dbRowId);
           return { rejectingIds: newIds, requestsError: result.error };
         });
       } else {
-        timeouts.start(`reject:${requestId}`, () => {
+        timeouts.start(`reject:${dbRowId}`, () => {
           set((s) => {
             const newIds = new Set(s.rejectingIds);
-            newIds.delete(numericId);
+            newIds.delete(dbRowId);
             return { rejectingIds: newIds, requestsError: TIMEOUT_ERROR_MESSAGE };
           });
         });
@@ -643,7 +641,7 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     } catch (e) {
       set((state) => {
         const newIds = new Set(state.rejectingIds);
-        newIds.delete(numericId);
+        newIds.delete(dbRowId);
         return {
           rejectingIds: newIds,
           requestsError: e instanceof Error ? e.message : String(e),

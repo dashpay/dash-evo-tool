@@ -7,6 +7,7 @@ import {
   HdWalletDetail,
   SingleKeyWalletDetail,
   ReceiveDialog,
+  FundAssetLockDialog,
   PrivateKeyDialog,
 } from "@/components/wallet";
 import type { ReceiveAddress } from "@/components/wallet/ReceiveDialog";
@@ -134,6 +135,12 @@ export function WalletsScreen() {
     address: string;
     derivationPath: string;
     error?: string | null;
+  } | null>(null);
+
+  // Fund from asset lock dialog
+  const [fundAssetLockDialog, setFundAssetLockDialog] = useState<{
+    open: boolean;
+    assetLockIndex: number;
   } | null>(null);
 
   // Load wallets and developer mode on mount
@@ -347,10 +354,9 @@ export function WalletsScreen() {
   );
 
   const handleFundAssetLock = useCallback(
-    async (_assetLockIndex: number) => {
+    (assetLockIndex: number) => {
       if (!selectedHdWallet) return;
-      // TODO: Implement fund-from-asset-lock flow (requires destination address input)
-      toast.warning("Not yet implemented — fund from asset lock requires a destination address input.");
+      setFundAssetLockDialog({ open: true, assetLockIndex });
     },
     [selectedHdWallet],
   );
@@ -492,6 +498,18 @@ export function WalletsScreen() {
           passwordHint={viewKeyUnlock.passwordHint}
           error={viewKeyUnlock.error}
           onResult={handleViewKeyUnlockResult}
+        />
+      )}
+
+      {/* Fund from Asset Lock Dialog */}
+      {fundAssetLockDialog && selectedHdWallet && (
+        <FundAssetLockDialog
+          open={fundAssetLockDialog.open}
+          onOpenChange={(open) => {
+            if (!open) setFundAssetLockDialog(null);
+          }}
+          wallet={selectedHdWallet}
+          assetLockIndex={fundAssetLockDialog.assetLockIndex}
         />
       )}
     </div>

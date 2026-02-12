@@ -202,7 +202,9 @@ pub fn add_contract_chooser_panel(
                 .shadow(Shadow::elevated())
                 .show(ui, |panel_ui| {
                     // Account for both outer margin (10px * 2) and inner margin
-                    panel_ui.set_min_height(available_height - 2.0 - (Spacing::MD_I8 as f32 * 2.0));
+                    let panel_height = available_height - 2.0 - (Spacing::MD_I8 as f32 * 2.0);
+                    panel_ui.set_min_height(panel_height);
+                    panel_ui.set_max_height(panel_height);
 
                     // Make the whole panel scrollable (if it overflows vertically)
                     egui::ScrollArea::vertical().show(panel_ui, |ui| {

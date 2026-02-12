@@ -442,8 +442,11 @@ impl Database {
                     ))
                 })?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName(
+                    "Seed hash should be 32 bytes".to_string(),
+                )
+            })?;
             let closed_wallet_seed = ClosedKeyItem {
                 seed_hash: seed_hash_array,
                 encrypted_seed: encrypted_seed.clone(),
@@ -519,8 +522,11 @@ impl Database {
             let path_type: u32 = row.get(5)?;
             let total_received: Option<u64> = row.get(6)?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName(
+                    "Seed hash should be 32 bytes".to_string(),
+                )
+            })?;
 
             // Convert u32 to DerivationPathReference safely
             let path_reference =
@@ -796,8 +802,11 @@ impl Database {
             let is_ours: bool = row.get(8)?;
             let raw_transaction: Vec<u8> = row.get(9)?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName(
+                    "Seed hash should be 32 bytes".to_string(),
+                )
+            })?;
             let txid = Txid::from_slice(&txid_bytes).map_err(|e| {
                 rusqlite::Error::InvalidParameterName(format!("Invalid transaction txid: {}", e))
             })?;
@@ -896,8 +905,11 @@ impl Database {
             let balance: i64 = row.get(2)?;
             let nonce: i64 = row.get(3)?;
             let last_full_sync_balance: Option<i64> = row.get(4)?;
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName(
+                    "Seed hash should be 32 bytes".to_string(),
+                )
+            })?;
             Ok((
                 seed_hash_array,
                 address_str,

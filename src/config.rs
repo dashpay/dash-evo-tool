@@ -480,10 +480,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "invalid insight API URL")]
-    fn test_insight_api_uri_empty_panics() {
+    fn test_insight_api_uri_empty_returns_error() {
         let config = make_network_config("https://127.0.0.1:443", "", 9998);
-        let _uri = config.insight_api_uri();
+        assert!(config.insight_api_uri().is_err());
     }
 
     // ── NetworkConfig::update_core_rpc_password ─────────────────────

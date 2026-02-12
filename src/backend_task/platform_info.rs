@@ -316,7 +316,8 @@ fn format_withdrawal_documents_to_bare_info(
                 .map_err(|e| format!("Failed to get withdrawal output script: {}", e))?;
             let output_script = ScriptBuf::from_bytes(address_bytes);
             let address = Address::from_script(&output_script, network)
-                .map_err(|e| format!("Failed to parse withdrawal address: {}", e))?;
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|e| format!("Invalid Address: {}", e));
             Ok(format!(
                 "{}: {:.8} Dash for {} towards {} ({})",
                 local_datetime.format("%Y-%m-%d %H:%M:%S"),

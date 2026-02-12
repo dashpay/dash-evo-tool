@@ -267,7 +267,22 @@ impl AppState {
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
 
         let selected_main_screen = settings.root_screen_type;
-        let chosen_network = settings.network;
+        // Validate that the saved network has an available context; fall back to mainnet if not
+        let chosen_network = match settings.network {
+            Network::Testnet if testnet_app_context.is_none() => {
+                tracing::warn!("Saved network is Testnet but context unavailable, defaulting to mainnet");
+                Network::Dash
+            }
+            Network::Devnet if devnet_app_context.is_none() => {
+                tracing::warn!("Saved network is Devnet but context unavailable, defaulting to mainnet");
+                Network::Dash
+            }
+            Network::Regtest if local_app_context.is_none() => {
+                tracing::warn!("Saved network is Regtest but context unavailable, defaulting to mainnet");
+                Network::Dash
+            }
+            other => other,
+        };
         network_chooser_screen.current_network = chosen_network;
 
         if let (Network::Testnet, Some(testnet_app_context)) =
@@ -696,13 +711,16 @@ impl AppState {
     }
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
+        // Note: change_network() guards against switching to unavailable networks,
+        // so the fallback branches below should never be reached in practice.
+        // They exist as defense-in-depth and log at error level to aid debugging.
         match self.chosen_network {
             Network::Dash => &self.mainnet_app_context,
             Network::Testnet => {
                 if let Some(ctx) = self.testnet_app_context.as_ref() {
                     ctx
                 } else {
-                    tracing::warn!("Testnet app context not available, falling back to mainnet");
+                    tracing::error!("BUG: Testnet app context not available but network is set to Testnet. Falling back to mainnet to avoid crash.");
                     &self.mainnet_app_context
                 }
             }
@@ -710,7 +728,7 @@ impl AppState {
                 if let Some(ctx) = self.devnet_app_context.as_ref() {
                     ctx
                 } else {
-                    tracing::warn!("Devnet app context not available, falling back to mainnet");
+                    tracing::error!("BUG: Devnet app context not available but network is set to Devnet. Falling back to mainnet to avoid crash.");
                     &self.mainnet_app_context
                 }
             }
@@ -718,15 +736,13 @@ impl AppState {
                 if let Some(ctx) = self.local_app_context.as_ref() {
                     ctx
                 } else {
-                    tracing::warn!(
-                        "Local/Regtest app context not available, falling back to mainnet"
-                    );
+                    tracing::error!("BUG: Local/Regtest app context not available but network is set to Regtest. Falling back to mainnet to avoid crash.");
                     &self.mainnet_app_context
                 }
             }
             _ => {
-                tracing::warn!(
-                    "Unknown network variant {:?} in current_app_context, falling back to mainnet",
+                tracing::error!(
+                    "BUG: Unknown network variant {:?} in current_app_context. Falling back to mainnet to avoid crash.",
                     self.chosen_network
                 );
                 &self.mainnet_app_context
@@ -783,6 +799,23 @@ impl AppState {
     }
 
     pub fn change_network(&mut self, network: Network) {
+        // Verify the target network context exists before switching
+        let context_available = match network {
+            Network::Dash => true, // Mainnet is always available
+            Network::Testnet => self.testnet_app_context.is_some(),
+            Network::Devnet => self.devnet_app_context.is_some(),
+            Network::Regtest => self.local_app_context.is_some(),
+            _ => false,
+        };
+
+        if !context_available {
+            tracing::error!(
+                "Cannot switch to {:?}: network context not available. Staying on current network.",
+                network
+            );
+            return;
+        }
+
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
 

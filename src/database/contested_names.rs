@@ -356,12 +356,21 @@ impl Database {
         match result {
             Ok((locked_votes, abstain_votes, awarded_to, ending_time)) => {
                 // Compare the current values with the new values
+                let db_awarded_to = awarded_to
+                    .as_ref()
+                    .map(|id| {
+                        Identifier::from_bytes(id).map_err(|e| {
+                            rusqlite::Error::InvalidParameterName(format!(
+                                "Invalid awarded_to identifier ({} bytes): {}",
+                                id.len(),
+                                e
+                            ))
+                        })
+                    })
+                    .transpose()?;
                 let should_update = locked_votes != contested_name.locked_votes
                     || abstain_votes != contested_name.abstain_votes
-                    || awarded_to
-                        .as_ref()
-                        .and_then(|id| Identifier::from_bytes(id).ok())
-                        != contested_name.awarded_to
+                    || db_awarded_to != contested_name.awarded_to
                     || ending_time != contested_name.end_time;
 
                 if should_update {

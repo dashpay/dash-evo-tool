@@ -814,8 +814,11 @@ impl Database {
             let (identity_data, wallet_seed_hash_array, wallet_index) = row?;
 
             if let Some(wallet) = wallets_map.get_mut(&wallet_seed_hash_array) {
-                let mut identity = QualifiedIdentity::from_bytes(&identity_data)
-                    .map_err(super::CorruptedBlobError)?;
+                let Ok(mut identity) = QualifiedIdentity::from_bytes(&identity_data)
+                    .inspect_err(|e| tracing::warn!(wallet_index, error = %e, "skipping corrupted identity blob"))
+                else {
+                    continue;
+                };
                 identity.wallet_index = Some(wallet_index);
                 identity.network = *network;
 

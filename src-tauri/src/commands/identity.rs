@@ -32,6 +32,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
 use serde::{Deserialize, Serialize};
@@ -495,9 +496,14 @@ pub fn qualified_identity_to_dto(qi: &QualifiedIdentity, network: Network) -> Qu
 // Helper: Parse identifier from hex string
 // ---------------------------------------------------------------------------
 
-pub fn parse_identifier(hex_str: &str) -> Result<Identifier, String> {
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex identifier: {e}"))?;
-    Identifier::from_bytes(&bytes).map_err(|e| format!("Invalid identifier: {e}"))
+pub fn parse_identifier(input: &str) -> Result<Identifier, String> {
+    let trimmed = input.trim();
+    if let Ok(bytes) = hex::decode(trimmed) {
+        Identifier::from_bytes(&bytes).map_err(|e| format!("Invalid identifier: {e}"))
+    } else {
+        Identifier::from_string(trimmed, Encoding::Base58)
+            .map_err(|e| format!("Invalid identifier: {e}"))
+    }
 }
 
 fn parse_wallet_seed_hash(hex_str: &str) -> Result<WalletSeedHash, String> {

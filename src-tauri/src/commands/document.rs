@@ -4,6 +4,7 @@
 //! operations are long-running and dispatched asynchronously via
 //! `task_dispatcher::dispatch_task`. Results arrive as events.
 
+use crate::commands::identity::parse_identifier;
 use crate::dto::common::{CreditsDto, IdentifierDto};
 use crate::state::AppState;
 use crate::task_dispatcher;
@@ -14,7 +15,7 @@ use dash_evo_tool::backend_task::BackendTask;
 
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::fee::Credits;
-use dash_sdk::platform::{DataContract, Document, DocumentQuery, Identifier};
+use dash_sdk::platform::{DataContract, Document, DocumentQuery};
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -206,11 +207,6 @@ pub struct FetchDocumentsPageInput {
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
-
-fn parse_identifier(hex_str: &str) -> Result<Identifier, String> {
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex identifier: {e}"))?;
-    Identifier::from_bytes(&bytes).map_err(|e| format!("Invalid identifier: {e}"))
-}
 
 /// Look up a `QualifiedIdentity` from the local database by identifier.
 fn lookup_identity(

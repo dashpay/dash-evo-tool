@@ -5,6 +5,7 @@
 //! via `task_dispatcher::dispatch_task` and results arrive as events.
 //! Short reads (DB queries) return directly.
 
+use crate::commands::identity::parse_identifier;
 use crate::dto::common::{CreditsDto, IdentifierDto, TokenAmountDto};
 use crate::dto::token::IdentityTokenIdentifierDto;
 use crate::state::AppState;
@@ -346,11 +347,6 @@ pub struct SaveTokenOrderInput {
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
-
-fn parse_identifier(hex_str: &str) -> Result<Identifier, String> {
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex identifier: {e}"))?;
-    Identifier::from_bytes(&bytes).map_err(|e| format!("Invalid identifier: {e}"))
-}
 
 fn parse_token_amount(s: &str) -> Result<TokenAmount, String> {
     s.parse::<TokenAmount>()

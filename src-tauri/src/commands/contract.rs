@@ -5,6 +5,7 @@
 //! via `task_dispatcher::dispatch_task` and results arrive as events.
 //! Short reads (DB queries) return directly.
 
+use crate::commands::identity::parse_identifier;
 use crate::dto::common::IdentifierDto;
 use crate::dto::contract::{ContractSummaryDto, DataContractDto};
 use crate::state::AppState;
@@ -114,13 +115,8 @@ pub struct SetContractAliasInput {
 // Helper functions
 // ---------------------------------------------------------------------------
 
-fn parse_identifier(hex_str: &str) -> Result<Identifier, String> {
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid hex identifier: {e}"))?;
-    Identifier::from_bytes(&bytes).map_err(|e| format!("Invalid identifier: {e}"))
-}
-
-fn parse_identifiers(hex_strs: &[String]) -> Result<Vec<Identifier>, String> {
-    hex_strs.iter().map(|s| parse_identifier(s)).collect()
+fn parse_identifiers(strs: &[String]) -> Result<Vec<Identifier>, String> {
+    strs.iter().map(|s| parse_identifier(s)).collect()
 }
 
 /// Look up a `QualifiedIdentity` from the local database by identifier.

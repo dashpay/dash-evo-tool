@@ -230,14 +230,26 @@ impl AppContext {
 
         // Remove spent UTXOs from database
         for (outpoint, _) in &selected_utxos {
-            let _ = self.db.drop_utxo(outpoint, &self.network.to_string());
+            if let Err(e) = self.db.drop_utxo(outpoint, &self.network.to_string()) {
+                tracing::warn!(
+                    "Failed to remove spent UTXO {:?} from database: {}",
+                    outpoint,
+                    e
+                );
+            }
         }
 
         // Persist new balance
         let balance = wallet.read().map_err(|e| e.to_string())?.total_balance;
-        let _ = self
+        if let Err(e) = self
             .db
-            .update_single_key_wallet_balances(&key_hash, balance, 0, balance);
+            .update_single_key_wallet_balances(&key_hash, balance, 0, balance)
+        {
+            tracing::warn!(
+                "Failed to update single key wallet balances in database: {}",
+                e
+            );
+        }
 
         let total_sent: u64 = request.recipients.iter().map(|r| r.amount_duffs).sum();
         let recipients_result: Vec<(String, u64)> = request

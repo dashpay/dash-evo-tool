@@ -12,3 +12,6 @@ ralph/
 .DS_Store
 .idea/
 .vscode/
+.env
+.env.*
+!.env.example

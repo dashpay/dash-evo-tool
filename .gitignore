@@ -44,3 +44,7 @@ test-results/
 src-tauri/icons/android/
 src-tauri/icons/ios/
 src-tauri/gen/
+
+# Internal implementation docs
+ralph/
+ralph_logs/

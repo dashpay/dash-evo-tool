@@ -236,7 +236,9 @@ jobs:
             libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Build Tauri app (debug)
-        run: npx tauri build --debug 2>&1 | tail -20
+        run: |
+          set -o pipefail
+          npx tauri build --debug 2>&1 | tail -20
 
   # ── Tauri build verification (macOS) ───────────────────────────────
   tauri-build-macos:
@@ -266,7 +268,9 @@ jobs:
         run: brew install protobuf
 
       - name: Build Tauri app (debug)
-        run: npx tauri build --debug 2>&1 | tail -20
+        run: |
+          set -o pipefail
+          npx tauri build --debug 2>&1 | tail -20
 
   # ── Full E2E tests (real Tauri backend, WebdriverIO + tauri-driver) ─
   test-e2e-full:
@@ -363,13 +367,17 @@ jobs:
 
       - name: Build Tauri app (debug)
         working-directory: src-tauri
-        run: cargo build 2>&1 | tail -5
+        run: |
+          set -o pipefail
+          cargo build 2>&1 | tail -5
 
       - name: Run WebdriverIO E2E tests
         timeout-minutes: 25
         run: |
+          set -o pipefail
+
           # Start dbus (needed for Playwright Chromium)
-          eval $(dbus-launch --sh-syntax) 2>/dev/null || true
+          eval "$(dbus-launch --sh-syntax)" 2>/dev/null || true
 
           # Start Xvfb (virtual display)
           Xvfb :99 -screen 0 1280x800x24 -ac &

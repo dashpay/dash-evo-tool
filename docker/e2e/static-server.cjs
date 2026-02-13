@@ -27,10 +27,18 @@ const MIME_TYPES = {
   ".ttf": "font/ttf",
 };
 
+const RESOLVED_DIST = path.resolve(DIST_DIR);
+
 http
   .createServer((req, res) => {
     const url = req.url.split("?")[0]; // Strip query params
-    let filePath = path.join(DIST_DIR, url === "/" ? "index.html" : url);
+    const normalized = path.normalize(url).replace(/^(\.\.[/\\])+/, "");
+    let filePath = path.resolve(DIST_DIR, normalized === "/" ? "index.html" : normalized.replace(/^\//, ""));
+
+    // Prevent path traversal outside DIST_DIR
+    if (!filePath.startsWith(RESOLVED_DIST)) {
+      filePath = path.join(DIST_DIR, "index.html");
+    }
 
     // SPA fallback: serve index.html for routes without file extensions
     if (!path.extname(filePath) || !fs.existsSync(filePath)) {

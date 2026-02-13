@@ -991,7 +991,7 @@ pub fn token_query_claims(
             },
         ],
         order_by_clauses: vec![],
-        limit: 0,
+        limit: 100,
         start: None,
     };
 

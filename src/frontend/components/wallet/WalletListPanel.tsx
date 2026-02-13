@@ -56,6 +56,10 @@ interface WalletListPanelProps {
   onUnlockWallet?: (seedHash: string, password: string) => Promise<string | null>;
   /** Called when an HD wallet is locked */
   onLockWallet?: (seedHash: string) => Promise<void>;
+  /** Called when a single-key wallet is unlocked. Returns error string or null on success. */
+  onUnlockSingleKeyWallet?: (keyHash: string, password: string) => Promise<string | null>;
+  /** Called when a single-key wallet is locked */
+  onLockSingleKeyWallet?: (keyHash: string) => Promise<void>;
   /** Called when the "Create Wallet" empty-state action is clicked */
   onCreateWallet?: () => void;
   /** Called when the "Import Wallet" empty-state action is clicked */
@@ -274,6 +278,8 @@ interface SingleKeyWalletCardProps {
   onSelect: () => void;
   onRename: (alias: string | null) => void;
   onRemove: () => void;
+  onUnlock?: () => void;
+  onLock?: () => void;
 }
 
 const SingleKeyWalletCard = memo(function SingleKeyWalletCard({
@@ -282,6 +288,8 @@ const SingleKeyWalletCard = memo(function SingleKeyWalletCard({
   onSelect,
   onRename,
   onRemove,
+  onUnlock,
+  onLock,
 }: SingleKeyWalletCardProps) {
   const [isRenaming, setIsRenaming] = useState(false);
   const displayName = getWalletDisplayName(wallet.alias, "Unnamed Wallet");
@@ -351,6 +359,18 @@ const SingleKeyWalletCard = memo(function SingleKeyWalletCard({
               <Pencil className="h-4 w-4 mr-2" />
               Rename
             </DropdownMenuItem>
+            {wallet.usesPassword && onUnlock && (
+              <DropdownMenuItem onClick={() => onUnlock()}>
+                <Unlock className="h-4 w-4 mr-2" />
+                Unlock
+              </DropdownMenuItem>
+            )}
+            {wallet.usesPassword && onLock && (
+              <DropdownMenuItem onClick={() => onLock()}>
+                <Lock className="h-4 w-4 mr-2" />
+                Lock
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem
               onClick={() => onRemove()}
               className="text-destructive focus:text-destructive"
@@ -378,6 +398,8 @@ export function WalletListPanel({
   onRemoveSingleKeyWallet,
   onUnlockWallet,
   onLockWallet,
+  onUnlockSingleKeyWallet,
+  onLockSingleKeyWallet,
   onCreateWallet,
   onImportWallet,
   className,
@@ -388,7 +410,7 @@ export function WalletListPanel({
     | null
   >(null);
   const [unlockTarget, setUnlockTarget] = useState<{
-    seedHash: string;
+    walletRef: WalletRefDto;
     alias: string | null;
     passwordHint: string | null;
   } | null>(null);
@@ -409,15 +431,28 @@ export function WalletListPanel({
 
   const handleUnlockResult = useCallback(
     async (result: WalletUnlockResult) => {
-      if (result.status !== "unlocked" || !unlockTarget || !onUnlockWallet) {
+      if (result.status !== "unlocked" || !unlockTarget) {
         setUnlockError(null);
+        setUnlockTarget(null);
+        return;
+      }
+      const { walletRef } = unlockTarget;
+      const unlockFn =
+        walletRef.type === "hd"
+          ? onUnlockWallet
+            ? (pw: string) => onUnlockWallet(walletRef.seedHash, pw)
+            : null
+          : onUnlockSingleKeyWallet
+            ? (pw: string) => onUnlockSingleKeyWallet(walletRef.keyHash, pw)
+            : null;
+      if (!unlockFn) {
         setUnlockTarget(null);
         return;
       }
       setUnlockError(null);
       setUnlockLoading(true);
       try {
-        const error = await onUnlockWallet(unlockTarget.seedHash, result.password);
+        const error = await unlockFn(result.password);
         if (error) {
           setUnlockError(error);
           return; // Keep dialog open on error
@@ -429,7 +464,7 @@ export function WalletListPanel({
         setUnlockLoading(false);
       }
     },
-    [unlockTarget, onUnlockWallet],
+    [unlockTarget, onUnlockWallet, onUnlockSingleKeyWallet],
   );
 
   if (!hasWallets) {
@@ -495,7 +530,7 @@ export function WalletListPanel({
                     wallet.usesPassword
                       ? () =>
                           setUnlockTarget({
-                            seedHash: wallet.seedHash,
+                            walletRef: { type: "hd", seedHash: wallet.seedHash },
                             alias: wallet.alias,
                             passwordHint: wallet.passwordHint,
                           })
@@ -548,6 +583,21 @@ export function WalletListPanel({
                       name: getWalletDisplayName(wallet.alias, "Unnamed Wallet"),
                     })
                   }
+                  onUnlock={
+                    wallet.usesPassword
+                      ? () =>
+                          setUnlockTarget({
+                            walletRef: { type: "singleKey", keyHash: wallet.keyHash },
+                            alias: wallet.alias,
+                            passwordHint: null,
+                          })
+                      : undefined
+                  }
+                  onLock={
+                    wallet.usesPassword && onLockSingleKeyWallet
+                      ? () => onLockSingleKeyWallet(wallet.keyHash)
+                      : undefined
+                  }
                 />
               ))}
             </div>
@@ -590,7 +640,7 @@ export function WalletListPanel({
         title="Remove Wallet"
         message={
           removeTarget
-            ? `Are you sure you want to remove "${removeTarget.name}"? This action cannot be undone.`
+            ? `Removing wallet "${removeTarget.name}" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?`
             : ""
         }
         confirmText="Remove"

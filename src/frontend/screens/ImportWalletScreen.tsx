@@ -10,7 +10,11 @@ import {
   Wallet,
 } from "lucide-react";
 import { validateMnemonic } from "@scure/bip39";
-import { wordlist } from "@scure/bip39/wordlists/english.js";
+import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english.js";
+import { wordlist as spanishWordlist } from "@scure/bip39/wordlists/spanish.js";
+import { wordlist as frenchWordlist } from "@scure/bip39/wordlists/french.js";
+import { wordlist as italianWordlist } from "@scure/bip39/wordlists/italian.js";
+import { wordlist as portugueseWordlist } from "@scure/bip39/wordlists/portuguese.js";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toastError";
 import { Island } from "@/components/layout";
@@ -28,37 +32,33 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commands } from "@/bindings";
 import { cn } from "@/lib/utils";
 import { useWalletStore } from "@/stores/walletStore";
+import { PasswordStrengthMeter } from "@/components/shared/PasswordStrengthMeter";
 
 // ─── Constants ────────────────────────────────────────────────────
 
 const WORD_COUNTS = [12, 15, 18, 21, 24] as const;
 type WordCount = (typeof WORD_COUNTS)[number];
 
-const STRENGTH_LABELS = ["Very Weak", "Weak", "Fair", "Strong", "Very Strong"];
-const STRENGTH_COLORS = [
-  "bg-destructive",
-  "bg-destructive",
-  "bg-warning",
-  "bg-success",
-  "bg-success",
-];
-
 type ImportMode = "mnemonic" | "privateKey";
 
-// ─── Helpers ──────────────────────────────────────────────────────
+const BIP39_LANGUAGES = [
+  "English",
+  "Spanish",
+  "French",
+  "Italian",
+  "Portuguese",
+] as const;
+type Bip39Language = (typeof BIP39_LANGUAGES)[number];
 
-function estimatePasswordStrength(password: string): number {
-  if (!password) return 0;
-  let score = 0;
-  if (password.length >= 8) score++;
-  if (password.length >= 12) score++;
-  if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score++;
-  if (/\d/.test(password)) score++;
-  if (/[^a-zA-Z0-9]/.test(password)) score++;
-  return Math.min(4, score);
-}
+const WORDLISTS: Record<Bip39Language, string[]> = {
+  English: englishWordlist,
+  Spanish: spanishWordlist,
+  French: frenchWordlist,
+  Italian: italianWordlist,
+  Portuguese: portugueseWordlist,
+};
 
-function validateSeedPhrase(words: string[]): {
+function validateSeedPhrase(words: string[], wl: string[]): {
   valid: boolean;
   error: string | null;
 } {
@@ -68,13 +68,13 @@ function validateSeedPhrase(words: string[]): {
   }
 
   const phrase = words.map((w) => w.trim().toLowerCase()).join(" ");
-  const isValid = validateMnemonic(phrase, wordlist);
+  const isValid = validateMnemonic(phrase, wl);
 
   if (!isValid) {
     // Check which word is invalid
     for (let i = 0; i < words.length; i++) {
       const word = words[i]?.trim().toLowerCase() ?? "";
-      if (!wordlist.includes(word)) {
+      if (!wl.includes(word)) {
         return {
           valid: false,
           error: `Word ${i + 1} ("${word}") is not a valid BIP39 word`,
@@ -184,6 +184,7 @@ export function ImportWalletScreen() {
 function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
   const [wordCount, setWordCount] = useState<WordCount>(24);
   const [words, setWords] = useState<string[]>(() => Array(24).fill(""));
+  const [language, setLanguage] = useState<Bip39Language>("English");
   const [alias, setAlias] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -194,11 +195,9 @@ function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Validation
-  const validation = useMemo(() => validateSeedPhrase(words), [words]);
-
-  const passwordStrength = useMemo(
-    () => estimatePasswordStrength(password),
-    [password],
+  const validation = useMemo(
+    () => validateSeedPhrase(words, WORDLISTS[language]),
+    [words, language],
   );
 
   // Resize words array when word count changes
@@ -328,24 +327,45 @@ function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
         </div>
       )}
 
-      {/* Word count selector */}
-      <div className="space-y-2">
-        <Label htmlFor="import-word-count">Word Count</Label>
-        <Select
-          value={String(wordCount)}
-          onValueChange={(v) => setWordCount(Number(v) as WordCount)}
-        >
-          <SelectTrigger id="import-word-count" className="w-[180px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {WORD_COUNTS.map((count) => (
-              <SelectItem key={count} value={String(count)}>
-                {count} words
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {/* Language and word count selectors */}
+      <div className="flex gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="import-language">Language</Label>
+          <Select
+            value={language}
+            onValueChange={(v) => setLanguage(v as Bip39Language)}
+          >
+            <SelectTrigger id="import-language" className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {BIP39_LANGUAGES.map((lang) => (
+                <SelectItem key={lang} value={lang}>
+                  {lang}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="import-word-count">Word Count</Label>
+          <Select
+            value={String(wordCount)}
+            onValueChange={(v) => setWordCount(Number(v) as WordCount)}
+          >
+            <SelectTrigger id="import-word-count" className="w-[180px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {WORD_COUNTS.map((count) => (
+                <SelectItem key={count} value={String(count)}>
+                  {count} words
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {/* Word grid */}
@@ -397,7 +417,6 @@ function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
             onPasswordChange={setPassword}
             showPassword={showPassword}
             onShowPasswordChange={setShowPassword}
-            passwordStrength={passwordStrength}
             aliasPlaceholder="My Wallet"
           />
 
@@ -433,11 +452,6 @@ function PrivateKeyImportForm({ onSuccess }: { onSuccess: () => void }) {
   const [saving, setSaving] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsedAddress, setParsedAddress] = useState<string | null>(null);
-
-  const passwordStrength = useMemo(
-    () => estimatePasswordStrength(password),
-    [password],
-  );
 
   // Validate private key format on change
   useEffect(() => {
@@ -557,7 +571,6 @@ function PrivateKeyImportForm({ onSuccess }: { onSuccess: () => void }) {
             onPasswordChange={setPassword}
             showPassword={showPassword}
             onShowPasswordChange={setShowPassword}
-            passwordStrength={passwordStrength}
             aliasPlaceholder="My Key"
           />
 
@@ -591,7 +604,6 @@ function NameAndPasswordSection({
   onPasswordChange,
   showPassword,
   onShowPasswordChange,
-  passwordStrength,
   aliasPlaceholder,
 }: {
   alias: string;
@@ -600,7 +612,6 @@ function NameAndPasswordSection({
   onPasswordChange: (value: string) => void;
   showPassword: boolean;
   onShowPasswordChange: (show: boolean) => void;
-  passwordStrength: number;
   aliasPlaceholder: string;
 }) {
   return (
@@ -655,26 +666,7 @@ function NameAndPasswordSection({
           </Button>
         </div>
 
-        {password.length > 0 && (
-          <div className="space-y-1">
-            <div className="flex gap-1">
-              {[0, 1, 2, 3, 4].map((i) => (
-                <div
-                  key={i}
-                  className={cn(
-                    "h-1.5 flex-1 rounded-full transition-colors",
-                    i <= passwordStrength
-                      ? STRENGTH_COLORS[passwordStrength]
-                      : "bg-muted",
-                  )}
-                />
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Strength: {STRENGTH_LABELS[passwordStrength]}
-            </p>
-          </div>
-        )}
+        <PasswordStrengthMeter password={password} />
       </div>
     </>
   );

@@ -211,13 +211,14 @@ function platformBalanceDuffs(platformAddresses: PlatformAddressDto[]): number {
   );
 }
 
-// Refresh mode options
+// Refresh mode options (matches egui order)
 const REFRESH_MODES: { value: WalletRefreshMode; label: string }[] = [
   { value: "coreAndPlatformAuto", label: "All (Auto)" },
   { value: "coreOnly", label: "Core Only" },
+  { value: "platformFull", label: "Platform (Full)" },
+  { value: "platformTerminal", label: "Platform (Terminal)" },
   { value: "coreAndPlatformFull", label: "Core + Platform (Full)" },
   { value: "coreAndPlatformTerminal", label: "Core + Platform (Terminal)" },
-  { value: "combined", label: "Combined" },
 ];
 
 // ─── Address Table Sub-Component ──────────────────────────────────

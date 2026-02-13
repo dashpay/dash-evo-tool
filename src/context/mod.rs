@@ -388,6 +388,11 @@ impl AppContext {
         self.network
     }
 
+    /// Get the network configuration lock (for reading the current config).
+    pub fn network_config(&self) -> &Arc<RwLock<NetworkConfig>> {
+        &self.config
+    }
+
     /// Get the DashPay contract ID.
     pub fn dashpay_contract_id(&self) -> dash_sdk::platform::Identifier {
         use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -851,6 +856,25 @@ impl AppContext {
         }
 
         Ok(())
+    }
+
+    /// Update the in-memory `NetworkConfig` and rebuild the RPC client + SDK.
+    ///
+    /// Combines writing a new config into the `RwLock` with
+    /// `reinit_core_client_and_sdk()` — the same two-step pattern the egui UI
+    /// uses when saving the local network password.
+    pub fn update_config_and_reinit(
+        self: Arc<Self>,
+        new_config: NetworkConfig,
+    ) -> Result<(), String> {
+        {
+            let mut cfg_lock = self
+                .config
+                .write()
+                .map_err(|_| "Config lock poisoned".to_string())?;
+            *cfg_lock = new_config;
+        }
+        self.reinit_core_client_and_sdk()
     }
 }
 

@@ -2377,6 +2377,7 @@ async contextSetCoreBackendMode(mode: CoreBackendModeDto) : Promise<Result<null,
 
 export const events = __makeEvents__<{
 scheduledVoteExecutedEvent: ScheduledVoteExecutedEvent,
+scheduledVoteInProgressEvent: ScheduledVoteInProgressEvent,
 spvStatusEvent: SpvStatusEvent,
 taskErrorEvent: TaskErrorEvent,
 taskResultEvent: TaskResultEvent,
@@ -2386,6 +2387,7 @@ zmqConnectionStatusEvent: ZmqConnectionStatusEvent,
 zmqIsLockedTransactionEvent: ZmqIsLockedTransactionEvent
 }>({
 scheduledVoteExecutedEvent: "scheduled-vote-executed-event",
+scheduledVoteInProgressEvent: "scheduled-vote-in-progress-event",
 spvStatusEvent: "spv-status-event",
 taskErrorEvent: "task-error-event",
 taskResultEvent: "task-result-event",
@@ -3175,7 +3177,11 @@ disabledAt: number | null;
 /**
  * Whether we have the corresponding private key in local storage.
  */
-hasPrivateKey: boolean }
+hasPrivateKey: boolean;
+/**
+ * Optional contract bounds restricting this key to a specific contract.
+ */
+contractBounds: ContractBoundsDto | null }
 /**
  * Status of an identity on the platform.
  */
@@ -3784,7 +3790,11 @@ voterIdentityId: string | null;
 /**
  * Associated operator identity ID (if any).
  */
-operatorIdentityId: string | null }
+operatorIdentityId: string | null;
+/**
+ * Masternode payout address (if applicable, for masternodes/evonodes).
+ */
+masternodePayoutAddress: string | null }
 /**
  * Input for querying token descriptions by keyword.
  */
@@ -4194,6 +4204,21 @@ success: boolean;
  */
 error: string | null }
 /**
+ * Emitted when a scheduled vote begins casting (before the task spawns).
+ *
+ * Allows the frontend to mark the vote as "in progress" even when the
+ * backend auto-casts it via the 60 s polling loop.
+ */
+export type ScheduledVoteInProgressEvent = {
+/**
+ * The contested name the vote is for.
+ */
+contestedName: string;
+/**
+ * Voter identity ID (hex).
+ */
+voterId: string }
+/**
  * Input for batch search of identities from a wallet.
  */
 export type SearchIdentitiesUpToIndexInput = {
@@ -4549,7 +4574,11 @@ export type StoredContactDto = { ownerIdentityId: string; contactIdentityId: str
 /**
  * Stored contact request from local database.
  */
-export type StoredContactRequestDto = { id: number; fromIdentityId: string; toIdentityId: string; toUsername: string | null; accountLabel: string | null; requestType: string; status: string; createdAt: number; respondedAt: number | null; expiresAt: number | null;
+export type StoredContactRequestDto = { id: number; fromIdentityId: string; toIdentityId: string; toUsername: string | null;
+/**
+ * Resolved display name of the sender (for incoming requests).
+ */
+fromUsername: string | null; accountLabel: string | null; requestType: string; status: string; createdAt: number; respondedAt: number | null; expiresAt: number | null;
 /**
  * The Platform document ID for this contact request (hex-encoded).
  * Needed for accept/reject operations. May be null for old DB rows.

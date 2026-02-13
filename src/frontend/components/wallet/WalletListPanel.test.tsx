@@ -358,7 +358,7 @@ describe("WalletListPanel — remove", () => {
     expect(screen.getByText("Remove Wallet")).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Are you sure you want to remove "Deletable"? This action cannot be undone.',
+        'Removing wallet "Deletable" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?',
       ),
     ).toBeInTheDocument();
   });
@@ -396,7 +396,7 @@ describe("WalletListPanel — remove", () => {
     expect(screen.getByText("Remove Wallet")).toBeInTheDocument();
     expect(
       screen.getByText(
-        'Are you sure you want to remove "SK Delete"? This action cannot be undone.',
+        'Removing wallet "SK Delete" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?',
       ),
     ).toBeInTheDocument();
   });

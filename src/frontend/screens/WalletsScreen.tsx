@@ -335,6 +335,20 @@ export function WalletsScreen() {
     [lockWallet],
   );
 
+  const handleUnlockSingleKeyWallet = useCallback(
+    async (keyHash: string, password: string): Promise<string | null> => {
+      return unlockWallet({ type: "singleKey", keyHash }, password);
+    },
+    [unlockWallet],
+  );
+
+  const handleLockSingleKeyWallet = useCallback(
+    async (keyHash: string) => {
+      await lockWallet({ type: "singleKey", keyHash });
+    },
+    [lockWallet],
+  );
+
   // ─── Receive dialog addresses ────────────────────────────────────
 
   let receiveWalletName: string;
@@ -384,6 +398,8 @@ export function WalletsScreen() {
           onRemoveSingleKeyWallet={removeSingleKeyWallet}
           onUnlockWallet={handleUnlockWallet}
           onLockWallet={handleLockWallet}
+          onUnlockSingleKeyWallet={handleUnlockSingleKeyWallet}
+          onLockSingleKeyWallet={handleLockSingleKeyWallet}
           onCreateWallet={handleCreateWallet}
           onImportWallet={handleImportWallet}
         />

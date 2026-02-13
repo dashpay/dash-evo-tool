@@ -404,7 +404,8 @@ describe("walletStore", () => {
         "coreAndPlatformAuto",
         "coreAndPlatformFull",
         "coreAndPlatformTerminal",
-        "combined",
+        "platformFull",
+        "platformTerminal",
       ];
       for (const mode of modes) {
         useWalletStore.getState().setRefreshMode(mode);

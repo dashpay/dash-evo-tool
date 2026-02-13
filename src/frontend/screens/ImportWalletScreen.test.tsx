@@ -56,20 +56,24 @@ vi.mock("@scure/bip39", () => ({
 }));
 
 vi.mock("@scure/bip39/wordlists/english.js", () => ({
-  wordlist: [
-    "abandon",
-    "ability",
-    "able",
-    "about",
-    "above",
-    "absent",
-    "absorb",
-    "abstract",
-    "absurd",
-    "abuse",
-    "access",
-    "accident",
-  ],
+  wordlist: ["abandon", "ability", "able", "about", "above", "absent",
+    "absorb", "abstract", "absurd", "abuse", "access", "accident"],
+}));
+vi.mock("@scure/bip39/wordlists/spanish.js", () => ({
+  wordlist: ["abandon", "ability", "able", "about", "above", "absent",
+    "absorb", "abstract", "absurd", "abuse", "access", "accident"],
+}));
+vi.mock("@scure/bip39/wordlists/french.js", () => ({
+  wordlist: ["abandon", "ability", "able", "about", "above", "absent",
+    "absorb", "abstract", "absurd", "abuse", "access", "accident"],
+}));
+vi.mock("@scure/bip39/wordlists/italian.js", () => ({
+  wordlist: ["abandon", "ability", "able", "about", "above", "absent",
+    "absorb", "abstract", "absurd", "abuse", "access", "accident"],
+}));
+vi.mock("@scure/bip39/wordlists/portuguese.js", () => ({
+  wordlist: ["abandon", "ability", "able", "about", "above", "absent",
+    "absorb", "abstract", "absurd", "abuse", "access", "accident"],
 }));
 
 import { commands } from "@/bindings";

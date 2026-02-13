@@ -16,7 +16,8 @@ export type WalletRefreshMode =
   | "coreAndPlatformAuto"
   | "coreAndPlatformFull"
   | "coreAndPlatformTerminal"
-  | "combined";
+  | "platformFull"
+  | "platformTerminal";
 
 // ─── Store state ────────────────────────────────────────────────────
 
@@ -110,13 +111,19 @@ function platformSyncModeForRefresh(
     case "coreOnly":
       return null;
     case "coreAndPlatformAuto":
-    case "combined":
       return "auto";
     case "coreAndPlatformFull":
+    case "platformFull":
       return "forceFull";
     case "coreAndPlatformTerminal":
+    case "platformTerminal":
       return "terminalOnly";
   }
+}
+
+/** Whether this refresh mode skips Core and only refreshes Platform */
+function isPlatformOnlyMode(mode: WalletRefreshMode): boolean {
+  return mode === "platformFull" || mode === "platformTerminal";
 }
 
 // ─── Task timeout manager ────────────────────────────────────────────
@@ -174,11 +181,20 @@ export const useWalletStore = create<WalletStore>((set, get) => ({
     const { refreshMode } = get();
     set({ refreshing: true, error: null });
     try {
-      const platformSyncMode = platformSyncModeForRefresh(refreshMode);
-      const result = await commands.coreRefreshWalletInfo({
-        walletSeedHash: seedHash,
-        platformSyncMode,
-      });
+      const syncMode = platformSyncModeForRefresh(refreshMode);
+      let result;
+      if (isPlatformOnlyMode(refreshMode)) {
+        // Platform-only refresh — skip Core
+        result = await commands.walletFetchPlatformAddressBalances({
+          walletSeedHash: seedHash,
+          syncMode: syncMode!,
+        });
+      } else {
+        result = await commands.coreRefreshWalletInfo({
+          walletSeedHash: seedHash,
+          platformSyncMode: syncMode,
+        });
+      }
       if (result.status === "error") {
         set({ error: result.error, refreshing: false });
         return;

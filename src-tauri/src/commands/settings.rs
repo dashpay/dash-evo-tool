@@ -7,8 +7,11 @@ use crate::commands::system::ThemeModeDto;
 use crate::dto::NetworkDto;
 use crate::state::AppState;
 
+use dash_evo_tool::config::Config;
 use dash_evo_tool::model::settings::UserMode;
 use dash_evo_tool::spv::CoreBackendMode;
+
+use dash_sdk::dpp::dashcore::Network;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -256,6 +259,33 @@ pub fn settings_get_auto_start_spv(state: tauri::State<'_, Arc<AppState>>) -> Re
         .map_err(|e| format!("Failed to get auto-start SPV setting: {e}"))
 }
 
+/// Update use_local_spv_node setting.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_update_use_local_spv_node(
+    state: tauri::State<'_, Arc<AppState>>,
+    use_local: bool,
+) -> Result<(), String> {
+    let db = state.db();
+    db.update_use_local_spv_node(use_local)
+        .map_err(|e| format!("Failed to update use_local_spv_node: {e}"))?;
+
+    // Propagate to all network SPV managers (matches egui behavior)
+    state.set_use_local_spv_node(use_local);
+    Ok(())
+}
+
+/// Get use_local_spv_node setting.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_get_use_local_spv_node(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<bool, String> {
+    let db = state.db();
+    db.get_use_local_spv_node()
+        .map_err(|e| format!("Failed to get use_local_spv_node: {e}"))
+}
+
 /// Result of picking a Dash-Qt executable via native file dialog.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -337,6 +367,67 @@ pub async fn settings_pick_dash_qt_path() -> PickDashQtPathResult {
             error: Some(format!("Invalid file: Please select a valid '{required}'.")),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Local (Regtest) RPC password commands
+// ---------------------------------------------------------------------------
+
+/// Get the current local network RPC password from the in-memory config.
+///
+/// Returns `None` when no local/regtest context is configured.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_get_local_rpc_password(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Option<String>, String> {
+    let local_ctx = match state.local_context() {
+        Some(ctx) => ctx,
+        None => return Ok(None),
+    };
+    let cfg = local_ctx
+        .network_config()
+        .read()
+        .map_err(|_| "Config lock poisoned".to_string())?;
+    Ok(Some(cfg.core_rpc_password.clone()))
+}
+
+/// Save a new local network RPC password.
+///
+/// Persists to `.env`, updates the in-memory config, and rebuilds the RPC
+/// client + SDK so the change takes effect immediately.
+#[tauri::command]
+#[specta::specta]
+pub fn settings_update_local_rpc_password(
+    state: tauri::State<'_, Arc<AppState>>,
+    password: String,
+) -> Result<(), String> {
+    let local_ctx = state
+        .local_context()
+        .ok_or_else(|| "No local (Regtest) network is configured".to_string())?;
+
+    // 1. Load the full Config from .env so we can save all networks back
+    let mut config = Config::load().map_err(|e| format!("Failed to load config from .env: {e}"))?;
+
+    // 2. Clone the current local NetworkConfig and update the password
+    let updated = {
+        let current = local_ctx
+            .network_config()
+            .read()
+            .map_err(|_| "Config lock poisoned".to_string())?;
+        current.clone().update_core_rpc_password(password)
+    };
+
+    // 3. Update the full Config and save to .env
+    config.update_config_for_network(Network::Regtest, updated.clone());
+    config
+        .save()
+        .map_err(|e| format!("Failed to save config to .env: {e}"))?;
+
+    // 4. Update the in-memory config and rebuild RPC client + SDK
+    Arc::clone(local_ctx).update_config_and_reinit(updated)?;
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

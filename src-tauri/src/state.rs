@@ -211,6 +211,11 @@ impl AppState {
         &self.subtasks
     }
 
+    /// Get the local/regtest context, if one was configured.
+    pub fn local_context(&self) -> Option<&Arc<AppContext>> {
+        self.local_context.as_ref()
+    }
+
     /// Check which networks have valid contexts.
     pub fn available_networks(&self) -> Vec<Network> {
         let mut networks = vec![Network::Dash];
@@ -224,6 +229,22 @@ impl AppState {
             networks.push(Network::Regtest);
         }
         networks
+    }
+
+    /// Propagate use_local_spv_node to all network contexts' SPV managers.
+    pub fn set_use_local_spv_node(&self, use_local: bool) {
+        self.mainnet_context
+            .spv_manager()
+            .set_use_local_node(use_local);
+        if let Some(ref ctx) = self.testnet_context {
+            ctx.spv_manager().set_use_local_node(use_local);
+        }
+        if let Some(ref ctx) = self.devnet_context {
+            ctx.spv_manager().set_use_local_node(use_local);
+        }
+        if let Some(ref ctx) = self.local_context {
+            ctx.spv_manager().set_use_local_node(use_local);
+        }
     }
 
     /// Graceful shutdown — cancels all background tasks.

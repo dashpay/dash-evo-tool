@@ -500,9 +500,9 @@ async coreRecoverAssetLocks(input: RecoverAssetLocksInput) : Promise<Result<Disp
 /**
  * Generate a new receive address for an HD wallet.
  *
- * Dispatches `WalletTask::GenerateReceiveAddress`. Result via `TaskResultEvent`.
+ * Calls the backend directly and returns the generated address.
  */
-async walletGenerateReceiveAddress(input: GenerateReceiveAddressInput) : Promise<Result<DispatchTaskResponse, string>> {
+async walletGenerateReceiveAddress(input: GenerateReceiveAddressInput) : Promise<Result<GenerateReceiveAddressResponseDto, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("wallet_generate_receive_address", { input }) };
 } catch (e) {
@@ -2981,6 +2981,10 @@ export type GenerateReceiveAddressInput = {
  * Wallet seed hash (hex).
  */
 walletSeedHash: string }
+/**
+ * Response from generating a new receive address.
+ */
+export type GenerateReceiveAddressResponseDto = { address: string }
 /**
  * Input for getting minting destination config for a token.
  */

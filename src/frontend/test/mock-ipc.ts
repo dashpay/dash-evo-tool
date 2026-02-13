@@ -375,7 +375,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     coreRecoverAssetLocks: dispatchOk("coreRecoverAssetLocks"),
 
     // -- Wallet --
-    walletGenerateReceiveAddress: dispatchOk("walletGenerateReceiveAddress"),
+    walletGenerateReceiveAddress: resolvesOk("walletGenerateReceiveAddress", { address: "XmockGeneratedAddress123" }),
     walletFetchPlatformAddressBalances: dispatchOk("walletFetchPlatformAddressBalances"),
     walletTransferPlatformCredits: dispatchOk("walletTransferPlatformCredits"),
     walletWithdrawFromPlatformAddress: dispatchOk("walletWithdrawFromPlatformAddress"),

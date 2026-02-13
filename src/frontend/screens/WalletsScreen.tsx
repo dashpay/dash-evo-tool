@@ -18,7 +18,6 @@ import { commands } from "@/bindings";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toastError";
-import { waitForTask } from "@/lib/utils";
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
@@ -181,8 +180,6 @@ export function WalletsScreen() {
         walletSeedHash: selectedHdWallet.seedHash,
       });
       if (result.status === "ok") {
-        // Wait for the backend task to actually complete before reloading
-        await waitForTask(result.data.taskId);
         toast.success("New address generated");
         await useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
       } else {
@@ -210,7 +207,6 @@ export function WalletsScreen() {
         walletSeedHash: selectedHdWallet.seedHash,
       });
       if (result.status === "ok") {
-        await waitForTask(result.data.taskId);
         toast.success("New receiving address added");
         await useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
       } else {

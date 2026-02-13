@@ -6,8 +6,9 @@
 
 use crate::dto::common::{CreditsDto, SingleKeyHashDto, WalletSeedHashDto};
 use crate::dto::wallet::{
-    AssetLockDto, AssetLockProofDetailsDto, PlatformAddressDto, SingleKeyWalletDto, UtxoDto,
-    WalletAddressDto, WalletDto, WalletListDto, WalletRefDto, WalletTransactionDto,
+    AssetLockDto, AssetLockProofDetailsDto, GenerateReceiveAddressResponseDto,
+    PlatformAddressDto, SingleKeyWalletDto, UtxoDto, WalletAddressDto, WalletDto, WalletListDto,
+    WalletRefDto, WalletTransactionDto,
 };
 use crate::state::AppState;
 use crate::task_dispatcher;
@@ -432,23 +433,40 @@ fn single_key_wallet_to_dto(wallet: &SingleKeyWallet) -> SingleKeyWalletDto {
 
 /// Generate a new receive address for an HD wallet.
 ///
-/// Dispatches `WalletTask::GenerateReceiveAddress`. Result via `TaskResultEvent`.
+/// Calls the backend directly and returns the generated address.
 #[tauri::command]
 #[specta::specta]
-pub fn wallet_generate_receive_address(
-    app_handle: AppHandle,
+pub async fn wallet_generate_receive_address(
     state: tauri::State<'_, Arc<AppState>>,
     input: GenerateReceiveAddressInput,
-) -> Result<DispatchTaskResponse, String> {
+) -> Result<GenerateReceiveAddressResponseDto, String> {
+    use dash_evo_tool::backend_task::wallet::WalletResult;
+    use dash_evo_tool::backend_task::BackendTaskSuccessResult;
+    use dash_evo_tool::utils::egui_mpsc::SenderAsync;
+
     let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
-    // Verify the wallet exists
     let ctx = state.current_context();
     ctx.wallet_by_seed_hash(&seed_hash)
         .ok_or_else(|| format!("Wallet not found for seed hash {}", input.wallet_seed_hash))?;
 
     let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
-    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
-    Ok(DispatchTaskResponse { task_id })
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    let sender = SenderAsync::new_headless(tx);
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        ctx.run_backend_task(task, sender),
+    )
+    .await
+    .map_err(|_| "Address generation timed out after 30 seconds".to_string())?
+    .map_err(|e| format!("Failed to generate address: {e}"))?;
+
+    match result {
+        BackendTaskSuccessResult::Wallet(WalletResult::GeneratedReceiveAddress {
+            address, ..
+        }) => Ok(GenerateReceiveAddressResponseDto { address }),
+        other => Err(format!("Unexpected result: {:?}", other)),
+    }
 }
 
 /// Fetch platform address balances for a wallet.

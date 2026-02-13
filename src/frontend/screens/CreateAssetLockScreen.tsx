@@ -16,7 +16,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useWalletStore } from "@/stores/walletStore";
-import { useTaskListener } from "@/hooks/useTaskListener";
 import { commands, events } from "@/bindings";
 import type { WalletDto, QualifiedIdentityDto } from "@/bindings";
 import {
@@ -89,7 +88,6 @@ export function CreateAssetLockScreen() {
   // Funding
   const [fundingAddress, setFundingAddress] = useState<string | null>(null);
   const [generatingAddress, setGeneratingAddress] = useState(false);
-  const [addressTaskId, setAddressTaskId] = useState<string | null>(null);
 
   // Asset lock creation tracking
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -181,24 +179,6 @@ export function CreateAssetLockScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Listen for the address generation task result
-  useTaskListener(
-    addressTaskId,
-    (event) => {
-      if (event.result.type === "walletGeneratedAddress") {
-        setFundingAddress(event.result.address);
-        setStep("funding");
-        setGeneratingAddress(false);
-        setAddressTaskId(null);
-      }
-    },
-    (event) => {
-      setError(event.message);
-      setGeneratingAddress(false);
-      setAddressTaskId(null);
-    },
-  );
-
   // ─── Handlers ─────────────────────────────────────────────────────
 
   const handleBack = useCallback(() => {
@@ -231,7 +211,9 @@ export function CreateAssetLockScreen() {
         walletSeedHash: wallet.seedHash,
       });
       if (result.status === "ok") {
-        setAddressTaskId(result.data.taskId);
+        setFundingAddress(result.data.address);
+        setStep("funding");
+        setGeneratingAddress(false);
       } else {
         setError(result.error);
         setGeneratingAddress(false);

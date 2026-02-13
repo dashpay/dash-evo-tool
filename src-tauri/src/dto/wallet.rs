@@ -223,6 +223,13 @@ pub struct RecoveredAssetLocksDto {
     pub total_amount: u64,
 }
 
+/// Response from generating a new receive address.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateReceiveAddressResponseDto {
+    pub address: String,
+}
+
 /// Network identifier for the wallet context.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]

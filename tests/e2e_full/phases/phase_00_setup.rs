@@ -93,6 +93,13 @@ pub fn run(
     println!("  Set wallet alias to 'E2E Test Wallet'");
 
     // 9. Click save button
+    // Capture wallet count before save so we detect the new wallet specifically,
+    // not a leftover from a previous test run.
+    let initial_wallet_count = {
+        let app_ctx = harness.state().current_app_context();
+        app_ctx.wallets.read().unwrap().len()
+    };
+
     let found = wait_for_label(harness, "Save Wallet", Duration::from_secs(5));
     assert!(found, "Save Wallet button not found");
     harness
@@ -102,18 +109,22 @@ pub fn run(
     harness.run_steps(10);
     println!("  Clicked Save Wallet");
 
-    // 10. Wait for wallet to appear in AppContext
+    // 10. Wait for NEW wallet to appear in AppContext
     let wallet_imported = wait_until(
         harness,
         |h| {
             let app_ctx = h.state().current_app_context();
             let wallets = app_ctx.wallets.read().unwrap();
-            !wallets.is_empty()
+            wallets.len() > initial_wallet_count
         },
         Duration::from_secs(60),
         10,
     );
-    assert!(wallet_imported, "Wallet was not imported within 60s");
+    assert!(
+        wallet_imported,
+        "Wallet was not imported within 60s (count stayed at {})",
+        initial_wallet_count
+    );
 
     // Save the seed hash to TestContext
     {
@@ -149,9 +160,11 @@ pub fn run(
         .and_then(|s| s.parse().ok())
         .unwrap_or(1800); // 30 min default
 
+    const MAX_SPV_RETRIES: u32 = 3;
+
     let start = Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
-    let mut error_retried = false;
+    let mut retry_count: u32 = 0;
     let mut spv_synced = false;
 
     while start.elapsed() < timeout {
@@ -171,14 +184,20 @@ pub fn run(
                 let err_msg = status.last_error.as_deref().unwrap_or("unknown");
                 println!("  SPV error detected: {}", err_msg);
 
-                if !error_retried {
-                    println!("  Retrying SPV sync...");
+                if retry_count < MAX_SPV_RETRIES {
+                    retry_count += 1;
+                    println!(
+                        "  Retrying SPV sync ({}/{})...",
+                        retry_count, MAX_SPV_RETRIES
+                    );
                     let app_ctx = harness.state().current_app_context().clone();
                     app_ctx.spv_manager.stop();
-                    std::thread::sleep(Duration::from_secs(2));
+                    harness.run_steps(120); // ~2s cooldown (non-blocking)
                     let wallet_count = app_ctx.wallets.read().unwrap().len();
-                    let _ = app_ctx.spv_manager.start(wallet_count);
-                    error_retried = true;
+                    app_ctx
+                        .spv_manager
+                        .start(wallet_count)
+                        .unwrap_or_else(|e| panic!("SPV restart failed: {}", e));
                 }
             }
             _ => {}
@@ -187,13 +206,13 @@ pub fn run(
 
     assert!(
         spv_synced,
-        "SPV sync did not reach Running within {}s",
-        timeout_secs
+        "SPV sync did not reach Running within {}s (retries: {}/{})",
+        timeout_secs, retry_count, MAX_SPV_RETRIES
     );
     ctx.spv_synced = true;
     println!("  SPV sync complete!");
 
-    // 13. Save wallet balance to context
+    // 13. Save wallet balance to context and validate
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
@@ -202,6 +221,18 @@ pub fn run(
             ctx.balance_duffs = w.total_balance_duffs();
         }
     }
+
+    // Minimum balance required for identity operations in later phases
+    const MIN_BALANCE_DUFFS: u64 = 100_000; // 0.001 DASH
+    assert!(
+        ctx.balance_duffs >= MIN_BALANCE_DUFFS,
+        "Wallet balance ({} duffs / {:.8} DASH) is below the minimum ({} duffs) \
+         required for E2E tests. Please fund the wallet.",
+        ctx.balance_duffs,
+        ctx.balance_duffs as f64 / 1e8,
+        MIN_BALANCE_DUFFS,
+    );
+
     println!(
         "  Setup complete. Balance: {} duffs ({:.8} DASH)",
         ctx.balance_duffs,

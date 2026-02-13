@@ -100,10 +100,20 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
             .query_by_label_contains("Finished loading")
             .is_some();
     let is_not_found = harness.query_by_label_contains("not found").is_some()
-        || harness.query_by_label_contains("No identity").is_some();
+        || harness
+            .query_by_label_contains("No identity found")
+            .is_some();
+
+    // Detect platform errors that aren't a clean "not found"
+    let has_error_label = harness.query_by_label_contains("Error").is_some();
+    let is_platform_error = has_error_label && !is_not_found;
+    assert!(
+        !is_platform_error,
+        "DPNS lookup returned a platform error (not a clean not-found)"
+    );
     assert!(
         is_success || is_not_found,
-        "DPNS lookup must succeed or return not-found (got platform error)"
+        "DPNS lookup must succeed or return not-found (got unexpected state)"
     );
     if is_success {
         println!("  DPNS lookup succeeded: name \"quantum\" found");
@@ -126,10 +136,10 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
         .type_text(DPNS_CONTRACT_ID);
     harness.run_steps(5);
 
-    // Click "Add Contracts" submit button
+    // Click "Fetch Contracts" submit button
     harness
-        .query_by_label_contains("Add Contracts")
-        .expect("'Add Contracts' button must be visible on Add Contracts screen")
+        .query_by_label_contains("Fetch Contracts")
+        .expect("'Fetch Contracts' button must be visible on Add Contracts screen")
         .click();
     harness.run_steps(10);
 

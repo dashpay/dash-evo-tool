@@ -1,11 +1,13 @@
 use crate::helpers::context::TestContext;
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
+use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::spv::SpvStatus;
 use dash_evo_tool::ui::{RootScreenType, Screen};
 use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 pub fn run(
@@ -93,11 +95,11 @@ pub fn run(
     println!("  Set wallet alias to 'E2E Test Wallet'");
 
     // 9. Click save button
-    // Capture wallet count before save so we detect the new wallet specifically,
-    // not a leftover from a previous test run.
-    let initial_wallet_count = {
+    // Capture wallet keys before save so we can diff to find the newly imported one,
+    // regardless of pre-existing wallets from previous runs.
+    let initial_wallet_keys: BTreeSet<WalletSeedHash> = {
         let app_ctx = harness.state().current_app_context();
-        app_ctx.wallets.read().unwrap().len()
+        app_ctx.wallets.read().unwrap().keys().copied().collect()
     };
 
     let found = wait_for_label(harness, "Save Wallet", Duration::from_secs(5));
@@ -115,7 +117,7 @@ pub fn run(
         |h| {
             let app_ctx = h.state().current_app_context();
             let wallets = app_ctx.wallets.read().unwrap();
-            wallets.len() > initial_wallet_count
+            wallets.len() > initial_wallet_keys.len()
         },
         Duration::from_secs(60),
         10,
@@ -123,18 +125,21 @@ pub fn run(
     assert!(
         wallet_imported,
         "Wallet was not imported within 60s (count stayed at {})",
-        initial_wallet_count
+        initial_wallet_keys.len()
     );
 
-    // Save the seed hash to TestContext
+    // Save the seed hash to TestContext by diffing key sets
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
-        let (hash, _) = wallets
-            .iter()
-            .next()
-            .expect("Wallet map should not be empty after successful import");
-        ctx.wallet_seed_hash = Some(*hash);
+        let current_keys: BTreeSet<WalletSeedHash> = wallets.keys().copied().collect();
+        let new_keys: Vec<_> = current_keys.difference(&initial_wallet_keys).collect();
+        assert!(
+            new_keys.len() == 1,
+            "Expected exactly 1 new wallet after import, found {}",
+            new_keys.len()
+        );
+        ctx.wallet_seed_hash = Some(*new_keys[0]);
     }
     println!(
         "  Wallet imported. Seed hash prefix: {:?}",

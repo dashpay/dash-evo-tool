@@ -55,12 +55,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // 3. Navigate to wallets screen and verify balance in UI
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
 
-    let has_dash_label = wait_for_label(harness, "DASH", Duration::from_secs(10));
+    let has_wallet_label = wait_for_label(harness, "E2E Test Wallet", Duration::from_secs(10));
     assert!(
-        has_dash_label,
-        "Wallet should show 'DASH' in balance display"
+        has_wallet_label,
+        "Wallet card should show 'E2E Test Wallet' alias"
     );
-    println!("  UI shows DASH balance");
+    println!("  UI shows wallet card with alias");
 
     // 4. Open receive dialog and verify address display
     let receive_btn = harness

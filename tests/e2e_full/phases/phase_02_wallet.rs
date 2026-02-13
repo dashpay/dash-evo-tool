@@ -10,9 +10,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // 1. Navigate to wallets screen and verify wallet card
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
 
-    let has_dash = wait_for_label(harness, "DASH", Duration::from_secs(10));
-    assert!(has_dash, "Wallet card should show DASH balance");
-    println!("  Wallet card with balance visible");
+    let has_wallet = wait_for_label(harness, "E2E Test Wallet", Duration::from_secs(10));
+    assert!(
+        has_wallet,
+        "Wallet card should show 'E2E Test Wallet' alias"
+    );
+    println!("  Wallet card with alias visible");
 
     // 2. Select wallet — the wallet should already be selected from Phase 0/1,
     //    but verify by checking the combo box shows our alias

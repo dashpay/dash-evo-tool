@@ -358,7 +358,7 @@ impl ScreenLike for AddContractsScreen {
                     ui.add_space(10.0);
                     // Add Contracts Button
                     let button =
-                        egui::Button::new(RichText::new("Add Contracts").color(Color32::WHITE))
+                        egui::Button::new(RichText::new("Fetch Contracts").color(Color32::WHITE))
                             .fill(DashColors::ACTION_BUTTON_BLUE)
                             .frame(true)
                             .corner_radius(3.0);

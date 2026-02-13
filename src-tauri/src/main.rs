@@ -460,6 +460,38 @@ fn main() {
                     );
                     task_dispatcher::start_spv_status_polling(handle, app_state.clone());
 
+                    // Auto-start SPV sync if conditions are met (matching egui behavior).
+                    // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
+                    // Remove the is_developer_mode() check once SPV is production-ready.
+                    {
+                        let ctx = app_state.current_context();
+                        if ctx.is_developer_mode()
+                            && ctx.core_backend_mode()
+                                == dash_evo_tool::spv::CoreBackendMode::Spv
+                        {
+                            let db = app_state.db();
+                            let onboarding_completed = db
+                                .get_settings()
+                                .ok()
+                                .flatten()
+                                .map(dash_evo_tool::model::settings::Settings::from)
+                                .unwrap_or_default()
+                                .onboarding_completed;
+                            let auto_start_spv =
+                                db.get_auto_start_spv().unwrap_or(false);
+                            if onboarding_completed && auto_start_spv {
+                                if let Err(e) = ctx.start_spv() {
+                                    tracing::warn!(
+                                        "Failed to auto-start SPV sync: {}",
+                                        e
+                                    );
+                                } else {
+                                    tracing::info!("SPV sync auto-started on startup");
+                                }
+                            }
+                        }
+                    }
+
                     // Manage the Arc<AppState> directly — Tauri commands receive
                     // tauri::State<'_, Arc<AppState>> and can clone the Arc as needed.
                     app.manage(app_state);

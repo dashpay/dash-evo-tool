@@ -191,6 +191,9 @@ pub fn settings_update_disable_zmq(
 }
 
 /// Update onboarding completed flag.
+///
+/// When onboarding is marked as completed and SPV auto-start is enabled,
+/// this will also start SPV sync (matching the egui behavior).
 #[tauri::command]
 #[specta::specta]
 pub fn settings_update_onboarding_completed(
@@ -201,7 +204,25 @@ pub fn settings_update_onboarding_completed(
     state
         .db()
         .update_onboarding_completed(completed)
-        .map_err(|e| format!("Failed to update onboarding: {e}"))
+        .map_err(|e| format!("Failed to update onboarding: {e}"))?;
+
+    // Auto-start SPV sync after onboarding completes (matching egui behavior).
+    if completed {
+        let ctx = state.current_context();
+        let auto_start_spv = state.db().get_auto_start_spv().unwrap_or(false);
+        if auto_start_spv
+            && ctx.is_developer_mode()
+            && ctx.core_backend_mode() == dash_evo_tool::spv::CoreBackendMode::Spv
+        {
+            if let Err(e) = ctx.start_spv() {
+                tracing::warn!("Failed to start SPV sync after onboarding: {}", e);
+            } else {
+                tracing::info!("SPV sync started after onboarding");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Update show evonode tools setting.

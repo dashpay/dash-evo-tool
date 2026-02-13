@@ -13,8 +13,11 @@ use crate::DispatchTaskResponse;
 use dash_evo_tool::backend_task::document::DocumentTask;
 use dash_evo_tool::backend_task::BackendTask;
 
+use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
+use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::platform::{DataContract, Document, DocumentQuery};
 
 use serde::{Deserialize, Serialize};
@@ -256,6 +259,21 @@ fn find_document_type(contract: &DataContract, type_name: &str) -> Result<Docume
         .ok_or_else(|| format!("Document type '{}' not found in contract", type_name))
 }
 
+/// Build `TokenPaymentInfo` from a document type's token cost, if any.
+fn token_payment_from_cost(
+    cost: Option<dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenCost>,
+) -> Option<TokenPaymentInfo> {
+    cost.map(|c| {
+        TokenPaymentInfo::V0(TokenPaymentInfoV0 {
+            payment_token_contract_id: c.contract_id,
+            token_contract_position: c.token_contract_position,
+            gas_fees_paid_by: c.gas_fees_paid_by,
+            minimum_token_cost: None,
+            maximum_token_cost: Some(c.token_amount),
+        })
+    })
+}
+
 /// Build a DocumentQuery from input parameters.
 fn build_document_query(
     contract: Arc<DataContract>,
@@ -339,7 +357,7 @@ pub fn document_broadcast(
     // Generate random entropy
     let entropy: [u8; 32] = rand::random();
 
-    let token_payment = None; // TODO: convert TokenPaymentInfoDto when needed
+    let token_payment = token_payment_from_cost(doc_type.document_creation_token_cost());
 
     let task = BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument(
         document,
@@ -369,7 +387,7 @@ pub fn document_delete(
     let contract = lookup_contract(&state, &input.contract_id)?;
     let doc_type = find_document_type(&contract, &input.document_type_name)?;
     let doc_id = parse_identifier(&input.document_id)?;
-    let token_payment = None; // TODO: convert TokenPaymentInfoDto when needed
+    let token_payment = token_payment_from_cost(doc_type.document_deletion_token_cost());
 
     let task = BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument(
         doc_id,
@@ -401,7 +419,7 @@ pub fn document_replace(
     let document: Document = serde_json::from_value(input.document_json)
         .map_err(|e| format!("Invalid document JSON: {e}"))?;
 
-    let token_payment = None;
+    let token_payment = token_payment_from_cost(doc_type.document_replacement_token_cost());
 
     let task = BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
         document,
@@ -431,7 +449,7 @@ pub fn document_transfer(
     let doc_type = find_document_type(&contract, &input.document_type_name)?;
     let doc_id = parse_identifier(&input.document_id)?;
     let new_owner_id = parse_identifier(&input.new_owner_id)?;
-    let token_payment = None;
+    let token_payment = token_payment_from_cost(doc_type.document_transfer_token_cost());
 
     let task = BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument(
         doc_id,
@@ -461,7 +479,7 @@ pub fn document_purchase(
     let contract = lookup_contract(&state, &input.contract_id)?;
     let doc_type = find_document_type(&contract, &input.document_type_name)?;
     let doc_id = parse_identifier(&input.document_id)?;
-    let token_payment = None;
+    let token_payment = token_payment_from_cost(doc_type.document_purchase_token_cost());
 
     let task = BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument(
         input.price as Credits,
@@ -491,7 +509,7 @@ pub fn document_set_price(
     let contract = lookup_contract(&state, &input.contract_id)?;
     let doc_type = find_document_type(&contract, &input.document_type_name)?;
     let doc_id = parse_identifier(&input.document_id)?;
-    let token_payment = None;
+    let token_payment = token_payment_from_cost(doc_type.document_update_price_token_cost());
 
     let task = BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice(
         input.price as Credits,

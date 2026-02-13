@@ -1301,7 +1301,7 @@ export function buildConfigJson(
   controlRules: ControlRulesState,
   groups: GroupsState,
   history: HistoryState,
-  keywords: KeywordsState,
+  _keywords: KeywordsState,
 ): Record<string, unknown> {
   // Build groups as position-keyed object: { "0": { "$format_version": "0", members: {...}, required_power: N } }
   const groupsObj: Record<string, unknown> = {};

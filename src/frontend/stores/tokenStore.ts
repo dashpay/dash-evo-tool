@@ -4,7 +4,6 @@ import type {
   IdentityTokenAvailableActionsDto,
   IdentityTokenBalanceDto,
   IdentityTokenIdentifierDto,
-  JsonValue,
   TaskResultEvent,
 } from "../bindings";
 import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";

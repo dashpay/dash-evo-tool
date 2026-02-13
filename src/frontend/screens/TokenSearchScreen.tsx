@@ -209,7 +209,7 @@ export function TokenSearchScreen() {
           }
         });
     },
-    [contractDetail],
+    [contractDetail, loadMyTokenBalances],
   );
 
   return (

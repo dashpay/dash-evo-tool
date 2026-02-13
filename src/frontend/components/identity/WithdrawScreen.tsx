@@ -251,7 +251,7 @@ export function WithdrawScreen({
       ? address.trim()
       : identity.masternodePayoutAddress ?? "masternode payout address";
     return `Are you sure you want to withdraw ${amountStr} DASH to ${dest}?`;
-  }, [amount.parsedAmount, address]);
+  }, [amount.parsedAmount, address, identity.masternodePayoutAddress]);
 
   // ─── Success screen ────────────────────────────────────────────
 

@@ -106,7 +106,7 @@ interface MnListFetchedDiffsPayload {
   }>;
 }
 
-type MnListPayload =
+type _MnListPayload =
   | MnListFetchedDiffPayload
   | MnListFetchedQrInfoPayload
   | MnListChainLockSigsPayload
@@ -1018,9 +1018,10 @@ function DiffsTab({
   const [selectedItemIndex, setSelectedItemIndex] = useState<number | null>(null);
   const [mnSearch, setMnSearch] = useState("");
 
-  // Reset selection when diffs change
+  // Reset selection when diffs array shrinks (clamp out-of-bounds index)
   useEffect(() => {
     if (selectedDiffIndex !== null && selectedDiffIndex >= fetchedDiffs.length) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting stale index when external data shrinks
       setSelectedDiffIndex(null);
       setSelectedItemIndex(null);
     }

@@ -314,8 +314,6 @@ export function CreateAssetLockScreen() {
     if (fundsReceived && step === "funding") {
       handleCreateRef.current();
     }
-    // Only trigger on fundsReceived/step changes, not callback identity
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fundsReceived, step]);
 
   const handleUnlockResult = useCallback(

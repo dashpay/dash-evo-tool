@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { events } from "@/bindings";
 import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 
@@ -19,8 +19,10 @@ export function useTaskListener(
 ) {
   const onResultRef = useRef(onResult);
   const onErrorRef = useRef(onError);
-  onResultRef.current = onResult;
-  onErrorRef.current = onError;
+  useLayoutEffect(() => {
+    onResultRef.current = onResult;
+    onErrorRef.current = onError;
+  });
 
   useEffect(() => {
     if (!taskId) return;

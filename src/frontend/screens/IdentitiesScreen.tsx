@@ -29,7 +29,6 @@ import {
 import {
   RegisterDpnsNameScreen,
   type RegisterDpnsNameStatus,
-  isContestedName,
 } from "@/components/identity/RegisterDpnsNameScreen";
 import { WalletUnlockDialog, type WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { useIdentityStore } from "@/stores/identityStore";
@@ -49,7 +48,6 @@ import type {
 } from "@/bindings";
 import type { AddKeyStatus } from "@/components/identity/AddKeyDialog";
 import type { IdentityOption } from "@/components/shared/IdentitySelector";
-import { toast } from "sonner";
 import { toastError } from "@/lib/toastError";
 
 // ─── Sub-view types ───────────────────────────────────────────────

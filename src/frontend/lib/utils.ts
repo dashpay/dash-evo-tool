@@ -8,40 +8,47 @@ export function cn(...inputs: ClassValue[]) {
 
 /** Wait for a dispatched backend task to complete. Resolves on success, rejects on error. */
 export async function waitForTask(taskId: string, timeoutMs = 30000): Promise<void> {
-  return new Promise<void>(async (resolve, reject) => {
-    let resolved = false;
+  let resolved = false;
+  let resolveFn: () => void;
+  let rejectFn: (err: Error) => void;
 
-    const timer = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      unsubResult();
-      unsubError();
-      reject(new Error("Task timed out"));
-    }, timeoutMs);
-
-    const done = (fn: () => void) => {
-      if (resolved) return;
-      resolved = true;
-      clearTimeout(timer);
-      unsubResult();
-      unsubError();
-      fn();
-    };
-
-    const unsubResult = await events.taskResultEvent.listen((event) => {
-      if (event.payload.taskId !== taskId) return;
-      done(() => resolve());
-    });
-    const unsubError = await events.taskErrorEvent.listen((event) => {
-      if (event.payload.taskId !== taskId) return;
-      done(() => reject(new Error(event.payload.message)));
-    });
-
-    if (resolved) {
-      unsubResult();
-      unsubError();
-    }
+  const promise = new Promise<void>((resolve, reject) => {
+    resolveFn = resolve;
+    rejectFn = reject;
   });
+
+  const timer = setTimeout(() => {
+    if (resolved) return;
+    resolved = true;
+    unsubResult();
+    unsubError();
+    rejectFn(new Error("Task timed out"));
+  }, timeoutMs);
+
+  const done = (fn: () => void) => {
+    if (resolved) return;
+    resolved = true;
+    clearTimeout(timer);
+    unsubResult();
+    unsubError();
+    fn();
+  };
+
+  const unsubResult = await events.taskResultEvent.listen((event) => {
+    if (event.payload.taskId !== taskId) return;
+    done(() => resolveFn());
+  });
+  const unsubError = await events.taskErrorEvent.listen((event) => {
+    if (event.payload.taskId !== taskId) return;
+    done(() => rejectFn(new Error(event.payload.message)));
+  });
+
+  if (resolved) {
+    unsubResult();
+    unsubError();
+  }
+
+  return promise;
 }
 
 const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";

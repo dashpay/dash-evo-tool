@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { Check, AlertCircle, Loader2, Clock, Vote } from "lucide-react";
 import { cn, displayId } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -142,10 +142,43 @@ export function VoteCastingDialog({
   const [setAllHours, setSetAllHours] = useState(0);
   const [setAllMinutes, setSetAllMinutes] = useState(0);
 
-  // Vote handling status
-  const [status, setStatus] = useState<VoteHandlingStatus>({
+  // Vote handling status (raw state — may be overridden by derived logic below)
+  const [rawStatus, setStatus] = useState<VoteHandlingStatus>({
     type: "notStarted",
   });
+
+  // When in "casting" state and vote results arrive, derive the completed summary
+  // without using setState in an effect.
+  const status: VoteHandlingStatus = useMemo(() => {
+    if (
+      rawStatus.type === "casting" &&
+      lastVoteResults &&
+      lastVoteResults.length > 0 &&
+      !votingInProgress
+    ) {
+      const succeeded = lastVoteResults.filter((r) => r.success).length;
+      const failed = lastVoteResults.filter((r) => !r.success).length;
+      const errors = lastVoteResults
+        .filter((r) => !r.success && r.error)
+        .map((r) => `${r.contestedName}: ${r.error}`);
+      const scheduledCount = identityOptions.filter(
+        (o) => o.method === "schedule",
+      ).length;
+      return {
+        type: "completed" as const,
+        results: {
+          totalCast: lastVoteResults.length,
+          totalScheduled: scheduledCount,
+          castSucceeded: succeeded,
+          castFailed: failed,
+          scheduleSucceeded: scheduledCount,
+          scheduleFailed: 0,
+          errors,
+        },
+      };
+    }
+    return rawStatus;
+  }, [rawStatus, lastVoteResults, votingInProgress, identityOptions]);
 
   // Reset state when dialog opens with new data
   const resetState = useCallback(() => {
@@ -156,36 +189,6 @@ export function VoteCastingDialog({
     setSetAllMinutes(0);
     setStatus({ type: "notStarted" });
   }, [votingIdentities]);
-
-  // When real vote results arrive from the backend, build the completed summary
-  useEffect(() => {
-    if (
-      lastVoteResults &&
-      lastVoteResults.length > 0 &&
-      !votingInProgress &&
-      status.type === "casting"
-    ) {
-      const succeeded = lastVoteResults.filter((r) => r.success).length;
-      const failed = lastVoteResults.filter((r) => !r.success).length;
-      const errors = lastVoteResults
-        .filter((r) => !r.success && r.error)
-        .map((r) => `${r.contestedName}: ${r.error}`);
-      // Count any scheduled identities that were part of this operation
-      const scheduledCount = identityOptions.filter(
-        (o) => o.method === "schedule",
-      ).length;
-      const results: VoteResultSummary = {
-        totalCast: lastVoteResults.length,
-        totalScheduled: scheduledCount,
-        castSucceeded: succeeded,
-        castFailed: failed,
-        scheduleSucceeded: scheduledCount,
-        scheduleFailed: 0,
-        errors,
-      };
-      setStatus({ type: "completed", results });
-    }
-  }, [lastVoteResults, votingInProgress, status.type, identityOptions]);
 
   // Validation
   const validationError = useMemo((): string | null => {
@@ -261,8 +264,8 @@ export function VoteCastingDialog({
       await onApplyVotes(immediateIds, scheduledEntries);
       // If only scheduling (no immediate votes), complete immediately
       // since scheduling is a local DB write with no per-vote results.
-      // When immediate votes are included, the useEffect will build
-      // real results from lastVoteResults when the backend responds.
+      // When immediate votes are included, the derived status useMemo will
+      // produce "completed" from lastVoteResults when the backend responds.
       if (immediateIds.length === 0 && scheduledEntries.length > 0) {
         const results: VoteResultSummary = {
           totalCast: 0,

@@ -42,7 +42,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Island, PageHeader } from "@/components/layout";
 import { EmptyState } from "@/components/feedback";
 import { ContractTreePanel } from "@/components/contract/ContractTreePanel";
-import type { TreeSelection, IndexInfo } from "@/components/contract/ContractTreePanel";
+import type { IndexInfo } from "@/components/contract/ContractTreePanel";
 import { useContractStore } from "@/stores/contractStore";
 import { commands } from "@/bindings";
 import type { NetworkDto } from "@/bindings";

@@ -447,7 +447,9 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
     [selectedContractDetail, selectedDocTypeName],
   );
 
-  const [tokenCost, setTokenCost] = useState<TokenCostInfo | null>(null);
+  const [tokenCostRaw, setTokenCost] = useState<TokenCostInfo | null>(null);
+  // Derive effective token cost — null when contract/doctype not selected
+  const tokenCost = selectedContractId && selectedDocTypeName ? tokenCostRaw : null;
 
   const estimatedFee = useMemo(() => {
     if (!selectedContractId || !selectedDocTypeName) return null;
@@ -515,10 +517,8 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
 
   // Fetch token cost when contract/doctype/action changes
   useEffect(() => {
-    if (!selectedContractId || !selectedDocTypeName) {
-      setTokenCost(null);
-      return;
-    }
+    if (!selectedContractId || !selectedDocTypeName) return;
+    let cancelled = false;
     commands
       .documentTypeTokenCost({
         contractId: selectedContractId,
@@ -526,13 +526,15 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
         actionType,
       })
       .then((result) => {
+        if (cancelled) return;
         if (result.status === "ok" && result.data) {
           setTokenCost(result.data);
         } else {
           setTokenCost(null);
         }
       })
-      .catch(() => setTokenCost(null));
+      .catch(() => { if (!cancelled) setTokenCost(null); });
+    return () => { cancelled = true; };
   }, [selectedContractId, selectedDocTypeName, actionType]);
 
   // (Contract detail loading and field reset handled in event handlers below)

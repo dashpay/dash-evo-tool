@@ -68,8 +68,6 @@ export function WalletsScreen() {
     setSingleKeyWalletAlias,
     removeHdWallet,
     removeSingleKeyWallet,
-    notifyUnlocked,
-    notifyLocked,
     unlockWallet,
     lockWallet,
     subscribeToUpdates,

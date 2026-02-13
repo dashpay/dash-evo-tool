@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import {
   ArrowLeft,
   Loader2,
@@ -220,7 +220,9 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
 
   // Listen for task completion/error
   const contactDisplayNameRef = useRef(contactDisplayName);
-  contactDisplayNameRef.current = contactDisplayName;
+  useLayoutEffect(() => {
+    contactDisplayNameRef.current = contactDisplayName;
+  });
 
   useTaskListener(
     taskId,

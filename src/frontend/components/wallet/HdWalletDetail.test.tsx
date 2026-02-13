@@ -762,7 +762,6 @@ describe("HdWalletDetail", () => {
     });
 
     it("categorizes testnet platform (DIP-17) addresses correctly", async () => {
-      const user = userEvent.setup();
       const wallet = makeWallet({
         addresses: [
           makeAddress({ address: "yTestFunds", derivationPath: "m/44'/1'/0'/0/0", balance: 100 }),
@@ -778,7 +777,6 @@ describe("HdWalletDetail", () => {
     });
 
     it("categorizes testnet identity creation addresses correctly", async () => {
-      const user = userEvent.setup();
       const wallet = makeWallet({
         addresses: [
           makeAddress({ address: "yTestFunds", derivationPath: "m/44'/1'/0'/0/0", balance: 100 }),

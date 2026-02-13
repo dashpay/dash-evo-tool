@@ -250,15 +250,29 @@ fn classify_identity_result(result: &IdentityResult) -> TaskResultPayloadDto {
 /// `DPNSVoteResults` carries per-vote success/failure data for the frontend.
 /// All other contest results signal generic completion.
 fn classify_contest_result(result: &ContestResult) -> TaskResultPayloadDto {
+    use crate::commands::contested::VoteChoiceDto;
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+
     match result {
         ContestResult::DPNSVoteResults(vote_results) => {
             let results: Vec<VoteResultEntryDto> = vote_results
                 .iter()
-                .map(|(name, choice, result)| VoteResultEntryDto {
-                    contested_name: name.clone(),
-                    choice: format!("{:?}", choice),
-                    success: result.is_ok(),
-                    error: result.as_ref().err().cloned(),
+                .map(|(name, choice, result)| {
+                    let choice_dto = match choice {
+                        ResourceVoteChoice::TowardsIdentity(id) => {
+                            VoteChoiceDto::TowardsIdentity {
+                                identity_id: hex::encode(id.as_slice()),
+                            }
+                        }
+                        ResourceVoteChoice::Abstain => VoteChoiceDto::Abstain,
+                        ResourceVoteChoice::Lock => VoteChoiceDto::Lock,
+                    };
+                    VoteResultEntryDto {
+                        contested_name: name.clone(),
+                        choice: choice_dto,
+                        success: result.is_ok(),
+                        error: result.as_ref().err().cloned(),
+                    }
                 })
                 .collect();
             TaskResultPayloadDto::ContestVoteResults { results }

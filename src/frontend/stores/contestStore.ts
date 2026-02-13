@@ -5,6 +5,7 @@ import type {
   ScheduledVoteDto,
   VoteChoiceDto,
   VoteEntry,
+  VoteResultEntryDto,
   TaskResultEvent,
   ScheduledVoteExecutedEvent,
   ScheduledVoteInProgressEvent,
@@ -100,6 +101,9 @@ interface ContestState_ {
   /** Whether a bulk vote cast/schedule operation is in progress. */
   votingInProgress: boolean;
 
+  /** Per-vote results from the last vote operation. */
+  lastVoteResults: VoteResultEntryDto[] | null;
+
   /** Error message. */
   error: string | null;
 
@@ -179,6 +183,9 @@ interface ContestActions {
 
   /** Reset all state (used on network switch). */
   resetState: () => void;
+
+  /** Clear last vote results. */
+  clearLastVoteResults: () => void;
 
   /** Clear error state. */
   clearError: () => void;
@@ -285,6 +292,7 @@ export const useContestStore = create<ContestStore>((set, get) => ({
   loading: false,
   refreshing: false,
   votingInProgress: false,
+  lastVoteResults: null,
   error: null,
   activeFilterTerm: "",
   pastFilterTerm: "",
@@ -422,7 +430,7 @@ export const useContestStore = create<ContestStore>((set, get) => ({
     const { selectedVotes } = get();
     if (selectedVotes.length === 0 || voterIdentityIds.length === 0) return;
 
-    set({ votingInProgress: true, error: null });
+    set({ votingInProgress: true, error: null, lastVoteResults: null });
     try {
       const votes: VoteEntry[] = selectedVotes.map((sv) => ({
         contestedName: sv.contestedName,
@@ -640,6 +648,21 @@ export const useContestStore = create<ContestStore>((set, get) => ({
           state.loadScheduledVotes();
         }
 
+        if (result.type === "contestVoteResults") {
+          timeouts.clearAll();
+
+          // Store per-vote results and clear voting state
+          set({
+            lastVoteResults: result.results,
+            votingInProgress: false,
+          });
+
+          // Reload contested names and scheduled votes
+          const state = get();
+          state.loadContestedNames();
+          state.loadScheduledVotes();
+        }
+
         // Also handle Identity results that may contain DPNS name updates
         if (result.type === "identityCompleted") {
           get().loadLocalNames();
@@ -720,11 +743,16 @@ export const useContestStore = create<ContestStore>((set, get) => ({
       loading: false,
       refreshing: false,
       votingInProgress: false,
+      lastVoteResults: null,
       error: null,
       activeFilterTerm: "",
       pastFilterTerm: "",
       ownedFilterTerm: "",
     });
+  },
+
+  clearLastVoteResults: () => {
+    set({ lastVoteResults: null });
   },
 
   clearError: () => {

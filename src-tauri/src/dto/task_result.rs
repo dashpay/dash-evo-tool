@@ -238,8 +238,8 @@ pub enum TaskResultPayloadDto {
 pub struct VoteResultEntryDto {
     /// The contested name this vote was for.
     pub contested_name: String,
-    /// The vote choice (e.g. "Lock", "Abstain", or "TowardsIdentity(...)").
-    pub choice: String,
+    /// The vote choice that was cast.
+    pub choice: crate::commands::contested::VoteChoiceDto,
     /// Whether the vote succeeded.
     pub success: bool,
     /// Error message if the vote failed.

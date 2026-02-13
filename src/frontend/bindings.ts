@@ -5262,9 +5262,9 @@ export type VoteResultEntryDto = {
  */
 contestedName: string;
 /**
- * The vote choice (e.g. "Lock", "Abstain", or "TowardsIdentity(...)").
+ * The vote choice that was cast.
  */
-choice: string;
+choice: VoteChoiceDto;
 /**
  * Whether the vote succeeded.
  */

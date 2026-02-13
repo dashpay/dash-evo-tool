@@ -618,13 +618,10 @@ pub fn document_fetch_page_sql(
 
     let contract = lookup_contract(&state, &input.contract_id)?;
 
-    let mut query: DocumentQuery = DriveDocumentQuery::from_sql_expr(
-        &input.sql_text,
-        &contract,
-        None,
-    )
-    .map(Into::into)
-    .map_err(|e| format!("Failed to parse query: {}", e))?;
+    let mut query: DocumentQuery =
+        DriveDocumentQuery::from_sql_expr(&input.sql_text, &contract, None)
+            .map(Into::into)
+            .map_err(|e| format!("Failed to parse query: {}", e))?;
 
     query.limit = 100;
 

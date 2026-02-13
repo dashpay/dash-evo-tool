@@ -106,6 +106,44 @@ function isVoteChoice(
   );
 }
 
+/** Derive the display name and tooltip for a contest from its contestants. */
+function getContestDisplayName(contest: ContestedName): {
+  displayName: string;
+  tooltip: string;
+} {
+  const contestants = contest.contestants;
+  if (!contestants || contestants.length === 0) {
+    return {
+      displayName: contest.normalizedContestedName,
+      tooltip: `Normalized: ${contest.normalizedContestedName}`,
+    };
+  }
+
+  const uniqueNames = [...new Set(contestants.map((c) => c.name).filter(Boolean))];
+
+  if (uniqueNames.length === 0) {
+    return {
+      displayName: contest.normalizedContestedName,
+      tooltip: `Normalized: ${contest.normalizedContestedName}`,
+    };
+  }
+
+  if (uniqueNames.length === 1) {
+    return {
+      displayName: uniqueNames[0],
+      tooltip: `Normalized: ${contest.normalizedContestedName}`,
+    };
+  }
+
+  return {
+    displayName: uniqueNames.join(" or "),
+    tooltip: contestants
+      .filter((c) => c.name)
+      .map((c) => `${displayId(c.id)} trying to get ${c.name}`)
+      .join(" and "),
+  };
+}
+
 // ─── Props ────────────────────────────────────────────────────────
 
 export interface ActiveContestsTableProps {
@@ -370,25 +408,22 @@ export function ActiveContestsTable({
                   >
                     {/* Name */}
                     <TableCell className="font-medium">
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="cursor-default">
-                            {contest.normalizedContestedName}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>
-                            Normalized: {contest.normalizedContestedName}
-                          </p>
-                          {contest.contestants &&
-                            contest.contestants.length > 0 && (
-                              <p>
-                                {contest.contestants.length} contestant
-                                {contest.contestants.length !== 1 ? "s" : ""}
-                              </p>
-                            )}
-                        </TooltipContent>
-                      </Tooltip>
+                      {(() => {
+                        const { displayName, tooltip } =
+                          getContestDisplayName(contest);
+                        return (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="cursor-default">
+                                {displayName}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p>{tooltip}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        );
+                      })()}
                     </TableCell>
 
                     {/* Locked Votes */}

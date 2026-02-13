@@ -22,6 +22,7 @@ export function DpnsActiveContestsScreen() {
     loading,
     refreshing,
     votingInProgress,
+    lastVoteResults,
     error,
     activeFilterTerm,
     sortColumn,
@@ -31,6 +32,7 @@ export function DpnsActiveContestsScreen() {
     clearSelectedVotes,
     castVotes,
     scheduleVotes,
+    clearLastVoteResults,
     setFilterTerm,
     setSortColumn,
     subscribeToUpdates,
@@ -102,14 +104,18 @@ export function DpnsActiveContestsScreen() {
       toast.info("Select at least one vote from the table first.");
       return;
     }
+    clearLastVoteResults();
     setVoteCastingOpen(true);
-  }, [selectedVotes.length]);
+  }, [selectedVotes.length, clearLastVoteResults]);
 
   const handleApplyVotes = useCallback(
     async (
       immediateIdentityIds: string[],
       scheduledEntries: Array<{ voterId: string; unixTimestamp: number }>,
     ) => {
+      // Clear previous results before starting new votes
+      clearLastVoteResults();
+
       // Cast immediate votes
       if (immediateIdentityIds.length > 0) {
         await castVotes(immediateIdentityIds);
@@ -133,7 +139,7 @@ export function DpnsActiveContestsScreen() {
       // Clear selections after voting
       clearSelectedVotes();
     },
-    [castVotes, scheduleVotes, selectedVotes, clearSelectedVotes],
+    [castVotes, scheduleVotes, selectedVotes, clearSelectedVotes, clearLastVoteResults],
   );
 
   const handleGoToScheduledVotes = useCallback(() => {
@@ -217,13 +223,17 @@ export function DpnsActiveContestsScreen() {
       {/* Vote Casting Dialog */}
       <VoteCastingDialog
         open={voteCastingOpen}
-        onOpenChange={setVoteCastingOpen}
+        onOpenChange={(open) => {
+          setVoteCastingOpen(open);
+          if (!open) clearLastVoteResults();
+        }}
         selectedVotes={selectedVotes}
         votingIdentities={votingIdentities}
         onApplyVotes={handleApplyVotes}
         onGoToActiveContests={() => setVoteCastingOpen(false)}
         onGoToScheduledVotes={handleGoToScheduledVotes}
         votingInProgress={votingInProgress}
+        lastVoteResults={lastVoteResults}
       />
     </div>
   );

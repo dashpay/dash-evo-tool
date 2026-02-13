@@ -155,9 +155,9 @@ describe("Wallet UI Operations", () => {
     console.log(`  Receive address: ${address}`);
 
     // Verify copy button exists next to the address
-    const copyBtn = await browser.$(
-      '[role="dialog"] button*=Copy'
-    );
+    const copyBtn = await browser
+      .$('[role="dialog"]')
+      .$('button*=Copy');
     expect(await copyBtn.isExisting()).toBe(true);
 
     // Save address for send-to-self

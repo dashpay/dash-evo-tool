@@ -45,9 +45,10 @@ describe("Platform Read Operations", () => {
 
   it("should open the Load Identity panel", async () => {
     // Click the "Load Identity" button (in the identity list panel header or empty state)
-    const loadBtn = await browser.$(
-      '[data-testid="load-identity-btn"], button*=Load Identity'
-    );
+    let loadBtn = await browser.$('[data-testid="load-identity-btn"]');
+    if (!(await loadBtn.isExisting())) {
+      loadBtn = await browser.$('button*=Load Identity');
+    }
     await loadBtn.waitForExist({
       timeout: 10_000,
       timeoutMsg: "Load Identity button not found",
@@ -168,14 +169,15 @@ describe("Platform Read Operations", () => {
   });
 
   it("should click Load Contracts", async () => {
-    const loadBtn = await browser.$(
-      '[data-testid="action-load-contracts"], button*=Load Contracts'
-    );
-    await loadBtn.waitForExist({
+    let loadContractsBtn = await browser.$('[data-testid="action-load-contracts"]');
+    if (!(await loadContractsBtn.isExisting())) {
+      loadContractsBtn = await browser.$('button*=Load Contracts');
+    }
+    await loadContractsBtn.waitForExist({
       timeout: 10_000,
       timeoutMsg: "Load Contracts button not found",
     });
-    await loadBtn.click();
+    await loadContractsBtn.click();
 
     // Wait for the Add Contracts screen
     await browser.waitUntil(

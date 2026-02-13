@@ -383,6 +383,35 @@ async identitySignMessage(input: SignMessageInput) : Promise<Result<string, stri
 }
 },
 /**
+ * Add a private key to local storage for an identity key.
+ *
+ * Parses the hex private key, validates it against the identity's public key,
+ * stores it in the qualified identity's key storage, and persists to the database.
+ * Returns the updated `QualifiedIdentityDto`.
+ */
+async identityAddPrivateKeyToStorage(input: AddPrivateKeyToStorageInput) : Promise<Result<QualifiedIdentityDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_add_private_key_to_storage", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove a private key from local storage for an identity key.
+ *
+ * Removes the private key from the qualified identity's key storage and
+ * persists the change to the database. Returns the updated `QualifiedIdentityDto`.
+ */
+async identityRemovePrivateKeyFromStorage(input: RemovePrivateKeyFromStorageInput) : Promise<Result<QualifiedIdentityDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("identity_remove_private_key_from_storage", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Get the best chain lock for the active network.
  *
  * Dispatches `CoreTask::GetBestChainLock`. Result via `TaskResultEvent`.
@@ -2327,6 +2356,22 @@ privateKeyHex: string;
  */
 contractBounds: ContractBoundsDto | null }
 /**
+ * Input for adding a private key to local storage for an identity key.
+ */
+export type AddPrivateKeyToStorageInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key ID on the identity to associate the private key with.
+ */
+keyId: number;
+/**
+ * Private key as hex string (32 bytes for ECDSA, 48 bytes for BLS).
+ */
+privateKeyHex: string }
+/**
  * An unused asset lock available for identity operations.
  */
 export type AssetLockDto = {
@@ -3880,6 +3925,18 @@ export type RemoveContractInput = {
  */
 contractId: string }
 /**
+ * Input for removing a private key from local storage for an identity key.
+ */
+export type RemovePrivateKeyFromStorageInput = {
+/**
+ * Identity ID (hex).
+ */
+identityId: string;
+/**
+ * Key ID on the identity whose private key should be removed.
+ */
+keyId: number }
+/**
  * Input for removing a single-key wallet.
  */
 export type RemoveSingleKeyWalletInput = {
@@ -4585,9 +4642,13 @@ export type TaskResultPayloadDto =
  */
 { type: "systemCompleted" } |
 /**
- * A GroveSTARK operation completed.
+ * A GroveSTARK proof was generated successfully.
  */
-{ type: "groveStarkCompleted" } |
+{ type: "groveStarkGeneratedProof"; proofBase64: string; stateRootHash: string; proofSize: number; generationTimeMs: number } |
+/**
+ * A GroveSTARK proof was verified.
+ */
+{ type: "groveStarkVerifiedProof"; isValid: boolean; contractId: string; securityLevel: number } |
 /**
  * Token pricing schedule for a specific token (transient query result).
  */

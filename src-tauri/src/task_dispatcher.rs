@@ -37,6 +37,7 @@ use dash_evo_tool::backend_task::identity::IdentityResult;
 use dash_evo_tool::backend_task::mnlist::MnListResult;
 use dash_evo_tool::backend_task::platform_info::{PlatformInfoTaskResult, PlatformResult};
 use dash_evo_tool::backend_task::tokens::TokenResult;
+use dash_evo_tool::backend_task::grovestark::GroveSTARKResult;
 use dash_evo_tool::backend_task::wallet::WalletResult;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::BackendTaskSuccessResult;
@@ -218,7 +219,9 @@ fn classify_success_result(result: &BackendTaskSuccessResult) -> TaskResultPaylo
         BackendTaskSuccessResult::DashPay(dashpay_result) => {
             classify_dashpay_result(dashpay_result)
         }
-        BackendTaskSuccessResult::GroveSTARK(_) => TaskResultPayloadDto::GroveStarkCompleted,
+        BackendTaskSuccessResult::GroveSTARK(gs_result) => {
+            classify_grovestark_result(gs_result)
+        }
         BackendTaskSuccessResult::MnList(mnlist_result) => classify_mnlist_result(mnlist_result),
         BackendTaskSuccessResult::Token(token_result) => {
             classify_token_result(token_result)
@@ -542,6 +545,35 @@ fn classify_mnlist_result(result: &MnListResult) -> TaskResultPayloadDto {
                 })
                 .collect();
             TaskResultPayloadDto::MnListFetchedDiffs { diffs }
+        }
+    }
+}
+
+/// Classify a `GroveSTARKResult` into a typed payload.
+///
+/// `GeneratedProof` serializes the proof to base64 and extracts display metadata.
+/// `VerifiedProof` passes through the validity flag and proof public inputs.
+fn classify_grovestark_result(result: &GroveSTARKResult) -> TaskResultPayloadDto {
+    match result {
+        GroveSTARKResult::GeneratedProof(proof_data) => {
+            let proof_base64 = proof_data
+                .to_base64()
+                .unwrap_or_else(|e| format!("Error encoding proof: {}", e));
+            let state_root_hash = hex::encode(&proof_data.public_inputs.state_root[0..8]);
+            TaskResultPayloadDto::GroveStarkGeneratedProof {
+                proof_base64,
+                state_root_hash,
+                proof_size: proof_data.metadata.proof_size as u64,
+                generation_time_ms: proof_data.metadata.generation_time_ms,
+            }
+        }
+        GroveSTARKResult::VerifiedProof(is_valid, proof_data) => {
+            let contract_id = hex::encode(proof_data.public_inputs.contract_id);
+            TaskResultPayloadDto::GroveStarkVerifiedProof {
+                is_valid: *is_valid,
+                contract_id,
+                security_level: proof_data.metadata.security_level,
+            }
         }
     }
 }

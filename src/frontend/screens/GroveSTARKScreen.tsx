@@ -334,14 +334,22 @@ export function GroveSTARKScreen() {
         (event: { payload: TaskResultEvent }) => {
           const taskId = event.payload.taskId;
 
+          const result = event.payload.result;
+
           // Handle generate result
           if (activeTaskIdRef.current && taskId === activeTaskIdRef.current) {
             activeTaskIdRef.current = null;
-            const payload = event.payload.payload;
-            setGenerateStatus({
-              type: "success",
-              proofBase64: (payload as string) ?? "Proof generated successfully",
-            });
+            if (result.type === "groveStarkGeneratedProof") {
+              setGenerateStatus({
+                type: "success",
+                proofBase64: result.proofBase64,
+              });
+            } else {
+              setGenerateStatus({
+                type: "error",
+                message: `Unexpected result type: ${result.type}`,
+              });
+            }
           }
 
           // Handle verify result
@@ -350,48 +358,25 @@ export function GroveSTARKScreen() {
             taskId === verifyTaskIdRef.current
           ) {
             verifyTaskIdRef.current = null;
-            // The payload contains verification result info
-            // The result type is "GroveSTARK" and contains VerifiedProof(bool, ProofDataOutput)
-            const payload = event.payload.payload;
-            try {
-              const parsed =
-                typeof payload === "string" ? JSON.parse(payload) : payload;
-              // Backend returns { VerifiedProof: [boolean, proofData] }
-              if (parsed?.VerifiedProof) {
-                const [isValid, proofData] = parsed.VerifiedProof;
-                if (isValid) {
-                  const contractId = bytesToHex(
-                    proofData.public_inputs.contract_id,
-                  );
-                  setVerifyStatus({
-                    type: "valid",
-                    verifiedAt: Math.floor(Date.now() / 1000),
-                    contractId,
-                    securityLevel: proofData.metadata?.security_level ?? 128,
-                  });
-                } else {
-                  setVerifyStatus({
-                    type: "invalid",
-                    errorMessage: "Proof verification failed",
-                    technicalDetails: "Verification result: INVALID",
-                  });
-                }
-              } else {
-                // Fallback: treat any non-error result as valid
+            if (result.type === "groveStarkVerifiedProof") {
+              if (result.isValid) {
                 setVerifyStatus({
                   type: "valid",
                   verifiedAt: Math.floor(Date.now() / 1000),
-                  contractId: "unknown",
-                  securityLevel: 128,
+                  contractId: result.contractId,
+                  securityLevel: result.securityLevel,
+                });
+              } else {
+                setVerifyStatus({
+                  type: "invalid",
+                  errorMessage: "Proof verification failed",
+                  technicalDetails: "Verification result: INVALID",
                 });
               }
-            } catch {
-              // If we can't parse the payload, treat as valid (task succeeded)
+            } else {
               setVerifyStatus({
-                type: "valid",
-                verifiedAt: Math.floor(Date.now() / 1000),
-                contractId: "unknown",
-                securityLevel: 128,
+                type: "error",
+                message: `Unexpected result type: ${result.type}`,
               });
             }
           }

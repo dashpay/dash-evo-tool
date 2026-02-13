@@ -569,7 +569,7 @@ pub fn wallet_withdraw_from_platform_address(
     }
 
     let core_addr = parse_address_checked(&input.core_address, network)?;
-    let output_script = CoreScript::from_bytes(core_addr.script_pubkey().to_bytes());
+    let output_script = CoreScript::new(core_addr.script_pubkey());
 
     let task = BackendTask::WalletTask(WalletTask::WithdrawFromPlatformAddress {
         seed_hash,

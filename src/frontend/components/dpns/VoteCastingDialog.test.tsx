@@ -165,7 +165,7 @@ describe("VoteCastingDialog — rendering", () => {
     expect(screen.getByText("evonode")).toBeInTheDocument();
   });
 
-  it("shows truncated ID when alias is null", () => {
+  it("shows truncated base58 ID when alias is null", () => {
     setup({
       votingIdentities: [
         makeIdentity({
@@ -174,7 +174,8 @@ describe("VoteCastingDialog — rendering", () => {
         }),
       ],
     });
-    expect(screen.getByText("aaaa1111...dddd4444")).toBeInTheDocument();
+    // displayId("aaaa1111bbbb2222cccc3333dddd4444") = "N5K9B3...ueTKXH"
+    expect(screen.getByText("N5K9B3...ueTKXH")).toBeInTheDocument();
   });
 
   it("renders Set All controls", () => {

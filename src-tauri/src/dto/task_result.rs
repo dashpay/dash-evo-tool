@@ -147,9 +147,35 @@ pub enum TaskResultPayloadDto {
     /// A System operation completed.
     #[serde(rename = "systemCompleted")]
     SystemCompleted,
-    /// A GroveSTARK operation completed.
-    #[serde(rename = "groveStarkCompleted")]
-    GroveStarkCompleted,
+    /// A GroveSTARK proof was generated successfully.
+    #[serde(rename = "groveStarkGeneratedProof")]
+    GroveStarkGeneratedProof {
+        /// Full ProofDataOutput as base64 JSON (for copy/paste & re-verify).
+        #[serde(rename = "proofBase64")]
+        proof_base64: String,
+        /// Hex of first 8 bytes of state_root (display hash).
+        #[serde(rename = "stateRootHash")]
+        state_root_hash: String,
+        /// Proof size in bytes.
+        #[serde(rename = "proofSize")]
+        proof_size: u64,
+        /// Generation time in milliseconds.
+        #[serde(rename = "generationTimeMs")]
+        generation_time_ms: u64,
+    },
+    /// A GroveSTARK proof was verified.
+    #[serde(rename = "groveStarkVerifiedProof")]
+    GroveStarkVerifiedProof {
+        /// Whether the proof is valid.
+        #[serde(rename = "isValid")]
+        is_valid: bool,
+        /// Hex-encoded contract_id from public_inputs.
+        #[serde(rename = "contractId")]
+        contract_id: String,
+        /// Security level from proof metadata.
+        #[serde(rename = "securityLevel")]
+        security_level: u32,
+    },
 
     // ── Transient token results (not stored in DB) ──────────────────
 
@@ -364,6 +390,45 @@ mod tests {
         let json = serde_json::to_string(&payload).unwrap();
         assert!(json.contains(r#""type":"tokenFrozenIdentities""#));
         assert!(json.contains(r#""identityIds":["aabb1122","ccdd3344"]"#));
+    }
+
+    #[test]
+    fn payload_grovestark_generated_proof_serializes() {
+        let payload = TaskResultPayloadDto::GroveStarkGeneratedProof {
+            proof_base64: "dGVzdA==".into(),
+            state_root_hash: "aabbccdd11223344".into(),
+            proof_size: 2048,
+            generation_time_ms: 5000,
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains(r#""type":"groveStarkGeneratedProof""#));
+        assert!(json.contains(r#""proofBase64":"dGVzdA==""#));
+        assert!(json.contains(r#""stateRootHash":"aabbccdd11223344""#));
+        assert!(json.contains(r#""proofSize":2048"#));
+        assert!(json.contains(r#""generationTimeMs":5000"#));
+    }
+
+    #[test]
+    fn payload_grovestark_verified_proof_serializes() {
+        let payload = TaskResultPayloadDto::GroveStarkVerifiedProof {
+            is_valid: true,
+            contract_id: "abcd1234".into(),
+            security_level: 128,
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains(r#""type":"groveStarkVerifiedProof""#));
+        assert!(json.contains(r#""isValid":true"#));
+        assert!(json.contains(r#""contractId":"abcd1234""#));
+        assert!(json.contains(r#""securityLevel":128"#));
+
+        // Also test invalid case
+        let payload_invalid = TaskResultPayloadDto::GroveStarkVerifiedProof {
+            is_valid: false,
+            contract_id: "deadbeef".into(),
+            security_level: 96,
+        };
+        let json2 = serde_json::to_string(&payload_invalid).unwrap();
+        assert!(json2.contains(r#""isValid":false"#));
     }
 
     #[test]

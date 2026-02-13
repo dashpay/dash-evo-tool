@@ -113,9 +113,7 @@ function formatElapsed(startTime: number): string {
 
 /** Get display name for an identity. */
 function identityDisplayName(identity: QualifiedIdentityDto): string {
-  if (identity.alias) return identity.alias;
-  const id = identity.id;
-  return id.length > 16 ? `${id.slice(0, 8)}...${id.slice(-8)}` : id;
+  return identity.alias || displayId(identity.id);
 }
 
 // ─── Component ─────────────────────────────────────────────────────

@@ -126,10 +126,6 @@ export interface IdentityListPanelProps {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
-function formatCreditsBalance(credits: number): string {
-  return formatCreditsAsDash(credits);
-}
-
 function getIdentityDisplayName(identity: QualifiedIdentityDto): string {
   return identity.alias?.trim() || displayId(identity.id);
 }
@@ -343,7 +339,8 @@ const IdentityCard = React.memo(React.forwardRef<HTMLDivElement, IdentityCardInt
   ) {
   const [isRenaming, setIsRenaming] = useState(false);
   const displayName = getIdentityDisplayName(identity);
-  const balance = formatCreditsBalance(identity.balance);
+  const balance = formatCreditsAsDash(identity.balance);
+  const base58Id = hexToBase58(identity.id);
   const active = isActive(identity);
   const typeLabel = getTypeLabel(identity.identityType);
   const hasKeys = identity.keys.length > 0;
@@ -492,7 +489,7 @@ const IdentityCard = React.memo(React.forwardRef<HTMLDivElement, IdentityCardInt
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span className="text-[10px] text-muted-foreground/70 font-mono truncate max-w-[140px]">
-                    {hexToBase58(identity.id)}
+                    {base58Id}
                   </span>
                 </TooltipTrigger>
                 <TooltipContent>
@@ -501,11 +498,11 @@ const IdentityCard = React.memo(React.forwardRef<HTMLDivElement, IdentityCardInt
                       {identity.identityType === "user" ? "User ID" : "ProTxHash"}:
                     </span>
                     <br />
-                    {hexToBase58(identity.id)}
+                    {base58Id}
                   </div>
                 </TooltipContent>
               </Tooltip>
-              <CopyButton value={hexToBase58(identity.id)} size="icon-xs" />
+              <CopyButton value={base58Id} size="icon-xs" />
             </div>
           </div>
         </div>

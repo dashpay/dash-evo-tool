@@ -463,6 +463,9 @@ fn main() {
                     // Auto-start SPV sync if conditions are met (matching egui behavior).
                     // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
                     // Remove the is_developer_mode() check once SPV is production-ready.
+                    //
+                    // Wrapped in block_on because start_spv() calls spawn_sync() →
+                    // tokio::spawn(), which requires a Tokio runtime context.
                     {
                         let ctx = app_state.current_context();
                         if ctx.is_developer_mode()
@@ -480,14 +483,17 @@ fn main() {
                             let auto_start_spv =
                                 db.get_auto_start_spv().unwrap_or(false);
                             if onboarding_completed && auto_start_spv {
-                                if let Err(e) = ctx.start_spv() {
-                                    tracing::warn!(
-                                        "Failed to auto-start SPV sync: {}",
-                                        e
-                                    );
-                                } else {
-                                    tracing::info!("SPV sync auto-started on startup");
-                                }
+                                let ctx = ctx.clone();
+                                tauri::async_runtime::block_on(async move {
+                                    if let Err(e) = ctx.start_spv() {
+                                        tracing::warn!(
+                                            "Failed to auto-start SPV sync: {}",
+                                            e
+                                        );
+                                    } else {
+                                        tracing::info!("SPV sync auto-started on startup");
+                                    }
+                                });
                             }
                         }
                     }

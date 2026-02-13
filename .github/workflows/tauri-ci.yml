@@ -161,7 +161,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
             libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Check formatting
@@ -232,7 +232,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
             libgtk-3-dev libayatana-appindicator3-dev
 
       - name: Build Tauri app (debug)
@@ -330,7 +330,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev \
-            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
+            libwebkit2gtk-4.1-dev librsvg2-dev patchelf \
             libgtk-3-dev libayatana-appindicator3-dev \
             libxdo-dev libssl-dev \
             webkit2gtk-driver xvfb dbus-x11 unzip

@@ -586,7 +586,7 @@ describe("MyTokensTable — Rewards column", () => {
   it("shows reward amount when estimate is available", async () => {
     const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
     const estimates = new Map<string, RewardEstimate>([
-      [key, { amount: "42.5 TestTokens", explanation: "Estimated 42.5 tokens over 3 epochs" }],
+      [key, { amount: "42.5 TestTokens", shortExplanation: "Estimated 42.5 tokens over 3 epochs", detailedExplanation: "", steps: [] }],
     ]);
     const { user } = setupWithRewards({ rewardEstimates: estimates });
     await user.click(screen.getByRole("button", { name: "TestToken" }));
@@ -596,7 +596,7 @@ describe("MyTokensTable — Rewards column", () => {
   it("shows info button when estimate is available", async () => {
     const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
     const estimates = new Map<string, RewardEstimate>([
-      [key, { amount: "42.5", explanation: "Full explanation text here" }],
+      [key, { amount: "42.5", shortExplanation: "Full explanation text here", detailedExplanation: "", steps: [] }],
     ]);
     const { user } = setupWithRewards({ rewardEstimates: estimates });
     await user.click(screen.getByRole("button", { name: "TestToken" }));
@@ -606,7 +606,7 @@ describe("MyTokensTable — Rewards column", () => {
   it("opens explanation dialog when info button is clicked", async () => {
     const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
     const estimates = new Map<string, RewardEstimate>([
-      [key, { amount: "42.5", explanation: "Full explanation text here" }],
+      [key, { amount: "42.5", shortExplanation: "Full explanation text here", detailedExplanation: "", steps: [] }],
     ]);
     const { user } = setupWithRewards({ rewardEstimates: estimates });
     await user.click(screen.getByRole("button", { name: "TestToken" }));
@@ -618,7 +618,7 @@ describe("MyTokensTable — Rewards column", () => {
   it("shows re-estimate button alongside reward amount", async () => {
     const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
     const estimates = new Map<string, RewardEstimate>([
-      [key, { amount: "42.5", explanation: "Explanation" }],
+      [key, { amount: "42.5", shortExplanation: "Explanation", detailedExplanation: "", steps: [] }],
     ]);
     const { user } = setupWithRewards({ rewardEstimates: estimates });
     await user.click(screen.getByRole("button", { name: "TestToken" }));
@@ -630,15 +630,13 @@ describe("MyTokensTable — Rewards column", () => {
   it("explanation dialog has collapsible explanation section", async () => {
     const key = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234:token1111222233334444555566667777888899990000aaaabbbbccccddddeeee";
     const estimates = new Map<string, RewardEstimate>([
-      [key, { amount: "42.5", explanation: "Detailed explanation of reward calculation" }],
+      [key, { amount: "42.5", shortExplanation: "Detailed explanation of reward calculation", detailedExplanation: "", steps: [] }],
     ]);
     const { user } = setupWithRewards({ rewardEstimates: estimates });
     await user.click(screen.getByRole("button", { name: "TestToken" }));
     await user.click(screen.getByRole("button", { name: "Show reward details" }));
-    // Explanation section should be collapsible - click to expand
-    const explanationToggle = screen.getByText(/explanation/i);
-    await user.click(explanationToggle);
-    expect(screen.getByTestId("reward-explanation-text")).toHaveTextContent(
+    // Basic explanation section is expanded by default
+    expect(screen.getByTestId("reward-short-explanation")).toHaveTextContent(
       "Detailed explanation of reward calculation",
     );
   });

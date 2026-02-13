@@ -52,7 +52,7 @@ import { commands, events } from "@/bindings";
 function makeContestant(overrides: Record<string, unknown> = {}) {
   return {
     id: "aaaa1111bbbb2222cccc3333dddd4444",
-    name: "alice",
+    name: "d4sh",
     info: "",
     votes: 3,
     createdAt: null,
@@ -506,9 +506,9 @@ describe("DpnsActiveContestsScreen — multiple contests", () => {
   it("renders multiple contests in the table", () => {
     useContestStore.setState({
       contestedNames: [
-        makeContest({ normalizedContestedName: "d4sh" }),
-        makeContest({ normalizedContestedName: "test" }),
-        makeContest({ normalizedContestedName: "name" }),
+        makeContest({ normalizedContestedName: "d4sh", contestants: [makeContestant({ name: "d4sh" })] }),
+        makeContest({ normalizedContestedName: "test", contestants: [makeContestant({ name: "test" })] }),
+        makeContest({ normalizedContestedName: "name", contestants: [makeContestant({ name: "name" })] }),
       ],
     });
     setup();
@@ -521,8 +521,8 @@ describe("DpnsActiveContestsScreen — multiple contests", () => {
   it("can select votes from different contests", async () => {
     useContestStore.setState({
       contestedNames: [
-        makeContest({ normalizedContestedName: "d4sh" }),
-        makeContest({ normalizedContestedName: "test" }),
+        makeContest({ normalizedContestedName: "d4sh", contestants: [makeContestant({ name: "d4sh" })] }),
+        makeContest({ normalizedContestedName: "test", contestants: [makeContestant({ name: "test" })] }),
       ],
     });
     const { user } = setup();

@@ -558,8 +558,9 @@ impl SpvManager {
             .await
             .map_err(|_| "SPV runtime channel closed".to_string())?;
 
-        response_rx
+        tokio::time::timeout(std::time::Duration::from_secs(60), response_rx)
             .await
+            .map_err(|_| "Broadcast transaction timed out after 60s".to_string())?
             .map_err(|_| "SPV request cancelled".to_string())?
     }
 
@@ -698,13 +699,13 @@ impl SpvManager {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
                 tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
+                    std::time::Duration::from_secs(5),
                     interface.get_quorum_by_height(core_chain_locked_height, llmq_type, qh),
                 )
                 .await
                 .map_err(|_| {
                     let msg = format!(
-                        "Quorum lookup timed out after 30s at height {} for llmq_type={} hash=0x{}",
+                        "Quorum lookup timed out after 5s at height {} for llmq_type={} hash=0x{}",
                         core_chain_locked_height,
                         quorum_type,
                         hex::encode(quorum_hash),

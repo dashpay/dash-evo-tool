@@ -106,12 +106,14 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
         }
     });
 
-    // Spawn the actual task inside a nested tokio::spawn so we can catch panics
+    // Spawn the actual task inside a nested tokio::spawn so we can catch panics.
+    // Wrap with a 120s timeout as a safety net against hanging DAPI/platform operations.
     tauri::async_runtime::spawn(async move {
         let inner = tokio::spawn(async move { app_context.run_backend_task(task, sender).await });
+        let abort_handle = inner.abort_handle();
 
-        match inner.await {
-            Ok(Ok(success)) => {
+        match tokio::time::timeout(Duration::from_secs(120), inner).await {
+            Ok(Ok(Ok(success))) => {
                 let payload = classify_success_result(&success);
                 tracing::info!(task_id = %tid, domain = ?domain, result_type = ?std::mem::discriminant(&payload), "Emitting TaskResultEvent");
                 if let Err(e) = (TaskResultEvent {
@@ -123,7 +125,7 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
                     tracing::error!(task_id = %tid, error = %e, "Failed to emit TaskResultEvent");
                 }
             }
-            Ok(Err(error)) => {
+            Ok(Ok(Err(error))) => {
                 tracing::info!(task_id = %tid, domain = ?domain, message = %error.user_message(), "Emitting TaskErrorEvent");
                 if let Err(e) = (TaskErrorEvent {
                     task_id: tid.clone(),
@@ -137,7 +139,7 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
                     tracing::error!(task_id = %tid, error = %e, "Failed to emit TaskErrorEvent");
                 }
             }
-            Err(join_error) => {
+            Ok(Err(join_error)) => {
                 // Task panicked or was cancelled
                 let panic_msg = if join_error.is_panic() {
                     match join_error.into_panic().downcast::<String>() {
@@ -161,6 +163,21 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
                 .emit(&handle)
                 {
                     tracing::error!(task_id = %tid, error = %e, "Failed to emit TaskErrorEvent after panic");
+                }
+            }
+            Err(_elapsed) => {
+                abort_handle.abort();
+                tracing::error!(task_id = %tid, domain = ?domain, "Backend task timed out and aborted after 120s");
+                if let Err(e) = (TaskErrorEvent {
+                    task_id: tid.clone(),
+                    domain,
+                    message: "Operation timed out after 120 seconds. The platform may be unreachable.".to_string(),
+                    details: "Task-level timeout elapsed — the backend task did not complete within the 120s safety limit.".to_string(),
+                    recoverable: true,
+                })
+                .emit(&handle)
+                {
+                    tracing::error!(task_id = %tid, error = %e, "Failed to emit TaskErrorEvent after timeout");
                 }
             }
         }

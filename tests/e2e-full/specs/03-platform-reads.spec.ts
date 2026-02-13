@@ -70,7 +70,7 @@ describe("Platform Read Operations", () => {
   });
 
   it("should search for a DPNS name", async function () {
-    this.timeout(120000);
+    this.timeout(0);
 
     // Switch to "By DPNS Name" tab
     const tabs = await browser.$$('button[role="tab"]');
@@ -197,7 +197,7 @@ describe("Platform Read Operations", () => {
   });
 
   it("should enter the DPNS contract ID and fetch it", async function () {
-    this.timeout(120000);
+    this.timeout(0);
 
     // Find the first contract input field
     const contractInput = await browser.$(

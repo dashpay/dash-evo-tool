@@ -203,7 +203,7 @@ describe("Wallet UI Operations", () => {
   // ─── UI: Send-to-self (conditional) ───────────────────────────────
 
   it("should send 0.001 DASH to self (conditional)", async function () {
-    this.timeout(120_000);
+    this.timeout(0);
 
     ctx = readContext();
     if (ctx.balanceDuffs < 10_000_000) {

@@ -1,8 +1,9 @@
 /**
  * Database helpers for E2E tests.
  *
- * Provides utilities for seeding the test database with known state
- * before tests and cleaning up after.
+ * Provides utilities for querying/resetting the app database.
+ * Real testnet E2E tests do NOT seed fake data — wallet state comes from
+ * real SPV sync and IPC. These helpers are for pre-test cleanup only.
  *
  * The database path depends on the platform and app configuration.
  * In Docker E2E, the app uses a predictable path.
@@ -10,10 +11,7 @@
 
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import { execSync } from "child_process";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** Database location in the Docker E2E environment.
  *  The app uses `directories::ProjectDirs::from("", "", "Dash-Evo-Tool")`.
@@ -46,31 +44,6 @@ export function getDatabasePath(): string {
  */
 export function databaseExists(): boolean {
   return fs.existsSync(getDatabasePath());
-}
-
-/**
- * Run a SQL file against the database using sqlite3 CLI.
- * Requires sqlite3 to be installed (it is in the Docker image).
- */
-export function runSqlFile(sqlFilePath: string): void {
-  const dbPath = getDatabasePath();
-  const resolvedSql = path.resolve(sqlFilePath);
-
-  if (!fs.existsSync(resolvedSql)) {
-    throw new Error(`SQL file not found: ${resolvedSql}`);
-  }
-
-  try {
-    execSync(`sqlite3 "${dbPath}" < "${resolvedSql}"`, {
-      stdio: "pipe",
-      timeout: 10_000,
-    });
-  } catch (err) {
-    const error = err as { stderr?: Buffer };
-    throw new Error(
-      `Failed to run SQL file ${resolvedSql}: ${error.stderr?.toString() || String(err)}`
-    );
-  }
 }
 
 /**
@@ -111,14 +84,6 @@ export function querySql(sql: string): string {
       `Failed to query SQL: ${error.stderr?.toString() || String(err)}`
     );
   }
-}
-
-/**
- * Seed the database with test fixtures from the seed-data.sql file.
- */
-export function seedTestData(): void {
-  const seedFile = path.resolve(__dirname, "../fixtures/seed-data.sql");
-  runSqlFile(seedFile);
 }
 
 /**
@@ -178,9 +143,10 @@ export function resetSettings(network = "testnet"): void {
 }
 
 /**
- * Full test database setup: clear data, reset settings, seed fixtures.
+ * Ensure the database starts clean before a test run.
+ * Clears user data and resets settings; does NOT seed fake data.
  */
-export function setupTestDatabase(network = "testnet"): void {
+export function prepareCleanDatabase(network = "testnet"): void {
   if (!databaseExists()) {
     console.warn(
       `Database not found at ${getDatabasePath()}. ` +
@@ -190,14 +156,4 @@ export function setupTestDatabase(network = "testnet"): void {
   }
   clearAllData();
   resetSettings(network);
-  seedTestData();
-}
-
-/**
- * Tear down test database: clear all user data.
- */
-export function teardownTestDatabase(): void {
-  if (databaseExists()) {
-    clearAllData();
-  }
 }

@@ -10,7 +10,7 @@ TAURI_DRIVER_PORT="${TAURI_DRIVER_PORT:-4444}"
 DISPLAY="${DISPLAY:-:99}"
 APP_BINARY="./src-tauri/target/debug/dash-evo-tool-tauri"
 TEST_RESULTS_DIR="/app/test-results"
-STARTUP_TIMEOUT=30
+STARTUP_TIMEOUT=60
 
 export DISPLAY
 
@@ -55,6 +55,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# ---- 0. Start dbus (needed for Playwright Chromium in Phase 3) ----
+eval $(dbus-launch --sh-syntax) 2>/dev/null || true
+
 # ---- 1. Start Xvfb (virtual display) ----
 echo "=== Starting Xvfb on $DISPLAY ==="
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -ac &
@@ -89,7 +92,14 @@ if [ ! -f "$APP_BINARY" ]; then
 fi
 echo "=== App binary found: $APP_BINARY ==="
 
-# ---- 4. Start frontend dev server ----
+# ---- 4. Verify frontend build exists ----
+if [ ! -d "/app/dist" ] || [ ! -f "/app/dist/index.html" ]; then
+    echo "ERROR: Frontend build not found in /app/dist/"
+    echo "  Did 'npm run build' succeed in the Dockerfile?"
+    exit 1
+fi
+
+# ---- 5. Start frontend dev server ----
 # Debug builds use devUrl (http://localhost:1420) instead of embedding dist/.
 # Serve the built frontend assets so the Tauri WebView can load them.
 DEV_SERVER_PORT=1420
@@ -104,7 +114,7 @@ if ! kill -0 "$DEV_SERVER_PID" 2>/dev/null; then
 fi
 echo "  Frontend server started (PID $DEV_SERVER_PID)"
 
-# ---- 5. Run WebdriverIO tests ----
+# ---- 6. Run WebdriverIO tests ----
 echo "=== Running WebdriverIO E2E tests ==="
 echo ""
 

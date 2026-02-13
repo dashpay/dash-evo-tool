@@ -19,10 +19,18 @@ services:
       - TAURI_DRIVER_PORT=4444
       # Disable GPU acceleration in headless environment
       - WEBKIT_DISABLE_COMPOSITING_MODE=1
+      # Testnet wallet mnemonic for real E2E tests (Phase 2+)
+      - E2E_WALLET_MNEMONIC=${E2E_WALLET_MNEMONIC:-}
+      - E2E_FAUCET_URL=${E2E_FAUCET_URL:-https://faucet.thepasta.org}
     volumes:
       # Persist test results and screenshots to host
       - ../../test-results/e2e-full:/app/test-results
+      # Cache SPV sync data between runs
+      - e2e-spv-cache:/root/.config/Dash-Evo-Tool/spv
     # Shared memory increase for WebKit rendering in container
     shm_size: '2gb'
     # The entrypoint handles: Xvfb start, tauri-driver start, app launch, test run
     # Exit code reflects test pass/fail
+
+volumes:
+  e2e-spv-cache:

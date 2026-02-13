@@ -54,7 +54,7 @@ export const config = {
   framework: "mocha" as const,
   mochaOpts: {
     ui: "bdd" as const,
-    timeout: 60_000, // 60s — Tauri app startup can be slow
+    timeout: 360_000, // 6 min — SPV sync can be slow on cold start
   },
 
   // Reporter
@@ -64,11 +64,11 @@ export const config = {
   logLevel: "warn" as const,
 
   // Wait for tauri-driver connection
-  connectionRetryTimeout: 30_000,
+  connectionRetryTimeout: 60_000,
   connectionRetryCount: 5,
 
   // Timeouts
-  waitforTimeout: 10_000,
+  waitforTimeout: 30_000,
   waitforInterval: 500,
 
   // Hooks
@@ -76,6 +76,9 @@ export const config = {
     console.log(
       `Connecting to tauri-driver at localhost:${driverPort} with app: ${appBinary}`
     );
+    // Log mnemonic availability (not the value) for Phase 2+ wallet import
+    const hasMnemonic = !!process.env.E2E_WALLET_MNEMONIC;
+    console.log(`  E2E_WALLET_MNEMONIC: ${hasMnemonic ? "set" : "NOT set (wallet tests will be skipped)"}`);
   },
 
   async before() {
@@ -95,19 +98,26 @@ export const config = {
           const networkChooser = await browser.$(
             '[data-testid="network-chooser-screen"]'
           );
-          return (
+          const uiReady =
             (await sidebar.isExisting()) ||
             (await welcome.isExisting()) ||
-            (await networkChooser.isExisting())
-          );
+            (await networkChooser.isExisting());
+          if (!uiReady) return false;
+
+          // Also verify the Tauri IPC bridge is injected
+          const bridgeReady = await browser.execute(() => {
+            const t = (window as any).__TAURI_INTERNALS__;
+            return !!(t && typeof t.invoke === "function");
+          });
+          return bridgeReady;
         } catch {
           return false;
         }
       },
       {
-        timeout: 45_000,
+        timeout: 60_000,
         timeoutMsg:
-          "Tauri app did not become ready within 45 seconds. " +
+          "Tauri app did not become ready within 60 seconds. " +
           "Check that the frontend static server is running (port 1420) " +
           "and AppState initialized successfully.",
         interval: 1000,
@@ -133,6 +143,17 @@ export const config = {
       } catch (err) {
         console.warn(`  Failed to save screenshot: ${err}`);
       }
+    }
+  },
+
+  async after() {
+    // Clean up shared test context file after the suite completes
+    try {
+      const fs = await import("fs");
+      const ctxPath = process.env.E2E_CONTEXT_PATH || "/tmp/e2e-test-context.json";
+      if (fs.existsSync(ctxPath)) fs.unlinkSync(ctxPath);
+    } catch {
+      // Ignore cleanup errors
     }
   },
 };

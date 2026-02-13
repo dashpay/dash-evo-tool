@@ -70,6 +70,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # ---- Install tauri-driver ----
 RUN cargo install tauri-driver 2>/dev/null
 
+# ---- Install Playwright + Chromium for faucet automation (Phase 3) ----
+RUN npx playwright install --with-deps chromium 2>/dev/null
+
 # ---- Set up working directory ----
 WORKDIR /app
 
@@ -105,6 +108,10 @@ RUN npm run build 2>/dev/null && \
 # ---- Copy entrypoint and helpers ----
 COPY docker/e2e/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# ---- Write .env to app data directory (testnet DAPI addresses) ----
+RUN mkdir -p /root/.config/Dash-Evo-Tool && \
+    cp /app/.env.example /root/.config/Dash-Evo-Tool/.env 2>/dev/null || true
 
 # Environment for headless display
 ENV DISPLAY=:99

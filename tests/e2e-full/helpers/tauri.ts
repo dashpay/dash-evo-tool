@@ -20,7 +20,7 @@ export type SidebarSection =
  * Wait for the Tauri app to finish loading and render the main UI.
  * Detects either the sidebar (normal state) or the welcome screen (first launch).
  */
-export async function waitForAppReady(timeout = 30_000): Promise<void> {
+export async function waitForAppReady(timeout = 60_000): Promise<void> {
   await browser.waitUntil(
     async () => {
       // Check if the sidebar or welcome screen is visible
@@ -252,4 +252,24 @@ export async function takeScreenshot(name: string): Promise<string> {
   const screenshotPath = `./test-results/screenshot-${name}-${Date.now()}.png`;
   await browser.saveScreenshot(screenshotPath);
   return screenshotPath;
+}
+
+/**
+ * Wait for the connection status indicator to reach a target state.
+ */
+export async function waitForConnectionStatus(
+  connected: boolean,
+  timeout = 60_000
+): Promise<void> {
+  await browser.waitUntil(
+    async () => {
+      const actual = await isConnected();
+      return actual === connected;
+    },
+    {
+      timeout,
+      timeoutMsg: `Connection status did not become ${connected ? "connected" : "disconnected"} within ${timeout}ms`,
+      interval: 1000,
+    }
+  );
 }

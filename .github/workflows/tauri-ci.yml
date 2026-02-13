@@ -273,6 +273,7 @@ jobs:
     name: Full E2E (WebdriverIO)
     runs-on: ubuntu-latest
     needs: [frontend, rust]
+    timeout-minutes: 30
 
     steps:
       - name: Free disk space
@@ -333,6 +334,21 @@ jobs:
       - name: Install tauri-driver
         run: cargo install tauri-driver
 
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Cache SPV data
+        uses: actions/cache@v4
+        with:
+          path: ~/.config/Dash-Evo-Tool/spv
+          key: ${{ runner.os }}-spv-testnet-${{ hashFiles('.env.example') }}
+          restore-keys: ${{ runner.os }}-spv-testnet-
+
+      - name: Configure testnet
+        run: |
+          mkdir -p ~/.config/Dash-Evo-Tool
+          cp .env.example ~/.config/Dash-Evo-Tool/.env 2>/dev/null || true
+
       - name: Build frontend
         run: npm run build
 
@@ -341,7 +357,11 @@ jobs:
         run: cargo build 2>&1 | tail -5
 
       - name: Run WebdriverIO E2E tests
+        timeout-minutes: 25
         run: |
+          # Start dbus (needed for Playwright Chromium)
+          eval $(dbus-launch --sh-syntax) 2>/dev/null || true
+
           # Start Xvfb (virtual display)
           Xvfb :99 -screen 0 1280x800x24 -ac &
           XVFB_PID=$!
@@ -365,6 +385,8 @@ jobs:
         env:
           DISPLAY: ":99"
           TAURI_DRIVER_PORT: "4444"
+          E2E_WALLET_MNEMONIC: ${{ secrets.E2E_TESTNET_MNEMONIC }}
+          E2E_FAUCET_URL: "https://faucet.thepasta.org"
 
       - name: Upload WebdriverIO report
         uses: actions/upload-artifact@v4

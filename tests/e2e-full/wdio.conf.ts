@@ -146,14 +146,7 @@ export const config = {
     }
   },
 
-  async after() {
-    // Clean up shared test context file after the suite completes
-    try {
-      const fs = await import("fs");
-      const ctxPath = process.env.E2E_CONTEXT_PATH || "/tmp/e2e-test-context.json";
-      if (fs.existsSync(ctxPath)) fs.unlinkSync(ctxPath);
-    } catch {
-      // Ignore cleanup errors
-    }
-  },
+  // Context file cleanup is handled by 05-teardown.spec.ts.
+  // Do NOT clean up here — `after()` runs per-worker (per-spec-file),
+  // which would delete the shared context before later specs read it.
 };

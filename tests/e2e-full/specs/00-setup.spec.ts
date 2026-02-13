@@ -254,14 +254,13 @@ describe("Wallet Import & SPV Sync", () => {
   });
 
   it("should complete SPV sync", async function () {
-    // SPV sync can take 1-5 minutes depending on cache state
-    this.timeout(360_000);
+    // SPV sync can take 5-10+ minutes on cold cache (no prior SPV data).
+    // The Docker volume `e2e-spv-cache` caches data between runs.
+    this.timeout(660_000); // 11 min mocha timeout
 
     try {
-      await waitForSpvSync("testnet", 300_000);
+      await waitForSpvSync("testnet", 600_000); // 10 min poll timeout
     } catch (err) {
-      await takeScreenshot("spv-sync-timeout");
-
       // Log the last SPV status for debugging
       try {
         const statuses = await invoke<Array<{ network: string; status: string }>>(
@@ -271,11 +270,26 @@ describe("Wallet Import & SPV Sync", () => {
       } catch {
         // ignore
       }
+      try { await takeScreenshot("spv-sync-timeout"); } catch { /* ignore */ }
       throw err;
     }
   });
 
   it("should save wallet info to test context", async () => {
+    // Check actual SPV status — don't hardcode spvSynced: true
+    let spvSynced = false;
+    try {
+      const statuses = await invoke<Array<{ network: string; status: string }>>(
+        "get_spv_status"
+      );
+      const entry = statuses.find(
+        (s) => s.network.toLowerCase() === "testnet"
+      );
+      spvSynced = entry?.status === "running";
+    } catch {
+      // If we can't check, assume false
+    }
+
     // Get wallet list to find our wallet's seedHash and balance
     const result = await invoke<{
       hdWallets: Array<{
@@ -307,7 +321,7 @@ describe("Wallet Import & SPV Sync", () => {
     const ctx = updateContext({
       walletSeedHash: seedHash,
       balanceDuffs: balance,
-      spvSynced: true,
+      spvSynced,
       network: "testnet",
     });
 

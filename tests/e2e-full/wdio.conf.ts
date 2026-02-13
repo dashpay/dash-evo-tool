@@ -247,6 +247,34 @@ export const config = {
       // transactions (e.g. faucet funds). In 00-setup this block is skipped
       // because expectedSeedHash is null (no context file yet).
       try {
+        // Stop any running SPV and clear cached data before starting.
+        // Debug builds crash when a second app instance tries to sync
+        // using stale cached SPV segment storage (known dash-spv bug).
+        try {
+          await browser.executeAsync(
+            (done: (r: { ok: boolean; error?: string }) => void) => {
+              const t = (window as any).__TAURI_INTERNALS__;
+              if (!t) return done({ ok: false, error: "no bridge" });
+              t.invoke("wallet_stop_spv")
+                .then(() => done({ ok: true }))
+                .catch((e: unknown) => done({ ok: false, error: String(e) }));
+            }
+          );
+          await browser.pause(500);
+          await browser.executeAsync(
+            (done: (r: { ok: boolean; error?: string }) => void) => {
+              const t = (window as any).__TAURI_INTERNALS__;
+              if (!t) return done({ ok: false, error: "no bridge" });
+              t.invoke("wallet_clear_spv_data")
+                .then(() => done({ ok: true }))
+                .catch((e: unknown) => done({ ok: false, error: String(e) }));
+            }
+          );
+          console.log("  SPV stopped and cached data cleared");
+        } catch (err) {
+          console.warn(`  SPV stop/clear failed (non-fatal): ${err}`);
+        }
+
         // Start SPV via IPC
         await browser.executeAsync(
           (done: (r: { ok: boolean; error?: string }) => void) => {

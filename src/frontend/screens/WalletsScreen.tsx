@@ -331,10 +331,6 @@ export function WalletsScreen() {
             } else {
               toast.info("No unused asset locks found");
             }
-            // Refresh wallet data to show updated asset locks
-            useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
-          } else if (r.type === "walletCompleted") {
-            toast.info("No unused asset locks found");
             useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
           }
         });

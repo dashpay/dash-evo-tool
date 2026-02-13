@@ -308,11 +308,15 @@ export function CreateAssetLockScreen() {
   }, [wallet, amountValue, purpose, identityIndex, topUpIndex, selectedIdentity]);
 
   // Auto-trigger asset lock creation when UTXO polling detects funds
+  const handleCreateRef = useRef(handleCreateAssetLock);
+  handleCreateRef.current = handleCreateAssetLock;
   useEffect(() => {
     if (fundsReceived && step === "funding") {
-      handleCreateAssetLock();
+      handleCreateRef.current();
     }
-  }, [fundsReceived, step, handleCreateAssetLock]);
+    // Only trigger on fundsReceived/step changes, not callback identity
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fundsReceived, step]);
 
   const handleUnlockResult = useCallback(
     async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {

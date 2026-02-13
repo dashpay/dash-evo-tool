@@ -30,7 +30,7 @@ function getRequestDisplayName(
   direction: "incoming" | "outgoing",
 ): string {
   if (direction === "incoming") {
-    return request.toUsername || displayId(request.fromIdentityId);
+    return request.fromUsername || displayId(request.fromIdentityId);
   }
   return request.toUsername || displayId(request.toIdentityId);
 }

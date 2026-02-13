@@ -411,11 +411,18 @@ impl AppContext {
     pub fn spv_setup_finality_listener(self: &Arc<Self>) {
         let rx = self.spv_manager.register_finality_channel();
         let ctx = Arc::clone(self);
+        let cancel = self.subtasks.cancellation_token.clone();
         self.subtasks.spawn_sync(async move {
             tokio::pin!(rx);
-            while let Some(event) = rx.recv().await {
-                if let Err(e) = ctx.handle_spv_finality_event(event).await {
-                    tracing::debug!("SPV finality event error: {}", e);
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    maybe = rx.recv() => {
+                        let Some(event) = maybe else { break; };
+                        if let Err(e) = ctx.handle_spv_finality_event(event).await {
+                            tracing::debug!("SPV finality event error: {}", e);
+                        }
+                    }
                 }
             }
         });
@@ -494,11 +501,13 @@ impl AppContext {
         use tokio::time::{Duration, Instant, sleep};
         let rx = self.spv_manager.register_reconcile_channel();
         let ctx = Arc::clone(self);
+        let cancel = self.subtasks.cancellation_token.clone();
         self.subtasks.spawn_sync(async move {
             tokio::pin!(rx);
             let mut last = Instant::now();
             loop {
                 tokio::select! {
+                    _ = cancel.cancelled() => break,
                     maybe = rx.recv() => {
                         if maybe.is_none() { break; }
                         // simple debounce window

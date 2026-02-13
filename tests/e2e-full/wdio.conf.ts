@@ -55,7 +55,7 @@ export const config = {
   framework: "mocha" as const,
   mochaOpts: {
     ui: "bdd" as const,
-    timeout: 660_000, // 11 min — SPV sync can take 10+ min on cold cache
+    timeout: 1_860_000, // 31 min — cold-start SPV sync can take 20+ min; cached runs are fast
   },
 
   // Reporter

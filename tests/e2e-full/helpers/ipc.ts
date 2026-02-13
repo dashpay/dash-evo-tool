@@ -79,6 +79,12 @@ export async function waitForSpvSync(
         (s) => s.network.toLowerCase() === network.toLowerCase()
       );
       if (entry && entry.status === "running") return;
+
+      // Log progress periodically
+      const elapsed = Math.round((Date.now() - start) / 1000);
+      if (elapsed % 30 < (interval / 1000)) { // ~every 30s
+        console.log(`  SPV sync: status=${entry?.status ?? 'unknown'}, ${elapsed}s elapsed`);
+      }
     } catch {
       // SPV not ready yet — keep polling
     }

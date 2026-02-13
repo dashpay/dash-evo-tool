@@ -254,12 +254,11 @@ describe("Wallet Import & SPV Sync", () => {
   });
 
   it("should complete SPV sync", async function () {
-    // SPV sync can take 5-10+ minutes on cold cache (no prior SPV data).
-    // The Docker volume `e2e-spv-cache` caches data between runs.
-    this.timeout(660_000); // 11 min mocha timeout
+    // Cold-start SPV sync can take 20+ min on first run; Docker volume caches data for fast subsequent runs
+    this.timeout(1_860_000); // 31 min mocha timeout
 
     try {
-      await waitForSpvSync("testnet", 600_000); // 10 min poll timeout
+      await waitForSpvSync("testnet", 1_800_000); // 30 min poll timeout
     } catch (err) {
       // Log the last SPV status for debugging
       try {

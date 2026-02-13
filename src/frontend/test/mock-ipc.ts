@@ -143,6 +143,7 @@ export type CommandName =
   | "documentSetPrice"
   | "documentFetch"
   | "documentFetchPage"
+  | "documentTypeTokenCost"
   // Token
   | "tokenQueryMyBalances"
   | "tokenQueryIdentityBalance"
@@ -451,6 +452,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     documentSetPrice: dispatchOk("documentSetPrice"),
     documentFetch: dispatchOk("documentFetch"),
     documentFetchPage: dispatchOk("documentFetchPage"),
+    documentTypeTokenCost: resolves("documentTypeTokenCost", null),
 
     // -- Token --
     tokenQueryMyBalances: resolves("tokenQueryMyBalances", { taskId: "mock-task-id" }),

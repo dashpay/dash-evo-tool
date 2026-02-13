@@ -16,8 +16,9 @@ use dash_evo_tool::backend_task::contract::ContractTask;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::database::contracts::InsertTokensToo;
 
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::{DataContract, Identifier};
 
 use serde::{Deserialize, Serialize};
@@ -263,8 +264,11 @@ pub fn contract_register(
     let signing_key = find_signing_key(&qi, input.key_id)?;
 
     // Deserialize the contract from JSON
-    let data_contract: DataContract = serde_json::from_value(input.contract_json)
+    let mut data_contract: DataContract = serde_json::from_value(input.contract_json)
         .map_err(|e| format!("Invalid contract JSON: {e}"))?;
+
+    // Override ownerId with the selected identity (frontend may send incorrect format)
+    data_contract.set_owner_id(qi.identity.id());
 
     let task = BackendTask::ContractTask(Box::new(ContractTask::RegisterDataContract(
         data_contract,
@@ -289,8 +293,11 @@ pub fn contract_update(
     let qi = lookup_identity(&state, &input.identity_id)?;
     let signing_key = find_signing_key(&qi, input.key_id)?;
 
-    let data_contract: DataContract = serde_json::from_value(input.contract_json)
+    let mut data_contract: DataContract = serde_json::from_value(input.contract_json)
         .map_err(|e| format!("Invalid contract JSON: {e}"))?;
+
+    // Override ownerId with the selected identity (frontend may send incorrect format)
+    data_contract.set_owner_id(qi.identity.id());
 
     let task = BackendTask::ContractTask(Box::new(ContractTask::UpdateDataContract(
         data_contract,

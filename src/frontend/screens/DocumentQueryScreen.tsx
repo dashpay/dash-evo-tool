@@ -44,6 +44,8 @@ import { EmptyState } from "@/components/feedback";
 import { ContractTreePanel } from "@/components/contract/ContractTreePanel";
 import type { TreeSelection, IndexInfo } from "@/components/contract/ContractTreePanel";
 import { useContractStore } from "@/stores/contractStore";
+import { commands } from "@/bindings";
+import type { NetworkDto } from "@/bindings";
 import { useDocumentStore, DOCUMENT_PRIVATE_FIELDS } from "@/stores/documentStore";
 import type { DocumentPageEntry, DocumentDisplayMode } from "@/stores/documentStore";
 import { useNavigate } from "@tanstack/react-router";
@@ -142,59 +144,65 @@ interface ActionButton {
   onClick?: () => void;
 }
 
-function useActionButtons(): ActionButton[] {
-  return useMemo(() => [
-    {
-      label: "Load Contracts",
-      icon: <Plus className="h-4 w-4" />,
-      route: "/contracts/add-contracts",
-    },
-    {
-      label: "Register Contract",
-      icon: <FileUp className="h-4 w-4" />,
-      route: "/contracts/register",
-    },
-    {
-      label: "Update Contract",
-      icon: <FilePen className="h-4 w-4" />,
-      route: "/contracts/update-contract",
-    },
-    {
-      label: "Create Document",
-      icon: <FilePlus2 className="h-4 w-4" />,
-      route: "/contracts/create-document",
-    },
-    {
-      label: "Delete Document",
-      icon: <FileX2 className="h-4 w-4" />,
-      route: "/contracts/delete-document",
-    },
-    {
-      label: "Replace Document",
-      icon: <FileOutput className="h-4 w-4" />,
-      route: "/contracts/replace-document",
-    },
-    {
-      label: "Transfer Document",
-      icon: <FileOutput className="h-4 w-4" />,
-      route: "/contracts/transfer-document",
-    },
-    {
-      label: "Purchase Document",
-      icon: <ShoppingCart className="h-4 w-4" />,
-      route: "/contracts/purchase-document",
-    },
-    {
-      label: "Set Document Price",
-      icon: <DollarSign className="h-4 w-4" />,
-      route: "/contracts/set-document-price",
-    },
-    {
-      label: "Group Actions",
-      icon: <Users className="h-4 w-4" />,
-      route: "/contracts/group-actions",
-    },
-  ], []);
+function useActionButtons(network: NetworkDto | null): ActionButton[] {
+  return useMemo(() => {
+    const buttons: ActionButton[] = [
+      {
+        label: "Load Contracts",
+        icon: <Plus className="h-4 w-4" />,
+        route: "/contracts/add-contracts",
+      },
+      {
+        label: "Register Contract",
+        icon: <FileUp className="h-4 w-4" />,
+        route: "/contracts/register",
+      },
+      {
+        label: "Update Contract",
+        icon: <FilePen className="h-4 w-4" />,
+        route: "/contracts/update-contract",
+      },
+      {
+        label: "Create Document",
+        icon: <FilePlus2 className="h-4 w-4" />,
+        route: "/contracts/create-document",
+      },
+      {
+        label: "Delete Document",
+        icon: <FileX2 className="h-4 w-4" />,
+        route: "/contracts/delete-document",
+      },
+      {
+        label: "Replace Document",
+        icon: <FileOutput className="h-4 w-4" />,
+        route: "/contracts/replace-document",
+      },
+      {
+        label: "Transfer Document",
+        icon: <FileOutput className="h-4 w-4" />,
+        route: "/contracts/transfer-document",
+      },
+      {
+        label: "Purchase Document",
+        icon: <ShoppingCart className="h-4 w-4" />,
+        route: "/contracts/purchase-document",
+      },
+      {
+        label: "Set Document Price",
+        icon: <DollarSign className="h-4 w-4" />,
+        route: "/contracts/set-document-price",
+      },
+    ];
+    // Group Actions is not available on Mainnet
+    if (network !== "dash") {
+      buttons.push({
+        label: "Group Actions",
+        icon: <Users className="h-4 w-4" />,
+        route: "/contracts/group-actions",
+      });
+    }
+    return buttons;
+  }, [network]);
 }
 
 // ─── Field Selection Dialog ──────────────────────────────────────────
@@ -356,6 +364,9 @@ export function DocumentQueryScreen() {
     setQueryTarget,
   } = useDocumentStore();
 
+  // Network state for conditional UI
+  const [network, setNetwork] = useState<NetworkDto | null>(null);
+
   // Tree selection state
   const [treeSelection, setTreeSelection] = useState<TreeSelection | null>(null);
   // Contract ID whose JSON is shown in the main area (null = not showing)
@@ -365,11 +376,12 @@ export function DocumentQueryScreen() {
   // Elapsed time for waiting status
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
-  const actionButtons = useActionButtons();
+  const actionButtons = useActionButtons(network);
 
   // Load contracts and subscribe to events on mount
   useEffect(() => {
     loadContracts();
+    commands.getNetworkInfo().then((info) => setNetwork(info.activeNetwork)).catch(() => {});
     const unsubPromises = [
       subscribeContractUpdates().catch((e) => console.error("Failed to subscribe to contract events:", e)),
       subscribeDocumentUpdates().catch((e) => console.error("Failed to subscribe to document events:", e)),

@@ -195,11 +195,6 @@ function parseContractInput(
       }
       contractObj = wrapDocumentSchemas(contractObj, selectedIdentityId);
       wrapped = true;
-    } else {
-      // Override ownerId with the selected identity
-      if (selectedIdentityId) {
-        contractObj = { ...contractObj, ownerId: selectedIdentityId };
-      }
     }
 
     const jsonStr = JSON.stringify(contractObj);

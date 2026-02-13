@@ -281,20 +281,6 @@ function hasOwnerIdIndex(
 }
 
 /**
- * Parse token cost info from a document type's schema.
- */
-function parseTokenCost(
-  _contract: DataContractDto | null,
-  _documentTypeName: string | null,
-  _actionType: DocumentActionType,
-): TokenCostInfo | null {
-  // Token costs are embedded in the document schema under specific keys
-  // For now, return null — actual token cost parsing would need backend support
-  // to extract from the document type definition
-  return null;
-}
-
-/**
  * Estimate fee for a document action (simple client-side estimate).
  */
 function estimateFee(actionType: DocumentActionType, dataSize: number): number {
@@ -461,10 +447,7 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
     [selectedContractDetail, selectedDocTypeName],
   );
 
-  const tokenCost = useMemo(
-    () => parseTokenCost(selectedContractDetail, selectedDocTypeName, actionType),
-    [selectedContractDetail, selectedDocTypeName, actionType],
-  );
+  const [tokenCost, setTokenCost] = useState<TokenCostInfo | null>(null);
 
   const estimatedFee = useMemo(() => {
     if (!selectedContractId || !selectedDocTypeName) return null;
@@ -529,6 +512,28 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
     loadContracts();
   }, [loadIdentities, loadContracts]);
 
+
+  // Fetch token cost when contract/doctype/action changes
+  useEffect(() => {
+    if (!selectedContractId || !selectedDocTypeName) {
+      setTokenCost(null);
+      return;
+    }
+    commands
+      .documentTypeTokenCost({
+        contractId: selectedContractId,
+        documentTypeName: selectedDocTypeName,
+        actionType,
+      })
+      .then((result) => {
+        if (result.status === "ok" && result.data) {
+          setTokenCost(result.data);
+        } else {
+          setTokenCost(null);
+        }
+      })
+      .catch(() => setTokenCost(null));
+  }, [selectedContractId, selectedDocTypeName, actionType]);
 
   // (Contract detail loading and field reset handled in event handlers below)
 

@@ -13,9 +13,14 @@ use crate::DispatchTaskResponse;
 use dash_evo_tool::backend_task::document::DocumentTask;
 use dash_evo_tool::backend_task::BackendTask;
 
+use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV1Getters;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::fee::Credits;
+use dash_sdk::dpp::tokens::gas_fees_paid_by::GasFeesPaidBy;
+use dash_sdk::dpp::tokens::token_amount_on_contract_token::DocumentActionTokenEffect;
 use dash_sdk::dpp::tokens::token_payment_info::v0::TokenPaymentInfoV0;
 use dash_sdk::dpp::tokens::token_payment_info::TokenPaymentInfo;
 use dash_sdk::platform::{DataContract, Document, DocumentQuery};
@@ -567,8 +572,7 @@ pub fn document_fetch_page(
     let start = input
         .start_after
         .map(|id_str| {
-            parse_identifier(&id_str)
-                .map(|id| Start::StartAfter(id.to_buffer().to_vec()))
+            parse_identifier(&id_str).map(|id| Start::StartAfter(id.to_buffer().to_vec()))
         })
         .transpose()?;
 
@@ -584,6 +588,106 @@ pub fn document_fetch_page(
     let task = BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocumentsPage(query)));
     let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
     Ok(DispatchTaskResponse { task_id })
+}
+
+// ---------------------------------------------------------------------------
+// Token cost query (synchronous)
+// ---------------------------------------------------------------------------
+
+/// Output DTO for document type token cost information.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentTypeTokenCostDto {
+    /// The token amount required.
+    pub token_amount: u64,
+    /// Human-readable token name.
+    pub token_name: String,
+    /// What happens to the tokens: "transferred to the contract owner" or "burned".
+    pub effect: String,
+    /// Who pays gas fees: "you", "the contract owner", or the full PreferContractOwner string.
+    pub gas_fees_paid_by: String,
+    /// Token ID (hex) for the token used for payment.
+    pub token_id: String,
+}
+
+/// Input DTO for querying document type token cost.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentTypeTokenCostInput {
+    /// Contract ID (hex).
+    pub contract_id: IdentifierDto,
+    /// Document type name.
+    pub document_type_name: String,
+    /// Action type: "create", "delete", "replace", "transfer", "purchase", or "setPrice".
+    pub action_type: String,
+}
+
+/// Query token cost for a document type action (if any).
+///
+/// Returns `None` if the document type has no token cost for the given action.
+#[tauri::command]
+#[specta::specta]
+pub fn document_type_token_cost(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: DocumentTypeTokenCostInput,
+) -> Result<Option<DocumentTypeTokenCostDto>, String> {
+    let contract = lookup_contract(&state, &input.contract_id)?;
+    let doc_type = find_document_type(&contract, &input.document_type_name)?;
+
+    let cost = match input.action_type.as_str() {
+        "create" => doc_type.document_creation_token_cost(),
+        "delete" => doc_type.document_deletion_token_cost(),
+        "replace" => doc_type.document_replacement_token_cost(),
+        "transfer" => doc_type.document_transfer_token_cost(),
+        "purchase" => doc_type.document_purchase_token_cost(),
+        "setPrice" => doc_type.document_update_price_token_cost(),
+        other => return Err(format!("Unknown action type: {}", other)),
+    };
+
+    let Some(token_cost) = cost else {
+        return Ok(None);
+    };
+
+    // Resolve token name from the contract's token definitions
+    let token_name = contract
+        .tokens()
+        .get(&token_cost.token_contract_position)
+        .map(|t| {
+            t.conventions()
+                .singular_form_by_language_code_or_default("en")
+                .to_string()
+        })
+        .unwrap_or_else(|| format!("Token {}", token_cost.token_contract_position));
+
+    let effect = match token_cost.effect {
+        DocumentActionTokenEffect::TransferTokenToContractOwner => {
+            "transferred to the contract owner".to_string()
+        }
+        DocumentActionTokenEffect::BurnToken => "burned".to_string(),
+    };
+
+    let gas_fees_paid_by = match token_cost.gas_fees_paid_by {
+        GasFeesPaidBy::DocumentOwner => "you".to_string(),
+        GasFeesPaidBy::ContractOwner => "the contract owner".to_string(),
+        GasFeesPaidBy::PreferContractOwner => {
+            "the contract owner unless their balance is insufficient, in which case you pay"
+                .to_string()
+        }
+    };
+
+    // Use the token payment contract ID as the token ID
+    let token_id = token_cost
+        .contract_id
+        .map(|id| hex::encode(id.to_buffer()))
+        .unwrap_or_default();
+
+    Ok(Some(DocumentTypeTokenCostDto {
+        token_amount: token_cost.token_amount,
+        token_name,
+        effect,
+        gas_fees_paid_by,
+        token_id,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -762,5 +866,35 @@ mod tests {
         assert_eq!(input.contract_id, "abc");
         assert_eq!(input.identity_id, "def");
         assert_eq!(input.key_id, 0);
+    }
+
+    #[test]
+    fn document_type_token_cost_dto_serializes() {
+        let dto = DocumentTypeTokenCostDto {
+            token_amount: 500,
+            token_name: "DashToken".into(),
+            effect: "burned".into(),
+            gas_fees_paid_by: "you".into(),
+            token_id: "abc123".into(),
+        };
+        let json = serde_json::to_string(&dto).unwrap();
+        assert!(json.contains("\"tokenAmount\":500"));
+        assert!(json.contains("\"tokenName\":\"DashToken\""));
+        assert!(json.contains("\"effect\":\"burned\""));
+        assert!(json.contains("\"gasFeesPaidBy\":\"you\""));
+        assert!(json.contains("\"tokenId\":\"abc123\""));
+    }
+
+    #[test]
+    fn document_type_token_cost_input_serializes() {
+        let input = DocumentTypeTokenCostInput {
+            contract_id: "abc".into(),
+            document_type_name: "domain".into(),
+            action_type: "create".into(),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"contractId\":\"abc\""));
+        assert!(json.contains("\"documentTypeName\":\"domain\""));
+        assert!(json.contains("\"actionType\":\"create\""));
     }
 }

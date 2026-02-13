@@ -273,11 +273,7 @@ export function UpdateContractScreen() {
           estimatedFee: null,
         };
       }
-      // Override ownerId with the selected identity
-      let contractObj = parsed as Record<string, unknown>;
-      if (selectedIdentityId) {
-        contractObj = { ...contractObj, ownerId: selectedIdentityId };
-      }
+      const contractObj = parsed as Record<string, unknown>;
       const jsonStr = JSON.stringify(contractObj);
       const fee = estimateUpdateFee(jsonStr);
       return { parsedJson: contractObj, parseError: null, estimatedFee: fee };
@@ -288,7 +284,7 @@ export function UpdateContractScreen() {
         estimatedFee: null,
       };
     }
-  }, [contractJson, selectedIdentityId]);
+  }, [contractJson]);
 
   // Derived: associated wallet for the selected identity
   const associatedWallet = useMemo(

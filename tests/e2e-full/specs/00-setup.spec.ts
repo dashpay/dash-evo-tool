@@ -255,10 +255,11 @@ describe("Wallet Import & SPV Sync", () => {
 
   it("should complete SPV sync", async function () {
     // Cold-start SPV sync can take 20+ min on first run; Docker volume caches data for fast subsequent runs
-    this.timeout(1_860_000); // 31 min mocha timeout
+    // Disable Mocha timeout entirely — the waitForSpvSync internal timer handles timing
+    this.timeout(0);
 
     try {
-      await waitForSpvSync("testnet", 1_800_000); // 30 min poll timeout
+      await waitForSpvSync("testnet", 1800000); // 30 min poll timeout
     } catch (err) {
       // Log the last SPV status for debugging
       try {

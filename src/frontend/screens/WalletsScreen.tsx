@@ -25,8 +25,8 @@ import { waitForTask } from "@/lib/utils";
 function buildCoreAddresses(wallet: WalletDto): ReceiveAddress[] {
   return wallet.addresses
     .filter((a) => {
-      // Only include external/funds addresses (BIP44 external chain m/44'/5'/X'/0/...)
-      return /m\/44'\/5'\/\d+'\/0\//.test(a.derivationPath);
+      // Only include external/funds addresses (BIP44 external chain m/44'/[coin_type]'/X'/0/...)
+      return /m\/44'\/\d+'\/\d+'\/0\//.test(a.derivationPath);
     })
     .map((a) => ({ address: a.address, balance: a.balance }));
 }

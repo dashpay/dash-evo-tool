@@ -116,14 +116,14 @@ function formatCreditsAsDash(credits: number): string {
 }
 
 function categorizeAddress(derivationPath: string): AddressCategory {
-  // BIP44 external chain: m/44'/5'/0'/0/...
-  if (/m\/44'\/5'\/\d+'\/0\//.test(derivationPath)) return "funds";
-  // BIP44 change chain: m/44'/5'/0'/1/...
-  if (/m\/44'\/5'\/\d+'\/1\//.test(derivationPath)) return "change";
-  // Asset lock / identity funding paths
-  if (/m\/9'\/5'\//.test(derivationPath)) return "identityCreation";
-  // Platform payment path
-  if (/m\/2049'\/5'\//.test(derivationPath)) return "platform";
+  // BIP44 external chain: m/44'/[coin_type]'/[account]'/0/...
+  if (/m\/44'\/\d+'\/\d+'\/0\//.test(derivationPath)) return "funds";
+  // BIP44 change chain: m/44'/[coin_type]'/[account]'/1/...
+  if (/m\/44'\/\d+'\/\d+'\/1\//.test(derivationPath)) return "change";
+  // DIP-17 Platform payment: m/9'/[coin_type]'/17'/... (check before identityCreation)
+  if (/m\/9'\/\d+'\/17'\//.test(derivationPath)) return "platform";
+  // Asset lock / identity funding: m/9'/[coin_type]'/5'/1'/...
+  if (/m\/9'\/\d+'\/5'\/1'\//.test(derivationPath)) return "identityCreation";
   return "system";
 }
 
@@ -153,7 +153,7 @@ function getAccountLabel(derivationPath: string): string {
   // Extract the account category from the path
   const category = categorizeAddress(derivationPath);
   if (category === "funds" || category === "change") {
-    const match = derivationPath.match(/m\/44'\/5'\/(\d+)'/);
+    const match = derivationPath.match(/m\/44'\/\d+'\/(\d+)'/);
     if (match) {
       const accountIndex = parseInt(match[1] ?? "", 10);
       return accountIndex === 0
@@ -191,7 +191,7 @@ function getAccountOptions(
 function getAccountKey(derivationPath: string): string {
   const category = categorizeAddress(derivationPath);
   if (category === "funds" || category === "change") {
-    const match = derivationPath.match(/m\/44'\/5'\/(\d+)'/);
+    const match = derivationPath.match(/m\/44'\/\d+'\/(\d+)'/);
     if (match) return `bip44-${match[1]}`;
   }
   return category;

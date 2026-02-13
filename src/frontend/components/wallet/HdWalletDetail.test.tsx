@@ -673,7 +673,7 @@ describe("HdWalletDetail", () => {
       const wallet = makeWallet({
         addresses: [
           makeAddress({ derivationPath: "m/44'/5'/0'/0/0", balance: 1 }),
-          makeAddress({ address: "XplatAddr", derivationPath: "m/2049'/5'/0'/0/0", balance: 0 }),
+          makeAddress({ address: "XplatAddr", derivationPath: "m/9'/5'/17'/0/0", balance: 0 }),
         ],
         platformAddresses: [
           makePlatformAddress({ address: "XplatAddr", balance: 5000000000 }),
@@ -693,7 +693,7 @@ describe("HdWalletDetail", () => {
         addresses: [
           makeAddress({
             address: "XplatformTest1",
-            derivationPath: "m/2049'/5'/0'/0/0",
+            derivationPath: "m/9'/5'/17'/0/0",
             balance: 0,
           }),
         ],
@@ -729,6 +729,77 @@ describe("HdWalletDetail", () => {
       // Verify both addresses are visible (order tested by presence, not DOM position)
       expect(screen.getByText("Aaddr")).toBeInTheDocument();
       expect(screen.getByText("Baddr")).toBeInTheDocument();
+    });
+  });
+
+  // ─── Testnet Derivation Path Tests ──────────────────────────────────
+
+  describe("testnet derivation paths (coin_type=1)", () => {
+    it("categorizes testnet BIP44 funds addresses correctly", () => {
+      const wallet = makeWallet({
+        addresses: [
+          makeAddress({ address: "yTestFunds0", derivationPath: "m/44'/1'/0'/0/0", balance: 100 }),
+          makeAddress({ address: "yTestFunds1", derivationPath: "m/44'/1'/0'/0/1", balance: 200 }),
+        ],
+      });
+      render(<HdWalletDetail wallet={wallet} />);
+      expect(screen.getByText("yTestFunds0")).toBeInTheDocument();
+      expect(screen.getByText("yTestFunds1")).toBeInTheDocument();
+      // Both should be categorized as "Funds"
+      const fundsBadges = screen.getAllByText("Funds");
+      expect(fundsBadges).toHaveLength(2);
+    });
+
+    it("categorizes testnet change addresses correctly", () => {
+      const wallet = makeWallet({
+        addresses: [
+          makeAddress({ address: "yTestChange0", derivationPath: "m/44'/1'/0'/1/0", balance: 50 }),
+        ],
+      });
+      render(<HdWalletDetail wallet={wallet} />);
+      expect(screen.getByText("yTestChange0")).toBeInTheDocument();
+      expect(screen.getByText("Change")).toBeInTheDocument();
+    });
+
+    it("categorizes testnet platform (DIP-17) addresses correctly", async () => {
+      const user = userEvent.setup();
+      const wallet = makeWallet({
+        addresses: [
+          makeAddress({ address: "yTestFunds", derivationPath: "m/44'/1'/0'/0/0", balance: 100 }),
+          makeAddress({ address: "yTestPlatform", derivationPath: "m/9'/1'/17'/0/0", balance: 0 }),
+        ],
+        platformAddresses: [
+          makePlatformAddress({ address: "yTestPlatform", balance: 5000000000 }),
+        ],
+      });
+      render(<HdWalletDetail wallet={wallet} />);
+      // Should show account selector since we have 2 account types
+      expect(screen.getByText("Main Account")).toBeInTheDocument();
+    });
+
+    it("categorizes testnet identity creation addresses correctly", async () => {
+      const user = userEvent.setup();
+      const wallet = makeWallet({
+        addresses: [
+          makeAddress({ address: "yTestFunds", derivationPath: "m/44'/1'/0'/0/0", balance: 100 }),
+          makeAddress({ address: "yTestIdentity", derivationPath: "m/9'/1'/5'/1'/0", balance: 50 }),
+        ],
+      });
+      render(<HdWalletDetail wallet={wallet} />);
+      // Should show account selector (Main Account + Identity Registration)
+      expect(screen.getByText("Main Account")).toBeInTheDocument();
+    });
+
+    it("shows account selector with testnet addresses across multiple accounts", () => {
+      const wallet = makeWallet({
+        addresses: [
+          makeAddress({ address: "yAcct0", derivationPath: "m/44'/1'/0'/0/0", balance: 100 }),
+          makeAddress({ address: "yAcct1", derivationPath: "m/44'/1'/1'/0/0", balance: 200 }),
+        ],
+      });
+      render(<HdWalletDetail wallet={wallet} />);
+      // Two BIP44 accounts → selector should be visible
+      expect(screen.getByText("Main Account")).toBeInTheDocument();
     });
   });
 

@@ -223,6 +223,7 @@ export function createMockContactRequest(
     fromIdentityId: "4EfA9Jrvv3nnCFdSf7fad59851kYrUWF21pYPKhq6Ycis",
     toIdentityId: "7BfX2Kqv8npRFdTe952mYsTWF31qZQNhq6Kdm5Zabc12",
     toUsername: "bob.dash",
+    fromUsername: null,
     accountLabel: "Account 0",
     requestType: "outgoing",
     status: "pending",

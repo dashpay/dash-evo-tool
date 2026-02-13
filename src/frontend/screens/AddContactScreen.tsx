@@ -11,7 +11,7 @@ import {
   ChevronDown,
   Lock,
 } from "lucide-react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { WalletUnlockDialog } from "@/components/shared";
@@ -185,6 +185,9 @@ type ScreenState = "form" | "sending" | "success";
 
 export function AddContactScreen() {
   const navigate = useNavigate();
+  const { username: prefillUsername } = useSearch({ strict: false }) as {
+    username?: string;
+  };
 
   // ── Store state ──
   const selectedIdentityId = useDashPayStore((s) => s.selectedIdentityId);
@@ -219,7 +222,7 @@ export function AddContactScreen() {
   );
 
   // ── Form state ──
-  const [usernameOrId, setUsernameOrId] = useState("");
+  const [usernameOrId, setUsernameOrId] = useState(prefillUsername ?? "");
   const [accountLabel, setAccountLabel] = useState("");
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);

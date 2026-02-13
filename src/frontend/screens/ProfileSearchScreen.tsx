@@ -102,10 +102,14 @@ export function ProfileSearchScreen() {
   );
 
   const handleAddContact = useCallback(
-    (_identityId: string) => {
-      navigate({ to: "/dashpay/add-contact" });
+    (identityId: string) => {
+      const result = searchResults.find((r) => r.identityId === identityId);
+      navigate({
+        to: "/dashpay/add-contact",
+        search: result?.username ? { username: result.username } : {},
+      });
     },
-    [navigate],
+    [navigate, searchResults],
   );
 
   // ── Render ───────────────────────────────────────────────────────

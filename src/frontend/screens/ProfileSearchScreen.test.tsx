@@ -367,13 +367,14 @@ describe("ProfileSearchScreen", () => {
     });
 
     it("navigates to add contact on Add Contact click", async () => {
-      setupWithResults([makeSearchResult({ identityId: IDENTITY_B })]);
+      setupWithResults([makeSearchResult({ identityId: IDENTITY_B, username: "alice.dash" })]);
       await renderScreen();
       const user = userEvent.setup();
       await user.click(screen.getByRole("button", { name: /add contact/i }));
       expect(mockNavigate).toHaveBeenCalledWith(
         expect.objectContaining({
           to: "/dashpay/add-contact",
+          search: { username: "alice.dash" },
         }),
       );
     });

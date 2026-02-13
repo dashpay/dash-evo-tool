@@ -323,15 +323,15 @@ describe("PaymentHistoryScreen", () => {
       expect(screen.getByText("pending")).toBeInTheDocument();
     });
 
-    it("does not show status badge for confirmed payments", () => {
+    it("shows green confirmed badge for confirmed payments", () => {
       const payment = makePayment({ status: "confirmed" });
       setupWithPayments([payment]);
       renderWithProviders(<PaymentHistoryScreen />);
 
-      // "confirmed" should not appear as a badge
       const items = screen.getAllByRole("listitem");
-      const badgeInItem = within(items[0]).queryByText("confirmed");
-      expect(badgeInItem).not.toBeInTheDocument();
+      const badge = within(items[0]).getByText("confirmed");
+      expect(badge).toBeInTheDocument();
+      expect(badge.className).toContain("text-green-600");
     });
   });
 

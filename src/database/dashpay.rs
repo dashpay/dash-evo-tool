@@ -40,6 +40,9 @@ pub struct StoredContactRequest {
     pub from_identity_id: Vec<u8>,
     pub to_identity_id: Vec<u8>,
     pub to_username: Option<String>,
+    /// Resolved display name for the sender (for incoming requests).
+    /// Populated by joining against dashpay_contacts/dashpay_profiles tables.
+    pub from_username: Option<String>,
     pub account_label: Option<String>,
     pub request_type: String, // "sent", "received"
     pub status: String,       // "pending", "accepted", "rejected", "expired"
@@ -491,17 +494,25 @@ impl crate::database::Database {
     ) -> rusqlite::Result<Vec<StoredContactRequest>> {
         let conn = self.conn.lock_or_recover();
         let sql = if request_type == "sent" {
-            "SELECT id, from_identity_id, to_identity_id, to_username, account_label,
-                    request_type, status, created_at, responded_at, expires_at, platform_document_id
-             FROM dashpay_contact_requests
-             WHERE from_identity_id = ?1 AND network = ?2 AND request_type = 'sent' AND status = 'pending'
-             ORDER BY created_at DESC"
+            "SELECT cr.id, cr.from_identity_id, cr.to_identity_id, cr.to_username, cr.account_label,
+                    cr.request_type, cr.status, cr.created_at, cr.responded_at, cr.expires_at,
+                    cr.platform_document_id, NULL as from_username
+             FROM dashpay_contact_requests cr
+             WHERE cr.from_identity_id = ?1 AND cr.network = ?2 AND cr.request_type = 'sent' AND cr.status = 'pending'
+             ORDER BY cr.created_at DESC"
         } else {
-            "SELECT id, from_identity_id, to_identity_id, to_username, account_label,
-                    request_type, status, created_at, responded_at, expires_at, platform_document_id
-             FROM dashpay_contact_requests
-             WHERE to_identity_id = ?1 AND network = ?2 AND request_type = 'received' AND status = 'pending'
-             ORDER BY created_at DESC"
+            // For incoming requests, resolve the sender's display name from contacts/profiles
+            "SELECT cr.id, cr.from_identity_id, cr.to_identity_id, cr.to_username, cr.account_label,
+                    cr.request_type, cr.status, cr.created_at, cr.responded_at, cr.expires_at,
+                    cr.platform_document_id,
+                    COALESCE(dc.username, dc.display_name, dp.display_name) as from_username
+             FROM dashpay_contact_requests cr
+             LEFT JOIN dashpay_contacts dc ON dc.contact_identity_id = cr.from_identity_id
+                 AND dc.owner_identity_id = cr.to_identity_id AND dc.network = cr.network
+             LEFT JOIN dashpay_profiles dp ON dp.identity_id = cr.from_identity_id
+                 AND dp.network = cr.network
+             WHERE cr.to_identity_id = ?1 AND cr.network = ?2 AND cr.request_type = 'received' AND cr.status = 'pending'
+             ORDER BY cr.created_at DESC"
         };
 
         let mut stmt = conn.prepare(sql)?;
@@ -519,6 +530,7 @@ impl crate::database::Database {
                     responded_at: row.get(8)?,
                     expires_at: row.get(9)?,
                     platform_document_id: row.get(10)?,
+                    from_username: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1095,7 +1107,15 @@ mod tests {
         let to = random_id();
 
         let request_id = db
-            .save_contact_request(&from, &to, "testnet", Some("bob"), Some("Default"), "sent", None)
+            .save_contact_request(
+                &from,
+                &to,
+                "testnet",
+                Some("bob"),
+                Some("Default"),
+                "sent",
+                None,
+            )
             .unwrap();
         assert!(request_id > 0);
 

@@ -94,11 +94,6 @@ function IncomingRequestCard({
       {/* Request info */}
       <div className="flex-1 min-w-0 space-y-0.5">
         <p className="text-sm font-medium truncate">{displayName}</p>
-        {request.toUsername && (
-          <p className="text-xs text-muted-foreground truncate">
-            @{request.toUsername}
-          </p>
-        )}
         <p className="text-xs text-muted-foreground font-mono truncate">
           ID: {identityId}
         </p>

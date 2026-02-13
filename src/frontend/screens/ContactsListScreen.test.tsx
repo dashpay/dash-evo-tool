@@ -58,6 +58,7 @@ function makeRequest(
     fromIdentityId: "cc".repeat(32),
     toIdentityId: "aa".repeat(32),
     toUsername: "alice",
+    fromUsername: null,
     accountLabel: "Personal",
     requestType: "incoming",
     status: "pending",

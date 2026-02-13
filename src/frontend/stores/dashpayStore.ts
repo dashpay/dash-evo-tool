@@ -25,6 +25,9 @@ export type ContactSortField = "name" | "username" | "date" | "account";
 
 export type ContactSortOrder = "ascending" | "descending";
 
+export type PaymentDirectionFilter = "all" | "incoming" | "outgoing";
+export type PaymentSortField = "date" | "amount" | "contact";
+
 /** A profile search result returned from the backend. */
 export interface ProfileSearchResult {
   identityId: string;
@@ -96,6 +99,14 @@ interface DashPayState {
   paymentsRefreshing: boolean;
   /** Payments error message. */
   paymentsError: string | null;
+  /** Direction filter for payments. */
+  paymentDirectionFilter: PaymentDirectionFilter;
+  /** Search query for filtering payments. */
+  paymentSearchQuery: string;
+  /** Sort field for payments. */
+  paymentSortField: PaymentSortField;
+  /** Sort order for payments. */
+  paymentSortOrder: ContactSortOrder;
 
   // ── Profile search slice ──
   /** Profile search results. */
@@ -174,6 +185,14 @@ interface DashPayActions {
     amountDash: number;
     memo: string | null;
   }) => Promise<string | null>;
+  /** Set payment direction filter. */
+  setPaymentDirectionFilter: (filter: PaymentDirectionFilter) => void;
+  /** Set payment search query. */
+  setPaymentSearchQuery: (query: string) => void;
+  /** Set payment sort field. */
+  setPaymentSortField: (field: PaymentSortField) => void;
+  /** Toggle payment sort order. */
+  togglePaymentSortOrder: () => void;
 
   // ── Contact info actions ──
   /** Load private info for a specific contact. */
@@ -246,6 +265,10 @@ const initialState: DashPayState = {
   paymentsLoading: false,
   paymentsRefreshing: false,
   paymentsError: null,
+  paymentDirectionFilter: "all",
+  paymentSearchQuery: "",
+  paymentSortField: "date",
+  paymentSortOrder: "descending",
   searchResults: [],
   searchLoading: false,
   searchError: null,
@@ -730,6 +753,24 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
       failOp(set, "sendPayment", "paymentsError", e instanceof Error ? e.message : String(e));
       return null;
     }
+  },
+
+  setPaymentDirectionFilter: (filter) => {
+    set({ paymentDirectionFilter: filter });
+  },
+
+  setPaymentSearchQuery: (query) => {
+    set({ paymentSearchQuery: query });
+  },
+
+  setPaymentSortField: (field) => {
+    set({ paymentSortField: field });
+  },
+
+  togglePaymentSortOrder: () => {
+    set((s) => ({
+      paymentSortOrder: s.paymentSortOrder === "ascending" ? "descending" : "ascending",
+    }));
   },
 
   // ── Contact private info ────────────────────────────────────────

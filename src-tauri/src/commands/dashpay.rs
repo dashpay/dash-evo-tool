@@ -224,6 +224,8 @@ pub struct StoredContactRequestDto {
     pub from_identity_id: IdentifierDto,
     pub to_identity_id: IdentifierDto,
     pub to_username: Option<String>,
+    /// Resolved display name of the sender (for incoming requests).
+    pub from_username: Option<String>,
     pub account_label: Option<String>,
     pub request_type: String,
     pub status: String,
@@ -664,6 +666,7 @@ pub fn dashpay_db_load_pending_requests(
             from_identity_id: hex::encode(&r.from_identity_id),
             to_identity_id: hex::encode(&r.to_identity_id),
             to_username: r.to_username,
+            from_username: r.from_username,
             account_label: r.account_label,
             request_type: r.request_type,
             status: r.status,

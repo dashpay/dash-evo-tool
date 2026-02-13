@@ -30,6 +30,7 @@ vi.mock("sonner", () => ({
 const mockNavigate = vi.fn();
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => mockNavigate,
+  useSearch: () => ({}),
   useRouterState: () => ({ location: { pathname: "/dashpay/add-contact" } }),
 }));
 

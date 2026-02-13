@@ -32,6 +32,7 @@ function makeIncomingRequest(
     fromIdentityId: "cc".repeat(32),
     toIdentityId: "aa".repeat(32),
     toUsername: "alice",
+    fromUsername: "SenderUser",
     accountLabel: "Personal",
     requestType: "incoming",
     status: "pending",
@@ -51,6 +52,7 @@ function makeOutgoingRequest(
     fromIdentityId: "aa".repeat(32),
     toIdentityId: "dd".repeat(32),
     toUsername: "dave",
+    fromUsername: null,
     accountLabel: null,
     requestType: "outgoing",
     status: "pending",
@@ -188,7 +190,7 @@ describe("ContactRequests", () => {
   describe("incoming request card rendering", () => {
     it("renders incoming request card with display name", () => {
       setupWithRequests({
-        incoming: [makeIncomingRequest({ toUsername: "alice" })],
+        incoming: [makeIncomingRequest({ fromUsername: "alice" })],
       });
       renderWithProviders(<ContactRequests />);
       expect(screen.getByText("alice")).toBeInTheDocument();
@@ -259,7 +261,7 @@ describe("ContactRequests", () => {
 
     it("falls back to truncated identity ID when no username", () => {
       setupWithRequests({
-        incoming: [makeIncomingRequest({ toUsername: null })],
+        incoming: [makeIncomingRequest({ fromUsername: null })],
       });
       renderWithProviders(<ContactRequests />);
       // Should show truncated fromIdentityId as the card's display name
@@ -321,7 +323,7 @@ describe("ContactRequests", () => {
     it("shows confirmation dialog when Accept is clicked", async () => {
       const user = userEvent.setup();
       setupWithRequests({
-        incoming: [makeIncomingRequest({ toUsername: "alice" })],
+        incoming: [makeIncomingRequest({ fromUsername: "alice" })],
       });
       renderWithProviders(<ContactRequests />);
       await user.click(screen.getByRole("button", { name: /Accept/ }));
@@ -389,7 +391,7 @@ describe("ContactRequests", () => {
     it("shows rejection confirmation dialog when Reject is clicked", async () => {
       const user = userEvent.setup();
       setupWithRequests({
-        incoming: [makeIncomingRequest({ toUsername: "alice" })],
+        incoming: [makeIncomingRequest({ fromUsername: "alice" })],
       });
       renderWithProviders(<ContactRequests />);
       await user.click(screen.getByRole("button", { name: /Reject/ }));
@@ -475,9 +477,9 @@ describe("ContactRequests", () => {
     it("renders all incoming request cards", () => {
       setupWithRequests({
         incoming: [
-          makeIncomingRequest({ id: 1, toUsername: "alice" }),
-          makeIncomingRequest({ id: 2, toUsername: "bob" }),
-          makeIncomingRequest({ id: 3, toUsername: "charlie" }),
+          makeIncomingRequest({ id: 1, fromUsername: "alice" }),
+          makeIncomingRequest({ id: 2, fromUsername: "bob" }),
+          makeIncomingRequest({ id: 3, fromUsername: "charlie" }),
         ],
       });
       renderWithProviders(<ContactRequests />);

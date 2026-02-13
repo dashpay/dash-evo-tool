@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   ArrowLeft,
   ArrowUpFromLine,
@@ -124,14 +125,6 @@ function getIdentityTypeLabel(type: string): string {
   }
 }
 
-function formatElapsedTime(startedAt: number): string {
-  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-  if (elapsed < 60) return `${elapsed} second${elapsed !== 1 ? "s" : ""}`;
-  const minutes = Math.floor(elapsed / 60);
-  const seconds = elapsed % 60;
-  return `${minutes} minute${minutes !== 1 ? "s" : ""} and ${seconds} second${seconds !== 1 ? "s" : ""}`;
-}
-
 // ─── Component ─────────────────────────────────────────────────────
 
 export function WithdrawScreen({
@@ -146,6 +139,10 @@ export function WithdrawScreen({
   walletLocked = false,
   onRequestUnlock,
 }: WithdrawScreenProps) {
+  // ─── Elapsed timer ──────────────────────────────────────────────
+  const sendingStartedAt = status.type === "sending" ? status.startedAt : null;
+  const elapsed = useElapsedTimer(sendingStartedAt);
+
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [address, setAddress] = useState("");
   const [addressError, setAddressError] = useState<string | null>(null);
@@ -498,7 +495,7 @@ export function WithdrawScreen({
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>
-              Withdrawing… ({formatElapsedTime(status.startedAt)})
+              Withdrawing… ({elapsed})
             </span>
           </div>
         )}

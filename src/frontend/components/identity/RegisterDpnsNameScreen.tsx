@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   ArrowLeft,
   CheckCircle2,
@@ -121,16 +122,6 @@ export function isContestedName(name: string): boolean {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
-function formatElapsedTime(startedAt: number): string {
-  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-  if (elapsed < 60) {
-    return `${elapsed} second${elapsed !== 1 ? "s" : ""}`;
-  }
-  const minutes = Math.floor(elapsed / 60);
-  const seconds = elapsed % 60;
-  return `${minutes} minute${minutes !== 1 ? "s" : ""} and ${seconds} second${seconds !== 1 ? "s" : ""}`;
-}
-
 /** Get suitable signing keys for DPNS: AUTHENTICATION purpose, CRITICAL/HIGH/MEDIUM level, not MASTER. */
 function getDpnsSigningKeys(identity: QualifiedIdentityDto): IdentityKeyDto[] {
   return identity.keys.filter(
@@ -162,6 +153,10 @@ export function RegisterDpnsNameScreen({
   onBack,
   onRegisterAnother,
 }: RegisterDpnsNameScreenProps) {
+  // ─── Elapsed timer ────────────────────────────────────────────────
+  const registeringStartedAt = status.type === "registering" ? status.startedAt : null;
+  const elapsed = useElapsedTimer(registeringStartedAt);
+
   // ─── State ──────────────────────────────────────────────────────
 
   const [selectedIdentityId, setSelectedIdentityId] = useState<string>(
@@ -170,8 +165,6 @@ export function RegisterDpnsNameScreen({
   const [nameInput, setNameInput] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [manualKeyId, setManualKeyId] = useState<number | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [, setTick] = useState(0); // force re-renders for elapsed time
 
   // ─── Derived state ──────────────────────────────────────────────
 
@@ -224,19 +217,6 @@ export function RegisterDpnsNameScreen({
     if (status.type !== "form") return false;
     return true;
   }, [selectedIdentity, validation, nameInput, signingKeys, hasInsufficientBalance, walletLocked, status]);
-
-  // ─── Elapsed time ticker ────────────────────────────────────────
-
-  useEffect(() => {
-    if (status.type === "registering") {
-      timerRef.current = setInterval(() => setTick((t) => t + 1), 1000);
-      return () => {
-        if (timerRef.current) clearInterval(timerRef.current);
-      };
-    } else {
-      if (timerRef.current) clearInterval(timerRef.current);
-    }
-  }, [status.type]);
 
   // ─── Callbacks ──────────────────────────────────────────────────
 
@@ -352,7 +332,7 @@ export function RegisterDpnsNameScreen({
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
         <h2 className="text-lg font-semibold">Registering...</h2>
         <p className="text-sm text-muted-foreground" data-testid="elapsed-time">
-          Time taken so far: {formatElapsedTime(status.startedAt)}
+          Time taken so far: {elapsed}
         </p>
       </div>
     );

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useUtxoMonitor } from "@/hooks/useUtxoMonitor";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   ArrowLeft,
   ChevronDown,
@@ -197,14 +198,6 @@ function makeDefaultKeys(): EditableKeySpec[] {
   ];
 }
 
-function formatElapsedTime(startedAt: number): string {
-  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-  if (elapsed < 60) return `${elapsed} second${elapsed !== 1 ? "s" : ""}`;
-  const minutes = Math.floor(elapsed / 60);
-  const seconds = elapsed % 60;
-  return `${minutes} minute${minutes !== 1 ? "s" : ""} and ${seconds} second${seconds !== 1 ? "s" : ""}`;
-}
-
 function truncateAddress(address: string): string {
   if (address.length <= 22) return address;
   return address.slice(0, 12) + "…" + address.slice(-8);
@@ -222,6 +215,13 @@ export function CreateIdentityScreen({
   onRegisterDpns,
   onCopy,
 }: CreateIdentityScreenProps) {
+  // ─── Elapsed timer ──────────────────────────────────────────────
+  const waitingStartedAt =
+    status.type === "waitingForAssetLock" || status.type === "waitingForPlatform"
+      ? status.startedAt
+      : null;
+  const elapsed = useElapsedTimer(waitingStartedAt);
+
   // ─── Form state ────────────────────────────────────────────────
 
   const [selectedWalletSeedHash, setSelectedWalletSeedHash] = useState<
@@ -871,7 +871,7 @@ export function CreateIdentityScreen({
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>
               Waiting for Core Chain to produce proof of transfer… (
-              {formatElapsedTime(status.startedAt)})
+              {elapsed})
             </span>
           </div>
         )}
@@ -880,7 +880,7 @@ export function CreateIdentityScreen({
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>
               Waiting for Platform acknowledgement… (
-              {formatElapsedTime(status.startedAt)})
+              {elapsed})
             </span>
           </div>
         )}

@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from "react";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import { Check, AlertCircle, Loader2, Clock, Vote } from "lucide-react";
 import { cn, displayId } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -101,16 +102,6 @@ function formatRelativeTime(timestamp: number): string {
   if (hours > 0) parts.push(`${hours}h`);
   if (minutes > 0) parts.push(`${minutes}m`);
   return parts.length > 0 ? `in ${parts.join(" ")}` : "< 1m";
-}
-
-/** Format elapsed time since a start timestamp. */
-function formatElapsed(startTime: number): string {
-  const elapsed = Math.max(0, Date.now() - startTime);
-  const seconds = Math.floor(elapsed / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainSec = seconds % 60;
-  return `${minutes}m ${remainSec}s`;
 }
 
 /** Get display name for an identity. */
@@ -718,6 +709,9 @@ interface VoteProgressViewProps {
 }
 
 function VoteProgressView({ status }: VoteProgressViewProps) {
+  const castingStartTime = status.type === "casting" ? status.startTime : null;
+  const elapsed = useElapsedTimer(castingStartTime);
+
   return (
     <div className="flex flex-col items-center justify-center py-8 space-y-4">
       <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -726,7 +720,7 @@ function VoteProgressView({ status }: VoteProgressViewProps) {
           <>
             <p className="text-sm font-medium">Casting votes...</p>
             <p className="text-xs text-muted-foreground" data-testid="elapsed-time">
-              Time elapsed: {formatElapsed(status.startTime)}
+              Time elapsed: {elapsed}
             </p>
           </>
         )}

@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { useUtxoMonitor } from "@/hooks/useUtxoMonitor";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   ArrowLeft,
   AlertCircle,
@@ -92,14 +93,6 @@ export interface TopUpIdentityScreenProps {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
-function formatElapsedTime(startedAt: number): string {
-  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-  if (elapsed < 60) return `${elapsed} second${elapsed !== 1 ? "s" : ""}`;
-  const minutes = Math.floor(elapsed / 60);
-  const seconds = elapsed % 60;
-  return `${minutes}m ${seconds}s`;
-}
-
 function truncateAddress(address: string): string {
   if (address.length <= 22) return address;
   return address.slice(0, 12) + "…" + address.slice(-8);
@@ -117,6 +110,13 @@ export function TopUpIdentityScreen({
   onBack,
   estimatedFee,
 }: TopUpIdentityScreenProps) {
+  // ─── Elapsed timer ──────────────────────────────────────────────
+  const waitingStartedAt =
+    status.type === "waitingForAssetLock" || status.type === "waitingForPlatform"
+      ? status.startedAt
+      : null;
+  const elapsed = useElapsedTimer(waitingStartedAt);
+
   // ─── State ────────────────────────────────────────────────────
 
   const [selectedWalletSeedHash, setSelectedWalletSeedHash] = useState<string>(
@@ -414,7 +414,7 @@ export function TopUpIdentityScreen({
             : "Waiting for Platform acknowledgement…"}
         </h2>
         <p className="text-sm text-muted-foreground">
-          Time elapsed: {formatElapsedTime(status.startedAt)}
+          Time elapsed: {elapsed}
         </p>
       </div>
     );

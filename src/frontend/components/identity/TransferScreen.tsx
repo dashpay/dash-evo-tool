@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   ArrowLeft,
   ArrowLeftRight,
@@ -121,14 +122,6 @@ function getIdentityTypeLabel(type: string): string {
   }
 }
 
-function formatElapsedTime(startedAt: number): string {
-  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-  if (elapsed < 60) return `${elapsed} second${elapsed !== 1 ? "s" : ""}`;
-  const minutes = Math.floor(elapsed / 60);
-  const seconds = elapsed % 60;
-  return `${minutes} minute${minutes !== 1 ? "s" : ""} and ${seconds} second${seconds !== 1 ? "s" : ""}`;
-}
-
 // ─── Component ─────────────────────────────────────────────────────
 
 export function TransferScreen({
@@ -146,6 +139,10 @@ export function TransferScreen({
   walletLocked = false,
   onRequestUnlock,
 }: TransferScreenProps) {
+  // ─── Elapsed timer ──────────────────────────────────────────────
+  const sendingStartedAt = status.type === "sending" ? status.startedAt : null;
+  const elapsed = useElapsedTimer(sendingStartedAt);
+
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [destinationType, setDestinationType] =
     useState<TransferDestinationType>("identity");
@@ -505,7 +502,7 @@ export function TransferScreen({
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>
-              Transferring… ({formatElapsedTime(status.startedAt)})
+              Transferring… ({elapsed})
             </span>
           </div>
         )}

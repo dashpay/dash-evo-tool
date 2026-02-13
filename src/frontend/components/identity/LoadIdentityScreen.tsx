@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   ArrowLeft,
   AlertCircle,
@@ -86,14 +87,6 @@ export interface LoadIdentityScreenProps {
 
 // ─── Helpers ───────────────────────────────────────────────────────
 
-function formatElapsedTime(startedAt: number): string {
-  const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-  if (elapsed < 60) return `${elapsed} second${elapsed !== 1 ? "s" : ""}`;
-  const minutes = Math.floor(elapsed / 60);
-  const seconds = elapsed % 60;
-  return `${minutes}m ${seconds}s`;
-}
-
 /** Generate a random 64-character hex string for testing. */
 function generateRandomHex64(): string {
   const bytes = new Uint8Array(32);
@@ -128,6 +121,11 @@ export function LoadIdentityScreen({
   onLoadAnother,
 }: LoadIdentityScreenProps) {
   const isTestnet = network === "testnet" || network === "devnet" || network === "regtest";
+
+  // ─── Elapsed timer ──────────────────────────────────────────────
+  const loadingStartedAt = status.type === "loading" ? status.startedAt : null;
+  const elapsed = useElapsedTimer(loadingStartedAt);
+
   // ─── State ────────────────────────────────────────────────────
 
   const [mode, setMode] = useState<LoadMode>("byId");
@@ -301,11 +299,11 @@ export function LoadIdentityScreen({
         <h2 className="text-xl font-semibold">Searching…</h2>
         {status.progressMessage ? (
           <p className="text-sm text-muted-foreground">
-            {status.progressMessage} ({formatElapsedTime(status.startedAt)})
+            {status.progressMessage} ({elapsed})
           </p>
         ) : (
           <p className="text-sm text-muted-foreground">
-            Time elapsed: {formatElapsedTime(status.startedAt)}
+            Time elapsed: {elapsed}
           </p>
         )}
       </div>

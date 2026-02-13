@@ -33,20 +33,13 @@ interface FoundToken {
   configurationJson: unknown;
 }
 
-// ─── Helpers ────────────────────────────────────────────────────────
-
-/** Validate a hex string (even-length, hex chars only). */
-function isValidHex(s: string): boolean {
-  return /^[0-9a-fA-F]+$/.test(s) && s.length >= 32;
-}
-
 // ─── Component ──────────────────────────────────────────────────────
 
 /**
  * TokenAddByIdScreen — add a token to "My Tokens" by contract ID or token ID.
  *
  * Features:
- * - Input for contract ID or token ID (hex)
+ * - Input for contract ID or token ID
  * - Search button dispatches fetch by contract ID or token ID
  * - Elapsed time counter during search
  * - Results display with token info
@@ -169,20 +162,12 @@ export function TokenAddByIdScreen() {
     const trimmed = inputValue.trim();
     if (!trimmed) return;
 
-    if (!isValidHex(trimmed)) {
-      setErrorMessage(
-        "Invalid ID format. Please enter a valid hex contract ID or token ID (at least 32 characters).",
-      );
-      setStatus("error");
-      return;
-    }
-
     setStatus("searching");
     setFoundTokens([]);
     setErrorMessage(null);
     startTimer();
 
-    // Try fetching by contract ID first — the backend will also check token IDs
+    // Pass input directly to backend — parse_identifier handles both hex and base58
     commands
       .tokenFetchByContractId({ contractId: trimmed })
       .then((result) => {
@@ -310,7 +295,7 @@ export function TokenAddByIdScreen() {
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Enter contract ID or token ID (hex)..."
+              placeholder="Enter contract ID or token ID..."
               className="font-mono flex-1"
               aria-label="Contract or token ID"
               disabled={status === "searching"}

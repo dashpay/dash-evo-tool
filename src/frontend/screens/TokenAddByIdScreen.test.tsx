@@ -101,7 +101,7 @@ describe("TokenAddByIdScreen — rendering", () => {
     expect(input).toBeInTheDocument();
     expect(input).toHaveAttribute(
       "placeholder",
-      "Enter contract ID or token ID (hex)...",
+      "Enter contract ID or token ID...",
     );
   });
 
@@ -205,28 +205,17 @@ describe("TokenAddByIdScreen — search interaction", () => {
     });
   });
 
-  it("shows error for invalid hex input", async () => {
+  it("passes base58 input directly to backend without conversion", async () => {
     const user = userEvent.setup();
     renderScreen();
+    const base58Id = "Hqvu8WcRwXCTwbNxdga4CN5gsVE6c67wng4TFzceyLUv";
     await user.type(
       screen.getByLabelText("Contract or token ID"),
-      "not-hex!{Enter}",
+      `${base58Id}{Enter}`,
     );
-    expect(screen.getByTestId("error-message")).toHaveTextContent(
-      /Invalid ID format/,
-    );
-  });
-
-  it("shows error for hex input that is too short", async () => {
-    const user = userEvent.setup();
-    renderScreen();
-    await user.type(
-      screen.getByLabelText("Contract or token ID"),
-      "aabb{Enter}",
-    );
-    expect(screen.getByTestId("error-message")).toHaveTextContent(
-      /Invalid ID format/,
-    );
+    expect(vi.mocked(commands.tokenFetchByContractId)).toHaveBeenCalledWith({
+      contractId: base58Id,
+    });
   });
 
   it("does not dispatch when input is empty and Enter is pressed", async () => {
@@ -295,14 +284,26 @@ describe("TokenAddByIdScreen — clear flow", () => {
   });
 
   it("resets error state on Clear click", async () => {
+    // Make the backend return an error
+    vi.mocked(commands.tokenFetchByContractId).mockResolvedValueOnce({
+      status: "error",
+      error: "Invalid identifier",
+    });
+    vi.mocked(commands.tokenFetchByTokenId).mockResolvedValueOnce({
+      status: "error",
+      error: "Invalid identifier",
+    });
+
     const user = userEvent.setup();
     renderScreen();
-    // Trigger error first
     await user.type(
       screen.getByLabelText("Contract or token ID"),
-      "not-hex!{Enter}",
+      "badInput{Enter}",
     );
-    expect(screen.getByTestId("error-message")).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("error-message")).toBeInTheDocument();
+    });
 
     // Click "Try Again" which is the clear button in error state
     await user.click(screen.getByText("Try Again"));

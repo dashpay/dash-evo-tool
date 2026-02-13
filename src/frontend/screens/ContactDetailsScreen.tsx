@@ -274,9 +274,10 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
           (prev) => new Set([...prev, associatedWallet.seedHash]),
         );
         setShowWalletUnlock(false);
+        handleSave();
       }
     },
-    [associatedWallet, unlockWallet],
+    [associatedWallet, unlockWallet, handleSave],
   );
 
   const handleRefresh = useCallback(async () => {

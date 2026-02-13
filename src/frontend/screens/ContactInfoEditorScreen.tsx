@@ -235,9 +235,10 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
           (prev) => new Set([...prev, associatedWallet.seedHash]),
         );
         setShowWalletUnlock(false);
+        handleSave();
       }
     },
-    [associatedWallet, unlockWallet],
+    [associatedWallet, unlockWallet, handleSave],
   );
 
   const handleCancel = useCallback(() => {

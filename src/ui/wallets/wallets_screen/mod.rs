@@ -222,7 +222,7 @@ impl WalletsBalancesScreen {
             .update_selected_single_key_hash(hash.as_ref());
     }
 
-    fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
+    pub fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
         self.selected_wallet = Some(wallet.clone());
         self.selected_single_key_wallet = None;
         self.selected_account = None;

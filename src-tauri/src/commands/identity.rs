@@ -1511,8 +1511,26 @@ pub fn identity_delete(
     let identifier = parse_identifier(&input.identity_id)?;
     let ctx = state.current_context();
     let db = state.db();
+
+    // Load the identity first so we can check for an associated voter identity
+    let qi = ctx
+        .get_identity_by_id(&identifier)
+        .map_err(|e| format!("Failed to load identity: {e}"))?;
+
     db.delete_local_qualified_identity(&identifier, ctx)
-        .map_err(|e| format!("Failed to delete identity: {e}"))
+        .map_err(|e| format!("Failed to delete identity: {e}"))?;
+
+    // Cascade delete the associated voter identity if present
+    if let Some(qi) = qi {
+        if let Some((voter_identity, _)) = &qi.associated_voter_identity {
+            let voter_id = voter_identity.id();
+            if let Err(e) = db.delete_local_qualified_identity(&voter_id, ctx) {
+                tracing::warn!("Failed to delete voter identity: {}", e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Get identity summaries suitable for dropdown selectors.

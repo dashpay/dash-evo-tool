@@ -18,6 +18,16 @@ vi.mock("@/bindings", async () => {
   return mockBindingsModule(createMockBindings());
 });
 
+vi.mock("@/hooks/useUtxoMonitor", () => ({
+  useUtxoMonitor: () => ({ fundsReceived: false, balance: 0, polling: false }),
+}));
+
+vi.mock("qrcode.react", () => ({
+  QRCodeSVG: (props: { value: string }) => (
+    <svg data-testid="qr-svg" data-value={props.value} />
+  ),
+}));
+
 import { commands } from "@/bindings";
 
 let walletStoreState: Record<string, unknown> = {};
@@ -40,6 +50,7 @@ function makeHdWallet(overrides: Record<string, unknown> = {}) {
     unusedAssetLocks: [],
     accounts: [],
     transactions: [],
+    identityIndexes: [],
     ...overrides,
   };
 }

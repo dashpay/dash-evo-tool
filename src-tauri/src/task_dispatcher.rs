@@ -22,6 +22,7 @@ use crate::commands::system::{convert_mn_list_diff, convert_qr_info};
 use crate::dto::{
     ContractTokenInfoDto, ContractWithTokensDto, NetworkDto, ProfileSearchResultDto,
     TaskChainLockSigDto, TaskDomain, TaskResultPayloadDto, TokenSearchResultDto,
+    VoteResultEntryDto,
 };
 use crate::events::{
     ScheduledVoteExecutedEvent, ScheduledVoteInProgressEvent, SpvStatusDto, SpvStatusEvent,
@@ -30,6 +31,7 @@ use crate::events::{
 };
 use crate::state::AppState;
 use dash_evo_tool::app::TaskResult;
+use dash_evo_tool::backend_task::contested_names::ContestResult;
 use dash_evo_tool::backend_task::contract::ContractResult;
 use dash_evo_tool::backend_task::dashpay::DashPayResult;
 use dash_evo_tool::backend_task::document::DocumentResult;
@@ -207,7 +209,9 @@ fn classify_success_result(result: &BackendTaskSuccessResult) -> TaskResultPaylo
         BackendTaskSuccessResult::Contract(contract_result) => {
             classify_contract_result(contract_result)
         }
-        BackendTaskSuccessResult::Contest(_) => TaskResultPayloadDto::ContestCompleted,
+        BackendTaskSuccessResult::Contest(contest_result) => {
+            classify_contest_result(contest_result)
+        }
         BackendTaskSuccessResult::System(_) => TaskResultPayloadDto::SystemCompleted,
         BackendTaskSuccessResult::Platform(platform_result) => {
             classify_platform_result(platform_result)
@@ -241,6 +245,28 @@ fn classify_identity_result(result: &IdentityResult) -> TaskResultPayloadDto {
     TaskResultPayloadDto::IdentityCompleted { identity_id }
 }
 
+/// Classify a `ContestResult` into a typed payload.
+///
+/// `DPNSVoteResults` carries per-vote success/failure data for the frontend.
+/// All other contest results signal generic completion.
+fn classify_contest_result(result: &ContestResult) -> TaskResultPayloadDto {
+    match result {
+        ContestResult::DPNSVoteResults(vote_results) => {
+            let results: Vec<VoteResultEntryDto> = vote_results
+                .iter()
+                .map(|(name, choice, result)| VoteResultEntryDto {
+                    contested_name: name.clone(),
+                    choice: format!("{:?}", choice),
+                    success: result.is_ok(),
+                    error: result.as_ref().err().cloned(),
+                })
+                .collect();
+            TaskResultPayloadDto::ContestVoteResults { results }
+        }
+        _ => TaskResultPayloadDto::ContestCompleted,
+    }
+}
+
 /// Classify a `WalletResult` into a typed payload.
 ///
 /// `GeneratedReceiveAddress` carries the real address for the frontend.
@@ -252,6 +278,13 @@ fn classify_wallet_result(result: &WalletResult) -> TaskResultPayloadDto {
                 address: address.clone(),
             }
         }
+        WalletResult::RecoveredAssetLocks {
+            recovered_count,
+            total_amount,
+        } => TaskResultPayloadDto::WalletRecoveredAssetLocks {
+            recovered_count: *recovered_count,
+            total_amount: *total_amount,
+        },
         _ => TaskResultPayloadDto::WalletCompleted,
     }
 }
@@ -321,14 +354,20 @@ fn classify_token_result(result: &TokenResult) -> TaskResultPayloadDto {
             token_id: hex::encode(token_id.to_buffer()),
             prices: prices.as_ref().and_then(|p| serde_json::to_value(p).ok()),
         },
-        TokenResult::EstimatedDistributionRewards(iti, amount, explanation) => {
-            TaskResultPayloadDto::TokenRewardEstimate {
-                token_id: hex::encode(iti.token_id.to_buffer()),
-                identity_id: hex::encode(iti.identity_id.to_buffer()),
-                amount: amount.to_string(),
-                explanation: explanation.detailed_explanation(),
-            }
-        }
+        TokenResult::EstimatedDistributionRewards {
+            identity_token_id,
+            amount,
+            short_explanation,
+            detailed_explanation,
+            step_explanations,
+        } => TaskResultPayloadDto::TokenRewardEstimate {
+            token_id: hex::encode(identity_token_id.token_id.to_buffer()),
+            identity_id: hex::encode(identity_token_id.identity_id.to_buffer()),
+            amount: amount.to_string(),
+            short_explanation: short_explanation.to_string(),
+            detailed_explanation: detailed_explanation.to_string(),
+            steps: step_explanations.to_vec(),
+        },
         TokenResult::DescriptionsByKeyword(descriptions, cursor) => {
             let results: Vec<TokenSearchResultDto> = descriptions
                 .iter()

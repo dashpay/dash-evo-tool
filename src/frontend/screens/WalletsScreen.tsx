@@ -13,8 +13,9 @@ import {
 import type { ReceiveAddress } from "@/components/wallet/ReceiveDialog";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
 import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
+import { formatAmount } from "@/components/shared/AmountInput";
 import { useWalletStore } from "@/stores/walletStore";
-import { commands } from "@/bindings";
+import { commands, events } from "@/bindings";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 import { toast } from "sonner";
 import { toastError } from "@/lib/toastError";
@@ -32,7 +33,7 @@ function buildCoreAddresses(wallet: WalletDto): ReceiveAddress[] {
 
 function buildPlatformAddresses(wallet: WalletDto): ReceiveAddress[] {
   return wallet.platformAddresses.map((a) => ({
-    address: a.address,
+    address: a.bech32MAddress,
     balance: a.balance,
   }));
 }
@@ -192,6 +193,26 @@ export function WalletsScreen() {
     }
   }, [selectedHdWallet]);
 
+  const handleNewPlatformAddress = useCallback(async () => {
+    if (!selectedHdWallet) return;
+    setGeneratingAddress(true);
+    try {
+      const result = await commands.walletGeneratePlatformAddress({
+        walletSeedHash: selectedHdWallet.seedHash,
+      });
+      if (result.status === "ok") {
+        toast.success("New platform address generated");
+        await useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
+      } else {
+        toastError(result.error);
+      }
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setGeneratingAddress(false);
+    }
+  }, [selectedHdWallet]);
+
   // ─── Refresh ─────────────────────────────────────────────────────
 
   const handleRefresh = useCallback(() => {
@@ -295,7 +316,34 @@ export function WalletsScreen() {
         walletSeedHash: selectedHdWallet.seedHash,
       });
       if (result.status === "ok") {
-        toast.success("Asset lock search dispatched");
+        toast.info("Searching for unused asset locks...");
+        const taskId = result.data.taskId;
+        // Listen for the result event
+        const cleanup = await events.taskResultEvent.listen((event) => {
+          if (event.payload.taskId !== taskId) return;
+          cleanup();
+          const r = event.payload.result;
+          if (r.type === "walletRecoveredAssetLocks") {
+            if (r.recoveredCount > 0) {
+              toast.success(
+                `Found ${r.recoveredCount} asset lock${r.recoveredCount > 1 ? "s" : ""} worth ${formatAmount(r.totalAmount, 8)} DASH`,
+              );
+            } else {
+              toast.info("No unused asset locks found");
+            }
+            // Refresh wallet data to show updated asset locks
+            useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
+          } else if (r.type === "walletCompleted") {
+            toast.info("No unused asset locks found");
+            useWalletStore.getState().reloadHdWallet(selectedHdWallet.seedHash);
+          }
+        });
+        // Also listen for errors
+        const cleanupError = await events.taskErrorEvent.listen((event) => {
+          if (event.payload.taskId !== taskId) return;
+          cleanupError();
+          toastError(event.payload.message);
+        });
       } else {
         toastError(result.error);
       }
@@ -448,6 +496,7 @@ export function WalletsScreen() {
         coreAddresses={receiveCoreAddresses}
         platformAddresses={receivePlatformAddresses}
         onNewCoreAddress={selectedHdWallet ? handleNewCoreAddress : undefined}
+        onNewPlatformAddress={selectedHdWallet ? handleNewPlatformAddress : undefined}
         generatingAddress={generatingAddress}
       />
 

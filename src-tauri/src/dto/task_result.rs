@@ -46,9 +46,7 @@ pub enum TaskResultPayloadDto {
     Refresh,
     /// A progress or informational message.
     #[serde(rename = "message")]
-    Message {
-        text: String,
-    },
+    Message { text: String },
     /// A state transition was broadcast successfully.
     #[serde(rename = "broadcastedStateTransition")]
     BroadcastedStateTransition,
@@ -62,11 +60,17 @@ pub enum TaskResultPayloadDto {
     /// A wallet operation completed.
     #[serde(rename = "walletCompleted")]
     WalletCompleted,
+    /// Asset locks were recovered during a wallet search.
+    #[serde(rename = "walletRecoveredAssetLocks")]
+    WalletRecoveredAssetLocks {
+        #[serde(rename = "recoveredCount")]
+        recovered_count: usize,
+        #[serde(rename = "totalAmount")]
+        total_amount: u64,
+    },
     /// A new receive address was generated for a wallet.
     #[serde(rename = "walletGeneratedAddress")]
-    WalletGeneratedAddress {
-        address: String,
-    },
+    WalletGeneratedAddress { address: String },
     /// A contract operation completed.
     #[serde(rename = "contractCompleted")]
     ContractCompleted,
@@ -96,6 +100,11 @@ pub enum TaskResultPayloadDto {
     /// A contest/DPNS operation completed.
     #[serde(rename = "contestCompleted")]
     ContestCompleted,
+    /// Per-vote results from a DPNS vote operation.
+    #[serde(rename = "contestVoteResults")]
+    ContestVoteResults {
+        results: Vec<VoteResultEntryDto>,
+    },
     /// A DashPay operation completed (non-search result).
     #[serde(rename = "dashPayCompleted")]
     DashPayCompleted,
@@ -106,10 +115,7 @@ pub enum TaskResultPayloadDto {
     },
     /// Platform info as pre-formatted text.
     #[serde(rename = "platformText")]
-    PlatformText {
-        title: String,
-        data: String,
-    },
+    PlatformText { title: String, data: String },
     /// Platform address balance query result.
     #[serde(rename = "platformAddressBalance")]
     PlatformAddressBalance {
@@ -127,9 +133,7 @@ pub enum TaskResultPayloadDto {
     },
     /// Multiple masternode list diffs.
     #[serde(rename = "mnListFetchedDiffs")]
-    MnListFetchedDiffs {
-        diffs: Vec<serde_json::Value>,
-    },
+    MnListFetchedDiffs { diffs: Vec<serde_json::Value> },
     /// Quorum rotation info.
     #[serde(rename = "mnListFetchedQrInfo")]
     MnListFetchedQrInfo {
@@ -138,9 +142,7 @@ pub enum TaskResultPayloadDto {
     },
     /// Chain lock signatures.
     #[serde(rename = "mnListChainLockSigs")]
-    MnListChainLockSigs {
-        entries: Vec<TaskChainLockSigDto>,
-    },
+    MnListChainLockSigs { entries: Vec<TaskChainLockSigDto> },
     /// A Core operation completed.
     #[serde(rename = "coreCompleted")]
     CoreCompleted,
@@ -178,7 +180,6 @@ pub enum TaskResultPayloadDto {
     },
 
     // ── Transient token results (not stored in DB) ──────────────────
-
     /// Token pricing schedule for a specific token (transient query result).
     #[serde(rename = "tokenPricing")]
     TokenPricing {
@@ -200,8 +201,14 @@ pub enum TaskResultPayloadDto {
         identity_id: String,
         /// Total estimated reward amount (string for u128).
         amount: String,
+        /// Basic human-readable explanation.
+        #[serde(rename = "shortExplanation")]
+        short_explanation: String,
         /// Detailed explanation text.
-        explanation: String,
+        #[serde(rename = "detailedExplanation")]
+        detailed_explanation: String,
+        /// Per-step breakdown explanations.
+        steps: Vec<String>,
     },
 
     /// Token search results by keyword (transient query result).
@@ -219,13 +226,26 @@ pub enum TaskResultPayloadDto {
     TokenNotFound,
 
     // ── Transient contract results (not stored in DB) ───────────────
-
     /// Contract(s) with token descriptions (transient query result).
     #[serde(rename = "contractWithDescriptions")]
     ContractWithDescriptions {
         /// Contracts with their token info.
         contracts: Vec<ContractWithTokensDto>,
     },
+}
+
+/// A single vote result entry from a DPNS vote operation.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VoteResultEntryDto {
+    /// The contested name this vote was for.
+    pub contested_name: String,
+    /// The vote choice (e.g. "Lock", "Abstain", or "TowardsIdentity(...)").
+    pub choice: String,
+    /// Whether the vote succeeded.
+    pub success: bool,
+    /// Error message if the vote failed.
+    pub error: Option<String>,
 }
 
 /// A profile search result from DashPay.

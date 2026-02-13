@@ -16,8 +16,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useWalletStore } from "@/stores/walletStore";
+import { useUtxoMonitor } from "@/hooks/useUtxoMonitor";
 import { commands, events } from "@/bindings";
 import type { WalletDto, QualifiedIdentityDto } from "@/bindings";
+import { QRCodeSVG } from "qrcode.react";
 import {
   ArrowLeft,
   Shield,
@@ -99,6 +101,13 @@ export function CreateAssetLockScreen() {
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [walletUnlocked, setWalletUnlocked] = useState(false);
 
+  // UTXO polling during funding step
+  const { fundsReceived } = useUtxoMonitor({
+    seedHash: wallet?.seedHash ?? null,
+    address: fundingAddress,
+    enabled: step === "funding",
+  });
+
   // Load identities for top-up
   useEffect(() => {
     commands
@@ -122,7 +131,13 @@ export function CreateAssetLockScreen() {
   // Calculate next unused identity index
   useEffect(() => {
     if (!wallet) return;
-    // Simple: just use 0 as default, user can change in advanced
+    const used = wallet.identityIndexes ?? [];
+    for (let i = 0; i <= MAX_IDENTITY_INDEX; i++) {
+      if (!used.includes(i)) {
+        setIdentityIndex(i);
+        return;
+      }
+    }
     setIdentityIndex(0);
   }, [wallet]);
 
@@ -130,6 +145,29 @@ export function CreateAssetLockScreen() {
   const selectedIdentity = useMemo(
     () => identities.find((id) => id.id === selectedIdentityId) ?? null,
     [identities, selectedIdentityId],
+  );
+
+  // Calculate next unused top-up index when identity changes
+  useEffect(() => {
+    if (!selectedIdentity) return;
+    const usedTopUpIndexes = new Set(selectedIdentity.topUps.map((t) => t.index));
+    for (let i = 0; i <= MAX_IDENTITY_INDEX; i++) {
+      if (!usedTopUpIndexes.has(i)) {
+        setTopUpIndex(i);
+        return;
+      }
+    }
+    setTopUpIndex(0);
+  }, [selectedIdentity]);
+
+  // Used index sets for dropdown labels
+  const usedIdentityIndexes = useMemo(
+    () => new Set(wallet?.identityIndexes ?? []),
+    [wallet],
+  );
+  const usedTopUpIndexes = useMemo(
+    () => new Set(selectedIdentity?.topUps.map((t) => t.index) ?? []),
+    [selectedIdentity],
   );
 
   // Listen for task events
@@ -268,6 +306,13 @@ export function CreateAssetLockScreen() {
       setStep("configure");
     }
   }, [wallet, amountValue, purpose, identityIndex, topUpIndex, selectedIdentity]);
+
+  // Auto-trigger asset lock creation when UTXO polling detects funds
+  useEffect(() => {
+    if (fundsReceived && step === "funding") {
+      handleCreateAssetLock();
+    }
+  }, [fundsReceived, step, handleCreateAssetLock]);
 
   const handleUnlockResult = useCallback(
     async (result: { status: "unlocked"; password: string } | { status: "cancelled" }) => {
@@ -540,8 +585,8 @@ export function CreateAssetLockScreen() {
                         </SelectTrigger>
                         <SelectContent>
                           {Array.from({ length: MAX_IDENTITY_INDEX + 1 }, (_, i) => (
-                            <SelectItem key={i} value={i.toString()}>
-                              {i}
+                            <SelectItem key={i} value={i.toString()} disabled={usedIdentityIndexes.has(i)}>
+                              {i}{usedIdentityIndexes.has(i) ? " (used)" : ""}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -560,8 +605,8 @@ export function CreateAssetLockScreen() {
                         </SelectTrigger>
                         <SelectContent>
                           {Array.from({ length: MAX_IDENTITY_INDEX + 1 }, (_, i) => (
-                            <SelectItem key={i} value={i.toString()}>
-                              {i}
+                            <SelectItem key={i} value={i.toString()} disabled={usedTopUpIndexes.has(i)}>
+                              {i}{usedTopUpIndexes.has(i) ? " (used)" : ""}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -630,12 +675,16 @@ export function CreateAssetLockScreen() {
                   when funds are received.
                 </p>
 
-                {/* QR code placeholder — uses address URI */}
+                {/* QR code */}
                 <div
-                  className="mx-auto w-[220px] h-[220px] rounded-lg border bg-white flex items-center justify-center"
+                  className="mx-auto p-3 rounded-lg border bg-white w-fit"
                   aria-label={`QR code for ${fundingAddress}`}
                 >
-                  <QrCode className="h-32 w-32 text-muted-foreground/30" />
+                  <QRCodeSVG
+                    value={`dash:${fundingAddress}?amount=${amountValue}`}
+                    size={220}
+                    level="M"
+                  />
                 </div>
 
                 {/* Address display */}
@@ -651,7 +700,9 @@ export function CreateAssetLockScreen() {
 
                 <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Waiting for funds...
+                  {fundsReceived
+                    ? "Funds received! Creating asset lock..."
+                    : "Waiting for funds..."}
                 </div>
               </div>
 

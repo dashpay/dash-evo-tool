@@ -540,6 +540,19 @@ async walletGenerateReceiveAddress(input: GenerateReceiveAddressInput) : Promise
 }
 },
 /**
+ * Generate a new platform (DIP-17) receive address for an HD wallet.
+ *
+ * Returns the Bech32m-encoded address (e.g. `tevo1...`/`evo1...`).
+ */
+async walletGeneratePlatformAddress(input: GenerateReceiveAddressInput) : Promise<Result<GenerateReceiveAddressResponseDto, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_generate_platform_address", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Fetch platform address balances for a wallet.
  *
  * Dispatches `WalletTask::FetchPlatformAddressBalances`. Result via `TaskResultEvent`.
@@ -1148,6 +1161,20 @@ async documentFetch(input: FetchDocumentsInput) : Promise<Result<DispatchTaskRes
 async documentFetchPage(input: FetchDocumentsPageInput) : Promise<Result<DispatchTaskResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("document_fetch_page", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Fetch documents from Platform using a SQL-like query string.
+ *
+ * Parses the SQL text via `DriveDocumentQuery::from_sql_expr` and dispatches
+ * `DocumentTask::FetchDocumentsPage`. Result via event.
+ */
+async documentFetchPageSql(input: FetchDocumentsSqlInput) : Promise<Result<DispatchTaskResponse, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_fetch_page_sql", { input }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -3044,6 +3071,22 @@ orderByClauses: OrderByClauseDto[];
  */
 startAfter: string | null }
 /**
+ * Input for fetching documents using a SQL-like query string.
+ */
+export type FetchDocumentsSqlInput = {
+/**
+ * Contract ID (hex) — used to look up the contract for query parsing.
+ */
+contractId: string;
+/**
+ * SQL-like query text (e.g. `SELECT * FROM domain WHERE normalizedLabel = 'alice'`).
+ */
+sqlText: string;
+/**
+ * Optional cursor (hex bytes of the last document ID from previous page).
+ */
+startAfter: string | null }
+/**
  * Input for fetching MnList diff.
  */
 export type FetchMnListDiffInput = { baseBlockHeight: number; baseBlockHash: string; blockHeight: number; blockHash: string; validateQuorums: boolean }
@@ -3672,6 +3715,10 @@ export type PlatformAddressDto = {
  * The Core address string.
  */
 address: string;
+/**
+ * The DIP-18 Bech32m-encoded platform address (e.g. `tevo1...` / `evo1...`).
+ */
+bech32MAddress: string;
 /**
  * Balance in credits.
  */
@@ -4729,6 +4776,10 @@ export type TaskResultPayloadDto =
  */
 { type: "walletCompleted" } |
 /**
+ * Asset locks were recovered during a wallet search.
+ */
+{ type: "walletRecoveredAssetLocks"; recoveredCount: number; totalAmount: number } |
+/**
  * A new receive address was generated for a wallet.
  */
 { type: "walletGeneratedAddress"; address: string } |
@@ -4761,6 +4812,10 @@ export type TaskResultPayloadDto =
  * A contest/DPNS operation completed.
  */
 { type: "contestCompleted" } |
+/**
+ * Per-vote results from a DPNS vote operation.
+ */
+{ type: "contestVoteResults"; results: VoteResultEntryDto[] } |
 /**
  * A DashPay operation completed (non-search result).
  */
@@ -4816,7 +4871,7 @@ export type TaskResultPayloadDto =
 /**
  * Estimated distribution rewards for a token (transient query result).
  */
-{ type: "tokenRewardEstimate"; tokenId: string; identityId: string; amount: string; explanation: string } |
+{ type: "tokenRewardEstimate"; tokenId: string; identityId: string; amount: string; shortExplanation: string; detailedExplanation: string; steps: string[] } |
 /**
  * Token search results by keyword (transient query result).
  */
@@ -5198,6 +5253,26 @@ votes: VoteEntry[];
  * List of voter identity IDs.
  */
 voterIdentityIds: string[] }
+/**
+ * A single vote result entry from a DPNS vote operation.
+ */
+export type VoteResultEntryDto = {
+/**
+ * The contested name this vote was for.
+ */
+contestedName: string;
+/**
+ * The vote choice (e.g. "Lock", "Abstain", or "TowardsIdentity(...)").
+ */
+choice: string;
+/**
+ * Whether the vote succeeded.
+ */
+success: boolean;
+/**
+ * Error message if the vote failed.
+ */
+error: string | null }
 /**
  * An address within an HD wallet.
  */

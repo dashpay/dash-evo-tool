@@ -415,7 +415,7 @@ const IdentityCard = React.memo(React.forwardRef<HTMLDivElement, IdentityCardInt
             ) : (
               <div className="flex items-center gap-1.5">
                 <p className="text-sm font-medium truncate">{displayName}</p>
-                {!identity.alias && (
+                {!identity.alias && active && (
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -526,7 +526,7 @@ const IdentityCard = React.memo(React.forwardRef<HTMLDivElement, IdentityCardInt
               align="end"
               onCloseAutoFocus={(e) => e.preventDefault()}
             >
-              <DropdownMenuItem onClick={() => setIsRenaming(true)}>
+              <DropdownMenuItem onClick={() => setIsRenaming(true)} disabled={!active}>
                 <Pencil className="h-4 w-4 mr-2" />
                 Update Alias
               </DropdownMenuItem>
@@ -626,6 +626,7 @@ export function IdentityListPanel({
     id: string;
     displayName: string;
     type: IdentityTypeDto;
+    base58Id: string;
   } | null>(null);
 
   const hasIdentities = identities.length > 0;
@@ -837,6 +838,7 @@ export function IdentityListPanel({
                     id: identity.id,
                     displayName: getIdentityDisplayName(identity),
                     type: identity.identityType,
+                    base58Id: hexToBase58(identity.id),
                   })
                 }
                 onRefresh={() => onRefreshIdentity(identity.id)}
@@ -869,9 +871,14 @@ export function IdentityListPanel({
         }}
         title="Confirm Removal"
         message={
-          removeTarget
-            ? `Are you sure you want to no longer track this ${getTypeLabel(removeTarget.type)} identity?`
-            : ""
+          removeTarget ? (
+            <>
+              Are you sure you want to no longer track this {getTypeLabel(removeTarget.type)} identity?
+              <span className="text-xs text-muted-foreground mt-1 block font-mono">
+                Identity ID: {removeTarget.base58Id}
+              </span>
+            </>
+          ) : ""
         }
         confirmText="Remove"
         danger

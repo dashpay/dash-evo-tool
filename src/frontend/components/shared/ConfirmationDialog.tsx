@@ -1,3 +1,4 @@
+import type React from "react";
 import {
   Dialog,
   DialogContent,
@@ -18,7 +19,7 @@ interface ConfirmationDialogProps {
   /** Dialog title */
   title: string;
   /** Dialog message / description */
-  message: string;
+  message: React.ReactNode;
   /** Confirm button label (default: "Confirm"). Pass null to hide. */
   confirmText?: string | null;
   /** Cancel button label (default: "Cancel"). Pass null to hide. */

@@ -190,6 +190,20 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
         } else {
           set({ identities, loading: false });
         }
+
+        // Auto-refresh any identities with "unknown" status
+        const loaded = get().identities;
+        const unknownIds = loaded
+          .filter((i) => i.status === "unknown")
+          .map((i) => i.id);
+        if (unknownIds.length > 0) {
+          const currentRefreshing = get().refreshingIds;
+          for (const id of unknownIds) {
+            if (!currentRefreshing.has(id)) {
+              get().refreshIdentity(id);
+            }
+          }
+        }
       } else {
         set({ error: result.error, loading: false });
       }
@@ -378,13 +392,21 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
 
   removeIdentity: async (identityId) => {
     try {
+      // Capture voter identity ID before deletion
+      const targetIdentity = get().identities.find((i) => i.id === identityId);
+      const voterIdentityId = targetIdentity?.voterIdentityId;
+
       const result = await commands.identityDelete({ identityId });
       if (result.status === "ok") {
         set((state) => {
+          const idsToRemove = new Set([identityId]);
+          if (voterIdentityId) idsToRemove.add(voterIdentityId);
           const newIdentities = state.identities.filter(
-            (i) => i.id !== identityId,
+            (i) => !idsToRemove.has(i.id),
           );
-          const wasSelected = state.selectedIdentityId === identityId;
+          const wasSelected =
+            state.selectedIdentityId === identityId ||
+            state.selectedIdentityId === voterIdentityId;
           return {
             identities: newIdentities,
             selectedIdentityId: wasSelected

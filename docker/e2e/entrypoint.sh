@@ -114,12 +114,7 @@ if ! kill -0 "$DEV_SERVER_PID" 2>/dev/null; then
 fi
 echo "  Frontend server started (PID $DEV_SERVER_PID)"
 
-# ---- 6. Clear SPV cache ----
-echo "=== Clearing SPV cache (avoid stale segment data from prior builds) ==="
-rm -rf /root/.config/Dash-Evo-Tool/spv/*
-echo "  SPV cache cleared"
-
-# ---- 7. Run WebdriverIO tests ----
+# ---- 6. Run WebdriverIO tests ----
 echo "=== Running WebdriverIO E2E tests ==="
 echo ""
 

@@ -243,40 +243,11 @@ export const config = {
       );
       console.log(`  Wallet ${seedHash.slice(0, 8)}... loaded in backend`);
 
-      // Stop SPV and clear cached data to prevent segment crashes.
-      // The dash-spv debug build can crash on stale segment data written
-      // by a previous app instance within the same Docker run.
-      // entrypoint.sh handles cross-run staleness; this handles intra-run.
-      try {
-        await browser.executeAsync(
-          (done: (r: { ok: boolean; error?: string }) => void) => {
-            const t = (window as any).__TAURI_INTERNALS__;
-            if (!t) return done({ ok: false, error: "no bridge" });
-            t.invoke("wallet_stop_spv")
-              .then(() => done({ ok: true }))
-              .catch((e: unknown) => done({ ok: false, error: String(e) }));
-          }
-        );
-        await browser.pause(500);
-        await browser.executeAsync(
-          (done: (r: { ok: boolean; error?: string }) => void) => {
-            const t = (window as any).__TAURI_INTERNALS__;
-            if (!t) return done({ ok: false, error: "no bridge" });
-            t.invoke("wallet_clear_spv_data")
-              .then(() => done({ ok: true }))
-              .catch((e: unknown) => done({ ok: false, error: String(e) }));
-          }
-        );
-        console.log("  SPV data cleared for fresh sync");
-      } catch {
-        // Non-fatal — SPV may not have been running
-      }
-
       // Start SPV and wait for sync so the wallet can detect incoming
-      // transactions (e.g. faucet funds). In 00-setup this block is skipped
-      // because expectedSeedHash is null (no context file yet).
-      // SPV cache is cleared once at container start (entrypoint.sh),
-      // so subsequent specs reuse the cache from 00-setup's sync.
+      // transactions (e.g. faucet funds). Uses try-first strategy: attempt
+      // sync with cached data (fast incremental sync), and only clear +
+      // retry if SPV enters "error" state (the known dash-spv segment crash).
+      let spvReady = false;
       try {
         // Start SPV via IPC
         await browser.executeAsync(
@@ -289,27 +260,38 @@ export const config = {
           }
         );
         console.log("  SPV start requested");
+      } catch {
+        // Non-fatal — SPV start may fail transiently
+      }
 
-        // Poll until SPV reaches "running" status for testnet
+      // Wait for SPV to reach "running" or "error" state
+      try {
         await browser.waitUntil(
           async () => {
             try {
               const result = await browser.executeAsync(
-                (done: (r: { ok: boolean; running: boolean }) => void) => {
+                (done: (r: { ok: boolean; status: string }) => void) => {
                   const t = (window as any).__TAURI_INTERNALS__;
-                  if (!t) return done({ ok: false, running: false });
+                  if (!t) return done({ ok: false, status: "" });
                   t.invoke("get_spv_status")
                     .then((statuses: Array<{ network: string; status: string }>) => {
                       const entry = statuses.find(
                         (s) => s.network.toLowerCase() === "testnet"
                       );
-                      done({ ok: true, running: entry?.status === "running" });
+                      done({ ok: true, status: entry?.status ?? "" });
                     })
-                    .catch(() => done({ ok: false, running: false }));
+                    .catch(() => done({ ok: false, status: "" }));
                 }
               );
-              const res = result as { ok: boolean; running: boolean };
-              return res.ok && res.running;
+              const res = result as { ok: boolean; status: string };
+              if (res.ok && res.status === "running") {
+                spvReady = true;
+                return true;
+              }
+              if (res.ok && res.status === "error") {
+                return true; // break out to handle error
+              }
+              return false;
             } catch {
               return false;
             }
@@ -318,12 +300,83 @@ export const config = {
             timeout: 300_000,
             interval: 3_000,
             timeoutMsg:
-              "SPV did not reach 'running' status within 300s in before() hook",
+              "SPV neither running nor errored within 300s",
           }
         );
-        console.log("  SPV sync running");
-      } catch (err) {
-        console.warn(`  SPV start/sync in before() hook failed (non-fatal): ${err}`);
+      } catch {
+        // Timeout — treat as not ready, will attempt retry below
+      }
+
+      if (spvReady) {
+        console.log("  SPV sync running (cached data ok)");
+      } else {
+        // SPV errored (segment crash on stale data) or timed out — clear and retry
+        console.log("  SPV not running, clearing data and retrying...");
+        try {
+          await browser.executeAsync(
+            (done: (r: { ok: boolean; error?: string }) => void) => {
+              const t = (window as any).__TAURI_INTERNALS__;
+              if (!t) return done({ ok: false, error: "no bridge" });
+              t.invoke("wallet_stop_spv")
+                .then(() => done({ ok: true }))
+                .catch((e: unknown) => done({ ok: false, error: String(e) }));
+            }
+          );
+          await browser.pause(500);
+          await browser.executeAsync(
+            (done: (r: { ok: boolean; error?: string }) => void) => {
+              const t = (window as any).__TAURI_INTERNALS__;
+              if (!t) return done({ ok: false, error: "no bridge" });
+              t.invoke("wallet_clear_spv_data")
+                .then(() => done({ ok: true }))
+                .catch((e: unknown) => done({ ok: false, error: String(e) }));
+            }
+          );
+          console.log("  SPV data cleared");
+          await browser.executeAsync(
+            (done: (r: { ok: boolean; error?: string }) => void) => {
+              const t = (window as any).__TAURI_INTERNALS__;
+              if (!t) return done({ ok: false, error: "no bridge" });
+              t.invoke("wallet_start_spv")
+                .then(() => done({ ok: true }))
+                .catch((e: unknown) => done({ ok: false, error: String(e) }));
+            }
+          );
+          await browser.waitUntil(
+            async () => {
+              try {
+                const result = await browser.executeAsync(
+                  (done: (r: { ok: boolean; running: boolean }) => void) => {
+                    const t = (window as any).__TAURI_INTERNALS__;
+                    if (!t) return done({ ok: false, running: false });
+                    t.invoke("get_spv_status")
+                      .then((statuses: Array<{ network: string; status: string }>) => {
+                        const entry = statuses.find(
+                          (s) => s.network.toLowerCase() === "testnet"
+                        );
+                        done({ ok: true, running: entry?.status === "running" });
+                      })
+                      .catch(() => done({ ok: false, running: false }));
+                  }
+                );
+                const res = result as { ok: boolean; running: boolean };
+                return res.ok && res.running;
+              } catch {
+                return false;
+              }
+            },
+            {
+              timeout: 300_000,
+              interval: 3_000,
+              timeoutMsg:
+                "SPV did not reach 'running' status within 300s after retry",
+            }
+          );
+          console.log("  SPV sync running (after retry)");
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.warn(`  SPV retry failed (non-fatal): ${msg}`);
+        }
       }
     }
 

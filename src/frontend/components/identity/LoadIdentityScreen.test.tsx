@@ -372,7 +372,8 @@ describe("LoadIdentityScreen — status screens", () => {
     expect(
       screen.getByText("Failed to Load Identity"),
     ).toBeInTheDocument();
-    expect(screen.getByText("Identity not found")).toBeInTheDocument();
+    // InlineError translates raw messages via translateError()
+    expect(screen.getByText("The requested identity was not found on Platform.")).toBeInTheDocument();
   });
 
   it("calls onDismissError from error screen", async () => {

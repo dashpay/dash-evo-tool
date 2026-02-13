@@ -25,6 +25,7 @@ import {
   formatAmount,
   formatCreditsAsDash,
 } from "@/components/shared/AmountInput";
+import { InlineError } from "@/components/feedback/InlineError";
 import type {
   QualifiedIdentityDto,
   WalletDto,
@@ -390,16 +391,13 @@ export function TopUpIdentityScreen({
 
   if (status.type === "error") {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-6 p-8">
-        <AlertCircle className="w-16 h-16 text-destructive" aria-hidden />
-        <h2 className="text-xl font-semibold">Top-Up Failed</h2>
-        <p className="text-sm text-destructive bg-destructive/10 rounded-md p-4 max-w-md text-center">
-          {status.message}
-        </p>
-        <Button variant="outline" onClick={onDismissError}>
-          Try Again
-        </Button>
-      </div>
+      <InlineError
+        message={status.message}
+        heading="Top-Up Failed"
+        onDismiss={onDismissError}
+        dismissLabel="Try Again"
+        fullScreen
+      />
     );
   }
 

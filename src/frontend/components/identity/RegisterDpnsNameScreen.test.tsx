@@ -513,8 +513,9 @@ describe("RegisterDpnsNameScreen", () => {
     );
     expect(screen.getByTestId("register-dpns-error")).toBeInTheDocument();
     expect(screen.getByText("Registration Failed")).toBeInTheDocument();
+    // InlineError translates raw messages via translateError()
     expect(
-      screen.getByText("DPNS preorder document type not found"),
+      screen.getByText("The requested document type was not found in the contract."),
     ).toBeInTheDocument();
   });
 
@@ -529,7 +530,7 @@ describe("RegisterDpnsNameScreen", () => {
         })}
       />,
     );
-    await user.click(screen.getByTestId("dismiss-error-btn"));
+    await user.click(screen.getByRole("button", { name: /dismiss/i }));
     expect(onDismissError).toHaveBeenCalledTimes(1);
   });
 

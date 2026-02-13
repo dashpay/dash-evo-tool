@@ -1154,6 +1154,19 @@ async documentFetchPage(input: FetchDocumentsPageInput) : Promise<Result<Dispatc
 }
 },
 /**
+ * Query token cost for a document type action (if any).
+ *
+ * Returns `None` if the document type has no token cost for the given action.
+ */
+async documentTypeTokenCost(input: DocumentTypeTokenCostInput) : Promise<Result<DocumentTypeTokenCostDto | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("document_type_token_cost", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Query all token balances for loaded identities.
  *
  * Dispatches `TokenTask::QueryMyTokenBalances`. Result via event.
@@ -2843,6 +2856,46 @@ export type DispatchTaskResponse = {
  * this ID to receive the result.
  */
 taskId: string }
+/**
+ * Output DTO for document type token cost information.
+ */
+export type DocumentTypeTokenCostDto = {
+/**
+ * The token amount required.
+ */
+tokenAmount: number;
+/**
+ * Human-readable token name.
+ */
+tokenName: string;
+/**
+ * What happens to the tokens: "transferred to the contract owner" or "burned".
+ */
+effect: string;
+/**
+ * Who pays gas fees: "you", "the contract owner", or the full PreferContractOwner string.
+ */
+gasFeesPaidBy: string;
+/**
+ * Token ID (hex) for the token used for payment.
+ */
+tokenId: string }
+/**
+ * Input DTO for querying document type token cost.
+ */
+export type DocumentTypeTokenCostInput = {
+/**
+ * Contract ID (hex).
+ */
+contractId: string;
+/**
+ * Document type name.
+ */
+documentTypeName: string;
+/**
+ * Action type: "create", "delete", "replace", "transfer", "purchase", or "setPrice".
+ */
+actionType: string }
 /**
  * A DPNS name entry with its owning identity.
  */

@@ -239,6 +239,7 @@ fn qualified_identity_dto_roundtrip() {
             is_disabled: false,
             disabled_at: None,
             has_private_key: true,
+            contract_bounds: None,
         }],
         dpns_names: vec![DpnsNameInfoDto {
             name: "alice.dash".into(),
@@ -254,6 +255,7 @@ fn qualified_identity_dto_roundtrip() {
         network: NetworkDto::Testnet,
         voter_identity_id: None,
         operator_identity_id: None,
+        masternode_payout_address: None,
     };
     let json = serde_json::to_string(&dto).unwrap();
     // Verify camelCase and structure

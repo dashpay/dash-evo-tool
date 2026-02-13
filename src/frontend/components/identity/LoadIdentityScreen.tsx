@@ -29,6 +29,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { InlineError } from "@/components/feedback/InlineError";
 import type { WalletDto, IdentityTypeDto, NetworkDto } from "@/bindings";
 
 // ─── Types ─────────────────────────────────────────────────────────
@@ -283,16 +284,13 @@ export function LoadIdentityScreen({
 
   if (status.type === "error") {
     return (
-      <div className="flex flex-col items-center justify-center h-full gap-6 p-8">
-        <AlertCircle className="w-16 h-16 text-destructive" aria-hidden />
-        <h2 className="text-xl font-semibold">Failed to Load Identity</h2>
-        <p className="text-sm text-destructive bg-destructive/10 rounded-md p-4 max-w-md text-center">
-          {status.message}
-        </p>
-        <Button variant="outline" onClick={onDismissError}>
-          Try Again
-        </Button>
-      </div>
+      <InlineError
+        message={status.message}
+        heading="Failed to Load Identity"
+        onDismiss={onDismissError}
+        dismissLabel="Try Again"
+        fullScreen
+      />
     );
   }
 

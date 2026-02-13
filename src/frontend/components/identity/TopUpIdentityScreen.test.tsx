@@ -354,7 +354,8 @@ describe("TopUpIdentityScreen — status screens", () => {
   it("shows error screen", () => {
     setup({ status: { type: "error", message: "Insufficient funds" } });
     expect(screen.getByText("Top-Up Failed")).toBeInTheDocument();
-    expect(screen.getByText("Insufficient funds")).toBeInTheDocument();
+    // InlineError translates raw messages via translateError()
+    expect(screen.getByText("Insufficient funds for this operation.")).toBeInTheDocument();
   });
 
   it("calls onDismissError from error screen", async () => {

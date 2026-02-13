@@ -7,8 +7,8 @@
 
 use crate::dto::common::{CreditsDto, IdentifierDto, WalletSeedHashDto};
 use crate::dto::identity::{
-    DpnsNameInfoDto, IdentityKeyDto, IdentityStatusDto, IdentitySummaryDto, IdentityTypeDto,
-    QualifiedIdentityDto, TopUpEntryDto,
+    ContractBoundsDto, DpnsNameInfoDto, IdentityKeyDto, IdentityStatusDto, IdentitySummaryDto,
+    IdentityTypeDto, QualifiedIdentityDto, TopUpEntryDto,
 };
 use crate::dto::NetworkDto;
 use crate::state::AppState;
@@ -256,26 +256,6 @@ pub struct KeySpecDto {
     pub contract_bounds: Option<ContractBoundsDto>,
 }
 
-/// Contract bounds for a key.
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-#[serde(rename_all = "camelCase", tag = "type")]
-pub enum ContractBoundsDto {
-    /// Key is bound to a single contract.
-    #[serde(rename_all = "camelCase")]
-    SingleContract {
-        /// Contract identifier (hex).
-        contract_id: IdentifierDto,
-    },
-    /// Key is bound to a single contract and document type.
-    #[serde(rename_all = "camelCase")]
-    SingleContractDocumentType {
-        /// Contract identifier (hex).
-        contract_id: IdentifierDto,
-        /// Document type name.
-        document_type_name: String,
-    },
-}
-
 /// Funding method for identity registration.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase", tag = "method")]
@@ -461,6 +441,18 @@ pub fn qualified_identity_to_dto(qi: &QualifiedIdentity, network: Network) -> Qu
                 is_disabled: key.is_disabled(),
                 disabled_at: key.disabled_at(),
                 has_private_key: has_private,
+                contract_bounds: key.contract_bounds().map(|cb| match cb {
+                    ContractBounds::SingleContract { id } => ContractBoundsDto::SingleContract {
+                        contract_id: hex::encode(id.to_vec()),
+                    },
+                    ContractBounds::SingleContractDocumentType {
+                        id,
+                        document_type_name,
+                    } => ContractBoundsDto::SingleContractDocumentType {
+                        contract_id: hex::encode(id.to_vec()),
+                        document_type_name: document_type_name.clone(),
+                    },
+                }),
             }
         })
         .collect();
@@ -512,6 +504,7 @@ pub fn qualified_identity_to_dto(qi: &QualifiedIdentity, network: Network) -> Qu
             .associated_operator_identity
             .as_ref()
             .map(|(operator_identity, _)| hex::encode(operator_identity.id().to_vec())),
+        masternode_payout_address: qi.masternode_payout_address(network).map(|a| a.to_string()),
     }
 }
 
@@ -1313,7 +1306,8 @@ pub fn identity_top_up(
     let wallet_arc_ref = lookup_wallet_arc_ref(&state, &input.wallet_seed_hash)?;
     let network = state.current_context().network();
 
-    let funding_method = parse_top_up_funding_method(&input.funding_method, input.identity_index, network)?;
+    let funding_method =
+        parse_top_up_funding_method(&input.funding_method, input.identity_index, network)?;
 
     let top_up_info = IdentityTopUpInfo {
         qualified_identity: qi,
@@ -1751,9 +1745,7 @@ pub fn identity_remove_private_key_from_storage(
         .ok_or(format!("Key with ID {} not found on identity", key_id))?;
 
     let target = PrivateKeyTarget::from(identity_key.purpose());
-    qi.private_keys
-        .private_keys
-        .remove(&(target, key_id));
+    qi.private_keys.private_keys.remove(&(target, key_id));
 
     // Persist
     let network = ctx.network();

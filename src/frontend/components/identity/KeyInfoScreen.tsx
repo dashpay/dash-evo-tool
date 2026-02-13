@@ -363,6 +363,24 @@ export function KeyInfoScreen({
           {keyData.disabledAt && (
             <MetadataRow label="Disabled At" value={new Date(keyData.disabledAt * 1000).toLocaleString()} />
           )}
+          {keyData.contractBounds && (
+            <>
+              <MetadataRow label="Contract Bound">
+                <div className="flex items-center gap-2">
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono break-all">
+                    {keyData.contractBounds.contractId}
+                  </code>
+                  <CopyButton value={keyData.contractBounds.contractId} />
+                </div>
+              </MetadataRow>
+              {keyData.contractBounds.type === "singleContractDocumentType" && (
+                <MetadataRow
+                  label="Document Type"
+                  value={keyData.contractBounds.documentTypeName}
+                />
+              )}
+            </>
+          )}
         </div>
       </section>
 

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUpFromLine,
@@ -31,7 +31,9 @@ import {
 import {
   ConfirmationDialog,
 } from "@/components/shared/ConfirmationDialog";
+import { InlineError } from "@/components/feedback/InlineError";
 import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
+import { validateCoreAddress } from "@/lib/validateAddress";
 
 // ─── Constants ─────────────────────────────────────────────────────
 
@@ -178,13 +180,43 @@ export function WithdrawScreen({
     }
   }, [maxAmount, amount]);
 
+  // Debounced address validation via Tauri backend
+  const addressValidationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleAddressChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      setAddress(e.target.value);
-      if (addressError) setAddressError(null);
+      const value = e.target.value;
+      setAddress(value);
+      setAddressError(null);
+
+      if (addressValidationTimer.current) {
+        clearTimeout(addressValidationTimer.current);
+      }
+
+      const trimmed = value.trim();
+      if (!trimmed) return;
+
+      addressValidationTimer.current = setTimeout(async () => {
+        const error = await validateCoreAddress(trimmed);
+        // Only set error if the address hasn't changed since we started validating
+        setAddress((current) => {
+          if (current.trim() === trimmed && error) {
+            setAddressError(error);
+          }
+          return current;
+        });
+      }, 300);
     },
-    [addressError],
+    [],
   );
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (addressValidationTimer.current) {
+        clearTimeout(addressValidationTimer.current);
+      }
+    };
+  }, []);
 
   const isReady = useMemo(() => {
     if (!amount.parsedAmount || amount.parsedAmount <= 0) return false;
@@ -192,8 +224,9 @@ export function WithdrawScreen({
     if (amount.parsedAmount > maxAmount) return false;
     // Owner key can have empty address (uses payout address)
     if (!isOwnerKey && !address.trim()) return false;
+    if (addressError) return false;
     return true;
-  }, [amount.parsedAmount, selectedKey, maxAmount, isOwnerKey, address]);
+  }, [amount.parsedAmount, selectedKey, maxAmount, isOwnerKey, address, addressError]);
 
   const handleWithdraw = useCallback(() => {
     if (!isReady) return;
@@ -216,7 +249,7 @@ export function WithdrawScreen({
     const amountStr = formatAmount(amount.parsedAmount, DASH_DECIMAL_PLACES);
     const dest = address.trim()
       ? address.trim()
-      : "masternode payout address";
+      : identity.masternodePayoutAddress ?? "masternode payout address";
     return `Are you sure you want to withdraw ${amountStr} DASH to ${dest}?`;
   }, [amount.parsedAmount, address]);
 
@@ -377,8 +410,10 @@ export function WithdrawScreen({
           <div className="space-y-2 pl-4">
             {isOwnerKey && !address.trim() ? (
               <p className="text-sm text-muted-foreground">
-                Using masternode payout address (leave address empty or enter a
-                custom address).
+                {identity.masternodePayoutAddress
+                  ? `Using masternode payout address: ${identity.masternodePayoutAddress}`
+                  : "No masternode payout address available"}{" "}
+                (leave address empty or enter a custom address).
               </p>
             ) : null}
             <div className="space-y-1.5">
@@ -455,22 +490,7 @@ export function WithdrawScreen({
 
         {/* ── Error display ───────────────────────────────── */}
         {status.type === "error" && (
-          <div
-            className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 space-y-2"
-            role="alert"
-          >
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
-              <p className="text-sm text-destructive">{status.message}</p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onDismissError}
-            >
-              Dismiss
-            </Button>
-          </div>
+          <InlineError message={status.message} onDismiss={onDismissError} />
         )}
 
         {/* ── Sending state ───────────────────────────────── */}

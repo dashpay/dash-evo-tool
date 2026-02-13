@@ -421,8 +421,9 @@ describe("WithdrawScreen — error state", () => {
     setup({
       status: { type: "error", message: "Insufficient funds for operation" },
     });
+    // InlineError translates raw messages via translateError()
     expect(
-      screen.getByText("Insufficient funds for operation"),
+      screen.getByText("Insufficient funds for this operation."),
     ).toBeInTheDocument();
   });
 

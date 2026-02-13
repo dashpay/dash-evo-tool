@@ -35,6 +35,7 @@ import {
   IdentitySelector,
   type IdentityOption,
 } from "@/components/shared/IdentitySelector";
+import { InlineError } from "@/components/feedback/InlineError";
 import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
 // ─── Constants ─────────────────────────────────────────────────────
@@ -496,18 +497,7 @@ export function TransferScreen({
 
         {/* ── Error display ───────────────────────────────── */}
         {status.type === "error" && (
-          <div
-            className="rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 space-y-2"
-            role="alert"
-          >
-            <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
-              <p className="text-sm text-destructive">{status.message}</p>
-            </div>
-            <Button variant="outline" size="sm" onClick={onDismissError}>
-              Dismiss
-            </Button>
-          </div>
+          <InlineError message={status.message} onDismiss={onDismissError} />
         )}
 
         {/* ── Sending state ───────────────────────────────── */}

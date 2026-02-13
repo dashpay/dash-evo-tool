@@ -38,6 +38,26 @@ pub struct DpnsNameInfoDto {
     pub acquired_at: u64,
 }
 
+/// Contract bounds for a key.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum ContractBoundsDto {
+    /// Key is bound to a single contract.
+    #[serde(rename_all = "camelCase")]
+    SingleContract {
+        /// Contract identifier (hex).
+        contract_id: IdentifierDto,
+    },
+    /// Key is bound to a single contract and document type.
+    #[serde(rename_all = "camelCase")]
+    SingleContractDocumentType {
+        /// Contract identifier (hex).
+        contract_id: IdentifierDto,
+        /// Document type name.
+        document_type_name: String,
+    },
+}
+
 /// A public key on an identity.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +78,8 @@ pub struct IdentityKeyDto {
     pub disabled_at: Option<u64>,
     /// Whether we have the corresponding private key in local storage.
     pub has_private_key: bool,
+    /// Optional contract bounds restricting this key to a specific contract.
+    pub contract_bounds: Option<ContractBoundsDto>,
 }
 
 /// Serializable version of `QualifiedIdentity`.
@@ -91,6 +113,8 @@ pub struct QualifiedIdentityDto {
     pub voter_identity_id: Option<IdentifierDto>,
     /// Associated operator identity ID (if any).
     pub operator_identity_id: Option<IdentifierDto>,
+    /// Masternode payout address (if applicable, for masternodes/evonodes).
+    pub masternode_payout_address: Option<String>,
 }
 
 /// A top-up history entry.

@@ -34,6 +34,7 @@ export function createMockIdentityKey(
     isDisabled: false,
     disabledAt: null,
     hasPrivateKey: true,
+    contractBounds: null,
     ...overrides,
   };
 }
@@ -120,6 +121,7 @@ export function createMockIdentity(
     network: "testnet",
     voterIdentityId: null,
     operatorIdentityId: null,
+    masternodePayoutAddress: null,
     ...overrides,
   };
 }

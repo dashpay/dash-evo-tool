@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatCreditsAsDash } from "@/components/shared/AmountInput";
+import { InlineError } from "@/components/feedback/InlineError";
 import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
 // ─── Constants ─────────────────────────────────────────────────────
@@ -333,19 +334,13 @@ export function RegisterDpnsNameScreen({
   // Error screen
   if (status.type === "error") {
     return (
-      <div className="flex flex-col gap-6" data-testid="register-dpns-error">
-        <div className="flex items-center gap-2">
-          <AlertCircle className="h-6 w-6 text-destructive" />
-          <h2 className="text-xl font-semibold">Registration Failed</h2>
-        </div>
-
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-          <p className="text-sm text-destructive">{status.message}</p>
-        </div>
-
-        <Button variant="outline" onClick={onDismissError} data-testid="dismiss-error-btn">
-          Dismiss
-        </Button>
+      <div data-testid="register-dpns-error">
+        <InlineError
+          message={status.message}
+          heading="Registration Failed"
+          onDismiss={onDismissError}
+          fullScreen
+        />
       </div>
     );
   }

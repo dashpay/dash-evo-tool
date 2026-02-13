@@ -242,6 +242,58 @@ export const config = {
         }
       );
       console.log(`  Wallet ${seedHash.slice(0, 8)}... loaded in backend`);
+
+      // Start SPV and wait for sync so the wallet can detect incoming
+      // transactions (e.g. faucet funds). In 00-setup this block is skipped
+      // because expectedSeedHash is null (no context file yet).
+      try {
+        // Start SPV via IPC
+        await browser.executeAsync(
+          (done: (r: { ok: boolean; error?: string }) => void) => {
+            const t = (window as any).__TAURI_INTERNALS__;
+            if (!t) return done({ ok: false, error: "no bridge" });
+            t.invoke("wallet_start_spv")
+              .then(() => done({ ok: true }))
+              .catch((e: unknown) => done({ ok: false, error: String(e) }));
+          }
+        );
+        console.log("  SPV start requested");
+
+        // Poll until SPV reaches "running" status for testnet
+        await browser.waitUntil(
+          async () => {
+            try {
+              const result = await browser.executeAsync(
+                (done: (r: { ok: boolean; running: boolean }) => void) => {
+                  const t = (window as any).__TAURI_INTERNALS__;
+                  if (!t) return done({ ok: false, running: false });
+                  t.invoke("get_spv_status")
+                    .then((statuses: Array<{ network: string; status: string }>) => {
+                      const entry = statuses.find(
+                        (s) => s.network.toLowerCase() === "testnet"
+                      );
+                      done({ ok: true, running: entry?.status === "running" });
+                    })
+                    .catch(() => done({ ok: false, running: false }));
+                }
+              );
+              const res = result as { ok: boolean; running: boolean };
+              return res.ok && res.running;
+            } catch {
+              return false;
+            }
+          },
+          {
+            timeout: 120_000,
+            interval: 3_000,
+            timeoutMsg:
+              "SPV did not reach 'running' status within 120s in before() hook",
+          }
+        );
+        console.log("  SPV sync running");
+      } catch (err) {
+        console.warn(`  SPV start/sync in before() hook failed (non-fatal): ${err}`);
+      }
     }
 
     // Allow background tasks (address scanning, SPV init) to settle.

@@ -11,6 +11,7 @@
 
 import path from "path";
 import { fileURLToPath } from "url";
+import { existsSync, readFileSync } from "fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -170,9 +171,81 @@ export const config = {
       // Welcome screen handling is best-effort
     }
 
-    // Allow background tasks (wallet loading, address scanning) to settle
-    // before running test commands via WebDriver.
-    await browser.pause(3_000);
+    // Ensure we're on testnet. The setting is persisted from 00-setup,
+    // but verify in case the app starts on a different default network.
+    try {
+      await browser.executeAsync(
+        (done: (r: { ok: boolean }) => void) => {
+          const t = (window as any).__TAURI_INTERNALS__;
+          if (!t) return done({ ok: false });
+          t.invoke("switch_network", { network: "testnet" })
+            .then(() => done({ ok: true }))
+            .catch(() => done({ ok: false }));
+        }
+      );
+    } catch {
+      // Best-effort — may already be on testnet
+    }
+
+    // Wait for wallets to be loaded from DB into memory.
+    // Each spec file launches a fresh Tauri app instance. Wallet loading
+    // from SQLite is async — wallet_list_all may return empty until done.
+    // If TestContext has a walletSeedHash (from 00-setup), poll until
+    // that wallet appears in wallet_list_all before running tests.
+    const ctxPath = process.env.E2E_CONTEXT_PATH || "/tmp/e2e-test-context.json";
+    let expectedSeedHash: string | null = null;
+    try {
+      if (existsSync(ctxPath)) {
+        const ctx = JSON.parse(readFileSync(ctxPath, "utf-8"));
+        expectedSeedHash = ctx.walletSeedHash || null;
+      }
+    } catch {
+      // No context yet — 00-setup hasn't run
+    }
+
+    if (expectedSeedHash) {
+      const seedHash = expectedSeedHash;
+      await browser.waitUntil(
+        async () => {
+          try {
+            const result = await browser.executeAsync(
+              (
+                hash: string,
+                done: (r: { ok: boolean; found: boolean }) => void
+              ) => {
+                const t = (window as any).__TAURI_INTERNALS__;
+                if (!t) return done({ ok: false, found: false });
+                t.invoke("wallet_list_all")
+                  .then((r: any) => {
+                    const found =
+                      r?.hdWallets?.some(
+                        (w: any) => w.seedHash === hash
+                      ) ?? false;
+                    done({ ok: true, found });
+                  })
+                  .catch(() => done({ ok: false, found: false }));
+              },
+              seedHash
+            );
+            const res = result as { ok: boolean; found: boolean };
+            return res.ok && res.found;
+          } catch {
+            return false;
+          }
+        },
+        {
+          timeout: 30_000,
+          interval: 2_000,
+          timeoutMsg:
+            `Wallet ${seedHash.slice(0, 8)}... not loaded after 30s — ` +
+            "wallet loading from DB may be slow or failed",
+        }
+      );
+      console.log(`  Wallet ${seedHash.slice(0, 8)}... loaded in backend`);
+    }
+
+    // Allow background tasks (address scanning, SPV init) to settle.
+    await browser.pause(5_000);
   },
 
   async afterTest(

@@ -58,6 +58,11 @@ const IdentitiesScreen = lazy(() =>
     default: m.IdentitiesScreen,
   })),
 );
+const DpnsScreen = lazy(() =>
+  import("@/screens/DpnsScreen").then((m) => ({
+    default: m.DpnsScreen,
+  })),
+);
 const DpnsActiveContestsScreen = lazy(() =>
   import("@/screens/DpnsActiveContestsScreen").then((m) => ({
     default: m.DpnsActiveContestsScreen,
@@ -436,6 +441,9 @@ const dashpaySearchRoute = createRoute({
 const dashpayAddContactRoute = createRoute({
   getParentRoute: () => dashpayRoute,
   path: "/add-contact",
+  validateSearch: (search: Record<string, unknown>) => ({
+    username: (search.username as string) || undefined,
+  }),
   component: () => (
     <LazyScreen>
       <AddContactScreen />
@@ -657,9 +665,26 @@ const contractsGroupActionsRoute = createRoute({
   ),
 });
 
-const contractsDpnsActiveRoute = createRoute({
+const contractsDpnsRoute = createRoute({
   getParentRoute: () => contractsRoute,
-  path: "/dpns-active",
+  path: "/dpns",
+  component: () => (
+    <LazyScreen>
+      <DpnsScreen />
+    </LazyScreen>
+  ),
+});
+
+const contractsDpnsIndexRoute = createRoute({
+  getParentRoute: () => contractsDpnsRoute,
+  path: "/",
+  // DpnsScreen redirects /contracts/dpns → /contracts/dpns/active
+  component: () => null,
+});
+
+const contractsDpnsActiveRoute = createRoute({
+  getParentRoute: () => contractsDpnsRoute,
+  path: "/active",
   component: () => (
     <LazyScreen>
       <DpnsActiveContestsScreen />
@@ -668,8 +693,8 @@ const contractsDpnsActiveRoute = createRoute({
 });
 
 const contractsDpnsPastRoute = createRoute({
-  getParentRoute: () => contractsRoute,
-  path: "/dpns-past",
+  getParentRoute: () => contractsDpnsRoute,
+  path: "/past",
   component: () => (
     <LazyScreen>
       <DpnsPastContestsScreen />
@@ -678,8 +703,8 @@ const contractsDpnsPastRoute = createRoute({
 });
 
 const contractsDpnsOwnedRoute = createRoute({
-  getParentRoute: () => contractsRoute,
-  path: "/dpns-owned",
+  getParentRoute: () => contractsDpnsRoute,
+  path: "/owned",
   component: () => (
     <LazyScreen>
       <DpnsOwnedNamesScreen />
@@ -688,8 +713,8 @@ const contractsDpnsOwnedRoute = createRoute({
 });
 
 const contractsDpnsScheduledRoute = createRoute({
-  getParentRoute: () => contractsRoute,
-  path: "/dpns-scheduled",
+  getParentRoute: () => contractsDpnsRoute,
+  path: "/scheduled",
   component: () => (
     <LazyScreen>
       <DpnsScheduledVotesScreen />
@@ -698,8 +723,8 @@ const contractsDpnsScheduledRoute = createRoute({
 });
 
 const contractsDpnsRegisterRoute = createRoute({
-  getParentRoute: () => contractsRoute,
-  path: "/dpns-register",
+  getParentRoute: () => contractsDpnsRoute,
+  path: "/register",
   component: () => (
     <LazyScreen>
       <DpnsRegisterNameScreen />
@@ -1107,11 +1132,14 @@ const routeTree = rootRoute.addChildren([
       contractsPurchaseDocumentRoute,
       contractsSetDocumentPriceRoute,
       contractsGroupActionsRoute,
-      contractsDpnsActiveRoute,
-      contractsDpnsPastRoute,
-      contractsDpnsOwnedRoute,
-      contractsDpnsScheduledRoute,
-      contractsDpnsRegisterRoute,
+      contractsDpnsRoute.addChildren([
+        contractsDpnsIndexRoute,
+        contractsDpnsActiveRoute,
+        contractsDpnsPastRoute,
+        contractsDpnsOwnedRoute,
+        contractsDpnsScheduledRoute,
+        contractsDpnsRegisterRoute,
+      ]),
     ]),
     tokensRoute.addChildren([
       tokensIndexRoute,

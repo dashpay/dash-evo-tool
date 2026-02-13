@@ -154,7 +154,7 @@ export function DpnsRegisterNameScreen() {
   }, []);
 
   const handleBack = useCallback(() => {
-    navigate({ to: "/contracts/dpns-active" });
+    navigate({ to: "/contracts/dpns/active" });
   }, [navigate]);
 
   const handleRegisterAnother = useCallback(() => {

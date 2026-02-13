@@ -94,7 +94,7 @@ export function DpnsActiveContestsScreen() {
   }, [loadContests]);
 
   const handleRegisterName = useCallback(() => {
-    navigate({ to: "/contracts/dpns-register" });
+    navigate({ to: "/contracts/dpns/register" });
   }, [navigate]);
 
   const handleOpenVoteDialog = useCallback(() => {
@@ -137,7 +137,7 @@ export function DpnsActiveContestsScreen() {
   );
 
   const handleGoToScheduledVotes = useCallback(() => {
-    navigate({ to: "/contracts/dpns-scheduled" });
+    navigate({ to: "/contracts/dpns/scheduled" });
   }, [navigate]);
 
   // Initial loading state

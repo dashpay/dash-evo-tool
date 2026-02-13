@@ -189,7 +189,7 @@ describe("getActiveSectionFromPath", () => {
   it("maps sub-paths to parent section", () => {
     expect(getActiveSectionFromPath("/dashpay/contacts")).toBe("dashpay");
     expect(getActiveSectionFromPath("/dashpay/profile")).toBe("dashpay");
-    expect(getActiveSectionFromPath("/contracts/dpns-active")).toBe("contracts");
+    expect(getActiveSectionFromPath("/contracts/dpns/active")).toBe("contracts");
     expect(getActiveSectionFromPath("/tokens/search")).toBe("tokens");
     expect(getActiveSectionFromPath("/tools/proof-log")).toBe("tools");
   });

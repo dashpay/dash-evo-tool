@@ -41,7 +41,6 @@ function makeVote(
 
 const defaultProps: ScheduledVotesTableProps = {
   scheduledVotes: [makeVote()],
-  castInProgress: false,
   onRemove: vi.fn(),
   onCastNow: vi.fn(),
 };
@@ -466,20 +465,9 @@ describe("ScheduledVotesTable — actions", () => {
     ).toBeDisabled();
   });
 
-  it("Cast Now is disabled when castInProgress is true", () => {
-    setup({
-      scheduledVotes: [makeVote({ castingStatus: "notStarted" })],
-      castInProgress: true,
-    });
-    expect(
-      screen.getByRole("button", { name: /cast now test-name/i }),
-    ).toBeDisabled();
-  });
-
   it("Remove button is always enabled", () => {
     setup({
       scheduledVotes: [makeVote({ castingStatus: "inProgress" })],
-      castInProgress: true,
     });
     expect(
       screen.getByRole("button", { name: /remove test-name/i }),

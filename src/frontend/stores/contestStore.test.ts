@@ -108,7 +108,6 @@ function resetStore() {
     ownedFilterTerm: "",
     sortColumn: "name",
     sortOrder: "ascending",
-    scheduledVoteCastInProgress: false,
   });
 }
 
@@ -136,7 +135,6 @@ describe("contestStore", () => {
       expect(state.ownedFilterTerm).toBe("");
       expect(state.sortColumn).toBe("name");
       expect(state.sortOrder).toBe("ascending");
-      expect(state.scheduledVoteCastInProgress).toBe(false);
     });
   });
 
@@ -513,20 +511,41 @@ describe("contestStore", () => {
       expect(commands.contestedCastScheduledVote).toHaveBeenCalledWith({
         vote,
       });
-      expect(useContestStore.getState().scheduledVoteCastInProgress).toBe(
-        true,
-      );
       expect(
         useContestStore.getState().scheduledVotes[0].castingStatus,
       ).toBe("inProgress");
     });
 
-    it("does nothing if a cast is already in progress", async () => {
-      useContestStore.setState({ scheduledVoteCastInProgress: true });
+    it("does nothing if this specific vote is already in progress", async () => {
+      const vote = makeScheduledVote();
+      useContestStore.setState({
+        scheduledVotes: [{ vote, castingStatus: "inProgress" }],
+      });
 
-      await useContestStore.getState().castScheduledVote(makeScheduledVote());
+      await useContestStore.getState().castScheduledVote(vote);
 
       expect(commands.contestedCastScheduledVote).not.toHaveBeenCalled();
+    });
+
+    it("allows casting a different vote while one is in progress", async () => {
+      const vote1 = makeScheduledVote({ voterId: "voter1" });
+      const vote2 = makeScheduledVote({ voterId: "voter2", contestedName: "bob" });
+      useContestStore.setState({
+        scheduledVotes: [
+          { vote: vote1, castingStatus: "inProgress" },
+          { vote: vote2, castingStatus: "notStarted" },
+        ],
+      });
+      (commands.contestedCastScheduledVote as Mock).mockResolvedValue({
+        status: "ok",
+        data: { taskId: "t2" },
+      });
+
+      await useContestStore.getState().castScheduledVote(vote2);
+
+      expect(commands.contestedCastScheduledVote).toHaveBeenCalledWith({
+        vote: vote2,
+      });
     });
 
     it("reverts to failed on error", async () => {
@@ -545,9 +564,6 @@ describe("contestStore", () => {
         useContestStore.getState().scheduledVotes[0].castingStatus,
       ).toBe("failed");
       expect(useContestStore.getState().error).toBe("Platform unavailable");
-      expect(useContestStore.getState().scheduledVoteCastInProgress).toBe(
-        false,
-      );
     });
 
     it("reverts to failed on exception", async () => {
@@ -787,14 +803,18 @@ describe("contestStore", () => {
   });
 
   describe("subscribeToUpdates", () => {
-    it("subscribes to all three event types", async () => {
+    it("subscribes to all four event types", async () => {
       const unlistenResult = vi.fn();
       const unlistenError = vi.fn();
+      const unlistenInProgress = vi.fn();
       const unlistenScheduled = vi.fn();
       (events.taskResultEvent.listen as Mock).mockResolvedValue(
         unlistenResult,
       );
       (events.taskErrorEvent.listen as Mock).mockResolvedValue(unlistenError);
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockResolvedValue(
+        unlistenInProgress,
+      );
       (events.scheduledVoteExecutedEvent.listen as Mock).mockResolvedValue(
         unlistenScheduled,
       );
@@ -805,6 +825,7 @@ describe("contestStore", () => {
 
       expect(events.taskResultEvent.listen).toHaveBeenCalled();
       expect(events.taskErrorEvent.listen).toHaveBeenCalled();
+      expect(events.scheduledVoteInProgressEvent.listen).toHaveBeenCalled();
       expect(events.scheduledVoteExecutedEvent.listen).toHaveBeenCalled();
       expect(typeof unlisten).toBe("function");
     });
@@ -812,11 +833,15 @@ describe("contestStore", () => {
     it("calls all unsubscribe functions when unsubscribed", async () => {
       const unlistenResult = vi.fn();
       const unlistenError = vi.fn();
+      const unlistenInProgress = vi.fn();
       const unlistenScheduled = vi.fn();
       (events.taskResultEvent.listen as Mock).mockResolvedValue(
         unlistenResult,
       );
       (events.taskErrorEvent.listen as Mock).mockResolvedValue(unlistenError);
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockResolvedValue(
+        unlistenInProgress,
+      );
       (events.scheduledVoteExecutedEvent.listen as Mock).mockResolvedValue(
         unlistenScheduled,
       );
@@ -828,6 +853,7 @@ describe("contestStore", () => {
 
       expect(unlistenResult).toHaveBeenCalled();
       expect(unlistenError).toHaveBeenCalled();
+      expect(unlistenInProgress).toHaveBeenCalled();
       expect(unlistenScheduled).toHaveBeenCalled();
     });
 
@@ -848,6 +874,9 @@ describe("contestStore", () => {
         },
       );
       (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockResolvedValue(
+        () => {},
+      );
       (events.scheduledVoteExecutedEvent.listen as Mock).mockResolvedValue(
         () => {},
       );
@@ -878,6 +907,9 @@ describe("contestStore", () => {
         },
       );
       (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockResolvedValue(
+        () => {},
+      );
       (events.scheduledVoteExecutedEvent.listen as Mock).mockResolvedValue(
         () => {},
       );
@@ -904,6 +936,9 @@ describe("contestStore", () => {
         },
       );
       (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockResolvedValue(
+        () => {},
+      );
       (events.scheduledVoteExecutedEvent.listen as Mock).mockResolvedValue(
         () => {},
       );
@@ -924,7 +959,6 @@ describe("contestStore", () => {
       useContestStore.setState({
         refreshing: true,
         votingInProgress: true,
-        scheduledVoteCastInProgress: true,
       });
 
       let errorCallback: (event: {
@@ -936,6 +970,9 @@ describe("contestStore", () => {
           errorCallback = cb;
           return Promise.resolve(() => {});
         },
+      );
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockResolvedValue(
+        () => {},
       );
       (events.scheduledVoteExecutedEvent.listen as Mock).mockResolvedValue(
         () => {},
@@ -949,7 +986,6 @@ describe("contestStore", () => {
       const state = useContestStore.getState();
       expect(state.refreshing).toBe(false);
       expect(state.votingInProgress).toBe(false);
-      expect(state.scheduledVoteCastInProgress).toBe(false);
       expect(state.error).toBe("Platform error");
     });
 
@@ -957,7 +993,6 @@ describe("contestStore", () => {
       const vote = makeScheduledVote();
       useContestStore.setState({
         scheduledVotes: [{ vote, castingStatus: "inProgress" }],
-        scheduledVoteCastInProgress: true,
       });
 
       let scheduledCallback: (event: {
@@ -965,6 +1000,9 @@ describe("contestStore", () => {
       }) => void;
       (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
       (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockResolvedValue(
+        () => {},
+      );
       (events.scheduledVoteExecutedEvent.listen as Mock).mockImplementation(
         (cb: typeof scheduledCallback) => {
           scheduledCallback = cb;
@@ -985,16 +1023,46 @@ describe("contestStore", () => {
       const sv = useContestStore.getState().scheduledVotes[0];
       expect(sv.castingStatus).toBe("completed");
       expect(sv.vote.executedSuccessfully).toBe(true);
-      expect(useContestStore.getState().scheduledVoteCastInProgress).toBe(
-        false,
+    });
+
+    it("marks vote as inProgress on ScheduledVoteInProgressEvent", async () => {
+      const vote = makeScheduledVote();
+      useContestStore.setState({
+        scheduledVotes: [{ vote, castingStatus: "notStarted" }],
+      });
+
+      let inProgressCallback: (event: {
+        payload: { contestedName: string; voterId: string };
+      }) => void;
+      (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockImplementation(
+        (cb: typeof inProgressCallback) => {
+          inProgressCallback = cb;
+          return Promise.resolve(() => {});
+        },
       );
+      (events.scheduledVoteExecutedEvent.listen as Mock).mockResolvedValue(
+        () => {},
+      );
+
+      await useContestStore.getState().subscribeToUpdates();
+      inProgressCallback!({
+        payload: {
+          contestedName: "alice",
+          voterId: "voter1",
+        },
+      });
+
+      expect(
+        useContestStore.getState().scheduledVotes[0].castingStatus,
+      ).toBe("inProgress");
     });
 
     it("updates scheduled vote status on ScheduledVoteExecutedEvent (failure)", async () => {
       const vote = makeScheduledVote();
       useContestStore.setState({
         scheduledVotes: [{ vote, castingStatus: "inProgress" }],
-        scheduledVoteCastInProgress: true,
       });
 
       let scheduledCallback: (event: {
@@ -1002,6 +1070,9 @@ describe("contestStore", () => {
       }) => void;
       (events.taskResultEvent.listen as Mock).mockResolvedValue(() => {});
       (events.taskErrorEvent.listen as Mock).mockResolvedValue(() => {});
+      (events.scheduledVoteInProgressEvent.listen as Mock).mockResolvedValue(
+        () => {},
+      );
       (events.scheduledVoteExecutedEvent.listen as Mock).mockImplementation(
         (cb: typeof scheduledCallback) => {
           scheduledCallback = cb;

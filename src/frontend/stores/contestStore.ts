@@ -7,6 +7,7 @@ import type {
   VoteEntry,
   TaskResultEvent,
   ScheduledVoteExecutedEvent,
+  ScheduledVoteInProgressEvent,
 } from "../bindings";
 import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
@@ -117,8 +118,6 @@ interface ContestState_ {
   /** Current sort direction. */
   sortOrder: SortOrder;
 
-  /** Whether a scheduled vote cast is currently in progress (prevents concurrent). */
-  scheduledVoteCastInProgress: boolean;
 }
 
 // ─── Store actions ──────────────────────────────────────────────────
@@ -292,7 +291,6 @@ export const useContestStore = create<ContestStore>((set, get) => ({
   ownedFilterTerm: "",
   sortColumn: "name",
   sortOrder: "ascending",
-  scheduledVoteCastInProgress: false,
 
   loadContests: async () => {
     set({ refreshing: true, error: null });
@@ -300,7 +298,7 @@ export const useContestStore = create<ContestStore>((set, get) => ({
       // Dispatch async query — result arrives via TaskResultEvent
       await commands.contestedQueryDpnsContests();
       timeouts.start("contest", () => {
-        set({ refreshing: false, votingInProgress: false, scheduledVoteCastInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
+        set({ refreshing: false, votingInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
       });
       // refreshing will be cleared when the "Contest" result event arrives
     } catch (e) {
@@ -438,7 +436,7 @@ export const useContestStore = create<ContestStore>((set, get) => ({
         set({ error: result.error, votingInProgress: false });
       } else {
         timeouts.start("castVotes", () => {
-          set({ refreshing: false, votingInProgress: false, scheduledVoteCastInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
+          set({ refreshing: false, votingInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
         });
       }
       // votingInProgress will be cleared when the "Contest" result event arrives
@@ -460,7 +458,7 @@ export const useContestStore = create<ContestStore>((set, get) => ({
         set({ error: result.error, votingInProgress: false });
       } else {
         timeouts.start("scheduleVotes", () => {
-          set({ refreshing: false, votingInProgress: false, scheduledVoteCastInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
+          set({ refreshing: false, votingInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
         });
       }
       // votingInProgress cleared by event
@@ -473,10 +471,15 @@ export const useContestStore = create<ContestStore>((set, get) => ({
   },
 
   castScheduledVote: async (vote) => {
-    const { scheduledVoteCastInProgress } = get();
-    if (scheduledVoteCastInProgress) return;
+    // Per-vote guard: skip if this specific vote is already in-flight
+    const currentVote = get().scheduledVotes.find(
+      (sv) =>
+        sv.vote.voterId === vote.voterId &&
+        sv.vote.contestedName === vote.contestedName,
+    );
+    if (currentVote?.castingStatus === "inProgress") return;
 
-    set({ scheduledVoteCastInProgress: true, error: null });
+    set({ error: null });
 
     // Optimistically mark the vote as in-progress
     set((state) => ({
@@ -500,14 +503,12 @@ export const useContestStore = create<ContestStore>((set, get) => ({
               : sv,
           ),
           error: result.error,
-          scheduledVoteCastInProgress: false,
         }));
       } else {
         timeouts.start("castScheduled", () => {
-          set({ refreshing: false, votingInProgress: false, scheduledVoteCastInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
+          set({ refreshing: false, votingInProgress: false, error: TIMEOUT_ERROR_MESSAGE });
         });
       }
-      // scheduledVoteCastInProgress cleared by event
     } catch (e) {
       set((state) => ({
         scheduledVotes: state.scheduledVotes.map((sv) =>
@@ -517,7 +518,6 @@ export const useContestStore = create<ContestStore>((set, get) => ({
             : sv,
         ),
         error: e instanceof Error ? e.message : String(e),
-        scheduledVoteCastInProgress: false,
       }));
     }
   },
@@ -656,9 +656,23 @@ export const useContestStore = create<ContestStore>((set, get) => ({
         set({
           refreshing: false,
           votingInProgress: false,
-          scheduledVoteCastInProgress: false,
           error: event.payload.message,
         });
+      },
+    );
+
+    const unlistenInProgress = await events.scheduledVoteInProgressEvent.listen(
+      (event: { payload: ScheduledVoteInProgressEvent }) => {
+        const { contestedName, voterId } = event.payload;
+
+        set((state) => ({
+          scheduledVotes: state.scheduledVotes.map((sv) =>
+            sv.vote.voterId === voterId &&
+            sv.vote.contestedName === contestedName
+              ? { ...sv, castingStatus: "inProgress" as const }
+              : sv,
+          ),
+        }));
       },
     );
 
@@ -669,7 +683,6 @@ export const useContestStore = create<ContestStore>((set, get) => ({
         const { contestedName, voterId, success, error: errMsg } = event.payload;
 
         set((state) => ({
-          scheduledVoteCastInProgress: false,
           scheduledVotes: state.scheduledVotes.map((sv) =>
             sv.vote.voterId === voterId &&
             sv.vote.contestedName === contestedName
@@ -692,6 +705,7 @@ export const useContestStore = create<ContestStore>((set, get) => ({
     return () => {
       unlistenResult();
       unlistenError();
+      unlistenInProgress();
       unlistenScheduled();
     };
   },
@@ -710,7 +724,6 @@ export const useContestStore = create<ContestStore>((set, get) => ({
       activeFilterTerm: "",
       pastFilterTerm: "",
       ownedFilterTerm: "",
-      scheduledVoteCastInProgress: false,
     });
   },
 

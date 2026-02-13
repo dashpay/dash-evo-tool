@@ -13,7 +13,6 @@ export function DpnsScheduledVotesScreen() {
     scheduledVotes,
     loading,
     error,
-    scheduledVoteCastInProgress,
     loadScheduledVotes,
     castScheduledVote,
     deleteScheduledVote,
@@ -138,7 +137,6 @@ export function DpnsScheduledVotesScreen() {
       <Island noPadding className="flex-1 overflow-auto p-4">
         <ScheduledVotesTable
           scheduledVotes={scheduledVotes}
-          castInProgress={scheduledVoteCastInProgress}
           onRemove={handleRemove}
           onCastNow={handleCastNow}
         />

@@ -81,7 +81,6 @@ function resetStore() {
     ownedFilterTerm: "",
     sortColumn: "name",
     sortOrder: "ascending",
-    scheduledVoteCastInProgress: false,
   });
 }
 
@@ -316,9 +315,8 @@ describe("DpnsScheduledVotesScreen — Cast Now", () => {
     });
   });
 
-  it("Cast Now is disabled during a cast operation", () => {
-    setupWithVotes([makeVote({ castingStatus: "notStarted" })]);
-    useContestStore.setState({ scheduledVoteCastInProgress: true });
+  it("Cast Now is disabled when vote is inProgress", () => {
+    setupWithVotes([makeVote({ castingStatus: "inProgress" })]);
     setup();
 
     expect(

@@ -265,6 +265,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::document::document_set_price,
             commands::document::document_fetch,
             commands::document::document_fetch_page,
+            commands::document::document_type_token_cost,
             // Token commands
             commands::token::token_query_my_balances,
             commands::token::token_query_identity_balance,

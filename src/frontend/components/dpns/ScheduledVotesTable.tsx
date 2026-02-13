@@ -145,8 +145,6 @@ function sortScheduledVotes(
 export interface ScheduledVotesTableProps {
   /** Scheduled votes with their casting status. */
   scheduledVotes: ScheduledVoteWithStatus[];
-  /** Whether any scheduled vote cast is currently in progress. */
-  castInProgress: boolean;
   /** Called when user clicks "Remove" for a vote. */
   onRemove: (voterId: string, contestedName: string) => void;
   /** Called when user clicks "Cast Now" for a vote. */
@@ -198,7 +196,6 @@ function SortableHeader({
 
 export function ScheduledVotesTable({
   scheduledVotes,
-  castInProgress,
   onRemove,
   onCastNow,
   className,
@@ -330,9 +327,8 @@ export function ScheduledVotesTable({
                   sv.vote.unixTimestamp,
                 );
                 const canCastNow =
-                  !castInProgress &&
-                  (sv.castingStatus === "notStarted" ||
-                    sv.castingStatus === "failed");
+                  sv.castingStatus === "notStarted" ||
+                  sv.castingStatus === "failed";
 
                 return (
                   <TableRow

@@ -115,7 +115,6 @@ function resetStore() {
     ownedFilterTerm: "",
     sortColumn: "name",
     sortOrder: "ascending",
-    scheduledVoteCastInProgress: false,
   });
 }
 
@@ -257,7 +256,7 @@ describe("DpnsActiveContestsScreen — action buttons", () => {
 
     await user.click(screen.getByRole("button", { name: /register dpns name/i }));
 
-    expect(mockNavigate).toHaveBeenCalledWith({ to: "/contracts/dpns-register" });
+    expect(mockNavigate).toHaveBeenCalledWith({ to: "/contracts/dpns/register" });
   });
 
   it("cast/schedule votes button is disabled when no votes selected", () => {

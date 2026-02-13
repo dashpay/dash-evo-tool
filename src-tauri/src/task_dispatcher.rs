@@ -20,24 +20,24 @@
 
 use crate::commands::system::{convert_mn_list_diff, convert_qr_info};
 use crate::dto::{
-    ContractTokenInfoDto, ContractWithTokensDto, TaskChainLockSigDto, NetworkDto,
-    ProfileSearchResultDto, TaskDomain, TaskResultPayloadDto, TokenSearchResultDto,
+    ContractTokenInfoDto, ContractWithTokensDto, NetworkDto, ProfileSearchResultDto,
+    TaskChainLockSigDto, TaskDomain, TaskResultPayloadDto, TokenSearchResultDto,
 };
 use crate::events::{
-    ScheduledVoteExecutedEvent, SpvStatusDto, SpvStatusEvent, TaskErrorEvent, TaskResultEvent,
-    WalletUpdatedEvent, ZmqChainLockedBlockEvent, ZmqConnectionStatusEvent,
-    ZmqIsLockedTransactionEvent,
+    ScheduledVoteExecutedEvent, ScheduledVoteInProgressEvent, SpvStatusDto, SpvStatusEvent,
+    TaskErrorEvent, TaskResultEvent, WalletUpdatedEvent, ZmqChainLockedBlockEvent,
+    ZmqConnectionStatusEvent, ZmqIsLockedTransactionEvent,
 };
 use crate::state::AppState;
 use dash_evo_tool::app::TaskResult;
 use dash_evo_tool::backend_task::contract::ContractResult;
 use dash_evo_tool::backend_task::dashpay::DashPayResult;
 use dash_evo_tool::backend_task::document::DocumentResult;
+use dash_evo_tool::backend_task::grovestark::GroveSTARKResult;
 use dash_evo_tool::backend_task::identity::IdentityResult;
 use dash_evo_tool::backend_task::mnlist::MnListResult;
 use dash_evo_tool::backend_task::platform_info::{PlatformInfoTaskResult, PlatformResult};
 use dash_evo_tool::backend_task::tokens::TokenResult;
-use dash_evo_tool::backend_task::grovestark::GroveSTARKResult;
 use dash_evo_tool::backend_task::wallet::WalletResult;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::BackendTaskSuccessResult;
@@ -106,9 +106,7 @@ pub fn dispatch_task(app_handle: &AppHandle, app_state: &AppState, task: Backend
 
     // Spawn the actual task inside a nested tokio::spawn so we can catch panics
     tauri::async_runtime::spawn(async move {
-        let inner = tokio::spawn(async move {
-            app_context.run_backend_task(task, sender).await
-        });
+        let inner = tokio::spawn(async move { app_context.run_backend_task(task, sender).await });
 
         match inner.await {
             Ok(Ok(success)) => {
@@ -197,15 +195,13 @@ fn classify_success_result(result: &BackendTaskSuccessResult) -> TaskResultPaylo
     match result {
         BackendTaskSuccessResult::None => TaskResultPayloadDto::None,
         BackendTaskSuccessResult::Refresh => TaskResultPayloadDto::Refresh,
-        BackendTaskSuccessResult::Message(msg) => TaskResultPayloadDto::Message {
-            text: msg.clone(),
-        },
+        BackendTaskSuccessResult::Message(msg) => {
+            TaskResultPayloadDto::Message { text: msg.clone() }
+        }
         BackendTaskSuccessResult::Identity(identity_result) => {
             classify_identity_result(identity_result)
         }
-        BackendTaskSuccessResult::Wallet(wallet_result) => {
-            classify_wallet_result(wallet_result)
-        }
+        BackendTaskSuccessResult::Wallet(wallet_result) => classify_wallet_result(wallet_result),
         BackendTaskSuccessResult::Core(_) => TaskResultPayloadDto::CoreCompleted,
         BackendTaskSuccessResult::Document(doc_result) => classify_document_result(doc_result),
         BackendTaskSuccessResult::Contract(contract_result) => {
@@ -219,13 +215,9 @@ fn classify_success_result(result: &BackendTaskSuccessResult) -> TaskResultPaylo
         BackendTaskSuccessResult::DashPay(dashpay_result) => {
             classify_dashpay_result(dashpay_result)
         }
-        BackendTaskSuccessResult::GroveSTARK(gs_result) => {
-            classify_grovestark_result(gs_result)
-        }
+        BackendTaskSuccessResult::GroveSTARK(gs_result) => classify_grovestark_result(gs_result),
         BackendTaskSuccessResult::MnList(mnlist_result) => classify_mnlist_result(mnlist_result),
-        BackendTaskSuccessResult::Token(token_result) => {
-            classify_token_result(token_result)
-        }
+        BackendTaskSuccessResult::Token(token_result) => classify_token_result(token_result),
         BackendTaskSuccessResult::BroadcastedStateTransition => {
             TaskResultPayloadDto::BroadcastedStateTransition
         }
@@ -240,9 +232,7 @@ fn classify_identity_result(result: &IdentityResult) -> TaskResultPayloadDto {
         | IdentityResult::RefreshedIdentity(qi)
         | IdentityResult::LoadedIdentity(qi)
         | IdentityResult::DisabledKeys(qi, _)
-        | IdentityResult::ReplacedKey(qi, _) => {
-            Some(hex::encode(qi.identity.id().to_buffer()))
-        }
+        | IdentityResult::ReplacedKey(qi, _) => Some(hex::encode(qi.identity.id().to_buffer())),
         IdentityResult::AddedKeyToIdentity(_)
         | IdentityResult::TransferredCredits(_)
         | IdentityResult::WithdrewFromIdentity(_)
@@ -327,14 +317,10 @@ fn classify_token_result(result: &TokenResult) -> TaskResultPayloadDto {
                 ids.iter().map(|id| hex::encode(id.to_buffer())).collect();
             TaskResultPayloadDto::TokenFrozenIdentities { identity_ids }
         }
-        TokenResult::TokenPricing { token_id, prices } => {
-            TaskResultPayloadDto::TokenPricing {
-                token_id: hex::encode(token_id.to_buffer()),
-                prices: prices
-                    .as_ref()
-                    .and_then(|p| serde_json::to_value(p).ok()),
-            }
-        }
+        TokenResult::TokenPricing { token_id, prices } => TaskResultPayloadDto::TokenPricing {
+            token_id: hex::encode(token_id.to_buffer()),
+            prices: prices.as_ref().and_then(|p| serde_json::to_value(p).ok()),
+        },
         TokenResult::EstimatedDistributionRewards(iti, amount, explanation) => {
             TaskResultPayloadDto::TokenRewardEstimate {
                 token_id: hex::encode(iti.token_id.to_buffer()),
@@ -376,8 +362,7 @@ fn classify_contract_result(result: &ContractResult) -> TaskResultPayloadDto {
                     let token_dtos: Vec<ContractTokenInfoDto> = tokens
                         .iter()
                         .map(|t| {
-                            let config_json =
-                                serde_json::to_value(&t.token_configuration).ok();
+                            let config_json = serde_json::to_value(&t.token_configuration).ok();
                             ContractTokenInfoDto {
                                 token_id: hex::encode(t.token_id.to_buffer()),
                                 name: t.token_name.clone(),
@@ -732,14 +717,19 @@ pub fn start_scheduled_vote_polling(app_handle: AppHandle, app_state: Arc<AppSta
                         ),
                     );
 
+                    // Notify the frontend that this vote is about to be cast
+                    let _ = ScheduledVoteInProgressEvent {
+                        contested_name: contested_name.clone(),
+                        voter_id: voter_id_hex.clone(),
+                    }
+                    .emit(&app_handle);
+
                     // Create a headless sender for the task
                     let (tx, mut rx) = tokiompsc::channel::<TaskResult>(64);
                     let sender = SenderAsync::new_headless(tx);
 
                     // Drain intermediate progress — scheduled votes run headless
-                    tauri::async_runtime::spawn(async move {
-                        while rx.recv().await.is_some() {}
-                    });
+                    tauri::async_runtime::spawn(async move { while rx.recv().await.is_some() {} });
 
                     let ctx_clone = ctx.clone();
                     let handle = app_handle.clone();
@@ -867,7 +857,11 @@ fn convert_spv_status(status: dash_evo_tool::spv::SpvStatus) -> SpvStatusDto {
 fn emit_wallet_updated_events(
     app_handle: &AppHandle,
     ctx: &dash_evo_tool::context::AppContext,
-    utxos: &[(dash_sdk::dpp::dashcore::OutPoint, dash_sdk::dpp::dashcore::TxOut, dash_sdk::dpp::dashcore::Address)],
+    utxos: &[(
+        dash_sdk::dpp::dashcore::OutPoint,
+        dash_sdk::dpp::dashcore::TxOut,
+        dash_sdk::dpp::dashcore::Address,
+    )],
     net_dto: NetworkDto,
 ) {
     use std::collections::BTreeSet;
@@ -938,8 +932,7 @@ mod tests {
 
     #[test]
     fn classify_message_result() {
-        let result =
-            classify_success_result(&BackendTaskSuccessResult::Message("hello".into()));
+        let result = classify_success_result(&BackendTaskSuccessResult::Message("hello".into()));
         match result {
             TaskResultPayloadDto::Message { text } => assert_eq!(text, "hello"),
             other => panic!("Expected Message, got {:?}", other),
@@ -948,8 +941,7 @@ mod tests {
 
     #[test]
     fn classify_broadcast_result() {
-        let result =
-            classify_success_result(&BackendTaskSuccessResult::BroadcastedStateTransition);
+        let result = classify_success_result(&BackendTaskSuccessResult::BroadcastedStateTransition);
         assert!(matches!(
             result,
             TaskResultPayloadDto::BroadcastedStateTransition

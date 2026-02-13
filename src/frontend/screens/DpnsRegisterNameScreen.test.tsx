@@ -103,7 +103,6 @@ function resetStores() {
     ownedFilterTerm: "",
     sortColumn: "name",
     sortOrder: "ascending",
-    scheduledVoteCastInProgress: false,
   });
 }
 
@@ -532,7 +531,7 @@ describe("DpnsRegisterNameScreen — navigation", () => {
     await user.click(screen.getByTestId("back-btn"));
 
     expect(mockNavigate).toHaveBeenCalledWith({
-      to: "/contracts/dpns-active",
+      to: "/contracts/dpns/active",
     });
   });
 
@@ -555,7 +554,7 @@ describe("DpnsRegisterNameScreen — navigation", () => {
     await user.click(screen.getByTestId("back-btn"));
 
     expect(mockNavigate).toHaveBeenCalledWith({
-      to: "/contracts/dpns-active",
+      to: "/contracts/dpns/active",
     });
   });
 

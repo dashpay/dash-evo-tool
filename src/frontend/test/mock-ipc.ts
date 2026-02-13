@@ -121,6 +121,7 @@ export type CommandName =
   | "walletUnlock"
   | "walletLock"
   | "walletGetPrivateKey"
+  | "validateCoreAddress"
   // Contract
   | "contractFetch"
   | "contractFetchWithDescriptions"
@@ -261,6 +262,7 @@ export type CommandName =
 /** All known event names (matching keys on `events` in bindings.ts). */
 export type EventName =
   | "scheduledVoteExecutedEvent"
+  | "scheduledVoteInProgressEvent"
   | "spvStatusEvent"
   | "taskErrorEvent"
   | "taskResultEvent"
@@ -425,6 +427,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
     walletUnlock: resolvesOk("walletUnlock", null),
     walletLock: resolvesOk("walletLock", null),
     walletGetPrivateKey: resolvesOk("walletGetPrivateKey", ""),
+    validateCoreAddress: resolvesOk("validateCoreAddress", null),
 
     // -- Contract --
     contractFetch: resolvesOk("contractFetch", { taskId: "mock-task-id", normalizedIds: [] }),
@@ -610,6 +613,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
 
 const ALL_EVENTS: EventName[] = [
   "scheduledVoteExecutedEvent",
+  "scheduledVoteInProgressEvent",
   "spvStatusEvent",
   "taskErrorEvent",
   "taskResultEvent",

@@ -71,7 +71,6 @@ function resetStore() {
     ownedFilterTerm: "",
     sortColumn: "name",
     sortOrder: "ascending",
-    scheduledVoteCastInProgress: false,
   });
 }
 

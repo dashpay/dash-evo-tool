@@ -165,6 +165,19 @@ pub struct WalletUpdatedEvent {
 // Scheduled vote events
 // ---------------------------------------------------------------------------
 
+/// Emitted when a scheduled vote begins casting (before the task spawns).
+///
+/// Allows the frontend to mark the vote as "in progress" even when the
+/// backend auto-casts it via the 60 s polling loop.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledVoteInProgressEvent {
+    /// The contested name the vote is for.
+    pub contested_name: String,
+    /// Voter identity ID (hex).
+    pub voter_id: String,
+}
+
 /// Emitted when a scheduled vote is automatically cast.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
 #[serde(rename_all = "camelCase")]

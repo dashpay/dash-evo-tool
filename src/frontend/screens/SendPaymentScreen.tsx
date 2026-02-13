@@ -15,6 +15,7 @@ import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { AmountInput, useAmountInput, formatAmount } from "@/components/shared/AmountInput";
 import { WalletUnlockDialog } from "@/components/shared";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -70,12 +71,15 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
   } = useDashPayStore();
   const identities = useIdentityStore((s) => s.identities);
   const hdWallets = useWalletStore((s) => s.hdWallets);
+  const unlockWallet = useWalletStore((s) => s.unlockWallet);
 
   // ── Local state ──
   const [screenState, setScreenState] = useState<ScreenState>("form");
   const [memo, setMemo] = useState("");
   const [showInfoPopup, setShowInfoPopup] = useState(false);
   const [showWalletUnlock, setShowWalletUnlock] = useState(false);
+  const [walletUnlockError, setWalletUnlockError] = useState<string | null>(null);
+  const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<Set<string>>(new Set());
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentAmount, setSentAmount] = useState<string>("");
   const [sentAddress, setSentAddress] = useState<string>("");
@@ -116,7 +120,10 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
 
   const walletBalance = associatedWallet?.confirmedBalance ?? 0;
   const walletAlias = associatedWallet?.alias ?? "Wallet";
-  const walletNeedsPassword = associatedWallet?.usesPassword ?? false;
+  const walletLocked =
+    !!associatedWallet &&
+    associatedWallet.usesPassword &&
+    !walletUnlockedHashes.has(associatedWallet.seedHash);
 
   const memoError = useMemo(() => {
     if (memo.length > MAX_MEMO_LENGTH) {
@@ -137,9 +144,10 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
       parsedAmount !== null &&
       parsedAmount > 0 &&
       memo.length <= MAX_MEMO_LENGTH &&
-      screenState === "form"
+      screenState === "form" &&
+      !walletLocked
     );
-  }, [isAmountValid, parsedAmount, memo.length, screenState]);
+  }, [isAmountValid, parsedAmount, memo.length, screenState, walletLocked]);
 
   // ── Load contacts if empty ──
   useEffect(() => {
@@ -239,12 +247,24 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
   }, [setAmountValue]);
 
   const handleWalletUnlockResult = useCallback(
-    (result: { status: "unlocked" | "cancelled"; password?: string }) => {
-      if (result.status === "unlocked") {
+    async (result: WalletUnlockResult) => {
+      if (result.status === "unlocked" && associatedWallet) {
+        setWalletUnlockError(null);
+        const error = await unlockWallet(
+          { type: "hd", seedHash: associatedWallet.seedHash },
+          result.password,
+        );
+        if (error) {
+          setWalletUnlockError(error);
+          return;
+        }
+        setWalletUnlockedHashes(
+          (prev) => new Set([...prev, associatedWallet.seedHash]),
+        );
         setShowWalletUnlock(false);
       }
     },
-    [],
+    [associatedWallet, unlockWallet],
   );
 
   // ── No identity state ──
@@ -359,7 +379,7 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
             )}
 
             {/* Wallet locked warning */}
-            {associatedWallet && walletNeedsPassword && (
+            {walletLocked && (
               <div className="flex items-center gap-2">
                 <Lock className="h-3.5 w-3.5 text-amber-500" />
                 <span className="text-xs text-amber-600 dark:text-amber-400">
@@ -489,6 +509,8 @@ export function SendPaymentScreen({ contactId }: SendPaymentScreenProps) {
           open={showWalletUnlock}
           onOpenChange={setShowWalletUnlock}
           walletAlias={walletAlias}
+          error={walletUnlockError}
+          passwordHint={associatedWallet.passwordHint ?? null}
           onResult={handleWalletUnlockResult}
         />
       )}

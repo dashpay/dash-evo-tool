@@ -6,11 +6,14 @@ import {
   Loader2,
   Save,
   X,
+  Lock,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { LoadingSpinner } from "@/components/feedback/LoadingSpinner";
+import { WalletUnlockDialog } from "@/components/shared";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,6 +35,8 @@ import {
 import { cn } from "@/lib/utils";
 import { toastError } from "@/lib/toastError";
 import { useDashPayStore } from "@/stores/dashpayStore";
+import { useIdentityStore } from "@/stores/identityStore";
+import { useWalletStore } from "@/stores/walletStore";
 import { useTaskListener } from "@/hooks/useTaskListener";
 import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 
@@ -61,6 +66,24 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
     saveContactPrivateInfo,
     updateContactInfo,
   } = useDashPayStore();
+  const identities = useIdentityStore((s) => s.identities);
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const unlockWallet = useWalletStore((s) => s.unlockWallet);
+
+  // ── Associated wallet ──
+  const selectedIdentity = useMemo(
+    () => identities.find((i) => i.id === selectedIdentityId) ?? null,
+    [identities, selectedIdentityId],
+  );
+
+  const associatedWallet = useMemo(() => {
+    if (!selectedIdentity) return null;
+    const hashes = selectedIdentity.associatedWalletHashes;
+    if (!hashes || hashes.length === 0) return null;
+    return hdWallets.find((w) => hashes.includes(w.seedHash)) ?? null;
+  }, [selectedIdentity, hdWallets]);
+
+  const walletAlias = associatedWallet?.alias ?? "Wallet";
 
   // ── State ──
   const [loading, setLoading] = useState(true);
@@ -73,6 +96,15 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
   const [taskId, setTaskId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
   const [showInfoPopup, setShowInfoPopup] = useState(false);
+  const [showWalletUnlock, setShowWalletUnlock] = useState(false);
+  const [walletUnlockError, setWalletUnlockError] = useState<string | null>(null);
+  const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<Set<string>>(new Set());
+
+  // ── Derived: wallet locked ──
+  const walletLocked =
+    !!associatedWallet &&
+    associatedWallet.usesPassword &&
+    !walletUnlockedHashes.has(associatedWallet.seedHash);
 
   // ── Derived data ──
   const contact = useMemo(
@@ -134,6 +166,10 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
 
   const handleSave = useCallback(async () => {
     if (!selectedIdentityId) return;
+    if (walletLocked) {
+      setShowWalletUnlock(true);
+      return;
+    }
     setSaving(true);
     setMessage(null);
 
@@ -173,6 +209,7 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
     }
   }, [
     selectedIdentityId,
+    walletLocked,
     contactId,
     nickname,
     note,
@@ -181,6 +218,27 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
     saveContactPrivateInfo,
     updateContactInfo,
   ]);
+
+  const handleWalletUnlockResult = useCallback(
+    async (result: WalletUnlockResult) => {
+      if (result.status === "unlocked" && associatedWallet) {
+        setWalletUnlockError(null);
+        const error = await unlockWallet(
+          { type: "hd", seedHash: associatedWallet.seedHash },
+          result.password,
+        );
+        if (error) {
+          setWalletUnlockError(error);
+          return;
+        }
+        setWalletUnlockedHashes(
+          (prev) => new Set([...prev, associatedWallet.seedHash]),
+        );
+        setShowWalletUnlock(false);
+      }
+    },
+    [associatedWallet, unlockWallet],
+  );
 
   const handleCancel = useCallback(() => {
     navigate({ to: "/dashpay/contact-details/$contactId", params: { contactId } });
@@ -396,6 +454,24 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
 
           <Separator />
 
+          {/* Wallet locked warning */}
+          {walletLocked && (
+            <div className="flex items-center gap-2">
+              <Lock className="h-3.5 w-3.5 text-amber-500" />
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                Wallet is locked.
+              </span>
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                onClick={() => setShowWalletUnlock(true)}
+              >
+                Unlock Wallet
+              </Button>
+            </div>
+          )}
+
           {/* Action buttons */}
           <div className="flex items-center gap-3">
             {saving ? (
@@ -405,7 +481,7 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
               </>
             ) : (
               <>
-                <Button onClick={handleSave} disabled={saving}>
+                <Button onClick={handleSave} disabled={saving || walletLocked}>
                   <Save className="h-4 w-4 mr-1" />
                   Save Changes
                 </Button>
@@ -417,6 +493,18 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
             )}
           </div>
         </div>
+      )}
+
+      {/* Wallet unlock dialog */}
+      {associatedWallet && (
+        <WalletUnlockDialog
+          open={showWalletUnlock}
+          onOpenChange={setShowWalletUnlock}
+          walletAlias={walletAlias}
+          error={walletUnlockError}
+          passwordHint={associatedWallet.passwordHint ?? null}
+          onResult={handleWalletUnlockResult}
+        />
       )}
     </Island>
   );

@@ -10,12 +10,14 @@ import {
   RefreshCw,
   ArrowUpRight,
   ArrowDownLeft,
+  Lock,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { LoadingSpinner } from "@/components/feedback/LoadingSpinner";
-import { CopyButton } from "@/components/shared";
+import { CopyButton, WalletUnlockDialog } from "@/components/shared";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,6 +40,8 @@ import {
 import { cn } from "@/lib/utils";
 import { toastError } from "@/lib/toastError";
 import { useDashPayStore } from "@/stores/dashpayStore";
+import { useIdentityStore } from "@/stores/identityStore";
+import { useWalletStore } from "@/stores/walletStore";
 import { formatAmount } from "@/components/shared/AmountInput";
 import type { StoredPaymentDto, ContactPrivateInfoDto, StoredContactDto } from "@/bindings";
 
@@ -96,6 +100,24 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
     saveContactPrivateInfo,
     updateContactInfo,
   } = useDashPayStore();
+  const identities = useIdentityStore((s) => s.identities);
+  const hdWallets = useWalletStore((s) => s.hdWallets);
+  const unlockWallet = useWalletStore((s) => s.unlockWallet);
+
+  // ── Associated wallet ──
+  const selectedIdentity = useMemo(
+    () => identities.find((i) => i.id === selectedIdentityId) ?? null,
+    [identities, selectedIdentityId],
+  );
+
+  const associatedWallet = useMemo(() => {
+    if (!selectedIdentity) return null;
+    const hashes = selectedIdentity.associatedWalletHashes;
+    if (!hashes || hashes.length === 0) return null;
+    return hdWallets.find((w) => hashes.includes(w.seedHash)) ?? null;
+  }, [selectedIdentity, hdWallets]);
+
+  const walletAlias = associatedWallet?.alias ?? "Wallet";
 
   // ── State ──
   const [loading, setLoading] = useState(true);
@@ -108,6 +130,15 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
   const [showInfoPopup, setShowInfoPopup] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [showWalletUnlock, setShowWalletUnlock] = useState(false);
+  const [walletUnlockError, setWalletUnlockError] = useState<string | null>(null);
+  const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<Set<string>>(new Set());
+
+  // ── Derived: wallet locked ──
+  const walletLocked =
+    !!associatedWallet &&
+    associatedWallet.usesPassword &&
+    !walletUnlockedHashes.has(associatedWallet.seedHash);
 
   // ── Derived data ──
   const contact = useMemo(
@@ -175,6 +206,10 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
 
   const handleSave = useCallback(async () => {
     if (!selectedIdentityId) return;
+    if (walletLocked) {
+      setShowWalletUnlock(true);
+      return;
+    }
     setSaving(true);
     setMessage(null);
 
@@ -214,6 +249,7 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
     }
   }, [
     selectedIdentityId,
+    walletLocked,
     contactId,
     editNickname,
     editNote,
@@ -221,6 +257,27 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
     saveContactPrivateInfo,
     updateContactInfo,
   ]);
+
+  const handleWalletUnlockResult = useCallback(
+    async (result: WalletUnlockResult) => {
+      if (result.status === "unlocked" && associatedWallet) {
+        setWalletUnlockError(null);
+        const error = await unlockWallet(
+          { type: "hd", seedHash: associatedWallet.seedHash },
+          result.password,
+        );
+        if (error) {
+          setWalletUnlockError(error);
+          return;
+        }
+        setWalletUnlockedHashes(
+          (prev) => new Set([...prev, associatedWallet.seedHash]),
+        );
+        setShowWalletUnlock(false);
+      }
+    },
+    [associatedWallet, unlockWallet],
+  );
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -401,12 +458,14 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
             editHidden={editHidden}
             saving={saving}
             showInfoPopup={showInfoPopup}
+            walletLocked={walletLocked}
             onEditNicknameChange={setEditNickname}
             onEditNoteChange={setEditNote}
             onEditHiddenChange={setEditHidden}
             onStartEdit={handleStartEdit}
             onCancelEdit={handleCancelEdit}
             onSave={handleSave}
+            onUnlockWallet={() => setShowWalletUnlock(true)}
             onToggleInfoPopup={() => setShowInfoPopup(!showInfoPopup)}
           />
 
@@ -431,6 +490,18 @@ export function ContactDetailsScreen({ contactId }: ContactDetailsScreenProps) {
           </div>
         </div>
       )}
+
+      {/* Wallet unlock dialog */}
+      {associatedWallet && (
+        <WalletUnlockDialog
+          open={showWalletUnlock}
+          onOpenChange={setShowWalletUnlock}
+          walletAlias={walletAlias}
+          error={walletUnlockError}
+          passwordHint={associatedWallet.passwordHint ?? null}
+          onResult={handleWalletUnlockResult}
+        />
+      )}
     </Island>
   );
 }
@@ -445,12 +516,14 @@ interface PrivateInfoSectionProps {
   editHidden: boolean;
   saving: boolean;
   showInfoPopup: boolean;
+  walletLocked: boolean;
   onEditNicknameChange: (v: string) => void;
   onEditNoteChange: (v: string) => void;
   onEditHiddenChange: (v: boolean) => void;
   onStartEdit: () => void;
   onCancelEdit: () => void;
   onSave: () => void;
+  onUnlockWallet: () => void;
   onToggleInfoPopup: () => void;
 }
 
@@ -462,12 +535,14 @@ function PrivateInfoSection({
   editHidden,
   saving,
   showInfoPopup,
+  walletLocked,
   onEditNicknameChange,
   onEditNoteChange,
   onEditHiddenChange,
   onStartEdit,
   onCancelEdit,
   onSave,
+  onUnlockWallet,
   onToggleInfoPopup,
 }: PrivateInfoSectionProps) {
   return (
@@ -506,7 +581,7 @@ function PrivateInfoSection({
               <X className="h-4 w-4 mr-1" />
               Cancel
             </Button>
-            <Button size="sm" onClick={onSave} disabled={saving}>
+            <Button size="sm" onClick={onSave} disabled={saving || walletLocked}>
               {saving ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-1" />
               ) : (
@@ -575,6 +650,22 @@ function PrivateInfoSection({
               </span>
             )}
           </div>
+          {walletLocked && (
+            <div className="flex items-center gap-2">
+              <Lock className="h-3.5 w-3.5 text-amber-500" />
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                Wallet is locked.
+              </span>
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                onClick={onUnlockWallet}
+              >
+                Unlock Wallet
+              </Button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="space-y-2">

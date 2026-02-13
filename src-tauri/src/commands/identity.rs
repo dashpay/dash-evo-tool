@@ -28,6 +28,7 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -214,6 +215,28 @@ pub struct SaveIdentityOrderInput {
 pub struct DeleteIdentityInput {
     /// Identity ID (hex) to delete.
     pub identity_id: IdentifierDto,
+}
+
+/// Input for adding a private key to local storage for an identity key.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AddPrivateKeyToStorageInput {
+    /// Identity ID (hex).
+    pub identity_id: IdentifierDto,
+    /// Key ID on the identity to associate the private key with.
+    pub key_id: u32,
+    /// Private key as hex string (64 hex chars = 32 bytes).
+    pub private_key_hex: String,
+}
+
+/// Input for removing a private key from local storage for an identity key.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovePrivateKeyFromStorageInput {
+    /// Identity ID (hex).
+    pub identity_id: IdentifierDto,
+    /// Key ID on the identity whose private key should be removed.
+    pub key_id: u32,
 }
 
 /// A key specification for identity registration.
@@ -1645,6 +1668,99 @@ pub fn identity_sign_message(
             key_type
         )),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Private key storage management
+// ---------------------------------------------------------------------------
+
+/// Add a private key to local storage for an identity key.
+///
+/// Parses the hex private key, validates it against the identity's public key,
+/// stores it in the qualified identity's key storage, and persists to the database.
+/// Returns the updated `QualifiedIdentityDto`.
+#[tauri::command]
+#[specta::specta]
+pub fn identity_add_private_key_to_storage(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: AddPrivateKeyToStorageInput,
+) -> Result<QualifiedIdentityDto, String> {
+    let identifier = parse_identifier(&input.identity_id)?;
+    let ctx = state.current_context();
+    let mut qi = ctx
+        .get_identity_by_id(&identifier)
+        .map_err(|e| format!("Failed to get identity: {e}"))?
+        .ok_or("Identity not found")?;
+
+    let key_id = input.key_id as KeyID;
+    let identity_key = qi
+        .identity
+        .get_public_key_by_id(key_id)
+        .ok_or(format!("Key with ID {} not found on identity", key_id))?
+        .clone();
+
+    // Parse the hex private key
+    let private_key_bytes = parse_private_key_hex(&input.private_key_hex)?;
+
+    // Validate the private key matches the public key
+    let network = ctx.network();
+    let validation_result = identity_key
+        .validate_private_key_bytes(&private_key_bytes, network)
+        .map_err(|e| format!("Issue verifying private key: {e}"))?;
+    if !validation_result {
+        return Err("Private key does not match the public key.".to_string());
+    }
+
+    // Store in qualified identity
+    let target = PrivateKeyTarget::from(identity_key.purpose());
+    let qualified_pub_key = QualifiedIdentityPublicKey {
+        identity_public_key: identity_key.clone(),
+        in_wallet_at_derivation_path: None,
+    };
+    qi.private_keys
+        .insert_non_encrypted((target, key_id), (qualified_pub_key, private_key_bytes));
+
+    // Persist
+    ctx.update_local_qualified_identity(&qi)
+        .map_err(|e| format!("Failed to save identity: {e}"))?;
+
+    Ok(qualified_identity_to_dto(&qi, network))
+}
+
+/// Remove a private key from local storage for an identity key.
+///
+/// Removes the private key from the qualified identity's key storage and
+/// persists the change to the database. Returns the updated `QualifiedIdentityDto`.
+#[tauri::command]
+#[specta::specta]
+pub fn identity_remove_private_key_from_storage(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: RemovePrivateKeyFromStorageInput,
+) -> Result<QualifiedIdentityDto, String> {
+    let identifier = parse_identifier(&input.identity_id)?;
+    let ctx = state.current_context();
+    let mut qi = ctx
+        .get_identity_by_id(&identifier)
+        .map_err(|e| format!("Failed to get identity: {e}"))?
+        .ok_or("Identity not found")?;
+
+    let key_id = input.key_id as KeyID;
+    let identity_key = qi
+        .identity
+        .get_public_key_by_id(key_id)
+        .ok_or(format!("Key with ID {} not found on identity", key_id))?;
+
+    let target = PrivateKeyTarget::from(identity_key.purpose());
+    qi.private_keys
+        .private_keys
+        .remove(&(target, key_id));
+
+    // Persist
+    let network = ctx.network();
+    ctx.update_local_qualified_identity(&qi)
+        .map_err(|e| format!("Failed to save identity: {e}"))?;
+
+    Ok(qualified_identity_to_dto(&qi, network))
 }
 
 // ---------------------------------------------------------------------------

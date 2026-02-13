@@ -2368,7 +2368,7 @@ identityId: string;
  */
 keyId: number;
 /**
- * Private key as hex string (32 bytes for ECDSA, 48 bytes for BLS).
+ * Private key as hex string (64 hex chars = 32 bytes).
  */
 privateKeyHex: string }
 /**

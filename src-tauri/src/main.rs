@@ -202,6 +202,8 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::identity::identity_list_summaries,
             commands::identity::identity_local_dpns_names,
             commands::identity::identity_sign_message,
+            commands::identity::identity_add_private_key_to_storage,
+            commands::identity::identity_remove_private_key_from_storage,
             // Core commands
             commands::core::core_get_best_chain_lock,
             commands::core::core_get_best_chain_locks,

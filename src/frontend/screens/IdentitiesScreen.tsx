@@ -995,6 +995,59 @@ export function IdentitiesScreen() {
     [selectedIdentity],
   );
 
+  const handleAddPrivateKey = useCallback(
+    async (keyId: number, privateKeyHex: string) => {
+      if (!selectedIdentity) return;
+      setKeyInfoState((s) => ({ ...s, isSubmitting: true, error: null }));
+      try {
+        const result = await commands.identityAddPrivateKeyToStorage({
+          identityId: selectedIdentity.id,
+          keyId,
+          privateKeyHex,
+        });
+        if (result.status === "ok") {
+          await reloadIdentity(selectedIdentity.id);
+          setKeyInfoState({ isSubmitting: false, error: null, success: "Private key added successfully" });
+        } else {
+          setKeyInfoState({ isSubmitting: false, error: result.error, success: null });
+        }
+      } catch (e) {
+        setKeyInfoState({
+          isSubmitting: false,
+          error: e instanceof Error ? e.message : String(e),
+          success: null,
+        });
+      }
+    },
+    [selectedIdentity, reloadIdentity],
+  );
+
+  const handleRemovePrivateKey = useCallback(
+    async (keyId: number) => {
+      if (!selectedIdentity) return;
+      setKeyInfoState((s) => ({ ...s, isSubmitting: true, error: null }));
+      try {
+        const result = await commands.identityRemovePrivateKeyFromStorage({
+          identityId: selectedIdentity.id,
+          keyId,
+        });
+        if (result.status === "ok") {
+          await reloadIdentity(selectedIdentity.id);
+          setKeyInfoState({ isSubmitting: false, error: null, success: "Private key removed" });
+        } else {
+          setKeyInfoState({ isSubmitting: false, error: result.error, success: null });
+        }
+      } catch (e) {
+        setKeyInfoState({
+          isSubmitting: false,
+          error: e instanceof Error ? e.message : String(e),
+          success: null,
+        });
+      }
+    },
+    [selectedIdentity, reloadIdentity],
+  );
+
   // ─── Render ──────────────────────────────────────────────────────
 
   if (loading) {
@@ -1159,6 +1212,8 @@ export function IdentitiesScreen() {
             onDisableKey={handleDisableKey}
             onReplaceKey={handleReplaceKey}
             onSignMessage={handleSignMessage}
+            onAddPrivateKey={handleAddPrivateKey}
+            onRemovePrivateKey={handleRemovePrivateKey}
             isSubmitting={keyInfoState.isSubmitting}
             error={keyInfoState.error}
             success={keyInfoState.success}

@@ -133,7 +133,9 @@ export function TokenMyTokensScreen() {
             const next = new Map(prev);
             next.set(key, {
               amount: result.amount,
-              explanation: result.explanation,
+              shortExplanation: result.shortExplanation,
+              detailedExplanation: result.detailedExplanation,
+              steps: result.steps,
             });
             return next;
           });

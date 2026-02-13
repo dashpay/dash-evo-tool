@@ -112,8 +112,12 @@ export interface TokenSummary {
 export interface RewardEstimate {
   /** The estimated reward amount (formatted string). */
   amount: string;
-  /** Full explanation text from the backend. */
-  explanation: string;
+  /** Basic human-readable explanation. */
+  shortExplanation: string;
+  /** Detailed explanation text. */
+  detailedExplanation: string;
+  /** Per-step breakdown explanations. */
+  steps: string[];
 }
 
 export interface MyTokensTableProps {
@@ -666,7 +670,19 @@ function TokenDetailView({
               </Button>
             </TableHead>
             <TableHead>
-              <span className="text-sm font-semibold">Identity ID</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="-ml-3 h-8 font-semibold"
+                onClick={() => onSortChange("ownerIdentity")}
+              >
+                Identity ID
+                <SortIndicator
+                  column="ownerIdentity"
+                  activeColumn={sortColumn}
+                  sortOrder={sortOrder}
+                />
+              </Button>
             </TableHead>
             <TableHead className="w-[160px] text-right">
               <Button
@@ -891,7 +907,7 @@ function RewardExplanationDialog({
   onOpenChange: (open: boolean) => void;
   estimate: RewardEstimate | null;
 }) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(["basic"]));
 
   const toggleSection = useCallback((section: string) => {
     setExpandedSections((prev) => {
@@ -925,24 +941,76 @@ function RewardExplanationDialog({
             </p>
           </div>
 
-          {/* Full explanation */}
+          {/* Basic Explanation */}
           <div>
             <button
               type="button"
               className="flex items-center gap-1.5 text-sm font-medium hover:underline"
-              onClick={() => toggleSection("explanation")}
+              onClick={() => toggleSection("basic")}
             >
-              {expandedSections.has("explanation") ? "▾" : "▸"} Explanation
+              {expandedSections.has("basic") ? "▾" : "▸"} Basic Explanation
             </button>
-            {expandedSections.has("explanation") && (
+            {expandedSections.has("basic") && (
               <div
                 className="mt-2 rounded-md border bg-muted/20 p-3 text-sm whitespace-pre-wrap font-mono"
-                data-testid="reward-explanation-text"
+                data-testid="reward-short-explanation"
               >
-                {estimate.explanation}
+                {estimate.shortExplanation}
               </div>
             )}
           </div>
+
+          {/* Detailed Explanation */}
+          <div>
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-sm font-medium hover:underline"
+              onClick={() => toggleSection("detailed")}
+            >
+              {expandedSections.has("detailed") ? "▾" : "▸"} Detailed Explanation
+            </button>
+            {expandedSections.has("detailed") && (
+              <div
+                className="mt-2 rounded-md border bg-muted/20 p-3 text-sm whitespace-pre-wrap font-mono"
+                data-testid="reward-detailed-explanation"
+              >
+                {estimate.detailedExplanation}
+              </div>
+            )}
+          </div>
+
+          {/* Step-by-Step Breakdown */}
+          {estimate.steps.length > 0 && (
+            <div>
+              <button
+                type="button"
+                className="flex items-center gap-1.5 text-sm font-medium hover:underline"
+                onClick={() => toggleSection("steps")}
+              >
+                {expandedSections.has("steps") ? "▾" : "▸"} Step-by-Step Breakdown
+              </button>
+              {expandedSections.has("steps") && (
+                <div className="mt-2 space-y-2">
+                  {estimate.steps.map((step, i) => (
+                    <div key={i}>
+                      <button
+                        type="button"
+                        className="flex items-center gap-1.5 text-sm font-medium hover:underline ml-4"
+                        onClick={() => toggleSection(`step-${i}`)}
+                      >
+                        {expandedSections.has(`step-${i}`) ? "▾" : "▸"} Step {i + 1}
+                      </button>
+                      {expandedSections.has(`step-${i}`) && (
+                        <div className="mt-1 ml-4 rounded-md border bg-muted/20 p-3 text-sm whitespace-pre-wrap font-mono">
+                          {step}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>

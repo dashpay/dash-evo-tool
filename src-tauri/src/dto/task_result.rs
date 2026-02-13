@@ -102,9 +102,7 @@ pub enum TaskResultPayloadDto {
     ContestCompleted,
     /// Per-vote results from a DPNS vote operation.
     #[serde(rename = "contestVoteResults")]
-    ContestVoteResults {
-        results: Vec<VoteResultEntryDto>,
-    },
+    ContestVoteResults { results: Vec<VoteResultEntryDto> },
     /// A DashPay operation completed (non-search result).
     #[serde(rename = "dashPayCompleted")]
     DashPayCompleted,

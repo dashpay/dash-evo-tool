@@ -626,7 +626,7 @@ pub fn start_zmq_forwarding(
                     // Process the transaction finality in the backend
                     match ctx.received_transaction_finality(tx, Some(is_lock.clone()), None) {
                         Ok(utxos) => {
-                            emit_wallet_updated_events(&handle_msg, &ctx, &utxos, net_dto);
+                            emit_wallet_updated_events(&handle_msg, ctx, &utxos, net_dto);
                             let txid = format!("{}", tx.txid());
                             let _ = ZmqIsLockedTransactionEvent {
                                 network: net_dto,
@@ -646,7 +646,7 @@ pub fn start_zmq_forwarding(
                 ZMQMessage::ChainLockedLockedTransaction(ref tx, height) => {
                     match ctx.received_transaction_finality(tx, None, Some(height)) {
                         Ok(utxos) => {
-                            emit_wallet_updated_events(&handle_msg, &ctx, &utxos, net_dto);
+                            emit_wallet_updated_events(&handle_msg, ctx, &utxos, net_dto);
                         }
                         Err(e) => {
                             tracing::error!("Failed to process chain-locked transaction: {}", e);

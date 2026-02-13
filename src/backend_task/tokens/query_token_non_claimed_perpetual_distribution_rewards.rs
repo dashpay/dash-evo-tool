@@ -13,6 +13,7 @@ use dash_sdk::dpp::block::finalized_epoch_info::FinalizedEpochInfo;
 use dash_sdk::dpp::block::finalized_epoch_info::v0::getters::FinalizedEpochInfoGettersV0;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::reward_ratio::RewardRatio;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_recipient::TokenDistributionRecipient;
@@ -275,15 +276,31 @@ impl AppContext {
                 .map_err(|e| format!("Failed to calculate estimated rewards: {e}"))?
         };
 
+        let decimals = token_config.conventions().decimals();
+        let platform_version = self.platform_version();
+        let local_time = chrono::Local::now();
+        let timezone = local_time.format("%Z").to_string();
+
+        let short_explanation =
+            explanation.short_explanation(decimals, platform_version, &timezone);
+        let detailed_explanation = explanation.detailed_explanation();
+        let step_explanations: Vec<String> = explanation
+            .evaluation_steps
+            .iter()
+            .filter_map(|step| explanation.explanation_for_step(step.step_index))
+            .collect();
+
         Ok(BackendTaskSuccessResult::Token(
-            TokenResult::EstimatedDistributionRewards(
-                IdentityTokenIdentifier {
+            TokenResult::EstimatedDistributionRewards {
+                identity_token_id: IdentityTokenIdentifier {
                     identity_id,
                     token_id,
                 },
-                explanation.total_amount,
-                explanation,
-            ),
+                amount: explanation.total_amount,
+                short_explanation,
+                detailed_explanation,
+                step_explanations,
+            },
         ))
     }
 }

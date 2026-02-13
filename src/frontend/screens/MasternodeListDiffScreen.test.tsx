@@ -94,6 +94,8 @@ describe("MasternodeListDiffScreen", () => {
     render(<MasternodeListDiffScreen />);
     expect(screen.getByText("Masternode List Diff")).toBeInTheDocument();
     expect(screen.getByText("Core Items")).toBeInTheDocument();
+    expect(screen.getByText("Diffs")).toBeInTheDocument();
+    expect(screen.getByText("Chain Lock Sigs")).toBeInTheDocument();
     expect(screen.getByText("QR Info")).toBeInTheDocument();
     expect(screen.getByText("Quorum Viewer")).toBeInTheDocument();
   });
@@ -740,6 +742,7 @@ describe("MasternodeListDiffScreen", () => {
       expect(screen.getByTestId("fetch-dmls-with-rotation-button")).toBeInTheDocument();
       expect(screen.getByTestId("fetch-chain-locks-button")).toBeInTheDocument();
       expect(screen.getByTestId("clear-button")).toBeInTheDocument();
+      expect(screen.getByTestId("clear-keep-base-button")).toBeInTheDocument();
     });
 
     it("shows error for invalid base height", async () => {
@@ -978,6 +981,357 @@ describe("MasternodeListDiffScreen", () => {
       expect(screen.getByText("3 / 5")).toBeInTheDocument(); // signers
       expect(screen.getByText("2 / 5")).toBeInTheDocument(); // valid
       expect(screen.getByText("Height: 200")).toBeInTheDocument();
+    });
+  });
+
+  // ─── Chain Lock Sigs Tab ──────────────────────────────────────────────────
+
+  describe("Chain Lock Sigs Tab", () => {
+    it("shows empty state when no chain lock sig data", async () => {
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("Chain Lock Sigs"));
+      expect(screen.getByTestId("chain-lock-sigs-tab")).toBeInTheDocument();
+      expect(screen.getByText("No chain lock signature data available.")).toBeInTheDocument();
+    });
+
+    it("shows chain lock sigs from task result events", async () => {
+      mocks.commands.mnlistFetchChainLocks = vi.fn().mockResolvedValue({
+        taskId: "task-cl-1",
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await flushMicrotasks();
+
+      await user.click(screen.getByTestId("fetch-chain-locks-button"));
+
+      act(() => {
+        mocks.emitMockEvent("taskResultEvent", {
+          taskId: "task-cl-1",
+          result: {
+            type: "mnListChainLockSigs",
+            entries: [
+              { height: 100, blockHash: "a".repeat(64), signature: "sig100" },
+              { height: 200, blockHash: "b".repeat(64), signature: null },
+            ],
+          },
+        });
+      });
+
+      await user.click(screen.getByText("Chain Lock Sigs"));
+      expect(screen.getByTestId("chain-lock-sigs-tab")).toBeInTheDocument();
+      expect(screen.getByText("100")).toBeInTheDocument();
+      expect(screen.getByText("200")).toBeInTheDocument();
+      expect(screen.getByText("None")).toBeInTheDocument();
+    });
+  });
+
+  // ─── Diffs Tab ────────────────────────────────────────────────────────────
+
+  describe("Diffs Tab", () => {
+    function createMockDiffResult(taskId: string, baseHeight: number, height: number) {
+      return {
+        taskId,
+        result: {
+          type: "mnListFetchedDiff",
+          baseHeight,
+          height,
+          diff: {
+            version: 1,
+            baseBlockHash: "0".repeat(64),
+            blockHash: "1".repeat(64),
+            totalTransactions: 5,
+            merkleHashes: [],
+            merkleFlagsLen: 0,
+            coinbaseTxid: "c".repeat(64),
+            coinbaseSize: 100,
+            newMasternodes: [
+              { proRegTxHash: "mn-hash-aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aabb7788", address: "1.2.3.4:9999" },
+              { proRegTxHash: "mn-hash-xxxx", address: "5.6.7.8:19999" },
+            ],
+            deletedMasternodes: ["deleted-mn-hash-1111222233334444555566667777888899990000aaaabbbbccccdddd"],
+            newQuorums: [
+              {
+                version: 1,
+                llmqType: 4,
+                quorumHash: "qhash123".padEnd(64, "0"),
+                quorumIndex: null,
+                signers: [true, false],
+                validMembers: [true, true],
+                quorumPublicKey: "pk-test",
+                quorumVvecHash: "vvec-test",
+                thresholdSig: "tsig-test",
+                allCommitmentAggregatedSignature: "agg-test",
+              },
+            ],
+            deletedQuorums: [],
+            chainlockSigCount: 1,
+            chainlockSignatures: [{ signature: "clsig-test-1234", indexSet: [0, 1] }],
+          },
+        },
+      };
+    }
+
+    async function setupWithDiff() {
+      mocks.commands.mnlistFetchDiff = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-d1" },
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await flushMicrotasks();
+
+      await user.click(screen.getByTestId("fetch-diff-button"));
+
+      act(() => {
+        mocks.emitMockEvent("taskResultEvent", createMockDiffResult("task-d1", 0, 100));
+      });
+
+      return user;
+    }
+
+    it("shows empty state when no diffs are fetched", async () => {
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByText("Diffs"));
+      expect(screen.getByTestId("diffs-tab")).toBeInTheDocument();
+      expect(screen.getByText("No diff data available.")).toBeInTheDocument();
+    });
+
+    it("shows diff list when diffs are fetched", async () => {
+      const user = await setupWithDiff();
+      await user.click(screen.getByText("Diffs"));
+
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      const options = within(diffList).getAllByRole("option");
+      expect(options).toHaveLength(1);
+      expect(options[0]).toHaveTextContent("0 → 100");
+    });
+
+    it("shows new quorums when a diff is selected", async () => {
+      const user = await setupWithDiff();
+      await user.click(screen.getByText("Diffs"));
+
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      await user.click(within(diffList).getByRole("option"));
+
+      // Default sub-view is "New Quorums"
+      expect(screen.getByText("LLMQ_100_67")).toBeInTheDocument();
+    });
+
+    it("shows masternode changes when MN Changes sub-view is selected", async () => {
+      const user = await setupWithDiff();
+      await user.click(screen.getByText("Diffs"));
+
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      await user.click(within(diffList).getByRole("option"));
+
+      await user.click(screen.getByText("MN Changes"));
+      expect(screen.getByText("New Masternodes (2)")).toBeInTheDocument();
+      expect(screen.getByText("Deleted Masternodes (1)")).toBeInTheDocument();
+      expect(screen.getByText("1.2.3.4:9999")).toBeInTheDocument();
+    });
+
+    it("shows chain lock signatures when Chain Locks sub-view is selected", async () => {
+      const user = await setupWithDiff();
+      await user.click(screen.getByText("Diffs"));
+
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      await user.click(within(diffList).getByRole("option"));
+
+      await user.click(screen.getByText("Chain Locks"));
+      expect(screen.getByText(/Index set: \[0, 1\]/)).toBeInTheDocument();
+    });
+
+    it("shows quorum detail when a quorum is selected in New Quorums sub-view", async () => {
+      const user = await setupWithDiff();
+      await user.click(screen.getByText("Diffs"));
+
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      await user.click(within(diffList).getByRole("option"));
+
+      // Click on the quorum entry in the items list
+      const itemList = screen.getByRole("listbox", { name: "Diff Items" });
+      await user.click(within(itemList).getByRole("option"));
+
+      expect(screen.getByTestId("quorum-entry-detail")).toBeInTheDocument();
+      expect(screen.getByText("pk-test")).toBeInTheDocument();
+    });
+
+    it("shows masternode detail when a masternode is selected", async () => {
+      const user = await setupWithDiff();
+      await user.click(screen.getByText("Diffs"));
+
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      await user.click(within(diffList).getByRole("option"));
+      await user.click(screen.getByText("MN Changes"));
+
+      // Click on first new masternode
+      const itemList = screen.getByRole("listbox", { name: "Diff Items" });
+      const items = within(itemList).getAllByRole("option");
+      await user.click(items[0]);
+
+      const detail = screen.getByTestId("masternode-detail");
+      expect(detail).toBeInTheDocument();
+      expect(within(detail).getByText("New Masternode")).toBeInTheDocument();
+      expect(within(detail).getByText("1.2.3.4:9999")).toBeInTheDocument();
+    });
+
+    it("filters masternodes with search (3+ chars)", async () => {
+      const user = await setupWithDiff();
+      await user.click(screen.getByText("Diffs"));
+
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      await user.click(within(diffList).getByRole("option"));
+      await user.click(screen.getByText("MN Changes"));
+
+      // Initially shows 2 new + 1 deleted
+      expect(screen.getByText("New Masternodes (2)")).toBeInTheDocument();
+
+      const searchInput = screen.getByTestId("mn-search-input");
+      await user.type(searchInput, "xxxx");
+
+      // Should filter to only the "xxxx" masternode
+      expect(screen.getByText("New Masternodes (1)")).toBeInTheDocument();
+      expect(screen.getByText("5.6.7.8:19999")).toBeInTheDocument();
+    });
+
+    it("shows no results message when search has no matches", async () => {
+      const user = await setupWithDiff();
+      await user.click(screen.getByText("Diffs"));
+
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      await user.click(within(diffList).getByRole("option"));
+      await user.click(screen.getByText("MN Changes"));
+
+      const searchInput = screen.getByTestId("mn-search-input");
+      await user.type(searchInput, "zzzzzz");
+
+      expect(screen.getByText("No masternodes match your search.")).toBeInTheDocument();
+    });
+  });
+
+  // ─── Clear Keep Base ──────────────────────────────────────────────────────
+
+  describe("Clear Keep Base", () => {
+    it("keeps only the base diff (baseHeight === 0) when clearKeepBase is clicked", async () => {
+      mocks.commands.mnlistFetchDiff = vi.fn()
+        .mockResolvedValueOnce({ status: "ok", data: { taskId: "task-ckb1" } })
+        .mockResolvedValueOnce({ status: "ok", data: { taskId: "task-ckb2" } });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await flushMicrotasks();
+
+      // Fetch two diffs
+      await user.click(screen.getByTestId("fetch-diff-button"));
+      act(() => {
+        mocks.emitMockEvent("taskResultEvent", {
+          taskId: "task-ckb1",
+          result: {
+            type: "mnListFetchedDiff",
+            baseHeight: 0,
+            height: 100,
+            diff: {
+              version: 1, baseBlockHash: "0".repeat(64), blockHash: "1".repeat(64),
+              totalTransactions: 1, merkleHashes: [], merkleFlagsLen: 0,
+              coinbaseTxid: "a".repeat(64), coinbaseSize: 100,
+              newMasternodes: [], deletedMasternodes: [],
+              newQuorums: [], deletedQuorums: [],
+              chainlockSigCount: 0, chainlockSignatures: [],
+            },
+          },
+        });
+      });
+
+      await user.click(screen.getByTestId("fetch-diff-button"));
+      act(() => {
+        mocks.emitMockEvent("taskResultEvent", {
+          taskId: "task-ckb2",
+          result: {
+            type: "mnListFetchedDiff",
+            baseHeight: 100,
+            height: 200,
+            diff: {
+              version: 1, baseBlockHash: "1".repeat(64), blockHash: "2".repeat(64),
+              totalTransactions: 1, merkleHashes: [], merkleFlagsLen: 0,
+              coinbaseTxid: "b".repeat(64), coinbaseSize: 100,
+              newMasternodes: [], deletedMasternodes: [],
+              newQuorums: [], deletedQuorums: [],
+              chainlockSigCount: 0, chainlockSignatures: [],
+            },
+          },
+        });
+      });
+
+      // Verify both diffs exist
+      await user.click(screen.getByText("Diffs"));
+      const diffList = screen.getByRole("listbox", { name: "Fetched Diffs" });
+      expect(within(diffList).getAllByRole("option")).toHaveLength(2);
+
+      // Click Clear Keep Base
+      await user.click(screen.getByTestId("clear-keep-base-button"));
+
+      // Should keep only the base diff (baseHeight === 0)
+      expect(within(diffList).getAllByRole("option")).toHaveLength(1);
+      expect(within(diffList).getByRole("option")).toHaveTextContent("0 → 100");
+    });
+
+    it("shows success message after clear keep base", async () => {
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await user.click(screen.getByTestId("clear-keep-base-button"));
+      await screen.findByText("Cleared data, kept base diff");
+    });
+  });
+
+  // ─── QR Info Routing from Task Results ────────────────────────────────────
+
+  describe("QR Info Routing", () => {
+    it("populates QR Info tab when fetched via Get single end QR info", async () => {
+      mocks.commands.mnlistFetchQrInfo = vi.fn().mockResolvedValue({
+        status: "ok",
+        data: { taskId: "task-qr1" },
+      });
+
+      const user = userEvent.setup();
+      render(<MasternodeListDiffScreen />);
+      await flushMicrotasks();
+
+      await user.click(screen.getByTestId("fetch-qrinfo-button"));
+
+      // Simulate QR info result
+      act(() => {
+        mocks.emitMockEvent("taskResultEvent", {
+          taskId: "task-qr1",
+          result: {
+            type: "mnListFetchedQrInfo",
+            qrInfo: {
+              tipBlockHash: "tip".padEnd(64, "0"),
+              snapshotHMinusC: { skipListMode: 0, activeQuorumMembers: [true], skipList: [] },
+              snapshotHMinus2C: { skipListMode: 0, activeQuorumMembers: [], skipList: [] },
+              snapshotHMinus3C: { skipListMode: 0, activeQuorumMembers: [], skipList: [] },
+              snapshotHMinus4C: null,
+              diffHMinus3C: { version: 1, baseBlockHash: "0".repeat(64), blockHash: "1".repeat(64), totalTransactions: 0, merkleHashes: [], merkleFlagsLen: 0, coinbaseTxid: "a".repeat(64), coinbaseSize: 0, newMasternodes: [], deletedMasternodes: [], newQuorums: [], deletedQuorums: [], chainlockSigCount: 0, chainlockSignatures: [] },
+              diffHMinus2C: { version: 1, baseBlockHash: "0".repeat(64), blockHash: "1".repeat(64), totalTransactions: 0, merkleHashes: [], merkleFlagsLen: 0, coinbaseTxid: "a".repeat(64), coinbaseSize: 0, newMasternodes: [], deletedMasternodes: [], newQuorums: [], deletedQuorums: [], chainlockSigCount: 0, chainlockSignatures: [] },
+              diffHMinusC: { version: 1, baseBlockHash: "0".repeat(64), blockHash: "1".repeat(64), totalTransactions: 0, merkleHashes: [], merkleFlagsLen: 0, coinbaseTxid: "a".repeat(64), coinbaseSize: 0, newMasternodes: [], deletedMasternodes: [], newQuorums: [], deletedQuorums: [], chainlockSigCount: 0, chainlockSignatures: [] },
+              diffH: { version: 1, baseBlockHash: "0".repeat(64), blockHash: "1".repeat(64), totalTransactions: 0, merkleHashes: [], merkleFlagsLen: 0, coinbaseTxid: "a".repeat(64), coinbaseSize: 0, newMasternodes: [], deletedMasternodes: [], newQuorums: [], deletedQuorums: [], chainlockSigCount: 0, chainlockSignatures: [] },
+              diffTip: { version: 1, baseBlockHash: "0".repeat(64), blockHash: "1".repeat(64), totalTransactions: 0, merkleHashes: [], merkleFlagsLen: 0, coinbaseTxid: "a".repeat(64), coinbaseSize: 0, newMasternodes: [], deletedMasternodes: [], newQuorums: [], deletedQuorums: [], chainlockSigCount: 0, chainlockSignatures: [] },
+              diffHMinus4C: null,
+              lastCommitments: [],
+              quorumSnapshotList: [],
+              mnListDiffList: [],
+            },
+          },
+        });
+      });
+
+      // Navigate to QR Info tab - data should be populated
+      await user.click(screen.getByText("QR Info"));
+      expect(screen.getByText(/Tip:/)).toBeInTheDocument();
+      expect(screen.getByText("Quorum Snapshots")).toBeInTheDocument();
     });
   });
 });

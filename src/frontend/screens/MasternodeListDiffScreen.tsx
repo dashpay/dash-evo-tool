@@ -1,4 +1,4 @@
-import { useCallback, useState, useRef } from "react";
+import { useCallback, useState, useRef, useMemo } from "react";
 import { useEffect } from "react";
 import { commands, events } from "@/bindings";
 import type {
@@ -28,6 +28,8 @@ import {
   AlertCircle,
   X,
   Shield,
+  Search,
+  GitCompare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toastError } from "@/lib/toastError";
@@ -812,13 +814,23 @@ function getFieldItems(
   }
 }
 
-function QrInfoTab() {
+function QrInfoTab({ externalQrInfo }: { externalQrInfo?: QrInfoDto | null }) {
   const [qrInfo, setQrInfo] = useState<QrInfoDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selectedField, setSelectedField] = useState<QrField | null>(null);
   const [selectedItemIndex, setSelectedItemIndex] = useState<number | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<QrSelectedDetail | null>(null);
+
+  // Accept externally fetched QR info (from "Get single end QR info" button)
+  useEffect(() => {
+    if (externalQrInfo) {
+      setQrInfo(externalQrInfo);
+      setSelectedField(null);
+      setSelectedItemIndex(null);
+      setSelectedDetail(null);
+    }
+  }, [externalQrInfo]);
 
   const handleLoadFile = useCallback(async () => {
     setLoading(true);
@@ -986,6 +998,427 @@ function QrInfoTab() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Diffs Tab
+// ---------------------------------------------------------------------------
+
+type DiffSubView = "newQuorums" | "masternodeChanges" | "chainLocks";
+
+function DiffsTab({
+  fetchedDiffs,
+}: {
+  fetchedDiffs: Array<{ baseHeight: number; height: number; diff: MnListDiffDto }>;
+}) {
+  const [selectedDiffIndex, setSelectedDiffIndex] = useState<number | null>(null);
+  const [subView, setSubView] = useState<DiffSubView>("newQuorums");
+  const [selectedItemIndex, setSelectedItemIndex] = useState<number | null>(null);
+  const [mnSearch, setMnSearch] = useState("");
+
+  // Reset selection when diffs change
+  useEffect(() => {
+    if (selectedDiffIndex !== null && selectedDiffIndex >= fetchedDiffs.length) {
+      setSelectedDiffIndex(null);
+      setSelectedItemIndex(null);
+    }
+  }, [fetchedDiffs.length, selectedDiffIndex]);
+
+  const selectedDiff = selectedDiffIndex !== null ? fetchedDiffs[selectedDiffIndex] : null;
+
+  // Filtered masternodes based on search
+  const filteredNewMasternodes = useMemo(() => {
+    if (!selectedDiff) return [];
+    const mns = selectedDiff.diff.newMasternodes;
+    if (mnSearch.length < 3) return mns;
+    const lower = mnSearch.toLowerCase();
+    return mns.filter(
+      (mn) =>
+        mn.proRegTxHash.toLowerCase().includes(lower) ||
+        mn.address.toLowerCase().includes(lower),
+    );
+  }, [selectedDiff, mnSearch]);
+
+  const filteredDeletedMasternodes = useMemo(() => {
+    if (!selectedDiff) return [];
+    const dels = selectedDiff.diff.deletedMasternodes;
+    if (mnSearch.length < 3) return dels;
+    const lower = mnSearch.toLowerCase();
+    return dels.filter((h) => h.toLowerCase().includes(lower));
+  }, [selectedDiff, mnSearch]);
+
+  if (fetchedDiffs.length === 0) {
+    return (
+      <div
+        className="flex-1 flex items-center justify-center text-sm text-muted-foreground"
+        data-testid="diffs-tab"
+      >
+        <div className="text-center">
+          <GitCompare className="size-8 mx-auto mb-3 opacity-30" />
+          <p>No diff data available.</p>
+          <p className="text-xs mt-1">
+            Fetch MnList diffs using the controls above to browse them here.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const handleSelectDiff = (index: number) => {
+    setSelectedDiffIndex(index);
+    setSelectedItemIndex(null);
+    setMnSearch("");
+  };
+
+  const handleSelectSubView = (view: DiffSubView) => {
+    setSubView(view);
+    setSelectedItemIndex(null);
+    setMnSearch("");
+  };
+
+  // Build middle column items based on sub-view
+  const renderMiddleContent = () => {
+    if (!selectedDiff) {
+      return (
+        <div className="p-4 text-xs text-muted-foreground text-center">
+          Select a diff from the left panel.
+        </div>
+      );
+    }
+
+    const diff = selectedDiff.diff;
+
+    switch (subView) {
+      case "newQuorums":
+        return diff.newQuorums.length === 0 ? (
+          <div className="p-4 text-xs text-muted-foreground text-center">
+            No new quorums in this diff.
+          </div>
+        ) : (
+          diff.newQuorums.map((q, i) => {
+            const isSelected = selectedItemIndex === i;
+            return (
+              <button
+                key={i}
+                onClick={() => setSelectedItemIndex(i)}
+                className={cn(
+                  "w-full text-left px-3 py-2 text-xs border-b last:border-b-0 transition-colors",
+                  "hover:bg-accent/50 focus:bg-accent/50 focus:outline-none",
+                  isSelected && "bg-accent text-accent-foreground font-medium",
+                )}
+                aria-selected={isSelected}
+                role="option"
+              >
+                <div className="font-mono truncate">{truncateHex(q.quorumHash)}</div>
+                <div className="text-muted-foreground">{llmqTypeLabel(q.llmqType)}</div>
+              </button>
+            );
+          })
+        );
+
+      case "masternodeChanges":
+        return (
+          <>
+            {/* Search input */}
+            <div className="px-2 py-1.5 border-b">
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
+                <Input
+                  type="text"
+                  value={mnSearch}
+                  onChange={(e) => { setMnSearch(e.target.value); setSelectedItemIndex(null); }}
+                  placeholder="Search masternodes (3+ chars)"
+                  className="h-7 text-xs pl-7"
+                  data-testid="mn-search-input"
+                />
+              </div>
+            </div>
+            {/* New masternodes */}
+            {filteredNewMasternodes.length > 0 && (
+              <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground bg-muted/30 border-b">
+                New Masternodes ({filteredNewMasternodes.length})
+              </div>
+            )}
+            {filteredNewMasternodes.map((mn, i) => {
+              const isSelected = selectedItemIndex === i;
+              return (
+                <button
+                  key={`new-${i}`}
+                  onClick={() => setSelectedItemIndex(i)}
+                  className={cn(
+                    "w-full text-left px-3 py-1.5 text-xs border-b last:border-b-0 transition-colors",
+                    "hover:bg-accent/50 focus:bg-accent/50 focus:outline-none",
+                    isSelected && "bg-accent text-accent-foreground font-medium",
+                  )}
+                  aria-selected={isSelected}
+                  role="option"
+                >
+                  <div className="font-mono truncate">{truncateHex(mn.proRegTxHash)}</div>
+                  <div className="text-muted-foreground">{mn.address}</div>
+                </button>
+              );
+            })}
+            {/* Deleted masternodes */}
+            {filteredDeletedMasternodes.length > 0 && (
+              <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground bg-muted/30 border-b">
+                Deleted Masternodes ({filteredDeletedMasternodes.length})
+              </div>
+            )}
+            {filteredDeletedMasternodes.map((h, i) => {
+              const idx = filteredNewMasternodes.length + i;
+              const isSelected = selectedItemIndex === idx;
+              return (
+                <button
+                  key={`del-${i}`}
+                  onClick={() => setSelectedItemIndex(idx)}
+                  className={cn(
+                    "w-full text-left px-3 py-1.5 text-xs border-b last:border-b-0 transition-colors text-red-600 dark:text-red-400",
+                    "hover:bg-accent/50 focus:bg-accent/50 focus:outline-none",
+                    isSelected && "bg-accent text-accent-foreground font-medium",
+                  )}
+                  aria-selected={isSelected}
+                  role="option"
+                >
+                  <div className="font-mono truncate">{truncateHex(h)}</div>
+                  <div className="text-muted-foreground">Deleted</div>
+                </button>
+              );
+            })}
+            {filteredNewMasternodes.length === 0 && filteredDeletedMasternodes.length === 0 && (
+              <div className="p-4 text-xs text-muted-foreground text-center">
+                {mnSearch.length >= 3
+                  ? "No masternodes match your search."
+                  : "No masternode changes in this diff."}
+              </div>
+            )}
+          </>
+        );
+
+      case "chainLocks":
+        return diff.chainlockSignatures.length === 0 ? (
+          <div className="p-4 text-xs text-muted-foreground text-center">
+            No chain lock signatures in this diff.
+          </div>
+        ) : (
+          diff.chainlockSignatures.map((sig, i) => {
+            const isSelected = selectedItemIndex === i;
+            return (
+              <button
+                key={i}
+                onClick={() => setSelectedItemIndex(i)}
+                className={cn(
+                  "w-full text-left px-3 py-2 text-xs border-b last:border-b-0 transition-colors",
+                  "hover:bg-accent/50 focus:bg-accent/50 focus:outline-none",
+                  isSelected && "bg-accent text-accent-foreground font-medium",
+                )}
+                aria-selected={isSelected}
+                role="option"
+              >
+                <div className="font-mono truncate">{truncateHex(sig.signature)}</div>
+                <div className="text-muted-foreground">
+                  Index set: [{sig.indexSet.join(", ")}]
+                </div>
+              </button>
+            );
+          })
+        );
+    }
+  };
+
+  // Build right column detail based on selection
+  const renderDetailContent = () => {
+    if (!selectedDiff || selectedItemIndex === null) {
+      return (
+        <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+          Select an item to view details.
+        </div>
+      );
+    }
+
+    const diff = selectedDiff.diff;
+
+    switch (subView) {
+      case "newQuorums": {
+        const entry = diff.newQuorums[selectedItemIndex];
+        if (!entry) return null;
+        return <QuorumEntryDetail entry={entry} />;
+      }
+      case "masternodeChanges": {
+        if (selectedItemIndex < filteredNewMasternodes.length) {
+          const mn = filteredNewMasternodes[selectedItemIndex];
+          return (
+            <div className="flex flex-col gap-3" data-testid="masternode-detail">
+              <h3 className="text-lg font-semibold">New Masternode</h3>
+              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+                <span className="text-muted-foreground">ProRegTx Hash</span>
+                <span className="font-mono break-all">{mn.proRegTxHash}</span>
+                <span className="text-muted-foreground">Address</span>
+                <span className="font-mono">{mn.address}</span>
+              </div>
+            </div>
+          );
+        }
+        const delIdx = selectedItemIndex - filteredNewMasternodes.length;
+        const hash = filteredDeletedMasternodes[delIdx];
+        if (!hash) return null;
+        return (
+          <div className="flex flex-col gap-3" data-testid="masternode-detail">
+            <h3 className="text-lg font-semibold">Deleted Masternode</h3>
+            <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+              <span className="text-muted-foreground">ProRegTx Hash</span>
+              <span className="font-mono break-all">{hash}</span>
+            </div>
+          </div>
+        );
+      }
+      case "chainLocks": {
+        const sig = diff.chainlockSignatures[selectedItemIndex];
+        if (!sig) return null;
+        return (
+          <div className="flex flex-col gap-3" data-testid="chainlock-sig-detail">
+            <h3 className="text-lg font-semibold">Chain Lock Signature</h3>
+            <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+              <span className="text-muted-foreground">Signature</span>
+              <div className="flex items-start gap-2">
+                <span className="font-mono break-all">{sig.signature}</span>
+                <CopyButton value={sig.signature} size="sm" />
+              </div>
+              <span className="text-muted-foreground">Index Set</span>
+              <span className="font-mono">[{sig.indexSet.join(", ")}]</span>
+            </div>
+          </div>
+        );
+      }
+    }
+  };
+
+  return (
+    <div className="flex gap-3 min-h-0 flex-1" data-testid="diffs-tab">
+      {/* Left column: Diff list */}
+      <div className="w-[150px] shrink-0 flex flex-col min-h-0">
+        <h4 className="text-xs font-semibold text-muted-foreground mb-1.5">
+          Fetched Diffs ({fetchedDiffs.length})
+        </h4>
+        <div
+          className="flex-1 overflow-y-auto rounded border bg-card"
+          role="listbox"
+          aria-label="Fetched Diffs"
+        >
+          {fetchedDiffs.map((item, i) => {
+            const isSelected = selectedDiffIndex === i;
+            return (
+              <button
+                key={`${item.baseHeight}-${item.height}-${i}`}
+                onClick={() => handleSelectDiff(i)}
+                className={cn(
+                  "w-full text-left px-3 py-2 text-xs border-b last:border-b-0 transition-colors",
+                  "hover:bg-accent/50 focus:bg-accent/50 focus:outline-none",
+                  isSelected && "bg-accent text-accent-foreground font-medium",
+                )}
+                aria-selected={isSelected}
+                role="option"
+              >
+                {item.baseHeight} → {item.height}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Middle column: Sub-view */}
+      <div className="w-[280px] shrink-0 flex flex-col min-h-0">
+        {/* Sub-view toggle buttons */}
+        <div className="flex items-center gap-1 mb-1.5">
+          {(
+            [
+              ["newQuorums", "New Quorums"],
+              ["masternodeChanges", "MN Changes"],
+              ["chainLocks", "Chain Locks"],
+            ] as [DiffSubView, string][]
+          ).map(([view, label]) => (
+            <Button
+              key={view}
+              variant={subView === view ? "default" : "outline"}
+              size="sm"
+              className="h-6 text-[10px] px-2"
+              onClick={() => handleSelectSubView(view)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+        <div
+          className="flex-1 overflow-y-auto rounded border bg-card"
+          role="listbox"
+          aria-label="Diff Items"
+        >
+          {renderMiddleContent()}
+        </div>
+      </div>
+
+      {/* Right column: Detail view */}
+      <div className="flex-1 min-h-0 overflow-y-auto rounded border bg-card p-4">
+        {renderDetailContent()}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chain Lock Sigs Tab
+// ---------------------------------------------------------------------------
+
+function ChainLockSigsTab({ entries }: { entries: ChainLockSigEntry[] }) {
+  const sorted = useMemo(
+    () => [...entries].sort((a, b) => a.height - b.height),
+    [entries],
+  );
+
+  if (sorted.length === 0) {
+    return (
+      <div
+        className="flex-1 flex items-center justify-center text-sm text-muted-foreground"
+        data-testid="chain-lock-sigs-tab"
+      >
+        <div className="text-center">
+          <Blocks className="size-8 mx-auto mb-3 opacity-30" />
+          <p>No chain lock signature data available.</p>
+          <p className="text-xs mt-1">
+            Fetch chain locks using the controls above to populate data.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3 min-h-0 flex-1" data-testid="chain-lock-sigs-tab">
+      <div className="flex-1 overflow-y-auto rounded border bg-card">
+        {/* Header */}
+        <div className="flex items-center gap-2 px-3 py-1.5 text-[10px] text-muted-foreground font-semibold border-b bg-muted/30 sticky top-0">
+          <span className="w-20 shrink-0">Height</span>
+          <span className="flex-1">Block Hash</span>
+          <span className="flex-1">Signature</span>
+        </div>
+        {sorted.map((entry, i) => (
+          <div
+            key={`${entry.height}-${i}`}
+            className="flex items-center gap-2 px-3 py-1.5 text-xs border-b last:border-b-0"
+          >
+            <span className="w-20 shrink-0 font-mono font-medium">
+              {entry.height}
+            </span>
+            <span className="flex-1 font-mono text-muted-foreground truncate">
+              {truncateHex(entry.blockHash)}
+            </span>
+            <span className="flex-1 font-mono text-muted-foreground truncate">
+              {entry.signature ?? "None"}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1356,6 +1789,16 @@ function InputArea({
         >
           Clear
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={() => handleAction("clearKeepBase")}
+          disabled={pendingOp !== null}
+          data-testid="clear-keep-base-button"
+        >
+          Clear Keep Base
+        </Button>
       </div>
 
       {/* Pending spinner */}
@@ -1421,7 +1864,8 @@ export function MasternodeListDiffScreen() {
   const [fetchedDiffs, setFetchedDiffs] = useState<
     Array<{ baseHeight: number; height: number; diff: MnListDiffDto }>
   >([]);
-  const [_chainLockSigs, setChainLockSigs] = useState<ChainLockSigEntry[]>([]);
+  const [chainLockSigs, setChainLockSigs] = useState<ChainLockSigEntry[]>([]);
+  const [fetchedQrInfo, setFetchedQrInfo] = useState<QrInfoDto | null>(null);
 
   // Track pending task IDs to match results
   const pendingTaskIds = useRef<Set<string>>(new Set());
@@ -1462,7 +1906,8 @@ export function MasternodeListDiffScreen() {
               setMessage({ text: `Fetched diff: ${result.baseHeight} → ${result.height}`, type: "success" });
               break;
             case "mnListFetchedQrInfo":
-              // Extract diffs from QR info
+              // Cast needed: backend serializes QrInfoDto via serde_json::Value (typed as `any` in bindings)
+              setFetchedQrInfo(result.qrInfo as unknown as QrInfoDto);
               setMessage({ text: "Fetched QR info successfully", type: "success" });
               break;
             case "mnListChainLockSigs":
@@ -1521,7 +1966,19 @@ export function MasternodeListDiffScreen() {
       if (action === "clear") {
         setFetchedDiffs([]);
         setChainLockSigs([]);
+        setFetchedQrInfo(null);
         setMessage({ text: "Cleared all data", type: "success" });
+        return;
+      }
+
+      if (action === "clearKeepBase") {
+        setFetchedDiffs((prev) => {
+          const baseDiff = prev.find((d) => d.baseHeight === 0);
+          return baseDiff ? [baseDiff] : [];
+        });
+        setChainLockSigs([]);
+        setFetchedQrInfo(null);
+        setMessage({ text: "Cleared data, kept base diff", type: "success" });
         return;
       }
 
@@ -1636,6 +2093,22 @@ export function MasternodeListDiffScreen() {
       <Tabs defaultValue="core-items" className="flex flex-col flex-1 min-h-0">
         <TabsList className="w-fit">
           <TabsTrigger value="core-items">Core Items</TabsTrigger>
+          <TabsTrigger value="diffs">
+            Diffs
+            {fetchedDiffs.length > 0 && (
+              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">
+                {fetchedDiffs.length}
+              </Badge>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="chain-lock-sigs">
+            Chain Lock Sigs
+            {chainLockSigs.length > 0 && (
+              <Badge variant="secondary" className="ml-1 text-[10px] h-4 px-1">
+                {chainLockSigs.length}
+              </Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="qr-info">QR Info</TabsTrigger>
           <TabsTrigger value="quorum-viewer">
             Quorum Viewer
@@ -1653,10 +2126,22 @@ export function MasternodeListDiffScreen() {
           <CoreItemsTab />
         </TabsContent>
         <TabsContent
+          value="diffs"
+          className="flex-1 min-h-0 flex flex-col mt-4"
+        >
+          <DiffsTab fetchedDiffs={fetchedDiffs} />
+        </TabsContent>
+        <TabsContent
+          value="chain-lock-sigs"
+          className="flex-1 min-h-0 flex flex-col mt-4"
+        >
+          <ChainLockSigsTab entries={chainLockSigs} />
+        </TabsContent>
+        <TabsContent
           value="qr-info"
           className="flex-1 min-h-0 flex flex-col mt-4"
         >
-          <QrInfoTab />
+          <QrInfoTab externalQrInfo={fetchedQrInfo} />
         </TabsContent>
         <TabsContent
           value="quorum-viewer"

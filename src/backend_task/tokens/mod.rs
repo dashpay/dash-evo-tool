@@ -7,7 +7,6 @@ use crate::{app::TaskResult, context::AppContext, model::qualified_identity::Qua
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
@@ -66,11 +65,13 @@ pub enum TokenResult {
     FetchedTokenBalances,
     SavedToken,
     DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
-    EstimatedDistributionRewards(
-        IdentityTokenIdentifier,
-        TokenAmount,
-        IntervalEvaluationExplanation,
-    ),
+    EstimatedDistributionRewards {
+        identity_token_id: IdentityTokenIdentifier,
+        amount: TokenAmount,
+        short_explanation: String,
+        detailed_explanation: String,
+        step_explanations: Vec<String>,
+    },
     TokenPricing {
         token_id: Identifier,
         prices: Option<TokenPricingSchedule>,

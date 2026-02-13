@@ -22,7 +22,7 @@ use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::{Screen, ScreenType};
-use chrono::{Local, Utc};
+use chrono::Utc;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
@@ -536,40 +536,32 @@ impl TokensScreen {
                                 .token_configuration
                                 .conventions()
                                 .plural_form_by_language_code_or_default("en");
+                            let total_amount = self
+                                .my_tokens
+                                .get(&identity_token_id)
+                                .and_then(|itb| itb.estimated_unclaimed_rewards)
+                                .unwrap_or(0);
                             let reward_amount =
-                                Amount::new(explanation.total_amount, decimal_places)
-                                    .with_unit_name(unit_name);
+                                Amount::new(total_amount, decimal_places).with_unit_name(unit_name);
 
                             ui.label(format!("Total Estimated Rewards: {}", reward_amount));
                             ui.separator();
 
                             ui.collapsing("Basic Explanation", |ui| {
-                                let local_time = Local::now();
-                                let timezone = local_time.format("%Z").to_string();
-
-                                let short_explanation = explanation.short_explanation(
-                                    token_info.token_configuration.conventions().decimals(),
-                                    self.app_context.platform_version(),
-                                    &timezone,
-                                );
-
-                                ui.label(short_explanation);
+                                ui.label(&explanation.short_explanation);
                             });
 
                             ui.collapsing("Detailed Explanation", |ui| {
-                                ui.label(explanation.detailed_explanation());
+                                ui.label(&explanation.detailed_explanation);
                             });
 
-                            if !explanation.evaluation_steps.is_empty() {
+                            if !explanation.step_explanations.is_empty() {
                                 ui.collapsing("Step-by-Step Breakdown", |ui| {
-                                    for (i, step) in explanation.evaluation_steps.iter().enumerate()
+                                    for (i, step_text) in
+                                        explanation.step_explanations.iter().enumerate()
                                     {
                                         ui.collapsing(format!("Step {}", i + 1), |ui| {
-                                            if let Some(step_explanation) =
-                                                explanation.explanation_for_step(step.step_index)
-                                            {
-                                                ui.label(step_explanation);
-                                            }
+                                            ui.label(step_text);
                                         });
                                     }
                                 });

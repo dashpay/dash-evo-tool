@@ -11,7 +11,7 @@ import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Sort types ──────────────────────────────────────────────────────
 
-export type TokenSortColumn = "ownerAlias" | "name" | "balance";
+export type TokenSortColumn = "ownerAlias" | "ownerIdentity" | "name" | "balance";
 
 export type TokenSortOrder = "ascending" | "descending";
 
@@ -166,6 +166,8 @@ function sortTokens(
     switch (column) {
       case "ownerAlias":
         return dir * (a.ownerAlias ?? "").localeCompare(b.ownerAlias ?? "");
+      case "ownerIdentity":
+        return dir * a.identityId.localeCompare(b.identityId);
       case "name":
         return dir * (a.name ?? "").localeCompare(b.name ?? "");
       case "balance": {

@@ -27,10 +27,14 @@ use crate::lock_helper::MutexExt;
 
 use serde_json;
 
+use crate::app::BackendTasksExecutionMode;
+use crate::backend_task::contract::ContractTask;
+use crate::backend_task::tokens::{TokenResult, TokenTask};
+use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
+use crate::ui::theme::DashColors;
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures;
 use dash_sdk::dpp::data_contract::associated_token::token_keeps_history_rules::v0::TokenKeepsHistoryRulesV0;
-use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -38,13 +42,8 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Context, Ui};
-use crate::ui::theme::DashColors;
 use egui::{ColorImage, TextureHandle};
 use enum_iterator::Sequence;
-use crate::app::BackendTasksExecutionMode;
-use crate::backend_task::contract::ContractTask;
-use crate::backend_task::tokens::{TokenResult, TokenTask};
-use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::contract::ContractResult;
@@ -365,6 +364,13 @@ impl TokenNameLanguage {
 
 pub type TokenSearchable = bool;
 
+/// Pre-computed reward explanation strings from the backend.
+pub struct RewardExplanation {
+    pub short_explanation: String,
+    pub detailed_explanation: String,
+    pub step_explanations: Vec<String>,
+}
+
 /// The main, combined TokensScreen:
 /// - Displays token balances or a search UI
 /// - Allows reordering of tokens if desired
@@ -436,8 +442,8 @@ pub struct TokensScreen {
     token_to_remove: Option<Identifier>,
     remove_token_confirmation_dialog: Option<ConfirmationDialog>,
 
-    // Reward explanations
-    reward_explanations: IndexMap<IdentityTokenIdentifier, IntervalEvaluationExplanation>,
+    // Reward explanations (pre-computed strings from the backend)
+    reward_explanations: IndexMap<IdentityTokenIdentifier, RewardExplanation>,
     show_explanation_popup: Option<IdentityTokenIdentifier>,
 
     // Token info popup
@@ -1588,17 +1594,25 @@ impl ScreenLike for TokensScreen {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.contract_details_loading = false;
             }
-            BackendTaskSuccessResult::Token(TokenResult::EstimatedDistributionRewards(
+            BackendTaskSuccessResult::Token(TokenResult::EstimatedDistributionRewards {
                 identity_token_id,
                 amount,
-                explanation,
-            )) => {
+                short_explanation,
+                detailed_explanation,
+                step_explanations,
+            }) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
                     itb.estimated_unclaimed_rewards = Some(amount);
                 }
-                self.reward_explanations
-                    .insert(identity_token_id, explanation);
+                self.reward_explanations.insert(
+                    identity_token_id,
+                    RewardExplanation {
+                        short_explanation,
+                        detailed_explanation,
+                        step_explanations,
+                    },
+                );
             }
             BackendTaskSuccessResult::Token(TokenResult::TokenPricing { token_id, prices }) => {
                 // Store the pricing data

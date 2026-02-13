@@ -8,7 +8,7 @@ set -euo pipefail
 
 TAURI_DRIVER_PORT="${TAURI_DRIVER_PORT:-4444}"
 DISPLAY="${DISPLAY:-:99}"
-APP_BINARY="./src-tauri/target/debug/dash-evo-tool-tauri"
+APP_BINARY="./src-tauri/target/release/dash-evo-tool-tauri"
 TEST_RESULTS_DIR="/app/test-results"
 STARTUP_TIMEOUT=60
 

@@ -99,17 +99,18 @@ RUN npm ci --ignore-scripts 2>/dev/null
 # ---- Layer: Full source ----
 COPY . .
 
-# ---- Build the Tauri app in debug mode ----
-# Debug mode is faster to compile and sufficient for E2E testing.
-# After building, strip the multi-GB intermediate artifacts from target/ so the
-# layer Docker exports is small (binary only ~200 MB instead of ~10 GB).
+# ---- Build the Tauri app in release mode ----
+# Release mode produces faster binaries (critical for SPV sync) and avoids
+# debug-only panics.  After building, strip the multi-GB intermediate artifacts
+# from target/ so the layer Docker exports is small (binary only ~200 MB
+# instead of ~10 GB).
 RUN npm run build 2>/dev/null && \
-    cargo build --manifest-path src-tauri/Cargo.toml && \
-    test -f src-tauri/target/debug/dash-evo-tool-tauri && \
-    mv src-tauri/target/debug/dash-evo-tool-tauri /tmp/app-binary && \
+    cargo build --release --manifest-path src-tauri/Cargo.toml && \
+    test -f src-tauri/target/release/dash-evo-tool-tauri && \
+    mv src-tauri/target/release/dash-evo-tool-tauri /tmp/app-binary && \
     rm -rf src-tauri/target && \
-    mkdir -p src-tauri/target/debug && \
-    mv /tmp/app-binary src-tauri/target/debug/dash-evo-tool-tauri
+    mkdir -p src-tauri/target/release && \
+    mv /tmp/app-binary src-tauri/target/release/dash-evo-tool-tauri
 
 # ---- Copy entrypoint and helpers ----
 COPY docker/e2e/entrypoint.sh /entrypoint.sh

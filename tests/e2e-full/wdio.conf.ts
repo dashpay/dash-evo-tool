@@ -18,7 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Path to the built Tauri binary (set in Docker, overridable for local dev)
 const appBinary =
   process.env.TAURI_APP_BINARY ||
-  path.resolve(__dirname, "../../src-tauri/target/debug/dash-evo-tool-tauri");
+  path.resolve(__dirname, "../../src-tauri/target/release/dash-evo-tool-tauri");
 
 // tauri-driver port (default matches docker/e2e/entrypoint.sh)
 const driverPort = parseInt(process.env.TAURI_DRIVER_PORT || "4444", 10);
@@ -297,10 +297,10 @@ export const config = {
             }
           },
           {
-            timeout: 300_000,
+            timeout: 120_000,
             interval: 3_000,
             timeoutMsg:
-              "SPV neither running nor errored within 300s",
+              "SPV neither running nor errored within 120s",
           }
         );
       } catch {
@@ -366,10 +366,10 @@ export const config = {
               }
             },
             {
-              timeout: 300_000,
+              timeout: 120_000,
               interval: 3_000,
               timeoutMsg:
-                "SPV did not reach 'running' status within 300s after retry",
+                "SPV did not reach 'running' status within 120s after retry",
             }
           );
           console.log("  SPV sync running (after retry)");

@@ -160,7 +160,7 @@ impl Database {
         // Use a LEFT JOIN to load identities and their top-ups in a single query,
         // avoiding the N+1 query pattern of querying top_up per identity.
         let mut stmt = conn.prepare(
-            "SELECT i.data, i.alias, i.wallet_index, i.status, i.id, t.top_up_index, t.amount
+            "SELECT i.data, i.alias, i.wallet_index, i.status, i.id, t.top_up_index, t.amount, i.wallet
              FROM identity i
              LEFT JOIN top_up t ON i.id = t.identity_id
              WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL
@@ -181,13 +181,18 @@ impl Database {
                 let alias: Option<String> = row.get(1)?;
                 let wallet_index: Option<u32> = row.get(2)?;
                 let status: Option<u8> = row.get(3)?;
+                let wallet_seed_hash: Option<WalletSeedHash> = row.get(7)?;
 
                 let mut identity = QualifiedIdentity::from_bytes(&data);
                 identity.alias = alias;
                 identity.wallet_index = wallet_index;
                 identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
                 identity.network = app_context.network;
-                identity.associated_wallets = wallets.clone();
+                if let Some(ref wsh) = wallet_seed_hash
+                    && let Some(wallet) = wallets.get(wsh)
+                {
+                    identity.associated_wallets.insert(*wsh, wallet.clone());
+                }
                 identity.top_ups = BTreeMap::new();
 
                 identities.push(identity);
@@ -219,7 +224,7 @@ impl Database {
 
         // Use a LEFT JOIN to load identities and their top-ups in a single query.
         let mut stmt = conn.prepare(
-            "SELECT i.data, i.alias, i.wallet_index, i.id, t.top_up_index, t.amount
+            "SELECT i.data, i.alias, i.wallet_index, i.id, t.top_up_index, t.amount, i.wallet
              FROM identity i
              LEFT JOIN top_up t ON i.id = t.identity_id
              WHERE i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL AND i.wallet_index IS NOT NULL
@@ -239,12 +244,17 @@ impl Database {
                 let data: Vec<u8> = row.get(0)?;
                 let alias: Option<String> = row.get(1)?;
                 let wallet_index: Option<u32> = row.get(2)?;
+                let wallet_seed_hash: Option<WalletSeedHash> = row.get(6)?;
 
                 let mut identity = QualifiedIdentity::from_bytes(&data);
                 identity.alias = alias;
                 identity.wallet_index = wallet_index;
                 identity.network = app_context.network;
-                identity.associated_wallets = wallets.clone();
+                if let Some(ref wsh) = wallet_seed_hash
+                    && let Some(wallet) = wallets.get(wsh)
+                {
+                    identity.associated_wallets.insert(*wsh, wallet.clone());
+                }
                 identity.top_ups = BTreeMap::new();
 
                 identities.push(identity);
@@ -276,7 +286,7 @@ impl Database {
 
         // Use a LEFT JOIN to load identity and its top-ups in a single query.
         let mut stmt = conn.prepare(
-            "SELECT i.data, i.alias, i.wallet_index, t.top_up_index, t.amount
+            "SELECT i.data, i.alias, i.wallet_index, t.top_up_index, t.amount, i.wallet
              FROM identity i
              LEFT JOIN top_up t ON i.id = t.identity_id
              WHERE i.id = ? AND i.is_local = 1 AND i.network = ? AND i.data IS NOT NULL",
@@ -291,12 +301,17 @@ impl Database {
                 let data: Vec<u8> = row.get(0)?;
                 let alias: Option<String> = row.get(1)?;
                 let wallet_index: Option<u32> = row.get(2)?;
+                let wallet_seed_hash: Option<WalletSeedHash> = row.get(5)?;
 
                 let mut qi = QualifiedIdentity::from_bytes(&data);
                 qi.alias = alias;
                 qi.wallet_index = wallet_index;
                 qi.network = app_context.network;
-                qi.associated_wallets = wallets.clone();
+                if let Some(ref wsh) = wallet_seed_hash
+                    && let Some(wallet) = wallets.get(wsh)
+                {
+                    qi.associated_wallets.insert(*wsh, wallet.clone());
+                }
                 qi.top_ups = BTreeMap::new();
 
                 identity = Some(qi);

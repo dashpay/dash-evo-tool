@@ -86,7 +86,7 @@ function makeIdentity(
     id: "aabbccdd11223344556677889900aabb",
     identityType: "user",
     alias: "Alice",
-    balance: 10_000_000_000, // 100 DASH
+    balance: 10_000_000_000, // 0.1 DASH in credits
     keys: [],
     dpnsNames: [],
     associatedWalletHashes: ["wallet1seedhash"],
@@ -140,7 +140,7 @@ describe("TopUpIdentityScreen — header", () => {
   it("shows current balance badge", () => {
     setup();
     expect(
-      screen.getByText(/Balance.*100\.00000000.*DASH/),
+      screen.getByText(/Balance.*0\.10000000.*DASH/),
     ).toBeInTheDocument();
   });
 

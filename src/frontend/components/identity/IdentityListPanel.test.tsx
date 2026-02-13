@@ -132,7 +132,7 @@ describe("IdentityListPanel — identity display", () => {
   it("renders identity alias and balance", () => {
     setup({ identities: [alice] });
     expect(screen.getByText("Alice")).toBeInTheDocument();
-    expect(screen.getByText("2.50000000 DASH")).toBeInTheDocument();
+    expect(screen.getByText("0.00250000 DASH")).toBeInTheDocument();
   });
 
   it("shows truncated ID when no alias", () => {
@@ -703,12 +703,12 @@ describe("IdentityListPanel — balance display", () => {
     setup({
       identities: [makeIdentity({ balance: 1_234_567_890 })],
     });
-    expect(screen.getByText("12.34567890 DASH")).toBeInTheDocument();
+    expect(screen.getByText("0.01234568 DASH")).toBeInTheDocument();
   });
 
   it("formats small balance correctly", () => {
     setup({
-      identities: [makeIdentity({ balance: 1 })],
+      identities: [makeIdentity({ balance: 1_000 })],
     });
     expect(screen.getByText("0.00000001 DASH")).toBeInTheDocument();
   });

@@ -31,7 +31,7 @@ function makeIdentity(
     id: "aabbccdd11223344556677889900aabb",
     identityType: "user",
     alias: "Alice",
-    balance: 10_000_000_000, // 100 DASH
+    balance: 1_000_000_000_000, // 10 DASH in credits
     keys: [makeKey()],
     dpnsNames: [],
     associatedWalletHashes: [],
@@ -134,7 +134,7 @@ describe("TransferScreen — form fields", () => {
 
   it("renders available balance", () => {
     setup();
-    expect(screen.getByText(/100\.00000000 DASH/)).toBeInTheDocument();
+    expect(screen.getByText(/10\.00000000 DASH/)).toBeInTheDocument();
   });
 
   it("renders amount input", () => {
@@ -240,9 +240,9 @@ describe("TransferScreen — Max button", () => {
     await user.click(
       screen.getByRole("button", { name: /set maximum/i }),
     );
-    // 10B - 20M = 9.98B credits = 99.80000000 DASH
+    // 1T - 20M = 999.98B credits → 999,980,000 duffs = 9.99980000 DASH
     const input = screen.getByPlaceholderText("0.00000000");
-    expect(input).toHaveValue("99.80000000");
+    expect(input).toHaveValue("9.99980000");
   });
 });
 
@@ -358,7 +358,7 @@ describe("TransferScreen — identity transfer confirmation", () => {
     expect(props.onSubmitToIdentity).toHaveBeenCalledWith({
       fromIdentityId: "aabbccdd11223344556677889900aabb",
       toIdentityId: "deadbeef1234",
-      credits: 200_000_000,
+      credits: 200_000_000_000,
       keyId: 1,
     });
   });
@@ -404,7 +404,7 @@ describe("TransferScreen — platform address transfer", () => {
     expect(props.onSubmitToAddress).toHaveBeenCalledWith({
       identityId: "aabbccdd11223344556677889900aabb",
       address: "tevo1test",
-      credits: 300_000_000,
+      credits: 300_000_000_000,
       keyId: 1,
     });
   });
@@ -435,7 +435,7 @@ describe("TransferScreen — fee estimation", () => {
   it("shows identity transfer fee", () => {
     setup({ estimatedFeeIdentity: 10_000_000 });
     expect(screen.getByText(/estimated fee/i)).toBeInTheDocument();
-    expect(screen.getByText(/0\.10000000 DASH/)).toBeInTheDocument();
+    expect(screen.getByText(/0\.00010000 DASH/)).toBeInTheDocument();
   });
 
   it("shows address transfer fee when platform address selected", async () => {
@@ -443,7 +443,7 @@ describe("TransferScreen — fee estimation", () => {
     await user.click(
       screen.getByRole("button", { name: /platform address/i }),
     );
-    expect(screen.getByText(/0\.25000000 DASH/)).toBeInTheDocument();
+    expect(screen.getByText(/0\.00025000 DASH/)).toBeInTheDocument();
   });
 });
 

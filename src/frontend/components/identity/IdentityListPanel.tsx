@@ -59,7 +59,7 @@ import {
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import { CopyButton } from "@/components/shared/CopyButton";
-import { formatAmount } from "@/components/shared/AmountInput";
+import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 import type {
   QualifiedIdentityDto,
   IdentityTypeDto,
@@ -70,7 +70,6 @@ import type { IdentitySortColumn, IdentitySortOrder } from "@/stores/identitySto
 // ─── Constants ─────────────────────────────────────────────────────
 
 const MAX_ALIAS_LENGTH = 64;
-const CREDITS_DECIMAL_PLACES = 8;
 const MIN_WITHDRAW_BALANCE = 500_000_000;
 const MIN_TRANSFER_BALANCE = 20_000_000;
 
@@ -128,7 +127,7 @@ export interface IdentityListPanelProps {
 // ─── Helpers ───────────────────────────────────────────────────────
 
 function formatCreditsBalance(credits: number): string {
-  return formatAmount(credits, CREDITS_DECIMAL_PLACES);
+  return formatCreditsAsDash(credits);
 }
 
 function getIdentityDisplayName(identity: QualifiedIdentityDto): string {

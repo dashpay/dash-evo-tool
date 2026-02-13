@@ -103,7 +103,7 @@ export function createMockIdentity(
     id: "4EfA9Jrvv3nnCFdSf7fad59851kYrUWF21pYPKhq6Ycis",
     identityType: "user" as IdentityTypeDto,
     alias: "Alice",
-    balance: 1_000_000_000, // 10 DASH in credits
+    balance: 1_000_000_000, // 0.01 DASH in credits
     keys: [
       createMockIdentityKey({ keyId: 0, securityLevel: "MASTER" }),
       createMockIdentityKey({

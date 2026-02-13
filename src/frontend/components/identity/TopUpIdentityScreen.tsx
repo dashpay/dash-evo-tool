@@ -23,6 +23,7 @@ import {
   AmountInput,
   useAmountInput,
   formatAmount,
+  formatCreditsAsDash,
 } from "@/components/shared/AmountInput";
 import type {
   QualifiedIdentityDto,
@@ -442,7 +443,7 @@ export function TopUpIdentityScreen({
           </p>
         </div>
         <Badge variant="secondary" className="ml-auto">
-          Balance: {formatAmount(identity.balance, DASH_DECIMAL_PLACES)} DASH
+          Balance: {formatCreditsAsDash(identity.balance)} DASH
         </Badge>
       </div>
 

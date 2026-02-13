@@ -72,6 +72,17 @@ export function formatAmount(amount: number, decimalPlaces: number): string {
   return (amount / divisor).toFixed(decimalPlaces);
 }
 
+/** 1 DASH = 100,000,000,000 Platform credits */
+export const CREDITS_PER_DASH = 100_000_000_000;
+
+/** 1 duff = 1,000 Platform credits */
+export const CREDITS_PER_DUFF = 1000;
+
+/** Format a Platform credits amount as a DASH decimal string (8 places). */
+export function formatCreditsAsDash(credits: number): string {
+  return (credits / CREDITS_PER_DASH).toFixed(8);
+}
+
 /**
  * Validate an amount value and return an error message if invalid.
  */

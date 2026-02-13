@@ -340,7 +340,7 @@ describe("AddKeyDialog — fee estimate", () => {
   it("shows estimated fee when provided", () => {
     setup({ estimatedFee: 50000 });
     expect(screen.getByText(/estimated fee/i)).toBeInTheDocument();
-    expect(screen.getByText(/0\.00050000/)).toBeInTheDocument();
+    expect(screen.getByText(/0\.00000050/)).toBeInTheDocument();
   });
 
   it("does not show fee section when not provided", () => {

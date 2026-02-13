@@ -14,6 +14,9 @@ export {
   AmountInput,
   useAmountInput,
   formatAmount,
+  formatCreditsAsDash,
+  CREDITS_PER_DASH,
+  CREDITS_PER_DUFF,
 } from "./AmountInput";
 export {
   IdentitySelector,

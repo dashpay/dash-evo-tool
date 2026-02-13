@@ -23,7 +23,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CopyButton } from "@/components/shared/CopyButton";
-import { formatAmount } from "@/components/shared/AmountInput";
+import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 import type {
   QualifiedIdentityDto,
   IdentityTypeDto,
@@ -33,7 +33,6 @@ import type {
 
 // ─── Constants ─────────────────────────────────────────────────────
 
-const CREDITS_DECIMAL_PLACES = 8;
 const MIN_WITHDRAW_BALANCE = 500_000_000;
 const MIN_TRANSFER_BALANCE = 20_000_000;
 
@@ -69,7 +68,7 @@ export interface IdentityDetailPanelProps {
 // ─── Helpers ───────────────────────────────────────────────────────
 
 function formatCreditsBalance(credits: number): string {
-  return formatAmount(credits, CREDITS_DECIMAL_PLACES);
+  return formatCreditsAsDash(credits);
 }
 
 function IdentityTypeIcon({
@@ -553,7 +552,7 @@ export function IdentityDetailPanel({
                             Index {topUp.index}
                           </span>
                           <span className="font-mono">
-                            {formatAmount(topUp.amount, CREDITS_DECIMAL_PLACES)} DASH
+                            {formatCreditsAsDash(topUp.amount)} DASH
                           </span>
                         </li>
                       ))}

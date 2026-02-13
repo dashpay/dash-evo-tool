@@ -35,12 +35,9 @@ import { useIdentityStore } from "@/stores/identityStore";
 import { useContractStore } from "@/stores/contractStore";
 import { useWalletStore } from "@/stores/walletStore";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
-import { formatAmount } from "@/components/shared/AmountInput";
+import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 import { toastError } from "@/lib/toastError";
 import { toast } from "sonner";
-
-// Credits per Dash (1 DASH = 100_000_000_000 credits on Platform)
-const CREDITS_PER_DASH = 100_000_000_000;
 
 /** System contracts that cannot be updated by users. */
 const SYSTEM_CONTRACT_ALIASES = new Set([
@@ -56,13 +53,6 @@ type ScreenStatus =
   | { type: "broadcasting"; startTime: number }
   | { type: "success" }
   | { type: "error"; message: string };
-
-/**
- * Format credits as DASH (1 DASH = 100,000,000,000 credits).
- */
-function formatCreditsAsDash(credits: number): string {
-  return (credits / CREDITS_PER_DASH).toFixed(8);
-}
 
 /**
  * Auto-select the best key for contract update from an identity.
@@ -541,7 +531,7 @@ export function UpdateContractScreen() {
                 {selectedIdentity && (
                   <p className="text-xs text-muted-foreground">
                     Balance:{" "}
-                    {formatAmount(selectedIdentity.balance, 8)} DASH
+                    {formatCreditsAsDash(selectedIdentity.balance)} DASH
                   </p>
                 )}
                 {identities.length === 0 && (

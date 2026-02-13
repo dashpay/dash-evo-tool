@@ -41,7 +41,7 @@ import {
 import { useDashPayStore } from "@/stores/dashpayStore";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useWalletStore } from "@/stores/walletStore";
-import { formatAmount } from "@/components/shared/AmountInput";
+import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 import { cn } from "@/lib/utils";
 
 // ─── Constants ────────────────────────────────────────────────────────
@@ -488,7 +488,7 @@ export function ProfileScreen() {
               ~0.0001 DASH
             </p>
             <p className="text-xs text-muted-foreground mt-1">
-              Identity balance: {formatAmount(identityBalance, 8)} DASH
+              Identity balance: {formatCreditsAsDash(identityBalance)} DASH
             </p>
           </div>
 
@@ -691,7 +691,7 @@ export function ProfileScreen() {
               </div>
               <div className="pt-1">
                 <Badge variant="outline" className="text-xs">
-                  {formatAmount(identityBalance, 8)} DASH
+                  {formatCreditsAsDash(identityBalance)} DASH
                 </Badge>
               </div>
             </div>

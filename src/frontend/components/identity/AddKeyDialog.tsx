@@ -26,7 +26,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { formatAmount } from "@/components/shared/AmountInput";
+import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 import type { QualifiedIdentityDto } from "@/bindings";
 
 // ─── Constants ─────────────────────────────────────────────────────
@@ -45,8 +45,6 @@ const PURPOSES = [
   { value: "DECRYPTION", label: "Decryption" },
 ] as const;
 
-
-const CREDITS_DECIMAL_PLACES = 8;
 
 /**
  * Which security levels are available for each purpose.
@@ -558,7 +556,7 @@ export function AddKeyDialog({
           <div className="flex items-center gap-2 text-sm">
             <span className="text-muted-foreground">Estimated fee:</span>
             <span className="font-medium">
-              {formatAmount(estimatedFee, CREDITS_DECIMAL_PLACES)} DASH
+              {formatCreditsAsDash(estimatedFee)} DASH
             </span>
           </div>
         </>

@@ -164,8 +164,8 @@ describe("IdentityDetailPanel — balance", () => {
   it("renders formatted balance in DASH", () => {
     setup();
     const balanceEl = screen.getByTestId("identity-balance");
-    // 1_000_000_000 credits = 10.00000000 DASH
-    expect(balanceEl).toHaveTextContent("10.00000000");
+    // 1_000_000_000 credits = 0.01000000 DASH
+    expect(balanceEl).toHaveTextContent("0.01000000");
     expect(balanceEl).toHaveTextContent("DASH");
   });
 
@@ -178,7 +178,7 @@ describe("IdentityDetailPanel — balance", () => {
   it("renders large balance", () => {
     setup({ identity: makeIdentity({ balance: 10_000_000_000 }) });
     const balanceEl = screen.getByTestId("identity-balance");
-    expect(balanceEl).toHaveTextContent("100.00000000");
+    expect(balanceEl).toHaveTextContent("0.10000000");
   });
 });
 
@@ -588,9 +588,9 @@ describe("IdentityDetailPanel — details section", () => {
     });
     expect(screen.getByText("Top-up History")).toBeInTheDocument();
     expect(screen.getByText("Index 0")).toBeInTheDocument();
-    expect(screen.getByText("1.00000000 DASH")).toBeInTheDocument();
+    expect(screen.getByText("0.00100000 DASH")).toBeInTheDocument();
     expect(screen.getByText("Index 1")).toBeInTheDocument();
-    expect(screen.getByText("0.50000000 DASH")).toBeInTheDocument();
+    expect(screen.getByText("0.00050000 DASH")).toBeInTheDocument();
   });
 });
 
@@ -635,7 +635,7 @@ describe("IdentityDetailPanel — accessibility", () => {
 // ─── Encoding tooltip ────────────────────────────────────────────────
 
 describe("IdentityDetailPanel — encoding tooltip", () => {
-  it("shows 'UserId (Base58)' tooltip for user identity ID", async () => {
+  it("shows 'User ID' tooltip for user identity ID", async () => {
     const { user } = setup({
       identity: makeIdentity({ identityType: "user" }),
     });
@@ -643,31 +643,31 @@ describe("IdentityDetailPanel — encoding tooltip", () => {
     await user.hover(idCode);
     await waitFor(() => {
       // Radix renders tooltip content twice (visible + sr-only)
-      const matches = screen.getAllByText("UserId (Base58)");
+      const matches = screen.getAllByText("User ID");
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
   });
 
-  it("shows 'ProTxHash (Hex)' tooltip for masternode identity ID", async () => {
+  it("shows 'ProTxHash' tooltip for masternode identity ID", async () => {
     const { user } = setup({
       identity: makeIdentity({ identityType: "masternode" }),
     });
     const idCode = screen.getByText("aabbccdd11223344556677889900aabb");
     await user.hover(idCode);
     await waitFor(() => {
-      const matches = screen.getAllByText("ProTxHash (Hex)");
+      const matches = screen.getAllByText("ProTxHash");
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
   });
 
-  it("shows 'ProTxHash (Hex)' tooltip for evonode identity ID", async () => {
+  it("shows 'ProTxHash' tooltip for evonode identity ID", async () => {
     const { user } = setup({
       identity: makeIdentity({ identityType: "evonode" }),
     });
     const idCode = screen.getByText("aabbccdd11223344556677889900aabb");
     await user.hover(idCode);
     await waitFor(() => {
-      const matches = screen.getAllByText("ProTxHash (Hex)");
+      const matches = screen.getAllByText("ProTxHash");
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
   });

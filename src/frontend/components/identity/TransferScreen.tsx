@@ -25,6 +25,8 @@ import {
   AmountInput,
   useAmountInput,
   formatAmount,
+  formatCreditsAsDash,
+  CREDITS_PER_DUFF,
 } from "@/components/shared/AmountInput";
 import {
   ConfirmationDialog,
@@ -37,7 +39,7 @@ import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
 // ─── Constants ─────────────────────────────────────────────────────
 
-const CREDITS_DECIMAL_PLACES = 8;
+const DASH_DECIMAL_PLACES = 8;
 /** Reserve 0.0002 DASH (20M credits) for transfer fees. */
 const TRANSFER_FEE_RESERVE = 20_000_000;
 
@@ -154,7 +156,7 @@ export function TransferScreen({
   });
   const [showConfirmation, setShowConfirmation] = useState(false);
 
-  const amount = useAmountInput(CREDITS_DECIMAL_PLACES);
+  const amount = useAmountInput(DASH_DECIMAL_PLACES);
 
   const transferKeys = useMemo(() => getTransferKeys(identity), [identity]);
   const selectedKey = useMemo(
@@ -162,15 +164,13 @@ export function TransferScreen({
     [transferKeys, selectedKeyId],
   );
 
+  // maxAmount in duffs (AmountInput works in duffs with 8 decimal places)
   const maxAmount = useMemo(() => {
-    const available = identity.balance - TRANSFER_FEE_RESERVE;
-    return available > 0 ? available : 0;
+    const availableCredits = identity.balance - TRANSFER_FEE_RESERVE;
+    return availableCredits > 0 ? Math.floor(availableCredits / CREDITS_PER_DUFF) : 0;
   }, [identity.balance]);
 
-  const balanceFormatted = formatAmount(
-    identity.balance,
-    CREDITS_DECIMAL_PLACES,
-  );
+  const balanceFormatted = formatCreditsAsDash(identity.balance);
 
   const isDisabled = status.type === "sending" || status.type === "success" || walletLocked;
 
@@ -181,7 +181,7 @@ export function TransferScreen({
 
   const handleMaxClick = useCallback(() => {
     if (maxAmount > 0) {
-      amount.setValue(formatAmount(maxAmount, CREDITS_DECIMAL_PLACES));
+      amount.setValue(formatAmount(maxAmount, DASH_DECIMAL_PLACES));
     }
   }, [maxAmount, amount]);
 
@@ -215,14 +215,14 @@ export function TransferScreen({
       onSubmitToIdentity?.({
         fromIdentityId: identity.id,
         toIdentityId: receiverIdentityId.trim(),
-        credits: amount.parsedAmount,
+        credits: amount.parsedAmount * CREDITS_PER_DUFF,
         keyId: selectedKey.keyId,
       });
     } else {
       onSubmitToAddress?.({
         identityId: identity.id,
         address: platformAddress.trim(),
-        credits: amount.parsedAmount,
+        credits: amount.parsedAmount * CREDITS_PER_DUFF,
         keyId: selectedKey.keyId,
       });
     }
@@ -244,7 +244,7 @@ export function TransferScreen({
 
   const confirmMessage = useMemo(() => {
     if (!amount.parsedAmount) return "";
-    const amountStr = formatAmount(amount.parsedAmount, CREDITS_DECIMAL_PLACES);
+    const amountStr = formatAmount(amount.parsedAmount, DASH_DECIMAL_PLACES);
     if (destinationType === "identity") {
       return `Are you sure you want to transfer ${amountStr} DASH to ${receiverIdentityId.trim()}?`;
     }
@@ -368,7 +368,7 @@ export function TransferScreen({
               onChange={amount.setValue}
               label="Amount:"
               placeholder="0.00000000"
-              decimalPlaces={CREDITS_DECIMAL_PLACES}
+              decimalPlaces={DASH_DECIMAL_PLACES}
               maxAmount={maxAmount}
               maxExceededHint="0.0002 DASH reserved for fees"
               showMaxButton
@@ -488,7 +488,7 @@ export function TransferScreen({
             <p className="text-sm text-muted-foreground">
               Estimated fee:{" "}
               <span className="font-medium tabular-nums">
-                {formatAmount(estimatedFee, CREDITS_DECIMAL_PLACES)} DASH
+                {formatCreditsAsDash(estimatedFee)} DASH
               </span>
             </p>
           </div>

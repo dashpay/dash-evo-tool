@@ -25,6 +25,8 @@ import {
   AmountInput,
   useAmountInput,
   formatAmount,
+  formatCreditsAsDash,
+  CREDITS_PER_DUFF,
 } from "@/components/shared/AmountInput";
 import {
   ConfirmationDialog,
@@ -33,7 +35,7 @@ import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
 // ─── Constants ─────────────────────────────────────────────────────
 
-const CREDITS_DECIMAL_PLACES = 8;
+const DASH_DECIMAL_PLACES = 8;
 /** Reserve 0.005 DASH (500M credits) for withdrawal fees. */
 const WITHDRAWAL_FEE_RESERVE = 500_000_000;
 
@@ -151,7 +153,7 @@ export function WithdrawScreen({
   });
   const [showConfirmation, setShowConfirmation] = useState(false);
 
-  const amount = useAmountInput(CREDITS_DECIMAL_PLACES);
+  const amount = useAmountInput(DASH_DECIMAL_PLACES);
 
   const withdrawalKeys = useMemo(() => getWithdrawalKeys(identity), [identity]);
   const selectedKey = useMemo(
@@ -160,18 +162,19 @@ export function WithdrawScreen({
   );
   const isOwnerKey = selectedKey?.purpose.toUpperCase() === "OWNER";
 
+  // maxAmount in duffs (AmountInput works in duffs with 8 decimal places)
   const maxAmount = useMemo(() => {
-    const available = identity.balance - WITHDRAWAL_FEE_RESERVE;
-    return available > 0 ? available : 0;
+    const availableCredits = identity.balance - WITHDRAWAL_FEE_RESERVE;
+    return availableCredits > 0 ? Math.floor(availableCredits / CREDITS_PER_DUFF) : 0;
   }, [identity.balance]);
 
-  const balanceFormatted = formatAmount(identity.balance, CREDITS_DECIMAL_PLACES);
+  const balanceFormatted = formatCreditsAsDash(identity.balance);
 
   const isDisabled = status.type === "sending" || status.type === "success" || walletLocked;
 
   const handleMaxClick = useCallback(() => {
     if (maxAmount > 0) {
-      amount.setValue(formatAmount(maxAmount, CREDITS_DECIMAL_PLACES));
+      amount.setValue(formatAmount(maxAmount, DASH_DECIMAL_PLACES));
     }
   }, [maxAmount, amount]);
 
@@ -203,14 +206,14 @@ export function WithdrawScreen({
     onSubmit?.({
       identityId: identity.id,
       toAddress,
-      credits: amount.parsedAmount,
+      credits: amount.parsedAmount * CREDITS_PER_DUFF,
       keyId: selectedKey.keyId,
     });
   }, [amount.parsedAmount, selectedKey, address, identity.id, onSubmit]);
 
   const confirmMessage = useMemo(() => {
     if (!amount.parsedAmount) return "";
-    const amountStr = formatAmount(amount.parsedAmount, CREDITS_DECIMAL_PLACES);
+    const amountStr = formatAmount(amount.parsedAmount, DASH_DECIMAL_PLACES);
     const dest = address.trim()
       ? address.trim()
       : "masternode payout address";
@@ -356,7 +359,7 @@ export function WithdrawScreen({
               onChange={amount.setValue}
               label="Amount:"
               placeholder="0.00000000"
-              decimalPlaces={CREDITS_DECIMAL_PLACES}
+              decimalPlaces={DASH_DECIMAL_PLACES}
               maxAmount={maxAmount}
               maxExceededHint="0.005 DASH reserved for fees"
               showMaxButton
@@ -444,7 +447,7 @@ export function WithdrawScreen({
             <p className="text-sm text-muted-foreground">
               Estimated fee:{" "}
               <span className="font-medium tabular-nums">
-                {formatAmount(estimatedFee, CREDITS_DECIMAL_PLACES)} DASH
+                {formatCreditsAsDash(estimatedFee)} DASH
               </span>
             </p>
           </div>

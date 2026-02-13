@@ -22,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatAmount } from "@/components/shared/AmountInput";
+import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 import type { QualifiedIdentityDto, IdentityKeyDto } from "@/bindings";
 
 // ─── Constants ─────────────────────────────────────────────────────
@@ -119,10 +119,6 @@ export function isContestedName(name: string): boolean {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────
-
-function formatCreditsAsDash(credits: number): string {
-  return formatAmount(credits, 8);
-}
 
 function formatElapsedTime(startedAt: number): string {
   const elapsed = Math.floor((Date.now() - startedAt) / 1000);

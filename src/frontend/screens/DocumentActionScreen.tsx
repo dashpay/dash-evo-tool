@@ -45,6 +45,7 @@ import { useContractStore } from "@/stores/contractStore";
 import { useWalletStore } from "@/stores/walletStore";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 import { Checkbox } from "@/components/ui/checkbox";
+import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -91,8 +92,6 @@ interface PropertySchema {
 
 // ─── Constants ────────────────────────────────────────────────────────
 
-const CREDITS_PER_DASH = 100_000_000_000;
-
 const ACTION_LABELS: Record<DocumentActionType, string> = {
   create: "Create Document",
   delete: "Delete Document",
@@ -112,10 +111,6 @@ const BROADCAST_LABELS: Record<DocumentActionType, string> = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────
-
-function formatCreditsAsDash(credits: number): string {
-  return (credits / CREDITS_PER_DASH).toFixed(8);
-}
 
 function formatElapsed(ms: number): string {
   const seconds = Math.floor(ms / 1000);
@@ -1217,7 +1212,7 @@ export function DocumentActionScreen({ actionType }: DocumentActionScreenProps) 
                 />
                 {selectedIdentity && (
                   <p className="text-xs text-muted-foreground">
-                    Balance: {(selectedIdentity.balance / CREDITS_PER_DASH).toFixed(8)} DASH
+                    Balance: {formatCreditsAsDash(selectedIdentity.balance)} DASH
                   </p>
                 )}
                 {showAdvanced && selectedIdentity && (

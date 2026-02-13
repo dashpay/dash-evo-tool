@@ -27,7 +27,7 @@ function makeIdentity(
     id: "aabbccdd11223344556677889900aabb",
     identityType: "user",
     alias: "Alice",
-    balance: 10_000_000_000, // 100 DASH
+    balance: 1_000_000_000_000, // 10 DASH in credits
     keys: [makeKey()],
     dpnsNames: [],
     associatedWalletHashes: [],
@@ -120,7 +120,7 @@ describe("WithdrawScreen — form fields", () => {
 
   it("renders available balance", () => {
     setup();
-    expect(screen.getByText(/100\.00000000 DASH/)).toBeInTheDocument();
+    expect(screen.getByText(/10\.00000000 DASH/)).toBeInTheDocument();
   });
 
   it("renders identity type badge", () => {
@@ -198,9 +198,9 @@ describe("WithdrawScreen — Max button", () => {
     await user.click(
       screen.getByRole("button", { name: /set maximum/i }),
     );
-    // 10B - 500M = 9.5B credits = 95.00000000 DASH
+    // 1T - 500M = 999.5B credits → 999,500,000 duffs = 9.99500000 DASH
     const input = screen.getByPlaceholderText("0.00000000");
-    expect(input).toHaveValue("95.00000000");
+    expect(input).toHaveValue("9.99500000");
   });
 });
 
@@ -345,7 +345,7 @@ describe("WithdrawScreen — confirmation dialog", () => {
     expect(props.onSubmit).toHaveBeenCalledWith({
       identityId: "aabbccdd11223344556677889900aabb",
       toAddress: "yTestAddr",
-      credits: 100_000_000, // 1.0 DASH
+      credits: 100_000_000_000, // 1.0 DASH
       keyId: 1,
     });
   });
@@ -410,7 +410,7 @@ describe("WithdrawScreen — fee estimation", () => {
   it("shows estimated fee when provided", () => {
     setup({ estimatedFee: 50_000_000 });
     expect(screen.getByText(/estimated fee/i)).toBeInTheDocument();
-    expect(screen.getByText(/0\.50000000 DASH/)).toBeInTheDocument();
+    expect(screen.getByText(/0\.00050000 DASH/)).toBeInTheDocument();
   });
 });
 

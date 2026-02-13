@@ -16,7 +16,7 @@ function makeIdentity(overrides?: Partial<QualifiedIdentityDto>): QualifiedIdent
     id: "abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
     identityType: "user",
     alias: "Alice",
-    balance: 10_000_000_000, // 100 DASH in credits
+    balance: 10_000_000_000, // 0.1 DASH in credits
     keys: [
       {
         keyId: 0,

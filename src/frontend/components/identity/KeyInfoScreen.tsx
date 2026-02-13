@@ -200,15 +200,7 @@ export function KeyInfoScreen({
       setAddKeyError("Please enter a private key.");
       return;
     }
-    // Basic hex validation
-    if (!/^[0-9a-fA-F]+$/.test(trimmed)) {
-      setAddKeyError("Private key must be a hex string.");
-      return;
-    }
-    if (trimmed.length !== 64 && trimmed.length !== 96) {
-      setAddKeyError("Private key must be 32 bytes (64 hex chars) for ECDSA or 48 bytes (96 hex chars) for BLS.");
-      return;
-    }
+    // Pass directly to backend — it handles hex and WIF parsing
     setAddKeyError(null);
     onAddPrivateKey?.(keyData.keyId, trimmed);
     setPrivateKeyInput("");
@@ -448,7 +440,7 @@ export function KeyInfoScreen({
               <div className="space-y-2">
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Enter private key (hex)"
+                    placeholder="Enter private key (hex or WIF)"
                     value={privateKeyInput}
                     onChange={(e) => {
                       setPrivateKeyInput(e.target.value);
@@ -685,7 +677,7 @@ export function KeyInfoScreen({
 
             {/* Generated private key */}
             <div className="space-y-1.5">
-              <Label>New Private Key (hex)</Label>
+              <Label>New Private Key</Label>
               <div className="flex items-center gap-2">
                 <Input
                   readOnly

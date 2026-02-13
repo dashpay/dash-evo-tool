@@ -157,7 +157,7 @@ pub struct AddKeyToIdentityInput {
     pub purpose: String,
     /// Security level (e.g., "HIGH", "MEDIUM").
     pub security_level: String,
-    /// Private key as hex string (32 bytes).
+    /// Private key (hex string or WIF).
     pub private_key_hex: String,
     /// Optional contract bounds for this key.
     pub contract_bounds: Option<ContractBoundsDto>,
@@ -187,7 +187,7 @@ pub struct ReplaceKeyInput {
     pub new_purpose: String,
     /// New security level.
     pub new_security_level: String,
-    /// New private key as hex string (32 bytes).
+    /// New private key (hex string or WIF).
     pub new_private_key_hex: String,
 }
 
@@ -225,7 +225,7 @@ pub struct AddPrivateKeyToStorageInput {
     pub identity_id: IdentifierDto,
     /// Key ID on the identity to associate the private key with.
     pub key_id: u32,
-    /// Private key as hex string (64 hex chars = 32 bytes).
+    /// Private key (hex string or WIF).
     pub private_key_hex: String,
 }
 
@@ -535,14 +535,23 @@ fn parse_wallet_seed_hash(hex_str: &str) -> Result<WalletSeedHash, String> {
     Ok(hash)
 }
 
-fn parse_private_key_hex(hex_str: &str) -> Result<[u8; 32], String> {
-    let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid private key hex: {e}"))?;
-    if bytes.len() != 32 {
+fn parse_private_key(input: &str) -> Result<[u8; 32], String> {
+    let trimmed = input.trim();
+    // Try hex first
+    if let Ok(bytes) = hex::decode(trimmed) {
+        if bytes.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&bytes);
+            return Ok(key);
+        }
         return Err(format!("Private key must be 32 bytes, got {}", bytes.len()));
     }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bytes);
-    Ok(key)
+    // Try WIF
+    use dash_sdk::dpp::dashcore::PrivateKey;
+    match PrivateKey::from_wif(trimmed) {
+        Ok(pk) => Ok(pk.inner.secret_bytes()),
+        Err(_) => Err("Invalid private key. Enter a hex string (64 chars) or WIF key.".to_string()),
+    }
 }
 
 /// Look up a `QualifiedIdentity` from the local database by identifier.
@@ -1134,7 +1143,7 @@ pub fn identity_add_key(
     input: AddKeyToIdentityInput,
 ) -> Result<DispatchTaskResponse, String> {
     let qi = lookup_identity(&state, &input.identity_id)?;
-    let private_key = parse_private_key_hex(&input.private_key_hex)?;
+    let private_key = parse_private_key(&input.private_key_hex)?;
 
     let key_type = parse_key_type(&input.key_type)?;
     let purpose = parse_purpose(&input.purpose)?;
@@ -1205,7 +1214,7 @@ pub fn identity_replace_key(
     input: ReplaceKeyInput,
 ) -> Result<DispatchTaskResponse, String> {
     let qi = lookup_identity(&state, &input.identity_id)?;
-    let new_private_key = parse_private_key_hex(&input.new_private_key_hex)?;
+    let new_private_key = parse_private_key(&input.new_private_key_hex)?;
 
     let key_type = parse_key_type(&input.new_key_type)?;
     let purpose = parse_purpose(&input.new_purpose)?;
@@ -1688,7 +1697,7 @@ pub fn identity_sign_message(
 
 /// Add a private key to local storage for an identity key.
 ///
-/// Parses the hex private key, validates it against the identity's public key,
+/// Parses the private key (hex or WIF), validates it against the identity's public key,
 /// stores it in the qualified identity's key storage, and persists to the database.
 /// Returns the updated `QualifiedIdentityDto`.
 #[tauri::command]
@@ -1712,7 +1721,7 @@ pub fn identity_add_private_key_to_storage(
         .clone();
 
     // Parse the hex private key
-    let private_key_bytes = parse_private_key_hex(&input.private_key_hex)?;
+    let private_key_bytes = parse_private_key(&input.private_key_hex)?;
 
     // Validate the private key matches the public key
     let network = ctx.network();
@@ -2058,9 +2067,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_private_key_hex_valid() {
+    fn parse_private_key_valid() {
         let hex_str = "cc".repeat(32);
-        let result = parse_private_key_hex(&hex_str);
+        let result = parse_private_key(&hex_str);
         assert!(result.is_ok());
     }
 

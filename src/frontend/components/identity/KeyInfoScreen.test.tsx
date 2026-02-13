@@ -211,24 +211,15 @@ describe("KeyInfoScreen — private key (not available)", () => {
     expect(props.onAddPrivateKey).toHaveBeenCalledWith(5, "a".repeat(64));
   });
 
-  it("shows error for invalid hex", async () => {
-    const { user } = setup({
-      keyData: makeKey({ hasPrivateKey: false }),
+  it("passes WIF key to onAddPrivateKey (backend validates)", async () => {
+    const { user, props } = setup({
+      keyData: makeKey({ keyId: 5, hasPrivateKey: false }),
     });
     const input = screen.getByLabelText("Private key hex input");
-    await user.type(input, "invalidhexXYZ");
+    const wifKey = "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ";
+    await user.type(input, wifKey);
     await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(screen.getByRole("alert")).toHaveTextContent(/hex string/i);
-  });
-
-  it("shows error for wrong length", async () => {
-    const { user } = setup({
-      keyData: makeKey({ hasPrivateKey: false }),
-    });
-    const input = screen.getByLabelText("Private key hex input");
-    await user.type(input, "aabb");
-    await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(screen.getByRole("alert")).toHaveTextContent(/32 bytes/i);
+    expect(props.onAddPrivateKey).toHaveBeenCalledWith(5, wifKey);
   });
 });
 

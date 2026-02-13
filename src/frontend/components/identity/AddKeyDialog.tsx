@@ -223,14 +223,7 @@ export function AddKeyDialog({
       setValidationError("Private key is required. Click 'Generate Random' or enter one manually.");
       return;
     }
-    if (!/^[0-9a-fA-F]+$/.test(trimmedKey)) {
-      setValidationError("Private key must be a hex string.");
-      return;
-    }
-    if (trimmedKey.length !== 64 && trimmedKey.length !== 96) {
-      setValidationError("Private key must be 32 bytes (64 hex) for ECDSA or 48 bytes (96 hex) for BLS.");
-      return;
-    }
+    // Pass directly to backend — it handles hex and WIF parsing
     if (enableContractBounds && !contractIdInput.trim()) {
       setValidationError("Contract ID is required when contract bounds are enabled.");
       return;
@@ -476,7 +469,7 @@ export function AddKeyDialog({
           <div className="flex gap-2">
             <Input
               id="add-key-private"
-              placeholder="Hex (64 or 96 chars)"
+              placeholder="Hex or WIF private key"
               value={privateKeyHex}
               onChange={(e) => {
                 setPrivateKeyHex(e.target.value);

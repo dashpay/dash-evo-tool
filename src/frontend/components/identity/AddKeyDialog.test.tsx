@@ -174,18 +174,11 @@ describe("AddKeyDialog — validation", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/private key is required/i);
   });
 
-  it("shows error for invalid hex in private key", async () => {
-    const { user } = setup();
-    await user.type(screen.getByLabelText("Private key hex"), "ZZZZ");
+  it("passes non-hex input to onSubmit (backend validates)", async () => {
+    const { user, props } = setup();
+    await user.type(screen.getByLabelText("Private key hex"), "5HueCGU8rMjxEXxiPuD5BDku4MkFqeZyd4dZ1jvhTVqvbTLvyTJ");
     await user.click(screen.getByRole("button", { name: /add key/i }));
-    expect(screen.getByRole("alert")).toHaveTextContent(/hex string/i);
-  });
-
-  it("shows error for wrong length private key", async () => {
-    const { user } = setup();
-    await user.type(screen.getByLabelText("Private key hex"), "aabb");
-    await user.click(screen.getByRole("button", { name: /add key/i }));
-    expect(screen.getByRole("alert")).toHaveTextContent(/32 bytes/i);
+    expect(props.onSubmit).toHaveBeenCalled();
   });
 
   it("shows error when contract bounds enabled but no contract ID", async () => {

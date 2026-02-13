@@ -388,9 +388,9 @@ describe("Bindings: commands object", () => {
     expect(settingsCmds.length).toBe(17);
   });
 
-  it("total command count is 195", () => {
+  it("total command count is 197", () => {
     const allKeys = Object.keys(commands);
-    expect(allKeys.length).toBe(195);
+    expect(allKeys.length).toBe(197);
   });
 });
 

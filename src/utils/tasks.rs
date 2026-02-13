@@ -65,25 +65,49 @@ impl TaskManager {
         let completed = Arc::new(AtomicUsize::new(0));
 
         let counter = completed.clone();
+        let counter_for_timeout = completed.clone();
         // we need to run this task in separate task to avoid cancelling it during shutdown
         tokio::task::spawn(async move {
             // Cancel all background tasks
+            tracing::trace!("shutdown: cancelling all tasks");
             cancel.cancel();
 
             // Wait for all subtasks to finish within SHUTDOWN_TIMEOUT
 
             let tasks_list = subtasks.clone();
-            timeout(SHUTDOWN_TIMEOUT, async move {
+            let timed_out = timeout(SHUTDOWN_TIMEOUT, async move {
                 let mut tasks = tasks_list.lock().await;
+                let total = tasks.len();
+                tracing::trace!(total, "shutdown: joining tasks");
+                let start = std::time::Instant::now();
                 while let Some(handle) = tasks.join_next().await {
-                    if let Err(e) = handle {
-                        tracing::error!("Subtask failed: {:?}", e);
+                    let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    match &handle {
+                        Ok(()) => tracing::trace!(
+                            task_num = i,
+                            total,
+                            elapsed_ms = start.elapsed().as_millis() as u64,
+                            "shutdown: task joined OK"
+                        ),
+                        Err(e) => tracing::trace!(
+                            task_num = i,
+                            total,
+                            elapsed_ms = start.elapsed().as_millis() as u64,
+                            error = %e,
+                            "shutdown: task joined with error"
+                        ),
                     }
-                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             })
-            .await
-            .ok(); // ignore output as we are shutting down anyway
+            .await;
+
+            if timed_out.is_err() {
+                let done = counter_for_timeout.load(std::sync::atomic::Ordering::Relaxed);
+                tracing::trace!(
+                    completed = done,
+                    "shutdown: timed out waiting for tasks, aborting remaining"
+                );
+            }
 
             // now abort all tasks
             subtasks.lock().await.shutdown().await;

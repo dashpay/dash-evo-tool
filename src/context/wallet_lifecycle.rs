@@ -419,8 +419,15 @@ impl AppContext {
                     _ = cancel.cancelled() => break,
                     maybe = rx.recv() => {
                         let Some(event) = maybe else { break; };
-                        if let Err(e) = ctx.handle_spv_finality_event(event).await {
-                            tracing::debug!("SPV finality event error: {}", e);
+                        // Wrap handler in select so cancellation can interrupt
+                        // even when blocked on locks held by the SPV sync thread.
+                        tokio::select! {
+                            _ = cancel.cancelled() => break,
+                            result = ctx.handle_spv_finality_event(event) => {
+                                if let Err(e) = result {
+                                    tracing::debug!("SPV finality event error: {}", e);
+                                }
+                            }
                         }
                     }
                 }
@@ -512,11 +519,26 @@ impl AppContext {
                         if maybe.is_none() { break; }
                         // simple debounce window
                         if last.elapsed() > Duration::from_millis(300) {
-                            if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
+                            // Wrap in select so cancellation can interrupt when
+                            // blocked on locks held by the SPV sync thread.
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                result = ctx.reconcile_spv_wallets() => {
+                                    if let Err(e) = result { tracing::debug!("SPV reconcile error: {}", e); }
+                                }
+                            }
                             last = Instant::now();
                         } else {
-                            sleep(Duration::from_millis(300)).await;
-                            if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = sleep(Duration::from_millis(300)) => {}
+                            }
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                result = ctx.reconcile_spv_wallets() => {
+                                    if let Err(e) = result { tracing::debug!("SPV reconcile error: {}", e); }
+                                }
+                            }
                             last = Instant::now();
                         }
                     }

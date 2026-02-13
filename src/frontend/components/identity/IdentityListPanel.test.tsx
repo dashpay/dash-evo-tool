@@ -135,10 +135,13 @@ describe("IdentityListPanel — identity display", () => {
     expect(screen.getByText("0.00250000 DASH")).toBeInTheDocument();
   });
 
-  it("shows truncated ID when no alias", () => {
+  it("shows base58 ID as display name when no alias", () => {
     const noAlias = makeIdentity({ alias: null, id: "aabbccdd11223344" });
     setup({ identities: [noAlias] });
-    expect(screen.getByText("aabbcc...223344")).toBeInTheDocument();
+    // displayId converts hex to base58; "aabbccdd11223344" -> "VZL8Eux1oTy" (short enough, no truncation)
+    // The same base58 text appears both as display name and in the ID row
+    const matches = screen.getAllByText("VZL8Eux1oTy");
+    expect(matches.length).toBeGreaterThanOrEqual(1);
   });
 
   it("shows identity type badge", () => {
@@ -890,45 +893,48 @@ describe("IdentityListPanel — header create/load buttons", () => {
 // ─── Encoding tooltip ──────────────────────────────────────────────
 
 describe("IdentityListPanel — encoding tooltip", () => {
-  it("shows 'UserId (Base58)' in tooltip for user identity", async () => {
+  it("shows 'User ID' in tooltip for user identity", async () => {
     const userIdentity = makeIdentity({
       id: "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec",
       identityType: "user",
     });
     const { user } = setup({ identities: [userIdentity] });
+    // Non-hex ID is returned unchanged by hexToBase58
     const idSpan = screen.getByText(/GWRSAVFMj/);
     await user.hover(idSpan);
     await waitFor(() => {
       // Radix renders tooltip content twice (visible + sr-only)
-      const matches = screen.getAllByText(/UserId \(Base58\)/);
+      const matches = screen.getAllByText(/User ID/);
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
   });
 
-  it("shows 'ProTxHash (Hex)' in tooltip for masternode identity", async () => {
+  it("shows 'ProTxHash' in tooltip for masternode identity", async () => {
     const mnIdentity = makeIdentity({
       id: "aabbccdd11223344556677889900aabb",
       identityType: "masternode",
     });
     const { user } = setup({ identities: [mnIdentity] });
-    const idSpan = screen.getByText(/aabbcc/);
+    // hexToBase58("aabbccdd11223344556677889900aabb") = "N5ovA3MMAGjRn5fEGPSqvJ"
+    const idSpan = screen.getByText(/N5ovA3/);
     await user.hover(idSpan);
     await waitFor(() => {
-      const matches = screen.getAllByText(/ProTxHash \(Hex\)/);
+      const matches = screen.getAllByText(/ProTxHash/);
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
   });
 
-  it("shows 'ProTxHash (Hex)' in tooltip for evonode identity", async () => {
+  it("shows 'ProTxHash' in tooltip for evonode identity", async () => {
     const evoIdentity = makeIdentity({
       id: "eeff00112233445566778899aabbccdd",
       identityType: "evonode",
     });
     const { user } = setup({ identities: [evoIdentity] });
-    const idSpan = screen.getByText(/eeff00/);
+    // hexToBase58("eeff00112233445566778899aabbccdd") = "WWiEReATjZj3VZ5bxuChLQ"
+    const idSpan = screen.getByText(/WWiERe/);
     await user.hover(idSpan);
     await waitFor(() => {
-      const matches = screen.getAllByText(/ProTxHash \(Hex\)/);
+      const matches = screen.getAllByText(/ProTxHash/);
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
   });

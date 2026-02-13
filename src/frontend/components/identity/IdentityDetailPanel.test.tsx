@@ -88,10 +88,11 @@ describe("IdentityDetailPanel — header", () => {
     expect(screen.getByText("Unnamed Identity")).toBeInTheDocument();
   });
 
-  it("renders the full identity ID", () => {
+  it("renders the full identity ID in base58", () => {
     setup();
+    // hexToBase58("aabbccdd11223344556677889900aabb") = "N5ovA3MMAGjRn5fEGPSqvJ"
     expect(
-      screen.getByText("aabbccdd11223344556677889900aabb"),
+      screen.getByText("N5ovA3MMAGjRn5fEGPSqvJ"),
     ).toBeInTheDocument();
   });
 
@@ -635,11 +636,14 @@ describe("IdentityDetailPanel — accessibility", () => {
 // ─── Encoding tooltip ────────────────────────────────────────────────
 
 describe("IdentityDetailPanel — encoding tooltip", () => {
+  // hexToBase58("aabbccdd11223344556677889900aabb") = "N5ovA3MMAGjRn5fEGPSqvJ"
+  const expectedBase58Id = "N5ovA3MMAGjRn5fEGPSqvJ";
+
   it("shows 'User ID' tooltip for user identity ID", async () => {
     const { user } = setup({
       identity: makeIdentity({ identityType: "user" }),
     });
-    const idCode = screen.getByText("aabbccdd11223344556677889900aabb");
+    const idCode = screen.getByText(expectedBase58Id);
     await user.hover(idCode);
     await waitFor(() => {
       // Radix renders tooltip content twice (visible + sr-only)
@@ -652,7 +656,7 @@ describe("IdentityDetailPanel — encoding tooltip", () => {
     const { user } = setup({
       identity: makeIdentity({ identityType: "masternode" }),
     });
-    const idCode = screen.getByText("aabbccdd11223344556677889900aabb");
+    const idCode = screen.getByText(expectedBase58Id);
     await user.hover(idCode);
     await waitFor(() => {
       const matches = screen.getAllByText("ProTxHash");
@@ -664,7 +668,7 @@ describe("IdentityDetailPanel — encoding tooltip", () => {
     const { user } = setup({
       identity: makeIdentity({ identityType: "evonode" }),
     });
-    const idCode = screen.getByText("aabbccdd11223344556677889900aabb");
+    const idCode = screen.getByText(expectedBase58Id);
     await user.hover(idCode);
     await waitFor(() => {
       const matches = screen.getAllByText("ProTxHash");

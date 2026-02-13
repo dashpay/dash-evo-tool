@@ -229,7 +229,8 @@ describe("ProfileScreen", () => {
     it("renders balance badge", () => {
       setupWithIdentityAndProfile();
       renderWithProviders(<ProfileScreen />);
-      expect(screen.getByText(/50\.00000000 DASH/)).toBeInTheDocument();
+      // balance: 5,000,000,000 credits / 100B CREDITS_PER_DASH = 0.05 DASH
+      expect(screen.getByText(/0\.05000000 DASH/)).toBeInTheDocument();
     });
 
     it("renders avatar image when URL is provided", () => {

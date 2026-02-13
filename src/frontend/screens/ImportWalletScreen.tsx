@@ -373,6 +373,7 @@ function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
         className="grid grid-cols-4 gap-2"
         role="group"
         aria-label="Seed phrase input"
+        data-testid="seed-phrase-grid"
       >
         {words.map((word, i) => (
           <div key={i} className="flex items-center gap-1">
@@ -395,6 +396,7 @@ function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
               autoComplete="off"
               spellCheck={false}
               aria-label={`Word ${i + 1}`}
+              data-testid={`seed-word-${i + 1}`}
             />
           </div>
         ))}
@@ -421,7 +423,7 @@ function MnemonicImportForm({ onSuccess }: { onSuccess: () => void }) {
           />
 
           <div className="flex justify-end pt-2">
-            <Button onClick={handleSave} disabled={saving} className="gap-2">
+            <Button onClick={handleSave} disabled={saving} className="gap-2" data-testid="import-wallet-submit">
               {saving ? (
                 <>
                   <RefreshCw className="h-4 w-4 animate-spin" />
@@ -625,6 +627,7 @@ function NameAndPasswordSection({
           value={alias}
           onChange={(e) => onAliasChange(e.target.value.slice(0, 64))}
           maxLength={64}
+          data-testid="import-alias"
         />
         <div className="flex justify-between">
           <p className="text-xs text-muted-foreground">
@@ -691,7 +694,7 @@ function ImportSuccessScreen({
     : "Key Imported Successfully!";
 
   return (
-    <div className="flex flex-col items-center text-center py-8 space-y-6">
+    <div className="flex flex-col items-center text-center py-8 space-y-6" data-testid="import-success">
       <div className="flex items-center justify-center w-16 h-16 rounded-full bg-success/20">
         <Check className="h-8 w-8 text-success" />
       </div>

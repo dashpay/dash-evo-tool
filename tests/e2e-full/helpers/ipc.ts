@@ -12,12 +12,18 @@
  * @param args    - Optional argument object passed to the command
  * @returns       The deserialized return value from the Rust backend
  */
+interface IpcResult {
+  ok: boolean;
+  value?: unknown;
+  error?: string;
+}
+
 export async function invoke<T = unknown>(
   command: string,
   args?: Record<string, unknown>
 ): Promise<T> {
   const result = await browser.executeAsync(
-    (cmd: string, cmdArgs: Record<string, unknown> | undefined, done: (r: { ok: true; value: unknown } | { ok: false; error: string }) => void) => {
+    (cmd: string, cmdArgs: Record<string, unknown> | undefined, done: (r: IpcResult) => void) => {
       const tauriInternals = (window as any).__TAURI_INTERNALS__;
       if (!tauriInternals || typeof tauriInternals.invoke !== "function") {
         done({ ok: false, error: "Tauri IPC bridge not available" });
@@ -34,7 +40,7 @@ export async function invoke<T = unknown>(
     args
   );
 
-  const res = result as { ok: boolean; value?: unknown; error?: string };
+  const res = result as IpcResult;
   if (!res.ok) {
     throw new Error(`IPC "${command}" failed: ${res.error}`);
   }

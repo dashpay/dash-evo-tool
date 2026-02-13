@@ -86,6 +86,13 @@ impl ImportMnemonicScreen {
         }
     }
 
+    /// Set the seed phrase length (for testing).
+    /// Resizes the word vector to match.
+    pub fn set_seed_phrase_length(&mut self, length: usize) {
+        self.selected_seed_phrase_length = length;
+        self.seed_phrase_words.resize(length, String::new());
+    }
+
     fn try_parse_private_key(&mut self) {
         let input = self.private_key_input.trim();
         if input.is_empty() {

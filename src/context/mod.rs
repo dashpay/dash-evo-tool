@@ -68,7 +68,7 @@ pub struct AppContext {
     pub(crate) keyword_search_contract: Arc<DataContract>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
-    pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
+    pub wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
@@ -83,7 +83,7 @@ pub struct AppContext {
     cached_settings: RwLock<Option<Settings>>,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
-    pub(crate) spv_manager: Arc<SpvManager>,
+    pub spv_manager: Arc<SpvManager>,
     core_backend_mode: AtomicU8,
     /// Tracks the connection status to currently active network
     pub(crate) connection_status: Arc<ConnectionStatus>,

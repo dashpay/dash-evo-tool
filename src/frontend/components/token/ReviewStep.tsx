@@ -1490,7 +1490,7 @@ function buildDistributionRules(
     let distributionRecipient: unknown = "ContractOwner";
     if (perp.recipient === "identity" && perp.recipientIdentityId) {
       distributionRecipient = { Identity: perp.recipientIdentityId.trim() };
-    } else if (perp.recipient === "evonodesByParticipation") {
+    } else if (perp.recipient === "evonodes") {
       distributionRecipient = "EvonodesByParticipation";
     }
 
@@ -1516,7 +1516,7 @@ function buildDistributionRules(
         if (!distributions[String(timestampMs)]) {
           distributions[String(timestampMs)] = {};
         }
-        distributions[String(timestampMs)][id] = amount;
+        distributions[String(timestampMs)]![id] = amount;
       }
     }
     preProgrammedDistribution = {
@@ -1589,8 +1589,8 @@ function buildDistributionFunction(
     case "stepwise": {
       const entries: Record<string, number> = {};
       (perp.stepwiseEntries || []).forEach(
-        (e: { step: string; amount: string }) => {
-          entries[String(parseU64(e.step))] = parseU64(e.amount);
+        (e) => {
+          entries[String(parseU64(e.startStep))] = parseU64(e.amount);
         },
       );
       return { Stepwise: entries };

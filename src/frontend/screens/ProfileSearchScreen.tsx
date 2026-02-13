@@ -106,7 +106,7 @@ export function ProfileSearchScreen() {
       const result = searchResults.find((r) => r.identityId === identityId);
       navigate({
         to: "/dashpay/add-contact",
-        search: result?.username ? { username: result.username } : {},
+        search: { username: result?.username },
       });
     },
     [navigate, searchResults],

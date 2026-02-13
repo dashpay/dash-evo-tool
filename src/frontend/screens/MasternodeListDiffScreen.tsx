@@ -73,44 +73,11 @@ type QrSelectedDetail =
   | { type: "diff"; label: string; data: MnListDiffDto }
   | { type: "quorum"; label: string; data: SimpleQuorumEntryDto };
 
-// MnList result payload types (from task_dispatcher serialization)
-interface MnListFetchedDiffPayload {
-  type: "FetchedDiff";
-  baseHeight: number;
-  height: number;
-  diff: MnListDiffDto;
-}
-
-interface MnListFetchedQrInfoPayload {
-  type: "FetchedQrInfo";
-  qrInfo: QrInfoDto;
-}
-
 interface ChainLockSigEntry {
   height: number;
   blockHash: string;
   signature: string | null;
 }
-
-interface MnListChainLockSigsPayload {
-  type: "ChainLockSigs";
-  entries: ChainLockSigEntry[];
-}
-
-interface MnListFetchedDiffsPayload {
-  type: "FetchedDiffs";
-  diffs: Array<{
-    baseHeight: number;
-    height: number;
-    diff: MnListDiffDto;
-  }>;
-}
-
-type _MnListPayload =
-  | MnListFetchedDiffPayload
-  | MnListFetchedQrInfoPayload
-  | MnListChainLockSigsPayload
-  | MnListFetchedDiffsPayload;
 
 // Quorum viewer: aggregated quorum data by LLMQ type
 interface QuorumViewerEntry {
@@ -1248,7 +1215,7 @@ function DiffsTab({
       }
       case "masternodeChanges": {
         if (selectedItemIndex < filteredNewMasternodes.length) {
-          const mn = filteredNewMasternodes[selectedItemIndex];
+          const mn = filteredNewMasternodes[selectedItemIndex]!;
           return (
             <div className="flex flex-col gap-3" data-testid="masternode-detail">
               <h3 className="text-lg font-semibold">New Masternode</h3>
@@ -1902,7 +1869,7 @@ export function MasternodeListDiffScreen() {
             case "mnListFetchedDiff":
               setFetchedDiffs((prev) => [
                 ...prev,
-                { baseHeight: result.baseHeight, height: result.height, diff: result.diff },
+                { baseHeight: result.baseHeight, height: result.height, diff: result.diff as unknown as MnListDiffDto },
               ]);
               setMessage({ text: `Fetched diff: ${result.baseHeight} → ${result.height}`, type: "success" });
               break;

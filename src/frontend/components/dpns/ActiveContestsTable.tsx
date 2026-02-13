@@ -130,7 +130,7 @@ function getContestDisplayName(contest: ContestedName): {
 
   if (uniqueNames.length === 1) {
     return {
-      displayName: uniqueNames[0],
+      displayName: uniqueNames[0]!,
       tooltip: `Normalized: ${contest.normalizedContestedName}`,
     };
   }

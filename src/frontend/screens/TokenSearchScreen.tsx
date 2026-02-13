@@ -90,7 +90,7 @@ export function TokenSearchScreen() {
         if (result.type === "contractWithDescriptions" && contractDetailLoadingRef.current) {
           const contracts = result.contracts ?? [];
           if (contracts.length > 0) {
-            const contract = contracts[0];
+            const contract = contracts[0]!;
             const tokens = (contract.tokens ?? []).map(
               (tk) => ({
                 tokenId: tk.tokenId ?? "",

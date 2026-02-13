@@ -198,17 +198,31 @@ describe("SingleKeySendScreen", () => {
     it("shows error for invalid address format", async () => {
       const user = userEvent.setup();
       setupWallet();
+      // Mock validateCoreAddress to reject this address
+      vi.mocked(commands.validateCoreAddress).mockResolvedValue({
+        status: "error",
+        error: "Invalid address: base58 error",
+      });
       render(<SingleKeySendScreen />);
       await user.type(screen.getByLabelText("Destination address"), "invalidaddress");
-      expect(screen.getByText("Invalid Dash address format")).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByText("Invalid address: base58 error")).toBeInTheDocument();
+      });
     });
 
     it("accepts valid dash address", async () => {
       const user = userEvent.setup();
       setupWallet();
+      // Mock validateCoreAddress to accept this address
+      vi.mocked(commands.validateCoreAddress).mockResolvedValue({
+        status: "ok",
+        data: null,
+      });
       render(<SingleKeySendScreen />);
       await user.type(screen.getByLabelText("Destination address"), "XtAG1kz2TzYNNbCm5sJGYR5NjBhHrGzm1L");
-      expect(screen.queryByText("Invalid Dash address format")).not.toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.queryByText(/Invalid address/)).not.toBeInTheDocument();
+      });
     });
   });
 

@@ -276,7 +276,7 @@ export function GroupActionsScreen() {
           to: actionRoute,
           search: {
             groupActionId: action.actionId,
-            groupPosition: action.groupPosition,
+            groupPosition: String(action.groupPosition),
             contractId: selectedContractId,
             details: JSON.stringify(action.details),
           },

@@ -79,7 +79,7 @@ export function hexToBase58(hex: string): string {
   const chars: string[] = [];
   while (num > 0n) {
     const remainder = Number(num % 58n);
-    chars.push(BASE58_ALPHABET[remainder]);
+    chars.push(BASE58_ALPHABET[remainder]!);
     num = num / 58n;
   }
 

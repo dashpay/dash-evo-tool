@@ -1138,7 +1138,9 @@ impl ScreenLike for ContactRequests {
                         "received",
                         Some(id),
                     ) {
-                        Ok(row_id) => tracing::debug!("Saved incoming contact request with row id {}", row_id),
+                        Ok(row_id) => {
+                            tracing::debug!("Saved incoming contact request with row id {}", row_id)
+                        }
                         Err(e) => tracing::error!("Failed to save incoming contact request: {}", e),
                     }
                 }
@@ -1192,7 +1194,9 @@ impl ScreenLike for ContactRequests {
                         "sent",
                         Some(id),
                     ) {
-                        Ok(row_id) => tracing::debug!("Saved outgoing contact request with row id {}", row_id),
+                        Ok(row_id) => {
+                            tracing::debug!("Saved outgoing contact request with row id {}", row_id)
+                        }
                         Err(e) => tracing::error!("Failed to save outgoing contact request: {}", e),
                     }
                 }

@@ -73,7 +73,7 @@ export function TokenClaimScreen() {
           estimateTaskIdRef.current = null;
           setEstimating(false);
 
-          setEstimatedRewards(result.explanation);
+          setEstimatedRewards(result.shortExplanation);
         },
       );
 

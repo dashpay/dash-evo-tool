@@ -326,7 +326,7 @@ export function ContactsListScreen() {
   );
 
   const handleAddContact = useCallback(() => {
-    navigate({ to: "/dashpay/add-contact" });
+    navigate({ to: "/dashpay/add-contact", search: { username: undefined } });
   }, [navigate]);
 
   const handleRefresh = useCallback(() => {

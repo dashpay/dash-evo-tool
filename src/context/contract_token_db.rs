@@ -76,10 +76,7 @@ impl AppContext {
         contract_id: &Identifier,
     ) -> Result<Option<QualifiedContract>> {
         // Check system contracts first (they are not stored in the database)
-        let system_contracts: &[(
-            &Arc<DataContract>,
-            &str,
-        )] = &[
+        let system_contracts: &[(&Arc<DataContract>, &str)] = &[
             (&self.dpns_contract, "dpns"),
             (&self.token_history_contract, "token_history"),
             (&self.withdraws_contract, "withdrawals"),

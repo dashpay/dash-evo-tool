@@ -737,9 +737,34 @@ const contractsDpnsRegisterRoute = createRoute({
   ),
 });
 
+interface TokenSearchParams {
+  tokenId?: string;
+  contractId?: string;
+  tokenPosition?: string;
+  name?: string;
+  balance?: string;
+  decimals?: string;
+  identityId?: string;
+  groupActionId?: string;
+  groupPosition?: string;
+  details?: string;
+}
+
 const tokensRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/tokens",
+  validateSearch: (search: Record<string, unknown>): TokenSearchParams => ({
+    tokenId: (search.tokenId as string) || undefined,
+    contractId: (search.contractId as string) || undefined,
+    tokenPosition: (search.tokenPosition as string) || undefined,
+    name: (search.name as string) || undefined,
+    balance: (search.balance as string) || undefined,
+    decimals: (search.decimals as string) || undefined,
+    identityId: (search.identityId as string) || undefined,
+    groupActionId: (search.groupActionId as string) || undefined,
+    groupPosition: (search.groupPosition as string) || undefined,
+    details: (search.details as string) || undefined,
+  }),
   component: () => (
     <LazyScreen>
       <TokensScreen />

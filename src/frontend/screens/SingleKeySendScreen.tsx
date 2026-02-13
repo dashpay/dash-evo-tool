@@ -6,6 +6,7 @@ import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import { FeeConfirmationDialog } from "@/components/shared/FeeConfirmationDialog";
 import type { FeeConfirmationResult } from "@/components/shared/FeeConfirmationDialog";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
+import { parseMinRelayFeeError } from "@/lib/feeUtils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,19 +47,7 @@ type SendStatus =
 
 // ─── Address validation ─────────────────────────────────────────────
 
-function validateRecipientAddress(address: string): string | null {
-  const trimmed = address.trim();
-  if (!trimmed) return null;
-  // Reject platform addresses
-  if (trimmed.startsWith("evo1") || trimmed.startsWith("tevo1")) {
-    return "Platform addresses are not supported for single-key sends. Use a Core address.";
-  }
-  // Basic Dash address format check
-  if (!/^[Xy789][a-km-zA-HJ-NP-Z1-9]{24,}$/.test(trimmed)) {
-    return "Invalid Dash address format";
-  }
-  return null;
-}
+import { validateCoreAddress } from "@/lib/validateAddress";
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -143,21 +132,8 @@ export function estimateFee(
 
 // ─── Fee error parsing ─────────────────────────────────────────────
 
-/**
- * Parse a "min relay fee not met" error to extract the required fee.
- * Matches error format: "min relay fee not met, 226 < 1000"
- * Returns the required fee (the number after '<') or null if not a fee error.
- */
-export function parseMinRelayFeeError(error: string): number | null {
-  if (!error.includes("min relay fee")) return null;
-  const ltPos = error.indexOf("<");
-  if (ltPos === -1) return null;
-  const afterLt = error.substring(ltPos + 1).trim();
-  const digits = afterLt.match(/^(\d+)/);
-  if (!digits) return null;
-  const requiredFee = parseInt(digits[1] ?? "", 10);
-  return isNaN(requiredFee) ? null : requiredFee;
-}
+// Re-export from shared utility for backwards compatibility with tests
+export { parseMinRelayFeeError } from "@/lib/feeUtils";
 
 // ─── SingleKeySendScreen ────────────────────────────────────────────
 
@@ -326,15 +302,46 @@ export function SingleKeySendScreen() {
     navigate({ to: "/wallets" });
   }, [navigate]);
 
+  const addressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const updateRecipientAddress = useCallback(
     (id: number, address: string) => {
+      // Immediately update the address and clear the error
       setRecipients((prev) =>
         prev.map((r) =>
-          r.id === id
-            ? { ...r, address, error: validateRecipientAddress(address) }
-            : r,
+          r.id === id ? { ...r, address, error: null } : r,
         ),
       );
+
+      if (addressTimerRef.current) {
+        clearTimeout(addressTimerRef.current);
+      }
+
+      const trimmed = address.trim();
+      if (!trimmed) return;
+
+      // Quick client-side check for platform addresses
+      if (trimmed.startsWith("evo1") || trimmed.startsWith("tevo1")) {
+        setRecipients((prev) =>
+          prev.map((r) =>
+            r.id === id
+              ? { ...r, error: "Platform addresses are not supported for single-key sends. Use a Core address." }
+              : r,
+          ),
+        );
+        return;
+      }
+
+      // Debounced backend validation
+      addressTimerRef.current = setTimeout(async () => {
+        const error = await validateCoreAddress(trimmed);
+        setRecipients((prev) =>
+          prev.map((r) =>
+            r.id === id && r.address.trim() === trimmed
+              ? { ...r, error }
+              : r,
+          ),
+        );
+      }, 300);
     },
     [],
   );
@@ -447,9 +454,8 @@ export function SingleKeySendScreen() {
         errors.push(`Recipient ${i + 1} has empty address`);
         continue;
       }
-      const addrError = validateRecipientAddress(r.address);
-      if (addrError) {
-        errors.push(`Recipient ${i + 1}: ${addrError}`);
+      if (r.error) {
+        errors.push(`Recipient ${i + 1}: ${r.error}`);
         continue;
       }
       const duffs = duffsFromDashString(r.amount);

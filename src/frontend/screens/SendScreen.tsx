@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
+import { validateCoreAddress } from "@/lib/validateAddress";
 import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout";
 import { AmountInput, formatAmount } from "@/components/shared/AmountInput";
 import { WalletUnlockDialog } from "@/components/shared/WalletUnlockDialog";
 import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
+import { FeeConfirmationDialog } from "@/components/shared/FeeConfirmationDialog";
+import type { FeeConfirmationResult } from "@/components/shared/FeeConfirmationDialog";
+import { parseMinRelayFeeError } from "@/lib/feeUtils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -172,6 +176,7 @@ export function SendScreen() {
     type: "core",
   });
   const [destinationAddress, setDestinationAddress] = useState("");
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [amountValue, setAmountValue] = useState("");
   const [subtractFee, setSubtractFee] = useState(false);
   const [sendStatus, setSendStatus] = useState<SendStatus>({ state: "idle" });
@@ -197,6 +202,18 @@ export function SendScreen() {
   // Confirmation dialog state
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [pendingSendMode, setPendingSendMode] = useState<"simple" | "advanced" | null>(null);
+
+  // Fee confirmation dialog state
+  const [feeDialogOpen, setFeeDialogOpen] = useState(false);
+  const [feeDialogEstimated, setFeeDialogEstimated] = useState(0);
+  const [feeDialogRequired, setFeeDialogRequired] = useState(0);
+  // Stores the pending Core→Core payment params for retry with override fee
+  const pendingCorePaymentRef = useRef<{
+    walletSeedHash: string;
+    recipients: { address: string; amount: number }[];
+    subtractFeeFromAmount: boolean;
+    memo: string | null;
+  } | null>(null);
 
   // Elapsed time for sending state
   const [elapsed, setElapsed] = useState(0);
@@ -263,6 +280,7 @@ export function SendScreen() {
         if (cancelled) return;
         const tid = activeTaskIdRef.current;
         if (!tid || event.payload.taskId !== tid) return;
+        pendingCorePaymentRef.current = null;
         let message = "Transaction sent successfully!";
         if (event.payload.result.type === "walletCompleted") {
           message = "Transaction completed successfully!";
@@ -275,6 +293,16 @@ export function SendScreen() {
         if (cancelled) return;
         const tid = activeTaskIdRef.current;
         if (!tid || event.payload.taskId !== tid) return;
+        // Check for min relay fee error — show fee confirmation dialog instead of error
+        const requiredFee = parseMinRelayFeeError(event.payload.message);
+        if (requiredFee !== null && pendingCorePaymentRef.current) {
+          const match = event.payload.message.match(/(\d+)\s*</);
+          const estimatedFee = match ? parseInt(match[1] ?? "", 10) : 0;
+          setFeeDialogEstimated(estimatedFee);
+          setFeeDialogRequired(requiredFee);
+          setFeeDialogOpen(true);
+          return;
+        }
         setSendStatus({ state: "error", message: event.payload.message });
       });
     };
@@ -331,11 +359,43 @@ export function SendScreen() {
     }
   }, [source, wallet, totalPlatformBalance]);
 
+  // Debounced address validation for Core addresses
+  const addrValidationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    setAddressError(null);
+
+    if (addrValidationTimer.current) {
+      clearTimeout(addrValidationTimer.current);
+    }
+
+    const trimmed = destinationAddress.trim();
+    // Only validate core-type addresses (platform addresses are handled separately)
+    if (!trimmed || destType !== "core") return;
+
+    addrValidationTimer.current = setTimeout(async () => {
+      const error = await validateCoreAddress(trimmed);
+      // Only set error if address hasn't changed
+      setDestinationAddress((current) => {
+        if (current.trim() === trimmed && error) {
+          setAddressError(error);
+        }
+        return current;
+      });
+    }, 300);
+
+    return () => {
+      if (addrValidationTimer.current) {
+        clearTimeout(addrValidationTimer.current);
+      }
+    };
+  }, [destinationAddress, destType]);
+
   // Can we send?
   const canSend = useMemo(() => {
     if (sendStatus.state === "sending") return false;
     if (!source) return false;
     if (destType === "unknown") return false;
+    if (addressError) return false;
     if (!amountValue || parseFloat(amountValue) <= 0) return false;
     if (isIdentitySource && destType !== "core") return false;
     if (!isIdentitySource && !walletUnlocked) return false;
@@ -344,6 +404,7 @@ export function SendScreen() {
     sendStatus.state,
     source,
     destType,
+    addressError,
     amountValue,
     isIdentitySource,
     walletUnlocked,
@@ -370,6 +431,7 @@ export function SendScreen() {
   const resetForm = useCallback(() => {
     setSource({ type: "core" });
     setDestinationAddress("");
+    setAddressError(null);
     setAmountValue("");
     setSubtractFee(false);
     setSendStatus({ state: "idle" });
@@ -450,7 +512,7 @@ export function SendScreen() {
             `Insufficient balance. Need ${formatDash(duffs)} but have ${formatDash(coreBalance)}`,
           );
 
-        const result = await commands.coreSendWalletPayment({
+        const requestParams = {
           walletSeedHash: seedHash,
           recipients: [
             {
@@ -459,7 +521,12 @@ export function SendScreen() {
             },
           ],
           subtractFeeFromAmount: subtractFee,
-          memo: null,
+          memo: null as string | null,
+        };
+        pendingCorePaymentRef.current = requestParams;
+
+        const result = await commands.coreSendWalletPayment({
+          ...requestParams,
           overrideFee: null,
         });
         if (result.status === "error") throw new Error(result.error);
@@ -624,11 +691,16 @@ export function SendScreen() {
           if (recipients.length === 0)
             throw new Error("No valid outputs specified");
 
-          const result = await commands.coreSendWalletPayment({
+          const advRequestParams = {
             walletSeedHash: seedHash,
             recipients,
             subtractFeeFromAmount: false,
-            memo: null,
+            memo: null as string | null,
+          };
+          pendingCorePaymentRef.current = advRequestParams;
+
+          const result = await commands.coreSendWalletPayment({
+            ...advRequestParams,
             overrideFee: null,
           });
           if (result.status === "error") throw new Error(result.error);
@@ -763,6 +835,40 @@ export function SendScreen() {
     setPendingSendMode(null);
   }, [pendingSendMode, handleAdvancedSend, handleSend]);
 
+  // ─── Fee confirmation ──────────────────────────────────────────
+
+  const handleFeeConfirmResult = useCallback(
+    async (result: FeeConfirmationResult) => {
+      if (result.status === "confirmed" && pendingCorePaymentRef.current) {
+        // Retry send with the override fee
+        try {
+          const sendResult = await commands.coreSendWalletPayment({
+            ...pendingCorePaymentRef.current,
+            overrideFee: result.overrideFee,
+          });
+
+          if (sendResult.status === "error") throw new Error(sendResult.error);
+
+          setSendStatus({
+            state: "sending",
+            startTime: Date.now(),
+            taskId: sendResult.data.taskId,
+          });
+        } catch (e) {
+          setSendStatus({
+            state: "error",
+            message: e instanceof Error ? e.message : String(e),
+          });
+        }
+      } else {
+        // User canceled — abort the transaction
+        pendingCorePaymentRef.current = null;
+        setSendStatus({ state: "idle" });
+      }
+    },
+    [],
+  );
+
   // ─── Advanced input management ─────────────────────────────────
 
   const addAdvancedCoreInput = useCallback(
@@ -858,6 +964,16 @@ export function SendScreen() {
             Time elapsed: {formatElapsed(elapsed)}
           </p>
         </div>
+
+        {/* Fee confirmation dialog — may appear during sending state */}
+        <FeeConfirmationDialog
+          open={feeDialogOpen}
+          onOpenChange={setFeeDialogOpen}
+          estimatedFee={feeDialogEstimated}
+          requiredFee={feeDialogRequired}
+          unit="duffs"
+          onResult={handleFeeConfirmResult}
+        />
       </Island>
     );
   }
@@ -1436,9 +1552,14 @@ export function SendScreen() {
               placeholder="Enter address (X.../y.../evo1.../tevo1...)"
               aria-label="Destination address"
             />
-            {destinationAddress.trim() && destType === "unknown" && (
+            {destinationAddress.trim() && destType === "unknown" && !addressError && (
               <p className="text-xs text-destructive">
                 Invalid address format
+              </p>
+            )}
+            {addressError && (
+              <p className="text-xs text-destructive">
+                {addressError}
               </p>
             )}
             {isIdentitySource && destType === "platform" && (

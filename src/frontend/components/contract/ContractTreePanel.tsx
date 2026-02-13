@@ -216,6 +216,10 @@ export interface ContractTreePanelProps {
   onCopyJson?: (contractId: string, json: string) => void;
   /** Called when user clicks Contract JSON to view in the main area. */
   onSelectContractJson?: (contractId: string) => void;
+  /** External expanded nodes (as string array). When provided, overrides internal state. */
+  expandedNodes?: string[];
+  /** Called when a tree node is toggled. When provided, overrides internal state. */
+  onToggleNode?: (key: string) => void;
   className?: string;
 }
 
@@ -248,15 +252,31 @@ export function ContractTreePanel({
   onCopyId,
   onCopyJson,
   onSelectContractJson,
+  expandedNodes: externalExpandedNodes,
+  onToggleNode: externalOnToggleNode,
   className,
 }: ContractTreePanelProps) {
   const [searchFilter, setSearchFilter] = useState("");
-  const [expandedNodes, setExpandedNodes] = useState<ExpandedNodes>(new Set());
+  const [internalExpanded, setInternalExpanded] = useState<ExpandedNodes>(new Set());
   const [removeTarget, setRemoveTarget] = useState<{
     contractId: string;
     name: string;
   } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Use external state if provided, otherwise fall back to internal
+  const expandedNodes: ExpandedNodes = useMemo(
+    () => externalExpandedNodes ? new Set(externalExpandedNodes) : internalExpanded,
+    [externalExpandedNodes, internalExpanded],
+  );
+
+  const handleToggleNodeInternal = useCallback((key: string) => {
+    if (externalOnToggleNode) {
+      externalOnToggleNode(key);
+    } else {
+      setInternalExpanded((prev) => toggleNode(prev, key));
+    }
+  }, [externalOnToggleNode]);
 
   // Filter contracts by search term
   const filteredContracts = useMemo(() => {
@@ -275,7 +295,7 @@ export function ContractTreePanel({
     (contractId: string) => {
       const key = `contract:${contractId}`;
       const isExpanding = !expandedNodes.has(key);
-      setExpandedNodes((prev) => toggleNode(prev, key));
+      handleToggleNodeInternal(key);
       if (isExpanding) {
         onExpandContract(contractId);
       } else {
@@ -285,21 +305,21 @@ export function ContractTreePanel({
         }
       }
     },
-    [expandedNodes, onExpandContract, onClearSelection, selection],
+    [expandedNodes, handleToggleNodeInternal, onExpandContract, onClearSelection, selection],
   );
 
   const handleToggleSection = useCallback(
     (key: string) => {
-      setExpandedNodes((prev) => toggleNode(prev, key));
+      handleToggleNodeInternal(key);
     },
-    [],
+    [handleToggleNodeInternal],
   );
 
   const handleSelectDocType = useCallback(
     (contractId: string, dt: DocumentTypeDetail) => {
       const key = `doctype:${contractId}:${dt.name}`;
       const isExpanding = !expandedNodes.has(key);
-      setExpandedNodes((prev) => toggleNode(prev, key));
+      handleToggleNodeInternal(key);
 
       if (isExpanding) {
         onSelectDocumentType(contractId, dt.name, dt.properties);
@@ -313,14 +333,14 @@ export function ContractTreePanel({
         }
       }
     },
-    [expandedNodes, onSelectDocumentType, selection],
+    [expandedNodes, handleToggleNodeInternal, onSelectDocumentType, selection],
   );
 
   const handleSelectIndex = useCallback(
     (contractId: string, docTypeName: string, index: IndexInfo) => {
       const key = `index:${contractId}:${docTypeName}:${index.name}`;
       const isExpanding = !expandedNodes.has(key);
-      setExpandedNodes((prev) => toggleNode(prev, key));
+      handleToggleNodeInternal(key);
 
       if (isExpanding) {
         onSelectIndex(contractId, docTypeName, index);
@@ -336,7 +356,7 @@ export function ContractTreePanel({
         }
       }
     },
-    [expandedNodes, onSelectIndex, contractDetails, onSelectDocumentType],
+    [expandedNodes, handleToggleNodeInternal, onSelectIndex, contractDetails, onSelectDocumentType],
   );
 
   const handleClearSearch = useCallback(() => {

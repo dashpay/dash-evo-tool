@@ -212,6 +212,18 @@ pub struct FetchDocumentsPageInput {
     pub start_after: Option<String>,
 }
 
+/// Input for fetching documents using a SQL-like query string.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchDocumentsSqlInput {
+    /// Contract ID (hex) — used to look up the contract for query parsing.
+    pub contract_id: IdentifierDto,
+    /// SQL-like query text (e.g. `SELECT * FROM domain WHERE normalizedLabel = 'alice'`).
+    pub sql_text: String,
+    /// Optional cursor (hex bytes of the last document ID from previous page).
+    pub start_after: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
@@ -590,6 +602,42 @@ pub fn document_fetch_page(
     Ok(DispatchTaskResponse { task_id })
 }
 
+/// Fetch documents from Platform using a SQL-like query string.
+///
+/// Parses the SQL text via `DriveDocumentQuery::from_sql_expr` and dispatches
+/// `DocumentTask::FetchDocumentsPage`. Result via event.
+#[tauri::command]
+#[specta::specta]
+pub fn document_fetch_page_sql(
+    app_handle: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    input: FetchDocumentsSqlInput,
+) -> Result<DispatchTaskResponse, String> {
+    use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
+    use dash_sdk::platform::DriveDocumentQuery;
+
+    let contract = lookup_contract(&state, &input.contract_id)?;
+
+    let mut query: DocumentQuery = DriveDocumentQuery::from_sql_expr(
+        &input.sql_text,
+        &contract,
+        None,
+    )
+    .map(Into::into)
+    .map_err(|e| format!("Failed to parse query: {}", e))?;
+
+    query.limit = 100;
+
+    if let Some(id_str) = input.start_after {
+        let id = parse_identifier(&id_str)?;
+        query.start = Some(Start::StartAfter(id.to_buffer().to_vec()));
+    }
+
+    let task = BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocumentsPage(query)));
+    let task_id = task_dispatcher::dispatch_task(&app_handle, &state, task);
+    Ok(DispatchTaskResponse { task_id })
+}
+
 // ---------------------------------------------------------------------------
 // Token cost query (synchronous)
 // ---------------------------------------------------------------------------
@@ -832,6 +880,19 @@ mod tests {
         assert!(json.contains("\"limit\":100"));
         assert!(json.contains("\"whereClauses\":[]"));
         assert!(json.contains("\"orderByClauses\":[]"));
+    }
+
+    #[test]
+    fn fetch_documents_sql_input_serializes() {
+        let input = FetchDocumentsSqlInput {
+            contract_id: "abc".into(),
+            sql_text: "SELECT * FROM domain WHERE normalizedLabel = 'alice'".into(),
+            start_after: Some("deadbeef".into()),
+        };
+        let json = serde_json::to_string(&input).unwrap();
+        assert!(json.contains("\"contractId\":\"abc\""));
+        assert!(json.contains("\"sqlText\":"));
+        assert!(json.contains("\"startAfter\":\"deadbeef\""));
     }
 
     #[test]

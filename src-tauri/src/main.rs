@@ -217,6 +217,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::core::core_recover_asset_locks,
             // Wallet commands
             commands::wallet::wallet_generate_receive_address,
+            commands::wallet::wallet_generate_platform_address,
             commands::wallet::wallet_fetch_platform_address_balances,
             commands::wallet::wallet_transfer_platform_credits,
             commands::wallet::wallet_withdraw_from_platform_address,
@@ -265,6 +266,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::document::document_set_price,
             commands::document::document_fetch,
             commands::document::document_fetch_page,
+            commands::document::document_fetch_page_sql,
             commands::document::document_type_token_cost,
             // Token commands
             commands::token::token_query_my_balances,

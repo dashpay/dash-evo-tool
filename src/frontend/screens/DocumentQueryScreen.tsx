@@ -349,9 +349,11 @@ export function DocumentQueryScreen() {
     currentPage,
     hasNextPage,
     queryContractId,
-    queryDocumentType,
+    treeSelection,
+    expandedNodes,
+    jsonContractId,
     setQueryText,
-    fetchDocuments,
+    fetchDocumentsSql,
     goToNextPage,
     goToPreviousPage,
     setDisplayMode,
@@ -362,15 +364,14 @@ export function DocumentQueryScreen() {
     clearResults,
     subscribeToUpdates: subscribeDocumentUpdates,
     setQueryTarget,
+    setTreeSelection,
+    toggleTreeNode,
+    setJsonContractId,
   } = useDocumentStore();
 
   // Network state for conditional UI
   const [network, setNetwork] = useState<NetworkDto | null>(null);
 
-  // Tree selection state
-  const [treeSelection, setTreeSelection] = useState<TreeSelection | null>(null);
-  // Contract ID whose JSON is shown in the main area (null = not showing)
-  const [jsonContractId, setJsonContractId] = useState<string | null>(null);
   // Field selection dialog
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false);
   // Elapsed time for waiting status
@@ -421,7 +422,7 @@ export function DocumentQueryScreen() {
       setQueryText(`SELECT * FROM ${documentType}`);
       initFieldSelection(properties);
     },
-    [setQueryTarget, setQueryText, initFieldSelection],
+    [setTreeSelection, setJsonContractId, setQueryTarget, setQueryText, initFieldSelection],
   );
 
   // Handle clicking "Contract JSON" in the tree
@@ -429,7 +430,7 @@ export function DocumentQueryScreen() {
     (contractId: string) => {
       setJsonContractId(contractId);
     },
-    [],
+    [setJsonContractId],
   );
 
   // Handle tree selection: select index
@@ -437,11 +438,12 @@ export function DocumentQueryScreen() {
     (contractId: string, documentType: string, index: IndexInfo) => {
       setTreeSelection({ contractId, documentType, indexName: index.name });
       setQueryTarget(contractId, documentType);
-      // Build a WHERE clause from index properties
-      const whereFields = index.properties.map((p) => p.field).join(", ");
-      setQueryText(`SELECT * FROM ${documentType} WHERE ${whereFields}`);
+      // Build a WHERE clause from index properties with backtick-quoted fields and placeholders
+      const conditions = index.properties.map((p) => `\`${p.field}\` = '___'`);
+      const whereClause = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+      setQueryText(`SELECT * FROM ${documentType}${whereClause}`);
     },
-    [setQueryTarget, setQueryText],
+    [setTreeSelection, setQueryTarget, setQueryText],
   );
 
   // Clear tree selection
@@ -451,7 +453,7 @@ export function DocumentQueryScreen() {
     setQueryTarget(null, null);
     clearResults();
     setQueryText("");
-  }, [setQueryTarget, clearResults, setQueryText]);
+  }, [setTreeSelection, setJsonContractId, setQueryTarget, clearResults, setQueryText]);
 
   // Handle remove contract
   const handleRemoveContract = useCallback(
@@ -477,14 +479,14 @@ export function DocumentQueryScreen() {
     toast.success("Contract JSON copied");
   }, []);
 
-  // Fetch documents
+  // Fetch documents using SQL text
   const handleFetchDocuments = useCallback(() => {
-    if (!queryContractId || !queryDocumentType) {
-      toast.error("Select a contract and document type first");
+    if (!queryContractId || !queryText.trim()) {
+      toast.error("Select a contract and enter a query first");
       return;
     }
-    fetchDocuments(queryContractId, queryDocumentType);
-  }, [queryContractId, queryDocumentType, fetchDocuments]);
+    fetchDocumentsSql(queryContractId, queryText);
+  }, [queryContractId, queryText, fetchDocumentsSql]);
 
   // Pagination
   const handleNextPage = useCallback(() => {
@@ -540,6 +542,8 @@ export function DocumentQueryScreen() {
           onCopyId={handleCopyId}
           onCopyJson={handleCopyJson}
           onSelectContractJson={handleSelectContractJson}
+          expandedNodes={expandedNodes}
+          onToggleNode={toggleTreeNode}
           className="h-full"
         />
       </div>
@@ -608,7 +612,7 @@ export function DocumentQueryScreen() {
               />
               <Button
                 onClick={handleFetchDocuments}
-                disabled={queryStatus === "waiting" || !queryContractId || !queryDocumentType}
+                disabled={queryStatus === "waiting" || !queryContractId || !queryText.trim()}
                 className="shrink-0"
                 data-testid="fetch-documents-btn"
               >

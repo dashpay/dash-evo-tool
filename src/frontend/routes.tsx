@@ -156,6 +156,11 @@ const GroupActionsScreen = lazy(() =>
     default: m.GroupActionsScreen,
   })),
 );
+const TokensScreen = lazy(() =>
+  import("@/screens/TokensScreen").then((m) => ({
+    default: m.TokensScreen,
+  })),
+);
 const TokenMyTokensScreen = lazy(() =>
   import("@/screens/TokenMyTokensScreen").then((m) => ({
     default: m.TokenMyTokensScreen,
@@ -735,7 +740,11 @@ const contractsDpnsRegisterRoute = createRoute({
 const tokensRoute = createRoute({
   getParentRoute: () => appLayoutRoute,
   path: "/tokens",
-  component: () => <Outlet />,
+  component: () => (
+    <LazyScreen>
+      <TokensScreen />
+    </LazyScreen>
+  ),
 });
 
 const tokensIndexRoute = createRoute({

@@ -6,6 +6,7 @@ import type {
   TaskResultEvent,
 } from "../bindings";
 import type { JsonValue } from "../bindings";
+import type { TreeSelection } from "../components/contract/ContractTreePanel";
 import { TaskTimeoutManager, TIMEOUT_ERROR_MESSAGE } from "../lib/taskTimeout";
 
 // ─── Document types (from task result payload) ─────────────────────
@@ -76,6 +77,8 @@ const DEFAULT_VISIBLE_PRIVATE_FIELDS = new Set(["$id", "$ownerId"]);
 interface DocumentState {
   /** SQL-like query text. */
   queryText: string;
+  /** The SQL text used for the last SQL-based fetch (for pagination). */
+  querySqlText: string | null;
   /** Where clauses for structured query. */
   whereClauses: WhereClauseDto[];
   /** Order-by clauses. */
@@ -106,6 +109,14 @@ interface DocumentState {
   queryContractId: string | null;
   /** The document type currently being queried. */
   queryDocumentType: string | null;
+
+  // ── Tree panel state (persisted across navigation) ──
+  /** Current tree selection. */
+  treeSelection: TreeSelection | null;
+  /** Expanded tree node keys. */
+  expandedNodes: string[];
+  /** Contract ID whose JSON is being viewed. */
+  jsonContractId: string | null;
 }
 
 // ─── Store actions ──────────────────────────────────────────────────
@@ -133,6 +144,19 @@ interface DocumentActions {
   fetchPage: (
     contractId: string,
     documentTypeName: string,
+    startAfter: string | null,
+  ) => Promise<string | null>;
+
+  /** Fetch documents using SQL text (first page). */
+  fetchDocumentsSql: (
+    contractId: string,
+    sqlText: string,
+  ) => Promise<string | null>;
+
+  /** Fetch a specific page using SQL text. */
+  fetchPageSql: (
+    contractId: string,
+    sqlText: string,
     startAfter: string | null,
   ) => Promise<string | null>;
 
@@ -168,6 +192,16 @@ interface DocumentActions {
 
   /** Clear the error state. */
   clearError: () => void;
+
+  // ── Tree panel actions ──
+  /** Set the tree selection. */
+  setTreeSelection: (selection: TreeSelection | null) => void;
+
+  /** Toggle a tree node's expanded state. */
+  toggleTreeNode: (key: string) => void;
+
+  /** Set the contract ID for JSON viewing. */
+  setJsonContractId: (id: string | null) => void;
 }
 
 // ─── Combined store type ────────────────────────────────────────────
@@ -183,6 +217,7 @@ const timeouts = new TaskTimeoutManager();
 export const useDocumentStore = create<DocumentStore>((set, get) => ({
   // Initial state
   queryText: "",
+  querySqlText: null,
   whereClauses: [],
   orderByClauses: [],
   documents: [],
@@ -198,6 +233,9 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
   hasNextPage: false,
   queryContractId: null,
   queryDocumentType: null,
+  treeSelection: null,
+  expandedNodes: [],
+  jsonContractId: null,
 
   setQueryText: (text: string) => {
     set({ queryText: text });
@@ -313,9 +351,98 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
     }
   },
 
+  fetchDocumentsSql: async (
+    contractId: string,
+    sqlText: string,
+  ) => {
+    set({
+      queryStatus: "waiting",
+      queryStartedAt: Date.now(),
+      queryError: null,
+      documents: [],
+      currentPage: 1,
+      nextCursors: [null],
+      hasNextPage: false,
+      queryContractId: contractId,
+      querySqlText: sqlText,
+    });
+
+    try {
+      const result = await commands.documentFetchPageSql({
+        contractId,
+        sqlText,
+        startAfter: null,
+      });
+
+      if (result.status === "ok") {
+        set({ activeTaskId: result.data.taskId });
+        timeouts.start("query", () => {
+          set({ queryStatus: "error", queryError: TIMEOUT_ERROR_MESSAGE, queryStartedAt: null, activeTaskId: null });
+        });
+        return result.data.taskId;
+      }
+
+      set({
+        queryStatus: "error",
+        queryError: result.error,
+        queryStartedAt: null,
+      });
+      return null;
+    } catch (e) {
+      set({
+        queryStatus: "error",
+        queryError: e instanceof Error ? e.message : String(e),
+        queryStartedAt: null,
+      });
+      return null;
+    }
+  },
+
+  fetchPageSql: async (
+    contractId: string,
+    sqlText: string,
+    startAfter: string | null,
+  ) => {
+    set({
+      queryStatus: "waiting",
+      queryStartedAt: Date.now(),
+      queryError: null,
+    });
+
+    try {
+      const result = await commands.documentFetchPageSql({
+        contractId,
+        sqlText,
+        startAfter,
+      });
+
+      if (result.status === "ok") {
+        set({ activeTaskId: result.data.taskId });
+        timeouts.start("query", () => {
+          set({ queryStatus: "error", queryError: TIMEOUT_ERROR_MESSAGE, queryStartedAt: null, activeTaskId: null });
+        });
+        return result.data.taskId;
+      }
+
+      set({
+        queryStatus: "error",
+        queryError: result.error,
+        queryStartedAt: null,
+      });
+      return null;
+    } catch (e) {
+      set({
+        queryStatus: "error",
+        queryError: e instanceof Error ? e.message : String(e),
+        queryStartedAt: null,
+      });
+      return null;
+    }
+  },
+
   goToNextPage: async () => {
-    const { documents, queryContractId, queryDocumentType, currentPage, nextCursors, hasNextPage } = get();
-    if (!hasNextPage || !queryContractId || !queryDocumentType) return null;
+    const { documents, queryContractId, querySqlText, currentPage, nextCursors, hasNextPage } = get();
+    if (!hasNextPage || !queryContractId) return null;
 
     // The cursor for the next page is the last document ID on the current page
     const lastDoc = documents[documents.length - 1];
@@ -334,18 +461,32 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
       nextCursors: newCursors,
     });
 
+    // Use SQL pagination if this was a SQL-based query
+    if (querySqlText) {
+      return get().fetchPageSql(queryContractId, querySqlText, cursor);
+    }
+
+    const { queryDocumentType } = get();
+    if (!queryDocumentType) return null;
     return get().fetchPage(queryContractId, queryDocumentType, cursor);
   },
 
   goToPreviousPage: async () => {
-    const { currentPage, nextCursors, queryContractId, queryDocumentType } = get();
-    if (currentPage <= 1 || !queryContractId || !queryDocumentType) return null;
+    const { currentPage, nextCursors, queryContractId, querySqlText } = get();
+    if (currentPage <= 1 || !queryContractId) return null;
 
     const prevPage = currentPage - 1;
     const cursor = nextCursors[prevPage - 1] ?? null; // Page 1 has cursor at index 0 (null)
 
     set({ currentPage: prevPage });
 
+    // Use SQL pagination if this was a SQL-based query
+    if (querySqlText) {
+      return get().fetchPageSql(queryContractId, querySqlText, cursor);
+    }
+
+    const { queryDocumentType } = get();
+    if (!queryDocumentType) return null;
     return get().fetchPage(queryContractId, queryDocumentType, cursor);
   },
 
@@ -400,10 +541,13 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
       queryStartedAt: null,
       queryError: null,
       activeTaskId: null,
+      querySqlText: null,
       currentPage: 1,
       nextCursors: [null],
       hasNextPage: false,
       searchFilter: "",
+      treeSelection: null,
+      jsonContractId: null,
     });
   },
 
@@ -517,6 +661,7 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
     timeouts.clearAll();
     set({
       queryText: "",
+      querySqlText: null,
       whereClauses: [],
       orderByClauses: [],
       documents: [],
@@ -532,10 +677,35 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
       hasNextPage: false,
       queryContractId: null,
       queryDocumentType: null,
+      treeSelection: null,
+      expandedNodes: [],
+      jsonContractId: null,
     });
   },
 
   clearError: () => {
     set({ queryError: null });
+  },
+
+  // ── Tree panel actions ──
+
+  setTreeSelection: (selection: TreeSelection | null) => {
+    set({ treeSelection: selection });
+  },
+
+  toggleTreeNode: (key: string) => {
+    set((state) => {
+      const nodes = new Set(state.expandedNodes);
+      if (nodes.has(key)) {
+        nodes.delete(key);
+      } else {
+        nodes.add(key);
+      }
+      return { expandedNodes: [...nodes] };
+    });
+  },
+
+  setJsonContractId: (id: string | null) => {
+    set({ jsonContractId: id });
   },
 }));

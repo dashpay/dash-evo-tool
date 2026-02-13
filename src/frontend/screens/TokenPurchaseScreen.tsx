@@ -11,6 +11,7 @@ import { commands, events } from "@/bindings";
 import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { TokenOperationForm } from "@/components/token/TokenOperationForm";
 import type { ConfirmationConfig } from "@/components/token/TokenOperationForm";
+import { estimateTokenTransition } from "@/lib/feeEstimation";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -316,6 +317,7 @@ export function TokenPurchaseScreen() {
     <TokenOperationForm
       actionName="Purchase"
       tokenContext={tokenContext}
+      estimatedFee={estimateTokenTransition()}
       isValid={canPurchase}
       validationMessage={validationMessage}
       confirmation={confirmation}

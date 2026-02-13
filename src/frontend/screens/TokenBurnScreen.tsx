@@ -6,6 +6,7 @@ import type {
   ConfirmationConfig,
   GroupActionContext,
 } from "@/components/token/TokenOperationForm";
+import { estimateDocumentBatch } from "@/lib/feeEstimation";
 
 /**
  * Token Burn screen — allows burning tokens from the current identity's balance.
@@ -143,6 +144,7 @@ export function TokenBurnScreen() {
     <TokenOperationForm
       actionName="Burn"
       tokenContext={tokenContext}
+      estimatedFee={estimateDocumentBatch(1)}
       showAmountInput={!isGroupSigning}
       amount={amount}
       onAmountChange={setAmount}

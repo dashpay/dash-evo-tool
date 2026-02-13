@@ -6,6 +6,7 @@ import type {
   ConfirmationConfig,
   GroupActionContext,
 } from "@/components/token/TokenOperationForm";
+import { estimateDocumentBatch } from "@/lib/feeEstimation";
 
 /**
  * Token Pause screen — pauses all token transfers for a contract.
@@ -90,6 +91,7 @@ export function TokenPauseScreen() {
     <TokenOperationForm
       actionName="Pause"
       tokenContext={tokenContext}
+      estimatedFee={estimateDocumentBatch(1)}
       groupAction={groupAction}
       isValid={true}
       confirmation={confirmation}

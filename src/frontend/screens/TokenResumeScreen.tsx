@@ -6,6 +6,7 @@ import type {
   ConfirmationConfig,
   GroupActionContext,
 } from "@/components/token/TokenOperationForm";
+import { estimateDocumentBatch } from "@/lib/feeEstimation";
 
 /**
  * Token Resume screen — resumes token transfers after a pause.
@@ -90,6 +91,7 @@ export function TokenResumeScreen() {
     <TokenOperationForm
       actionName="Resume"
       tokenContext={tokenContext}
+      estimatedFee={estimateDocumentBatch(1)}
       groupAction={groupAction}
       isValid={true}
       confirmation={confirmation}

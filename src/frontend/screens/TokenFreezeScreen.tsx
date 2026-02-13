@@ -6,6 +6,7 @@ import type {
   ConfirmationConfig,
   GroupActionContext,
 } from "@/components/token/TokenOperationForm";
+import { estimateDocumentBatch } from "@/lib/feeEstimation";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -126,6 +127,7 @@ export function TokenFreezeScreen() {
     <TokenOperationForm
       actionName="Freeze"
       tokenContext={tokenContext}
+      estimatedFee={estimateDocumentBatch(1)}
       groupAction={groupAction}
       isValid={isValid}
       validationMessage={validationMessage}

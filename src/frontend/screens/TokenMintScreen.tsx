@@ -7,6 +7,7 @@ import type {
   ConfirmationConfig,
   GroupActionContext,
 } from "@/components/token/TokenOperationForm";
+import { estimateDocumentBatch } from "@/lib/feeEstimation";
 
 /**
  * Token Mint screen — allows minting new tokens.
@@ -223,6 +224,7 @@ export function TokenMintScreen() {
     <TokenOperationForm
       actionName="Mint"
       tokenContext={tokenContext}
+      estimatedFee={estimateDocumentBatch(1)}
       showAmountInput={!isGroupSigning}
       amount={amount}
       onAmountChange={setAmount}

@@ -8,6 +8,7 @@ import type {
 } from "@/bindings";
 import { TokenOperationForm } from "@/components/token/TokenOperationForm";
 import type { ConfirmationConfig } from "@/components/token/TokenOperationForm";
+import { estimateDocumentBatch } from "@/lib/feeEstimation";
 import {
   Select,
   SelectContent,
@@ -177,6 +178,7 @@ export function TokenClaimScreen() {
     <TokenOperationForm
       actionName="Claim"
       tokenContext={tokenContext}
+      estimatedFee={estimateDocumentBatch(1)}
       isValid={isValid}
       validationMessage={validationMessage}
       confirmation={confirmation}

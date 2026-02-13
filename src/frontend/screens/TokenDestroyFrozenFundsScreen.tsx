@@ -6,6 +6,7 @@ import type {
   ConfirmationConfig,
   GroupActionContext,
 } from "@/components/token/TokenOperationForm";
+import { estimateDocumentBatch } from "@/lib/feeEstimation";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -158,6 +159,7 @@ export function TokenDestroyFrozenFundsScreen() {
     <TokenOperationForm
       actionName="Destroy Frozen Funds"
       tokenContext={tokenContext}
+      estimatedFee={estimateDocumentBatch(1)}
       groupAction={groupAction}
       isValid={isValid}
       validationMessage={validationMessage}

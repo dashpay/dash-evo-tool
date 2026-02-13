@@ -33,6 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn, displayId, hexToBase58 } from "@/lib/utils";
+import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 import { events } from "@/bindings";
 import type {
   QualifiedIdentityDto,
@@ -160,6 +161,8 @@ export interface TokenOperationFormProps {
   doAnotherLabel?: string;
   /** Called when user clicks "do another". */
   onDoAnother?: () => void;
+  /** Estimated platform fee in credits. Displayed above the action bar. */
+  estimatedFee?: number | null;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -277,6 +280,7 @@ export function TokenOperationForm({
   onSuccess,
   doAnotherLabel,
   onDoAnother,
+  estimatedFee,
 }: TokenOperationFormProps) {
   const navigate = useNavigate();
 
@@ -921,6 +925,18 @@ export function TokenOperationForm({
         >
           {validationMessage}
         </p>
+      )}
+
+      {/* ── Estimated fee ─────────────────────────────────────────────── */}
+      {estimatedFee != null && (
+        <div className="rounded-md border border-border bg-muted/30 px-4 py-3">
+          <p className="text-sm text-muted-foreground">
+            Estimated fee:{" "}
+            <span className="font-medium tabular-nums">
+              {formatCreditsAsDash(estimatedFee)} DASH
+            </span>
+          </p>
+        </div>
       )}
 
       {/* ── Action bar ────────────────────────────────────────────────── */}

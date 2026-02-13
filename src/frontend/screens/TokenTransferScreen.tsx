@@ -3,6 +3,7 @@ import { useRouterState } from "@tanstack/react-router";
 import { commands } from "@/bindings";
 import { TokenOperationForm } from "@/components/token/TokenOperationForm";
 import type { ConfirmationConfig } from "@/components/token/TokenOperationForm";
+import { estimateDocumentBatch } from "@/lib/feeEstimation";
 
 /**
  * Token Transfer screen — allows transferring tokens to another identity.
@@ -86,6 +87,7 @@ export function TokenTransferScreen() {
     <TokenOperationForm
       actionName="Transfer"
       tokenContext={tokenContext}
+      estimatedFee={estimateDocumentBatch(1)}
       showAmountInput
       amount={amount}
       onAmountChange={setAmount}

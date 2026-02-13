@@ -73,13 +73,22 @@ async function attemptFaucet(address: string): Promise<FaucetResult> {
     // Navigate to faucet
     await page.goto(FAUCET_URL, { waitUntil: "networkidle", timeout: 30_000 });
 
-    // Wait for the address input to be ready
+    // The faucet page has an initial view with a "Get tDash" button that must
+    // be clicked first to reveal the config view containing the address input.
+    // Click the "Get tDash" button in .initial-view to show the config view.
+    await page.waitForSelector("#coreFaucetCard .initial-view .btn", {
+      state: "visible",
+      timeout: 15_000,
+    });
+    await page.click("#coreFaucetCard .initial-view .btn");
+
+    // Wait for the address input to be visible in the config view
     await page.waitForSelector("#addressInput", { state: "visible", timeout: 15_000 });
 
     // Fill in the testnet address
     await page.fill("#addressInput", address);
 
-    // Click the faucet button
+    // Click the "Send" button (#coreFaucetBtn) in the config view
     await page.click("#coreFaucetBtn");
 
     // Wait for either success (txid appears) or error

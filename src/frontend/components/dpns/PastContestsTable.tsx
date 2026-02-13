@@ -7,7 +7,7 @@ import {
   Trophy,
   Lock,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, displayId } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -89,17 +89,12 @@ function formatLastUpdated(timestamp: number | null): string {
   return `${days}d ago`;
 }
 
-/** Truncate a string identifier to first N chars. */
-function truncateId(id: string, chars = 8): string {
-  return id.length > chars ? `${id.slice(0, chars)}...` : id;
-}
-
 /** Get the display text for an awarded-to field. */
 function formatAwardedTo(contest: ContestedName): string {
   const state = contest.state;
   if (state === "locked") return "Locked";
   if (typeof state === "object" && "wonBy" in state) {
-    return truncateId(state.wonBy);
+    return displayId(state.wonBy);
   }
   return "Fetching";
 }

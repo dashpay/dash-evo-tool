@@ -11,6 +11,7 @@ import type { ScheduledVotesTableProps } from "./ScheduledVotesTable";
 import type { ScheduledVoteWithStatus } from "@/stores/contestStore";
 import type { VoteChoiceDto } from "@/bindings";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { displayId } from "@/lib/utils";
 
 // ─── Test fixtures ────────────────────────────────────────────────
 
@@ -169,7 +170,7 @@ describe("ScheduledVotesTable — rendering", () => {
 
   it("renders the truncated voter ID", () => {
     setup();
-    expect(screen.getByText("abcdef12...")).toBeInTheDocument();
+    expect(screen.getByText(displayId("abcdef1234567890abcdef1234567890"))).toBeInTheDocument();
   });
 
   it("renders the vote choice as Lock", () => {
@@ -194,7 +195,7 @@ describe("ScheduledVotesTable — rendering", () => {
         }),
       ],
     });
-    expect(screen.getByText("aaaa11...dd4444")).toBeInTheDocument();
+    expect(screen.getByText(displayId("aaaa1111bbbb2222cccc3333dddd4444"))).toBeInTheDocument();
   });
 
   it("renders Pending status for notStarted", () => {

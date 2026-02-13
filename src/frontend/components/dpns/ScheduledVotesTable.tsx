@@ -8,7 +8,7 @@ import {
   Trash2,
   Play,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, displayId } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -42,11 +42,6 @@ export type ScheduledVoteSortColumn =
 export type SortOrder = "ascending" | "descending";
 
 // ─── Helpers ───────────────────────────────────────────────────────
-
-/** Truncate an identifier to first N chars. */
-function truncateId(id: string, chars = 8): string {
-  return id.length > chars ? `${id.slice(0, chars)}...` : id;
-}
 
 /** Format a Unix timestamp (milliseconds) to ISO-like date string. */
 export function formatScheduledTime(timestampMs: number): string {
@@ -356,7 +351,7 @@ export function ScheduledVotesTable({
                             variant="outline"
                             className="cursor-default font-mono"
                           >
-                            {truncateId(sv.vote.voterId)}
+                            {displayId(sv.vote.voterId)}
                           </Badge>
                         </TooltipTrigger>
                         <TooltipContent>

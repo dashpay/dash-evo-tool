@@ -7,7 +7,7 @@ import {
   Ban,
   Search,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, displayId } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -90,12 +90,6 @@ function formatLastUpdated(timestamp: number | null): string {
 
   const days = Math.floor(diff / 86_400_000);
   return `${days}d ago`;
-}
-
-/** Truncate a string identifier to first N chars. */
-function truncateId(id: string | undefined | null, chars = 6): string {
-  if (!id) return "???";
-  return id.length > chars ? `${id.slice(0, chars)}...` : id;
 }
 
 /** Check if a VoteChoiceDto matches a specific type. */
@@ -189,7 +183,7 @@ function ContestantButton({
   lockedVotesAreHighest: boolean;
   onToggle: () => void;
 }) {
-  const label = `${truncateId(contestant.id)} — ${contestant.votes} votes`;
+  const label = `${displayId(contestant.id)} — ${contestant.votes} votes`;
   const showBold = hasHighestVotes && !lockedVotesAreHighest;
 
   return (
@@ -204,7 +198,7 @@ function ContestantButton({
             showBold && !isSelected && "font-bold text-green-700 dark:text-green-400",
           )}
           onClick={onToggle}
-          aria-label={`Vote for contestant ${truncateId(contestant.id)}`}
+          aria-label={`Vote for contestant ${displayId(contestant.id)}`}
           aria-pressed={isSelected}
         >
           {label}

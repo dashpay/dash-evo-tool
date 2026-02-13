@@ -92,7 +92,7 @@ describe("MyTokensTable — Level 1 (Token List)", () => {
 
   it("renders truncated token ID", () => {
     setup();
-    expect(screen.getByText(/token111\.\.\.ddddeeee/)).toBeInTheDocument();
+    expect(screen.getByText(displayId("token1111222233334444555566667777888899990000aaaabbbbccccddddeeee"))).toBeInTheDocument();
   });
 
   it("renders identity count", () => {
@@ -218,8 +218,8 @@ describe("MyTokensTable — Level 2 (Identity Balances)", () => {
   it("shows truncated identity IDs", async () => {
     const { user } = setup({ tokens: multiIdentityTokens });
     await user.click(screen.getByRole("button", { name: "TestToken" }));
-    expect(screen.getByText(/id1aaaaa\.\.\.66667777/)).toBeInTheDocument();
-    expect(screen.getByText(/id2aaaaa\.\.\.66667777/)).toBeInTheDocument();
+    expect(screen.getByText(displayId("id1aaaaabbbbccccddddeeeeffffffff1111222233334444555566667777"))).toBeInTheDocument();
+    expect(screen.getByText(displayId("id2aaaaabbbbccccddddeeeeffffffff1111222233334444555566667777"))).toBeInTheDocument();
   });
 
   it("shows dash for identity with no alias", async () => {

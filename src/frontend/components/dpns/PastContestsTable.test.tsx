@@ -9,6 +9,7 @@ import type {
   SortOrder,
 } from "@/stores/contestStore";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { displayId } from "@/lib/utils";
 
 // ─── Test fixtures ─────────────────────────────────────────────────
 
@@ -143,7 +144,7 @@ describe("PastContestsTable — rendering", () => {
         }),
       ],
     });
-    expect(screen.getByText("abcdef12...")).toBeInTheDocument();
+    expect(screen.getByText(displayId("abcdef1234567890abcdef1234567890"))).toBeInTheDocument();
   });
 
   it("renders 'Locked' badge for locked state", () => {
@@ -290,7 +291,7 @@ describe("PastContestsTable — awarded to display", () => {
         }),
       ],
     });
-    expect(screen.getByText("abcdef12...")).toBeInTheDocument();
+    expect(screen.getByText(displayId("abcdef1234567890"))).toBeInTheDocument();
   });
 
   it("shows lock icon badge for locked contests", () => {
@@ -313,7 +314,7 @@ describe("PastContestsTable — awarded to display", () => {
         }),
       ],
     });
-    expect(screen.getByText("id123456...")).toBeInTheDocument();
+    expect(screen.getByText(displayId("id1234567890abcd"))).toBeInTheDocument();
     expect(screen.getByText("Locked")).toBeInTheDocument();
   });
 });

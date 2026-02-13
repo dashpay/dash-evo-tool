@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { cn, displayId } from "@/lib/utils";
 import { toastError } from "@/lib/toastError";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useContractStore } from "@/stores/contractStore";
@@ -150,13 +150,6 @@ const SYSTEM_CONTRACT_ALIASES = [
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────
-
-function truncateId(id: string): string {
-  if (id.length > 16) {
-    return `${id.slice(0, 6)}...${id.slice(-6)}`;
-  }
-  return id;
-}
 
 function formatElapsed(seconds: number): string {
   if (seconds < 60) return `${seconds} second${seconds !== 1 ? "s" : ""}`;
@@ -741,8 +734,8 @@ function GenerateModeContent({
               {eddsaIdentities.map((identity) => (
                 <SelectItem key={identity.id} value={identity.id}>
                   {identity.alias
-                    ? `${identity.alias} (${truncateId(identity.id)})`
-                    : truncateId(identity.id)}
+                    ? `${identity.alias} (${displayId(identity.id)})`
+                    : displayId(identity.id)}
                 </SelectItem>
               ))}
             </SelectContent>

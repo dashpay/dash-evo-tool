@@ -9,6 +9,7 @@ import type {
   SortOrder,
 } from "@/stores/contestStore";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { displayId } from "@/lib/utils";
 
 // ─── Test fixtures ─────────────────────────────────────────────────
 
@@ -136,7 +137,7 @@ describe("ActiveContestsTable — rendering", () => {
   it("renders contestant with votes", () => {
     setup();
     expect(
-      screen.getByText("aaaa11... — 3 votes"),
+      screen.getByText(`${displayId("aaaa1111bbbb2222cccc3333dddd4444")} — 3 votes`),
     ).toBeInTheDocument();
   });
 
@@ -294,7 +295,7 @@ describe("ActiveContestsTable — voting", () => {
     const { user, props } = setup();
     await user.click(
       screen.getByRole("button", {
-        name: /vote for contestant aaaa11/i,
+        name: `Vote for contestant ${displayId("aaaa1111bbbb2222cccc3333dddd4444")}`,
       }),
     );
     expect(props.onToggleVote).toHaveBeenCalledWith({
@@ -355,7 +356,7 @@ describe("ActiveContestsTable — selection highlighting", () => {
       ],
     });
     const contestantBtn = screen.getByRole("button", {
-      name: /vote for contestant aaaa11/i,
+      name: `Vote for contestant ${displayId("aaaa1111bbbb2222cccc3333dddd4444")}`,
     });
     expect(contestantBtn).toHaveAttribute("aria-pressed", "true");
   });
@@ -442,12 +443,12 @@ describe("ActiveContestsTable — visual emphasis", () => {
       ],
     });
     const highVoteBtn = screen.getByRole("button", {
-      name: /vote for contestant aaa111/i,
+      name: `Vote for contestant ${displayId("aaa111xxxxxxxx")}`,
     });
     expect(highVoteBtn.className).toContain("font-bold");
 
     const lowVoteBtn = screen.getByRole("button", {
-      name: /vote for contestant bbb222/i,
+      name: `Vote for contestant ${displayId("bbb222xxxxxxxx")}`,
     });
     expect(lowVoteBtn.className).not.toContain("font-bold");
   });
@@ -468,9 +469,9 @@ describe("ActiveContestsTable — multiple contestants", () => {
         }),
       ],
     });
-    expect(screen.getByText("aaa111... — 5 votes")).toBeInTheDocument();
-    expect(screen.getByText("bbb222... — 3 votes")).toBeInTheDocument();
-    expect(screen.getByText("ccc333... — 1 votes")).toBeInTheDocument();
+    expect(screen.getByText(`${displayId("aaa111xxxxxxxx")} — 5 votes`)).toBeInTheDocument();
+    expect(screen.getByText(`${displayId("bbb222xxxxxxxx")} — 3 votes`)).toBeInTheDocument();
+    expect(screen.getByText(`${displayId("ccc333xxxxxxxx")} — 1 votes`)).toBeInTheDocument();
   });
 });
 

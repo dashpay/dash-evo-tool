@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback } from "react";
 import { Check, AlertCircle, Loader2, Clock, Vote } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, displayId } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -81,8 +81,7 @@ export function formatVoteChoice(choice: VoteChoiceDto): string {
   if (choice === "lock") return "Lock";
   if (choice === "abstain") return "Abstain";
   if (typeof choice === "object" && "towardsIdentity" in choice) {
-    const id = choice.towardsIdentity.identityId;
-    return id.length > 12 ? `${id.slice(0, 6)}...${id.slice(-6)}` : id;
+    return displayId(choice.towardsIdentity.identityId);
   }
   return "Unknown";
 }

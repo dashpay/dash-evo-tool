@@ -48,6 +48,8 @@ const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvw
 
 /** Convert a hex string to base58 (Bitcoin/Dash alphabet). */
 export function hexToBase58(hex: string): string {
+  if (!/^[0-9a-fA-F]*$/.test(hex)) return hex;
+
   const bytes: number[] = [];
   for (let i = 0; i < hex.length; i += 2) {
     bytes.push(parseInt(hex.substring(i, i + 2), 16));

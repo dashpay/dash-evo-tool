@@ -7,6 +7,7 @@ import type {
   ContractDetail,
 } from "./TokenSearchPanel";
 import { renderWithProviders } from "@/test/router-utils";
+import { displayId } from "@/lib/utils";
 
 // ─── Mock ThemeProvider ──────────────────────────────────────────────
 
@@ -208,7 +209,7 @@ describe("TokenSearchPanel — results display", () => {
       screen.queryByText(mockResults[0].contractId),
     ).not.toBeInTheDocument();
     // But truncated version should be visible
-    expect(screen.getByText("aabb1122...7788aabb")).toBeInTheDocument();
+    expect(screen.getByText(displayId("aabb1122334455667788aabb1122334455667788aabb1122334455667788aabb"))).toBeInTheDocument();
   });
 });
 

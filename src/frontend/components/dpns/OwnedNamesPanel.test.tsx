@@ -5,6 +5,7 @@ import { OwnedNamesPanel } from "./OwnedNamesPanel";
 import type { OwnedNamesPanelProps } from "./OwnedNamesPanel";
 import type { DpnsNameEntryDto } from "@/bindings";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { displayId } from "@/lib/utils";
 
 // ─── Test fixtures ────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ describe("OwnedNamesPanel — rendering", () => {
 
   it("renders the truncated owner ID", () => {
     setup();
-    expect(screen.getByText("abcdef12...")).toBeInTheDocument();
+    expect(screen.getByText(displayId("abcdef1234567890abcdef1234567890"))).toBeInTheDocument();
   });
 
   it("renders relative acquired at time", () => {

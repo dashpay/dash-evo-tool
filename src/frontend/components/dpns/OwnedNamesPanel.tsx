@@ -7,7 +7,7 @@ import {
   User,
   Tag,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, displayId } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -34,11 +34,6 @@ export type OwnedNameSortColumn = "name" | "ownerId" | "acquiredAt";
 export type SortOrder = "ascending" | "descending";
 
 // ─── Helpers ───────────────────────────────────────────────────────
-
-/** Truncate an identifier to first N chars. */
-function truncateId(id: string, chars = 8): string {
-  return id.length > chars ? `${id.slice(0, chars)}...` : id;
-}
 
 /** Format a Unix timestamp (seconds) to a human-readable date. */
 function formatAcquiredAt(timestamp: number): string {
@@ -268,7 +263,7 @@ export function OwnedNamesPanel({
                             variant="outline"
                             className="cursor-default font-mono"
                           >
-                            {truncateId(entry.identityId)}
+                            {displayId(entry.identityId)}
                           </Badge>
                         </TooltipTrigger>
                         <TooltipContent>

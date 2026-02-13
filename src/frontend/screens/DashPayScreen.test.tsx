@@ -151,13 +151,31 @@ describe("DashPayScreen", () => {
       });
     }
 
-    it("renders sidebar navigation tabs", async () => {
+    it("renders sidebar navigation tabs (non-dev tabs always visible)", async () => {
       setupWithIdentities([identity1]);
       renderWithProviders(<DashPayScreen />);
       expect(screen.getByText("My Profile")).toBeInTheDocument();
       expect(screen.getByText("Contacts")).toBeInTheDocument();
-      expect(screen.getByText("Payment History")).toBeInTheDocument();
       expect(screen.getByText("Search Profiles")).toBeInTheDocument();
+    });
+
+    it("hides Payment History tab when developer mode is off", async () => {
+      vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(false);
+      setupWithIdentities([identity1]);
+      renderWithProviders(<DashPayScreen />);
+      await waitFor(() => {
+        expect(commands.contextIsDeveloperMode).toHaveBeenCalled();
+      });
+      expect(screen.queryByText("Payment History")).not.toBeInTheDocument();
+    });
+
+    it("shows Payment History tab when developer mode is on", async () => {
+      vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(true);
+      setupWithIdentities([identity1]);
+      renderWithProviders(<DashPayScreen />);
+      await waitFor(() => {
+        expect(screen.getByText("Payment History")).toBeInTheDocument();
+      });
     });
 
     it("renders the outlet for subscreen content", () => {
@@ -207,7 +225,8 @@ describe("DashPayScreen", () => {
       expect(mockNavigate).toHaveBeenCalledWith({ to: "/dashpay/profile" });
     });
 
-    it("navigates to payments when Payment History tab is clicked", async () => {
+    it("navigates to payments when Payment History tab is clicked (dev mode)", async () => {
+      vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(true);
       const user = userEvent.setup();
       setupWithIdentities([identity1]);
       renderWithProviders(<DashPayScreen />);
@@ -266,6 +285,19 @@ describe("DashPayScreen", () => {
       expect(mockNavigate).toHaveBeenCalledWith({
         to: "/dashpay/profile",
         replace: true,
+      });
+    });
+
+    it("redirects away from dev-only tab when developer mode is off", async () => {
+      vi.mocked(commands.contextIsDeveloperMode).mockResolvedValue(false);
+      mockPathname = "/dashpay/payments";
+      useIdentityStore.setState({ identities: [makeIdentity()], loading: false });
+      renderWithProviders(<DashPayScreen />);
+      await waitFor(() => {
+        expect(mockNavigate).toHaveBeenCalledWith({
+          to: "/dashpay/profile",
+          replace: true,
+        });
       });
     });
   });

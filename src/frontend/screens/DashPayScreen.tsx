@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Outlet,
   useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
+import { commands } from "@/bindings";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import {
@@ -30,6 +31,10 @@ interface SubscreenTab {
   path: string;
   /** Only show in developer mode */
   devOnly?: boolean;
+}
+
+function matchesTabPath(pathname: string, tabPath: string): boolean {
+  return pathname === tabPath || pathname.startsWith(tabPath + "/");
 }
 
 const tabs: SubscreenTab[] = [
@@ -72,6 +77,12 @@ export function DashPayScreen() {
   const navigate = useNavigate();
   const routerState = useRouterState();
   const pathname = routerState.location.pathname;
+  const [developerMode, setDeveloperMode] = useState<boolean | null>(null);
+
+  // Fetch developer mode on mount
+  useEffect(() => {
+    commands.contextIsDeveloperMode().then(setDeveloperMode);
+  }, []);
 
   // Stores
   const {
@@ -120,12 +131,26 @@ export function DashPayScreen() {
     return () => unsubscribe?.();
   }, [subscribeToUpdates]);
 
-  // Redirect /dashpay to /dashpay/profile
+  // Filter visible tabs (payments is dev-only)
+  const visibleTabs = useMemo(
+    () => tabs.filter((t) => !t.devOnly || developerMode === true),
+    [developerMode],
+  );
+
+  // Redirect /dashpay to first visible tab, or redirect away from dev-only tabs
   useEffect(() => {
     if (pathname === "/dashpay" || pathname === "/dashpay/") {
       navigate({ to: "/dashpay/profile", replace: true });
+      return;
     }
-  }, [pathname, navigate]);
+    if (developerMode === null) return; // Don't redirect until dev mode is known
+    const onDevOnlyTab = tabs.find(
+      (t) => t.devOnly && matchesTabPath(pathname, t.path),
+    );
+    if (onDevOnlyTab && !developerMode) {
+      navigate({ to: "/dashpay/profile", replace: true });
+    }
+  }, [pathname, navigate, developerMode]);
 
   // Identity options for selector
   const identityOptions: IdentityOption[] = useMemo(
@@ -139,22 +164,9 @@ export function DashPayScreen() {
 
   // Active tab from pathname
   const activeTabId = useMemo(() => {
-    const match = tabs.find(
-      (t) => pathname === t.path || pathname.startsWith(t.path + "/"),
-    );
+    const match = visibleTabs.find((t) => matchesTabPath(pathname, t.path));
     return match?.id ?? "profile";
-  }, [pathname]);
-
-  const handleTabClick = useCallback(
-    (path: string) => {
-      navigate({ to: path });
-    },
-    [navigate],
-  );
-
-  const handleLoadIdentity = useCallback(() => {
-    navigate({ to: "/identities" });
-  }, [navigate]);
+  }, [pathname, visibleTabs]);
 
   const handleIdentityChange = useCallback(
     (id: string) => {
@@ -165,11 +177,8 @@ export function DashPayScreen() {
 
   // Show no-identities state
   if (!identitiesLoading && identities.length === 0) {
-    return <NoIdentitiesCard onLoadIdentity={handleLoadIdentity} />;
+    return <NoIdentitiesCard onLoadIdentity={() => navigate({ to: "/identities" })} />;
   }
-
-  // Filter visible tabs (payments is dev-only — for now always show)
-  const visibleTabs = tabs;
 
   return (
     <div className="flex flex-1 gap-3 min-h-0">
@@ -196,7 +205,7 @@ export function DashPayScreen() {
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => handleTabClick(tab.path)}
+                onClick={() => navigate({ to: tab.path })}
                 className={cn(
                   "flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium transition-colors text-left",
                   isActive

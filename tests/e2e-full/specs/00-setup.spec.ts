@@ -214,18 +214,41 @@ describe("Wallet Import & SPV Sync", () => {
     const goToWalletBtn = await browser.$("button=Go to Wallet");
     if (await goToWalletBtn.isExisting()) {
       await goToWalletBtn.click();
-      await browser.pause(500);
     }
+
+    // Give the backend time to finish wallet bootstrapping (address derivation,
+    // identity scanning). The import IPC returns immediately but these run async.
+    await browser.pause(3_000);
   });
 
-  it("should show the imported wallet in the wallet list", async () => {
-    // Navigate to wallets if not already there
-    const url = await browser.getUrl();
-    if (!url.includes("/wallets")) {
-      await navigateToSection("wallets");
-    }
+  it("should show the imported wallet in the wallet list", async function () {
+    this.timeout(60_000);
 
-    // Wait for wallet list to display our wallet
+    // First, verify via IPC that the backend knows about the wallet.
+    // This separates "backend registered it" from "UI rendered it".
+    await browser.waitUntil(
+      async () => {
+        try {
+          const result = await invoke<{
+            hdWallets: Array<{ alias: string | null }>;
+          }>("wallet_list_all");
+          return result.hdWallets.some((w) => w.alias === WALLET_ALIAS);
+        } catch {
+          return false;
+        }
+      },
+      {
+        timeout: 30_000,
+        interval: 3_000,
+        timeoutMsg: `Wallet "${WALLET_ALIAS}" not found in backend after 30s`,
+      }
+    );
+    console.log("  Wallet confirmed in backend via IPC");
+
+    // Now verify it renders in the UI
+    await navigateToSection("wallets");
+    await browser.pause(1_000);
+
     await browser.waitUntil(
       async () => {
         const pageText = await browser.$("body").getText();
@@ -233,7 +256,7 @@ describe("Wallet Import & SPV Sync", () => {
       },
       {
         timeout: 15_000,
-        timeoutMsg: `Wallet "${WALLET_ALIAS}" did not appear in wallet list`,
+        timeoutMsg: `Wallet "${WALLET_ALIAS}" in backend but did not render in UI`,
       }
     );
   });

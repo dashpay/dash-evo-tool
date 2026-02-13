@@ -111,8 +111,8 @@ pub struct WithdrawFromPlatformAddressInput {
     pub wallet_seed_hash: WalletSeedHashDto,
     /// Platform addresses and amounts to withdraw.
     pub inputs: Vec<PlatformAddressAmountDto>,
-    /// Core script (hex) to receive the withdrawal.
-    pub output_script_hex: String,
+    /// Core address to receive the withdrawal.
+    pub core_address: String,
     /// Core fee per byte.
     pub core_fee_per_byte: u32,
     /// Index of the input to deduct fees from.
@@ -568,9 +568,8 @@ pub fn wallet_withdraw_from_platform_address(
         inputs.insert(platform_addr, item.amount);
     }
 
-    let script_bytes = hex::decode(&input.output_script_hex)
-        .map_err(|e| format!("Invalid output script hex: {e}"))?;
-    let output_script = CoreScript::from_bytes(script_bytes);
+    let core_addr = parse_address_checked(&input.core_address, network)?;
+    let output_script = CoreScript::from_bytes(core_addr.script_pubkey().to_bytes());
 
     let task = BackendTask::WalletTask(WalletTask::WithdrawFromPlatformAddress {
         seed_hash,
@@ -1632,12 +1631,12 @@ mod tests {
                 address: "addr1".into(),
                 amount: 50000,
             }],
-            output_script_hex: "76a914".into(),
+            core_address: "yP8A3cbdxRtLRduy5mXDsBnJtMo3vgGUSL".into(),
             core_fee_per_byte: 1,
             fee_payer_index: 0,
         };
         let json = serde_json::to_string(&input).unwrap();
-        assert!(json.contains("\"outputScriptHex\":\"76a914\""));
+        assert!(json.contains("\"coreAddress\":\"yP8A3cbdxRtLRduy5mXDsBnJtMo3vgGUSL\""));
         assert!(json.contains("\"coreFeePerByte\":1"));
     }
 

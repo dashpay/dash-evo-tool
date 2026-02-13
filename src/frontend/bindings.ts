@@ -5191,9 +5191,9 @@ walletSeedHash: string;
  */
 inputs: PlatformAddressAmountDto[];
 /**
- * Core script (hex) to receive the withdrawal.
+ * Core address to receive the withdrawal.
  */
-outputScriptHex: string;
+coreAddress: string;
 /**
  * Core fee per byte.
  */

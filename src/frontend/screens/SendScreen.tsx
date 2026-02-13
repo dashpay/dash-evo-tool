@@ -542,12 +542,10 @@ export function SendScreen() {
           remaining -= use;
         }
 
-        // For withdrawal, the Rust backend expects the output_script_hex
-        // We pass the Core address and the backend will convert
         const result = await commands.walletWithdrawFromPlatformAddress({
           walletSeedHash: seedHash,
           inputs,
-          outputScriptHex: destinationAddress.trim(),
+          coreAddress: destinationAddress.trim(),
           coreFeePerByte: 1,
           feePayerIndex: 0,
         });
@@ -712,7 +710,7 @@ export function SendScreen() {
           const result = await commands.walletWithdrawFromPlatformAddress({
             walletSeedHash: seedHash,
             inputs,
-            outputScriptHex: coreOutput.address.trim(),
+            coreAddress: coreOutput.address.trim(),
             coreFeePerByte: 1,
             feePayerIndex: 0,
           });

@@ -53,8 +53,10 @@ pub struct NetworkChooserScreen {
     theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
     backend_modes: HashMap<Network, CoreBackendMode>,
+    spv_progress_network: Option<Network>,
     headers_stage_start: Option<u32>,
     filter_headers_stage_start: Option<u32>,
+    filters_stage_start: Option<u32>,
     blocks_stage_start: Option<u32>,
     blocks_target_height: u32,
     spv_clear_dialog: Option<ConfirmationDialog>,
@@ -150,8 +152,10 @@ impl NetworkChooserScreen {
             theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
             backend_modes,
+            spv_progress_network: None,
             headers_stage_start: None,
             filter_headers_stage_start: None,
+            filters_stage_start: None,
             blocks_stage_start: None,
             blocks_target_height: 0,
             spv_clear_dialog: None,
@@ -1313,7 +1317,38 @@ impl NetworkChooserScreen {
         app_action
     }
 
+    /// Rebuild all SPV progress tracking state from the current snapshot.
+    /// Called once when the active network changes so that stale values from
+    /// one network don't leak into another, while preserving already-synced
+    /// progress from the new network's SPV manager.
+    fn rebuild_spv_progress_state(&mut self, snapshot: &SpvStatusSnapshot) {
+        self.headers_stage_start = None;
+        self.filter_headers_stage_start = None;
+        self.filters_stage_start = None;
+        self.blocks_stage_start = None;
+        self.blocks_target_height = 0;
+
+        // Seed from the new network's sync_progress so bars don't jump to 0.
+        if let Some(progress) = &snapshot.sync_progress {
+            if let Ok(headers) = progress.headers() {
+                self.blocks_target_height = self.blocks_target_height.max(headers.target_height());
+            }
+            if let Ok(blocks) = progress.blocks() {
+                self.blocks_target_height = self.blocks_target_height.max(blocks.last_processed());
+                if blocks.state() == SyncState::Syncing {
+                    self.blocks_stage_start = Some(blocks.last_processed());
+                }
+            }
+        }
+    }
+
     fn render_spv_sync_progress(&mut self, ui: &mut Ui, snapshot: &SpvStatusSnapshot) {
+        // Rebuild progress state when the network changes.
+        if self.spv_progress_network != Some(self.current_network) {
+            self.rebuild_spv_progress_state(snapshot);
+            self.spv_progress_network = Some(self.current_network);
+        }
+
         if let Some(progress) = &snapshot.sync_progress {
             // Track headers download window start for checkpoint-aware progress
             if let Ok(headers) = progress.headers() {
@@ -1351,29 +1386,39 @@ impl NetworkChooserScreen {
                 self.filter_headers_stage_start = None;
             }
 
+            // Track filters download window start
+            if let Ok(filters) = progress.filters() {
+                if filters.state() == SyncState::Syncing {
+                    let current = filters.current_height();
+                    let target = filters.target_height();
+                    let baseline = current.min(target);
+                    if let Some(existing) = self.filters_stage_start {
+                        self.filters_stage_start = Some(existing.min(target));
+                    } else {
+                        self.filters_stage_start = Some(baseline);
+                    }
+                } else {
+                    self.filters_stage_start = None;
+                }
+            } else {
+                self.filters_stage_start = None;
+            }
+
             // Capture target height from headers and blocks (only increases).
             if let Ok(headers) = progress.headers() {
-                self.blocks_target_height =
-                    self.blocks_target_height.max(headers.target_height());
+                self.blocks_target_height = self.blocks_target_height.max(headers.target_height());
             }
             if let Ok(blocks) = progress.blocks() {
                 // last_processed is a lower bound for chain height
-                self.blocks_target_height =
-                    self.blocks_target_height.max(blocks.last_processed());
+                self.blocks_target_height = self.blocks_target_height.max(blocks.last_processed());
 
                 if blocks.state() == SyncState::Syncing && self.blocks_stage_start.is_none() {
                     self.blocks_stage_start = Some(blocks.last_processed());
                 }
-                if blocks.state() == SyncState::Synced {
+                if matches!(blocks.state(), SyncState::Synced | SyncState::Error) {
                     self.blocks_stage_start = None;
                 }
             }
-        } else {
-            self.headers_stage_start = None;
-            self.filter_headers_stage_start = None;
-            self.blocks_stage_start = None;
-            // Don't reset blocks_target_height here — it will be refreshed
-            // from headers/blocks on the next sync and only increases.
         }
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -1717,9 +1762,24 @@ impl NetworkChooserScreen {
                 if target == 0 {
                     return 0.0;
                 }
-                // Use current_height (storage tip) for height-based progress,
-                // not downloaded() which is a session-level count.
-                (filters.current_height() as f32 / target as f32).clamp(0.0, 1.0)
+                // Use windowed progress so checkpoint-resumed syncs start near 0%.
+                // current_height is the storage tip (not downloaded() which is a
+                // session-level count).
+                let start = self
+                    .filters_stage_start
+                    .unwrap_or(filters.current_height())
+                    .min(target);
+                let span = target.saturating_sub(start);
+                if span == 0 {
+                    if filters.current_height() >= target {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    let done = filters.current_height().saturating_sub(start);
+                    (done as f32 / span as f32).clamp(0.0, 1.0)
+                }
             }
             SyncState::Synced => 1.0,
             SyncState::Initializing

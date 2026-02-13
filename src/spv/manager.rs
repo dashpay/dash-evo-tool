@@ -1050,10 +1050,11 @@ impl SpvManager {
                             break; // Channel closed
                         }
                         let watch_progress = progress_rx.borrow().clone();
+                        let is_synced = watch_progress.is_synced();
 
                         // Update sync progress state
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
-                            *stored_sync = Some(watch_progress.clone());
+                            *stored_sync = Some(watch_progress);
                         }
                         if let Ok(mut updated_at) = progress_updated_at.write() {
                             *updated_at = Some(SystemTime::now());
@@ -1061,7 +1062,7 @@ impl SpvManager {
 
                         // Update status based on progress
                         if let Ok(mut status_guard) = status.write() {
-                            if watch_progress.is_synced() {
+                            if is_synced {
                                 *status_guard = SpvStatus::Running;
                             } else if !matches!(*status_guard, SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error) {
                                 *status_guard = SpvStatus::Syncing;

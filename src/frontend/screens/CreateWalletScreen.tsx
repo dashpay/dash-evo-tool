@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeft,
@@ -34,6 +34,7 @@ import {
   EntropyGrid,
   type EntropyGridRef,
 } from "@/components/wallet/EntropyGrid";
+import { PasswordStrengthMeter } from "@/components/shared/PasswordStrengthMeter";
 
 // ─── Constants ────────────────────────────────────────────────────
 
@@ -65,29 +66,7 @@ const ENTROPY_BITS: Record<WordCount, number> = {
   24: 256,
 };
 
-const STRENGTH_LABELS = ["Very Weak", "Weak", "Fair", "Strong", "Very Strong"];
-const STRENGTH_COLORS = [
-  "bg-destructive",
-  "bg-destructive",
-  "bg-warning",
-  "bg-success",
-  "bg-success",
-];
-
 type Step = "generate" | "backup" | "protect" | "success";
-
-// ─── Helpers ──────────────────────────────────────────────────────
-
-function estimatePasswordStrength(password: string): number {
-  if (!password) return 0;
-  let score = 0;
-  if (password.length >= 8) score++;
-  if (password.length >= 12) score++;
-  if (/[a-z]/.test(password) && /[A-Z]/.test(password)) score++;
-  if (/\d/.test(password)) score++;
-  if (/[^a-zA-Z0-9]/.test(password)) score++;
-  return Math.min(4, score);
-}
 
 // ─── Component ────────────────────────────────────────────────────
 
@@ -105,11 +84,6 @@ export function CreateWalletScreen() {
   const [saving, setSaving] = useState(false);
   const [createdSeedHash, setCreatedSeedHash] = useState<string | null>(null);
   const entropyGridRef = useRef<EntropyGridRef>(null);
-
-  const passwordStrength = useMemo(
-    () => estimatePasswordStrength(password),
-    [password],
-  );
 
   const handleGenerate = useCallback(() => {
     const entropyBytes = ENTROPY_BITS[wordCount] / 8;
@@ -166,7 +140,7 @@ export function CreateWalletScreen() {
 
   if (step === "success") {
     return (
-      <Island className="max-w-2xl mx-auto">
+      <Island className="max-w-2xl mx-auto w-full">
         <SuccessScreen
           onGoToWallets={handleGoToWallets}
           onCreateIdentity={handleCreateIdentity}
@@ -180,20 +154,22 @@ export function CreateWalletScreen() {
 
   return (
     <div className="flex flex-1 flex-col min-h-0 overflow-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={handleBack}
-          aria-label="Back to wallets"
-        >
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <h1 className="text-2xl font-bold">Create New Wallet</h1>
+      <div className="max-w-2xl mx-auto w-full">
+        <div className="flex items-center gap-3 mb-6">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleBack}
+            aria-label="Back to wallets"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <h1 className="text-2xl font-bold">Create New Wallet</h1>
+        </div>
       </div>
 
       <div
-        className="flex items-center gap-2 mb-8"
+        className="flex items-center gap-2 mb-8 max-w-2xl mx-auto w-full"
         role="navigation"
         aria-label="Wallet creation steps"
       >
@@ -219,7 +195,7 @@ export function CreateWalletScreen() {
         />
       </div>
 
-      <Island className="max-w-2xl">
+      <Island className="max-w-2xl mx-auto w-full">
         {step === "generate" && (
           <GenerateStep
             wordCount={wordCount}
@@ -253,7 +229,6 @@ export function CreateWalletScreen() {
             onPasswordChange={setPassword}
             showPassword={showPassword}
             onShowPasswordChange={setShowPassword}
-            passwordStrength={passwordStrength}
             saving={saving}
             onBack={() => setStep("backup")}
             onSave={handleSave}
@@ -418,7 +393,7 @@ function BackupStep({
 
       <div
         className={cn(
-          "grid gap-2",
+          "grid gap-3",
           cols === 3 ? "grid-cols-3" : "grid-cols-4",
         )}
         role="list"
@@ -427,10 +402,10 @@ function BackupStep({
         {words.map((word, i) => (
           <div
             key={i}
-            className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2"
+            className="flex items-center gap-2.5 rounded-lg border border-border/60 bg-muted/40 px-3.5 py-2.5"
             role="listitem"
           >
-            <span className="text-xs text-muted-foreground font-mono w-5 text-right">
+            <span className="text-xs text-muted-foreground/70 font-mono w-5 text-right shrink-0">
               {i + 1}.
             </span>
             <span className="text-sm font-medium font-mono">{word}</span>
@@ -438,24 +413,26 @@ function BackupStep({
         ))}
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-3">
         <CopyButton
           value={words.join(" ")}
           label="Copy All Words"
+          size="sm"
+          className="text-xs"
         />
         <span className="text-xs text-muted-foreground">
-          (For pasting into another backup method)
+          For pasting into another backup method
         </span>
       </div>
 
-      <label className="flex items-center gap-3 cursor-pointer select-none">
+      <label className="flex items-start gap-3 cursor-pointer select-none rounded-lg border border-border/60 p-4 transition-colors hover:bg-muted/30">
         <input
           type="checkbox"
           checked={wroteItDown}
           onChange={(e) => onWroteItDownChange(e.target.checked)}
-          className="h-4 w-4 rounded border-input accent-primary"
+          className="mt-0.5 h-4 w-4 rounded border-input accent-primary"
         />
-        <span className="text-sm font-medium">
+        <span className="text-sm">
           I have written down my seed phrase and stored it securely
         </span>
       </label>
@@ -479,7 +456,6 @@ function ProtectStep({
   onPasswordChange,
   showPassword,
   onShowPasswordChange,
-  passwordStrength,
   saving,
   onBack,
   onSave,
@@ -490,7 +466,6 @@ function ProtectStep({
   onPasswordChange: (value: string) => void;
   showPassword: boolean;
   onShowPasswordChange: (show: boolean) => void;
-  passwordStrength: number;
   saving: boolean;
   onBack: () => void;
   onSave: () => void;
@@ -552,26 +527,7 @@ function ProtectStep({
           </Button>
         </div>
 
-        {password.length > 0 && (
-          <div className="space-y-1">
-            <div className="flex gap-1">
-              {[0, 1, 2, 3, 4].map((i) => (
-                <div
-                  key={i}
-                  className={cn(
-                    "h-1.5 flex-1 rounded-full transition-colors",
-                    i <= passwordStrength
-                      ? STRENGTH_COLORS[passwordStrength]
-                      : "bg-muted",
-                  )}
-                />
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Strength: {STRENGTH_LABELS[passwordStrength]}
-            </p>
-          </div>
-        )}
+        <PasswordStrengthMeter password={password} />
       </div>
 
       <div className="flex justify-between pt-2">

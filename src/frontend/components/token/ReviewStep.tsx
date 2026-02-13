@@ -1291,6 +1291,9 @@ function FeeBreakdown({
 /**
  * Serialize all wizard state into the JSON structure expected by
  * the Tauri `tokenRegisterContract` IPC command.
+ *
+ * Field names and structures must match the Rust backend's
+ * `serde_json::from_value` calls in `token_register_contract`.
  */
 export function buildConfigJson(
   basicInfo: BasicInfoState,
@@ -1300,147 +1303,366 @@ export function buildConfigJson(
   history: HistoryState,
   keywords: KeywordsState,
 ): Record<string, unknown> {
+  // Build groups as position-keyed object: { "0": { "$format_version": "0", members: {...}, required_power: N } }
+  const groupsObj: Record<string, unknown> = {};
+  groups.groups.forEach((g, i) => {
+    const members: Record<string, number> = {};
+    g.members.forEach((m) => {
+      if (m.identityId.trim()) {
+        members[m.identityId.trim()] = parseInt(m.power, 10) || 0;
+      }
+    });
+    groupsObj[String(i)] = {
+      $format_version: "0",
+      members,
+      required_power: parseInt(g.requiredPower, 10) || 0,
+    };
+  });
+
   return {
-    // Basic info
-    names: basicInfo.names.map((n) => ({
-      singular: n.singular.trim(),
-      plural: n.plural.trim(),
-      languageCode: n.languageCode,
-    })),
-    description: basicInfo.description.trim() || null,
+    // Basic info — backend reads "tokenNames" as Vec<(String, String, String)>
+    tokenNames: basicInfo.names.map((n) => [
+      n.singular.trim(),
+      n.plural.trim(),
+      n.languageCode,
+    ]),
+    tokenDescription: basicInfo.description.trim() || null,
     baseSupply: basicInfo.baseSupply.trim(),
     maxSupply: basicInfo.maxSupply.trim() || null,
     decimals: parseInt(basicInfo.decimals, 10),
     shouldCapitalize: basicInfo.shouldCapitalize,
     startPaused: basicInfo.startPaused,
-    allowTransfersToFrozen: basicInfo.allowTransfersToFrozen,
+    allowTransfersToFrozenIdentities: basicInfo.allowTransfersToFrozen,
     contractKeywords: basicInfo.contractKeywords
       .split(",")
       .map((k) => k.trim())
       .filter(Boolean),
 
-    // Distribution
-    perpetualDistribution: distribution.perpetual.enabled
-      ? {
-          intervalType: distribution.perpetual.intervalType,
-          intervalAmount: distribution.perpetual.intervalAmount,
-          intervalTimeUnit: distribution.perpetual.intervalTimeUnit,
-          distributionFunction: distribution.perpetual.distributionFunction,
-          recipient: distribution.perpetual.recipient,
-          recipientIdentityId:
-            distribution.perpetual.recipientIdentityId || null,
-          params: {
-            fixedAmount: distribution.perpetual.fixedAmount,
-            stepCount: distribution.perpetual.stepCount,
-            decreaseNumerator: distribution.perpetual.decreaseNumerator,
-            decreaseDenominator: distribution.perpetual.decreaseDenominator,
-            startPeriodOffset: distribution.perpetual.startPeriodOffset,
-            initialEmission: distribution.perpetual.initialEmission,
-            stepDecreasingMinValue:
-              distribution.perpetual.stepDecreasingMinValue,
-            stepDecreasingMaxIntervalCount:
-              distribution.perpetual.stepDecreasingMaxIntervalCount,
-            trailingAmount: distribution.perpetual.trailingAmount,
-            stepwiseEntries: distribution.perpetual.stepwiseEntries,
-            linearA: distribution.perpetual.linearA,
-            linearD: distribution.perpetual.linearD,
-            linearStartStep: distribution.perpetual.linearStartStep,
-            linearStartingAmount:
-              distribution.perpetual.linearStartingAmount,
-            linearMinValue: distribution.perpetual.linearMinValue,
-            linearMaxValue: distribution.perpetual.linearMaxValue,
-          },
-        }
-      : null,
-    preProgrammedDistribution: distribution.preProgrammed.enabled
-      ? {
-          entries: distribution.preProgrammed.entries.map((e) => ({
-            days: e.days,
-            hours: e.hours,
-            minutes: e.minutes,
-            identityId: e.identityId,
-            amount: e.amount,
-          })),
-        }
-      : null,
-
-    // Control rules
-    controlRules: {
-      manualMinting: serializeControlRule(controlRules.manualMinting),
-      manualBurning: serializeControlRule(controlRules.manualBurning),
-      freeze: serializeControlRule(controlRules.freeze),
-      unfreeze: serializeControlRule(controlRules.unfreeze),
-      destroyFrozenFunds: serializeControlRule(
-        controlRules.destroyFrozenFunds,
-      ),
-      emergencyAction: serializeControlRule(controlRules.emergencyAction),
-      maxSupplyChange: serializeControlRule(controlRules.maxSupplyChange),
-      conventionsChange: serializeControlRule(
-        controlRules.conventionsChange,
-      ),
-      marketplace: serializeControlRule(controlRules.marketplace),
-      directPurchasePricing: serializeControlRule(
-        controlRules.directPurchasePricing,
-      ),
-      mainControlGroupChange: {
-        actionTaker: controlRules.mainControlGroupChange,
-        identityId: controlRules.mainControlGroupChangeIdentityId || null,
-        groupPosition: controlRules.mainControlGroupChangeGroupPosition || null,
-      },
-    },
-    mintExtras: {
-      destinationDefaultToContractOwner:
-        controlRules.mintExtras.destinationDefaultToContractOwner,
-      destinationOtherIdentityEnabled:
-        controlRules.mintExtras.destinationOtherIdentityEnabled,
-      destinationOtherIdentityId:
-        controlRules.mintExtras.destinationOtherIdentityId || null,
-      allowChoosingDestination:
-        controlRules.mintExtras.allowChoosingDestination,
-      destinationIdentityRules: serializeControlRule(
-        controlRules.mintExtras.destinationIdentityRules,
-      ),
-      choosingDestinationRules: serializeControlRule(
-        controlRules.mintExtras.choosingDestinationRules,
-      ),
+    // History — backend reads "keepsHistory" as TokenKeepsHistoryRules (internally tagged)
+    keepsHistory: {
+      $format_version: "0",
+      keepsTransferHistory: history.keepTransferHistory,
+      keepsFreezingHistory: history.keepFreezingHistory,
+      keepsMintingHistory: history.keepMintingHistory,
+      keepsBurningHistory: history.keepBurningHistory,
+      keepsDirectPricingHistory: history.keepDirectPricingHistory,
+      keepsDirectPurchaseHistory: history.keepDirectPurchaseHistory,
     },
 
-    // Groups
-    groups: groups.groups.map((g) => ({
-      requiredPower: parseInt(g.requiredPower, 10) || 0,
-      members: g.members.map((m) => ({
-        identityId: m.identityId.trim(),
-        power: parseInt(m.power, 10) || 0,
-      })),
-    })),
+    // Control rules — backend reads each as top-level keys
+    manualMintingRules: serializeControlRule(controlRules.manualMinting),
+    manualBurningRules: serializeControlRule(controlRules.manualBurning),
+    freezeRules: serializeControlRule(controlRules.freeze),
+    unfreezeRules: serializeControlRule(controlRules.unfreeze),
+    destroyFrozenFundsRules: serializeControlRule(
+      controlRules.destroyFrozenFunds,
+    ),
+    emergencyActionRules: serializeControlRule(controlRules.emergencyAction),
+    maxSupplyChangeRules: serializeControlRule(controlRules.maxSupplyChange),
+    conventionsChangeRules: serializeControlRule(
+      controlRules.conventionsChange,
+    ),
 
-    // History
-    keepHistory: {
-      transfers: history.keepTransferHistory,
-      freezing: history.keepFreezingHistory,
-      minting: history.keepMintingHistory,
-      burning: history.keepBurningHistory,
-      directPricing: history.keepDirectPricingHistory,
-      directPurchase: history.keepDirectPurchaseHistory,
-    },
+    // Main control group change — backend reads as AuthorizedActionTakers
+    mainControlGroupChangeAuthorized: serializeActionTaker(
+      controlRules.mainControlGroupChange,
+      controlRules.mainControlGroupChangeIdentityId,
+      controlRules.mainControlGroupChangeGroupPosition,
+    ),
 
-    // Keywords
-    tokenKeywords: keywords.keywords,
+    // Distribution — backend reads "distributionRules" as TokenDistributionRules (internally tagged)
+    distributionRules: buildDistributionRules(distribution, controlRules),
+
+    // Groups — backend reads as BTreeMap<u16, Group>
+    groups: groupsObj,
+
+    // Marketplace — backend reads as top-level keys
+    marketplaceTradeMode: 0,
+    marketplaceRules: serializeControlRule(controlRules.marketplace),
   };
 }
 
+/** Convert an ActionTaker UI value to the Platform SDK AuthorizedActionTakers serde format */
+function serializeActionTaker(
+  actionTaker: import("./ControlRulesStep").ActionTaker,
+  identityId?: string,
+  groupPosition?: string,
+): unknown {
+  switch (actionTaker) {
+    case "noOne":
+      return "NoOne";
+    case "contractOwner":
+      return "ContractOwner";
+    case "mainGroup":
+      return "MainGroup";
+    case "identity":
+      return { Identity: (identityId || "").trim() || null };
+    case "group":
+      return { Group: parseInt(groupPosition || "0", 10) };
+    default:
+      return "NoOne";
+  }
+}
+
+/** Serialize a ChangeControlRulesState to ChangeControlRules serde format (externally tagged V0) */
 function serializeControlRule(
   rule: import("./ControlRulesStep").ChangeControlRulesState,
 ): Record<string, unknown> {
   return {
-    authorizedActionTaker: rule.authorizedActionTaker,
-    authorizedIdentityId: rule.authorizedIdentityId || null,
-    authorizedGroupPosition: rule.authorizedGroupPosition || null,
-    adminActionTaker: rule.adminActionTaker,
-    adminIdentityId: rule.adminIdentityId || null,
-    adminGroupPosition: rule.adminGroupPosition || null,
-    changingAuthorizedToNoOneAllowed: rule.changingAuthorizedToNoOneAllowed,
-    changingAdminToNoOneAllowed: rule.changingAdminToNoOneAllowed,
-    selfChangingAdminAllowed: rule.selfChangingAdminAllowed,
+    V0: {
+      authorized_to_make_change: serializeActionTaker(
+        rule.authorizedActionTaker,
+        rule.authorizedIdentityId,
+        rule.authorizedGroupPosition,
+      ),
+      admin_action_takers: serializeActionTaker(
+        rule.adminActionTaker,
+        rule.adminIdentityId,
+        rule.adminGroupPosition,
+      ),
+      changing_authorized_action_takers_to_no_one_allowed:
+        rule.changingAuthorizedToNoOneAllowed,
+      changing_admin_action_takers_to_no_one_allowed:
+        rule.changingAdminToNoOneAllowed,
+      self_changing_admin_action_takers_allowed:
+        rule.selfChangingAdminAllowed,
+    },
   };
+}
+
+/** Default ChangeControlRules for fields not exposed in the UI */
+function defaultControlRule(): Record<string, unknown> {
+  return {
+    V0: {
+      authorized_to_make_change: "NoOne",
+      admin_action_takers: "NoOne",
+      changing_authorized_action_takers_to_no_one_allowed: false,
+      changing_admin_action_takers_to_no_one_allowed: false,
+      self_changing_admin_action_takers_allowed: false,
+    },
+  };
+}
+
+/** Build the distributionRules object matching TokenDistributionRules serde format */
+function buildDistributionRules(
+  distribution: DistributionState,
+  controlRules: ControlRulesState,
+): Record<string, unknown> {
+  const perp = distribution.perpetual;
+
+  // Build perpetual distribution if enabled
+  let perpetualDistribution: unknown = null;
+  if (perp.enabled) {
+    const fn = buildDistributionFunction(perp);
+    let distributionType: unknown;
+    if (perp.intervalType === "blockBased") {
+      distributionType = {
+        BlockBasedDistribution: {
+          interval: parseInt(perp.intervalAmount, 10) || 0,
+          function: fn,
+        },
+      };
+    } else if (perp.intervalType === "epochBased") {
+      distributionType = {
+        EpochBasedDistribution: {
+          interval: parseInt(perp.intervalAmount, 10) || 0,
+          function: fn,
+        },
+      };
+    } else {
+      // timeBased — convert to milliseconds based on time unit
+      const amount = parseInt(perp.intervalAmount, 10) || 0;
+      const msMultiplier: Record<string, number> = {
+        second: 1000,
+        minute: 60_000,
+        hour: 3_600_000,
+        day: 86_400_000,
+      };
+      const intervalMs = amount * (msMultiplier[perp.intervalTimeUnit] || 86_400_000);
+      distributionType = {
+        TimeBasedDistribution: {
+          interval: intervalMs,
+          function: fn,
+        },
+      };
+    }
+
+    let distributionRecipient: unknown = "ContractOwner";
+    if (perp.recipient === "identity" && perp.recipientIdentityId) {
+      distributionRecipient = { Identity: perp.recipientIdentityId.trim() };
+    } else if (perp.recipient === "evonodesByParticipation") {
+      distributionRecipient = "EvonodesByParticipation";
+    }
+
+    perpetualDistribution = {
+      $format_version: "0",
+      distributionType,
+      distributionRecipient,
+    };
+  }
+
+  // Build pre-programmed distribution if enabled
+  let preProgrammedDistribution: unknown = null;
+  if (distribution.preProgrammed.enabled && distribution.preProgrammed.entries.length > 0) {
+    const distributions: Record<string, Record<string, number>> = {};
+    for (const entry of distribution.preProgrammed.entries) {
+      const days = parseInt(entry.days || "0", 10);
+      const hours = parseInt(entry.hours || "0", 10);
+      const minutes = parseInt(entry.minutes || "0", 10);
+      const timestampMs = ((days * 24 + hours) * 60 + minutes) * 60_000;
+      const amount = parseInt(entry.amount || "0", 10);
+      const id = entry.identityId.trim();
+      if (id) {
+        if (!distributions[String(timestampMs)]) {
+          distributions[String(timestampMs)] = {};
+        }
+        distributions[String(timestampMs)][id] = amount;
+      }
+    }
+    preProgrammedDistribution = {
+      $format_version: "0",
+      distributions,
+    };
+  }
+
+  // Determine newTokensDestinationIdentity from mintExtras
+  const mintExtras = controlRules.mintExtras;
+  let newTokensDestinationIdentity: string | null = null;
+  if (mintExtras.destinationDefaultToContractOwner) {
+    // Will be resolved server-side to the contract owner
+    // For now, we don't send a specific ID — the backend will use the identity
+    newTokensDestinationIdentity = null;
+  } else if (
+    mintExtras.destinationOtherIdentityEnabled &&
+    mintExtras.destinationOtherIdentityId.trim()
+  ) {
+    newTokensDestinationIdentity = mintExtras.destinationOtherIdentityId.trim();
+  }
+
+  return {
+    $format_version: "0",
+    perpetualDistribution,
+    perpetualDistributionRules: defaultControlRule(),
+    preProgrammedDistribution,
+    newTokensDestinationIdentity,
+    newTokensDestinationIdentityRules: serializeControlRule(
+      mintExtras.destinationIdentityRules,
+    ),
+    mintingAllowChoosingDestination: mintExtras.allowChoosingDestination,
+    mintingAllowChoosingDestinationRules: serializeControlRule(
+      mintExtras.choosingDestinationRules,
+    ),
+    changeDirectPurchasePricingRules: serializeControlRule(
+      controlRules.directPurchasePricing,
+    ),
+  };
+}
+
+/** Build a DistributionFunction serde value from the perpetual distribution state */
+function buildDistributionFunction(
+  perp: DistributionState["perpetual"],
+): unknown {
+  const parseU64 = (v: string) => parseInt(v, 10) || 0;
+  const parseI64 = (v: string) => parseInt(v, 10) || 0;
+  const parseOptU64 = (v: string): number | null => {
+    if (!v || !v.trim()) return null;
+    const n = parseInt(v, 10);
+    return isNaN(n) || n === 0 ? null : n;
+  };
+
+  switch (perp.distributionFunction) {
+    case "fixedAmount":
+      return { FixedAmount: { amount: parseU64(perp.fixedAmount) } };
+    case "stepDecreasing":
+      return {
+        StepDecreasingAmount: {
+          step_count: parseU64(perp.stepCount),
+          decrease_per_interval_numerator: parseU64(perp.decreaseNumerator),
+          decrease_per_interval_denominator: parseU64(perp.decreaseDenominator),
+          start_decreasing_offset: parseOptU64(perp.startPeriodOffset),
+          max_interval_count: parseOptU64(perp.stepDecreasingMaxIntervalCount),
+          distribution_start_amount: parseU64(perp.initialEmission),
+          trailing_distribution_interval_amount: parseU64(perp.trailingAmount),
+          min_value: parseOptU64(perp.stepDecreasingMinValue),
+        },
+      };
+    case "stepwise": {
+      const entries: Record<string, number> = {};
+      (perp.stepwiseEntries || []).forEach(
+        (e: { step: string; amount: string }) => {
+          entries[String(parseU64(e.step))] = parseU64(e.amount);
+        },
+      );
+      return { Stepwise: entries };
+    }
+    case "linear":
+      return {
+        Linear: {
+          a: parseI64(perp.linearA),
+          d: parseU64(perp.linearD) || 1,
+          start_step: parseOptU64(perp.linearStartStep),
+          starting_amount: parseU64(perp.linearStartingAmount),
+          min_value: parseOptU64(perp.linearMinValue),
+          max_value: parseOptU64(perp.linearMaxValue),
+        },
+      };
+    case "polynomial":
+      return {
+        Polynomial: {
+          a: parseI64(perp.polyA ?? ""),
+          d: parseU64(perp.polyD ?? "") || 1,
+          m: parseI64(perp.polyM ?? ""),
+          n: parseU64(perp.polyN ?? "") || 1,
+          o: parseI64(perp.polyO ?? ""),
+          start_moment: parseOptU64(perp.polyS ?? ""),
+          b: parseU64(perp.polyB ?? ""),
+          min_value: parseOptU64(perp.polyMinValue ?? ""),
+          max_value: parseOptU64(perp.polyMaxValue ?? ""),
+        },
+      };
+    case "exponential":
+      return {
+        Exponential: {
+          a: parseU64(perp.expA ?? ""),
+          d: parseU64(perp.expD ?? "") || 1,
+          m: parseI64(perp.expM ?? ""),
+          n: parseU64(perp.expN ?? "") || 1,
+          o: parseI64(perp.expO ?? ""),
+          start_moment: parseOptU64(perp.expS ?? ""),
+          b: parseU64(perp.expB ?? ""),
+          min_value: parseOptU64(perp.expMinValue ?? ""),
+          max_value: parseOptU64(perp.expMaxValue ?? ""),
+        },
+      };
+    case "logarithmic":
+      return {
+        Logarithmic: {
+          a: parseI64(perp.logA ?? ""),
+          d: parseU64(perp.logD ?? "") || 1,
+          m: parseU64(perp.logM ?? ""),
+          n: parseU64(perp.logN ?? "") || 1,
+          o: parseI64(perp.logO ?? ""),
+          start_moment: parseOptU64(perp.logS ?? ""),
+          b: parseU64(perp.logB ?? ""),
+          min_value: parseOptU64(perp.logMinValue ?? ""),
+          max_value: parseOptU64(perp.logMaxValue ?? ""),
+        },
+      };
+    case "invertedLogarithmic":
+      return {
+        InvertedLogarithmic: {
+          a: parseI64(perp.invLogA ?? ""),
+          d: parseU64(perp.invLogD ?? "") || 1,
+          m: parseU64(perp.invLogM ?? ""),
+          n: parseU64(perp.invLogN ?? "") || 1,
+          o: parseI64(perp.invLogO ?? ""),
+          start_moment: parseOptU64(perp.invLogS ?? ""),
+          b: parseU64(perp.invLogB ?? ""),
+          min_value: parseOptU64(perp.invLogMinValue ?? ""),
+          max_value: parseOptU64(perp.invLogMaxValue ?? ""),
+        },
+      };
+    default:
+      return { FixedAmount: { amount: 0 } };
+  }
 }

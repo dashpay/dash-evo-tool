@@ -351,7 +351,7 @@ describe("isPermanentlyNonTradeable", () => {
 // ─── buildConfigJson ────────────────────────────────────────────────
 
 describe("buildConfigJson", () => {
-  it("serializes basic info correctly", () => {
+  it("serializes basic info with backend field names", () => {
     const config = buildConfigJson(
       validBasicInfo({ description: "A test token" }),
       createDefaultDistributionState(),
@@ -360,16 +360,15 @@ describe("buildConfigJson", () => {
       createDefaultHistoryState(),
       createDefaultKeywordsState(),
     );
-    expect(config.names).toEqual([
-      { singular: "TestToken", plural: "TestTokens", languageCode: "en" },
-    ]);
-    expect(config.description).toBe("A test token");
+    // tokenNames as array of tuples
+    expect(config.tokenNames).toEqual([["TestToken", "TestTokens", "en"]]);
+    expect(config.tokenDescription).toBe("A test token");
     expect(config.baseSupply).toBe("1000000");
     expect(config.maxSupply).toBeNull();
     expect(config.decimals).toBe(8);
     expect(config.shouldCapitalize).toBe(false);
     expect(config.startPaused).toBe(false);
-    expect(config.allowTransfersToFrozen).toBe(false);
+    expect(config.allowTransfersToFrozenIdentities).toBe(false);
   });
 
   it("serializes contract keywords as array", () => {
@@ -384,7 +383,7 @@ describe("buildConfigJson", () => {
     expect(config.contractKeywords).toEqual(["gaming", "reward"]);
   });
 
-  it("serializes null perpetual distribution when disabled", () => {
+  it("serializes null distributions in distributionRules when disabled", () => {
     const config = buildConfigJson(
       validBasicInfo(),
       createDefaultDistributionState(),
@@ -393,14 +392,18 @@ describe("buildConfigJson", () => {
       createDefaultHistoryState(),
       createDefaultKeywordsState(),
     );
-    expect(config.perpetualDistribution).toBeNull();
-    expect(config.preProgrammedDistribution).toBeNull();
+    const distRules = config.distributionRules as Record<string, unknown>;
+    expect(distRules.$format_version).toBe("0");
+    expect(distRules.perpetualDistribution).toBeNull();
+    expect(distRules.preProgrammedDistribution).toBeNull();
   });
 
   it("serializes perpetual distribution when enabled", () => {
     const dist = createDefaultDistributionState();
     dist.perpetual.enabled = true;
     dist.perpetual.distributionFunction = "linear";
+    dist.perpetual.intervalType = "blockBased";
+    dist.perpetual.intervalAmount = "10";
     const config = buildConfigJson(
       validBasicInfo(),
       dist,
@@ -409,12 +412,18 @@ describe("buildConfigJson", () => {
       createDefaultHistoryState(),
       createDefaultKeywordsState(),
     );
-    expect(config.perpetualDistribution).not.toBeNull();
-    const perp = config.perpetualDistribution as Record<string, unknown>;
-    expect(perp.distributionFunction).toBe("linear");
+    const distRules = config.distributionRules as Record<string, unknown>;
+    expect(distRules.perpetualDistribution).not.toBeNull();
+    const perp = distRules.perpetualDistribution as Record<string, unknown>;
+    expect(perp.$format_version).toBe("0");
+    const distType = perp.distributionType as Record<string, unknown>;
+    expect(distType).toHaveProperty("BlockBasedDistribution");
+    const block = distType.BlockBasedDistribution as Record<string, unknown>;
+    expect(block.interval).toBe(10);
+    expect(block.function).toHaveProperty("Linear");
   });
 
-  it("serializes control rules", () => {
+  it("serializes control rules as top-level V0 structs", () => {
     const config = buildConfigJson(
       validBasicInfo(),
       createDefaultDistributionState(),
@@ -423,15 +432,30 @@ describe("buildConfigJson", () => {
       createDefaultHistoryState(),
       createDefaultKeywordsState(),
     );
-    const rules = config.controlRules as Record<
-      string,
-      Record<string, unknown>
-    >;
-    expect(rules.manualMinting.authorizedActionTaker).toBe("noOne");
-    expect(rules.marketplace.authorizedActionTaker).toBe("noOne");
+    // Control rules are now top-level keys with V0-wrapped values
+    const mintRules = config.manualMintingRules as Record<string, unknown>;
+    const v0 = mintRules.V0 as Record<string, unknown>;
+    expect(v0.authorized_to_make_change).toBe("NoOne");
+    expect(v0.admin_action_takers).toBe("NoOne");
+
+    const marketRules = config.marketplaceRules as Record<string, unknown>;
+    const mv0 = marketRules.V0 as Record<string, unknown>;
+    expect(mv0.authorized_to_make_change).toBe("NoOne");
   });
 
-  it("serializes groups", () => {
+  it("serializes mainControlGroupChangeAuthorized as AuthorizedActionTakers", () => {
+    const config = buildConfigJson(
+      validBasicInfo(),
+      createDefaultDistributionState(),
+      createDefaultControlRulesState(),
+      createDefaultGroupsState(),
+      createDefaultHistoryState(),
+      createDefaultKeywordsState(),
+    );
+    expect(config.mainControlGroupChangeAuthorized).toBe("NoOne");
+  });
+
+  it("serializes groups as position-keyed object", () => {
     const groups = createDefaultGroupsState();
     groups.groups = [
       {
@@ -448,17 +472,15 @@ describe("buildConfigJson", () => {
       createDefaultHistoryState(),
       createDefaultKeywordsState(),
     );
-    const configGroups = config.groups as Array<{
-      requiredPower: number;
-      members: Array<{ identityId: string; power: number }>;
-    }>;
-    expect(configGroups).toHaveLength(1);
-    expect(configGroups[0].requiredPower).toBe(100);
-    expect(configGroups[0].members[0].identityId).toBe("abc123");
-    expect(configGroups[0].members[0].power).toBe(50);
+    const configGroups = config.groups as Record<string, Record<string, unknown>>;
+    expect(configGroups["0"]).toBeDefined();
+    expect(configGroups["0"].$format_version).toBe("0");
+    expect(configGroups["0"].required_power).toBe(100);
+    const members = configGroups["0"].members as Record<string, number>;
+    expect(members["abc123"]).toBe(50);
   });
 
-  it("serializes history flags", () => {
+  it("serializes keepsHistory with Platform SDK format", () => {
     const history = createDefaultHistoryState();
     history.keepTransferHistory = false;
     const config = buildConfigJson(
@@ -469,23 +491,22 @@ describe("buildConfigJson", () => {
       history,
       createDefaultKeywordsState(),
     );
-    const keepHist = config.keepHistory as Record<string, boolean>;
-    expect(keepHist.transfers).toBe(false);
-    expect(keepHist.minting).toBe(true);
+    const keepHist = config.keepsHistory as Record<string, unknown>;
+    expect(keepHist.$format_version).toBe("0");
+    expect(keepHist.keepsTransferHistory).toBe(false);
+    expect(keepHist.keepsMintingHistory).toBe(true);
   });
 
-  it("serializes token keywords", () => {
-    const kw = createDefaultKeywordsState();
-    kw.keywords = ["gaming", "reward"];
+  it("includes marketplaceTradeMode", () => {
     const config = buildConfigJson(
       validBasicInfo(),
       createDefaultDistributionState(),
       createDefaultControlRulesState(),
       createDefaultGroupsState(),
       createDefaultHistoryState(),
-      kw,
+      createDefaultKeywordsState(),
     );
-    expect(config.tokenKeywords).toEqual(["gaming", "reward"]);
+    expect(config.marketplaceTradeMode).toBe(0);
   });
 });
 

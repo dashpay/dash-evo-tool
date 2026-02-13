@@ -8,6 +8,7 @@ import {
 import type { VoteCastingDialogProps } from "./VoteCastingDialog";
 import type { SelectedVote } from "@/stores/contestStore";
 import type { QualifiedIdentityDto, VoteChoiceDto } from "@/bindings";
+import { displayId } from "@/lib/utils";
 
 // ─── Polyfills for Radix Select in jsdom ──────────────────────────
 
@@ -88,10 +89,11 @@ describe("formatVoteChoice", () => {
   });
 
   it("formats towardsIdentity with truncation", () => {
+    const id = "aaaa1111bbbb2222cccc3333dddd4444";
     const choice: VoteChoiceDto = {
-      towardsIdentity: { identityId: "aaaa1111bbbb2222cccc3333dddd4444" },
+      towardsIdentity: { identityId: id },
     };
-    expect(formatVoteChoice(choice)).toBe("aaaa11...dd4444");
+    expect(formatVoteChoice(choice)).toBe(displayId(id));
   });
 
   it("formats short towardsIdentity without truncation", () => {

@@ -583,6 +583,8 @@ describe("dashpayStore", () => {
   });
 
   describe("acceptContactRequest", () => {
+    const PLATFORM_DOC_ID = "aabb".repeat(16);
+
     it("dispatches accept and tracks accepting state", async () => {
       useDashPayStore.setState({ selectedIdentityId: IDENTITY_ID });
       (commands.dashpayAcceptContactRequest as Mock).mockResolvedValue({
@@ -590,11 +592,11 @@ describe("dashpayStore", () => {
         data: { taskId: "t1" },
       });
 
-      await useDashPayStore.getState().acceptContactRequest("1");
+      await useDashPayStore.getState().acceptContactRequest(1, PLATFORM_DOC_ID);
 
       expect(commands.dashpayAcceptContactRequest).toHaveBeenCalledWith({
         identityId: IDENTITY_ID,
-        requestId: "1",
+        requestId: PLATFORM_DOC_ID,
       });
       expect(useDashPayStore.getState().acceptingIds.has(1)).toBe(true);
     });
@@ -606,7 +608,7 @@ describe("dashpayStore", () => {
         error: "Accept failed",
       });
 
-      await useDashPayStore.getState().acceptContactRequest("1");
+      await useDashPayStore.getState().acceptContactRequest(1, PLATFORM_DOC_ID);
 
       expect(useDashPayStore.getState().acceptingIds.size).toBe(0);
       expect(useDashPayStore.getState().requestsError).toBe("Accept failed");
@@ -618,7 +620,7 @@ describe("dashpayStore", () => {
         new Error("Network error"),
       );
 
-      await useDashPayStore.getState().acceptContactRequest("1");
+      await useDashPayStore.getState().acceptContactRequest(1, PLATFORM_DOC_ID);
 
       expect(useDashPayStore.getState().acceptingIds.size).toBe(0);
       expect(useDashPayStore.getState().requestsError).toBe("Network error");
@@ -626,6 +628,8 @@ describe("dashpayStore", () => {
   });
 
   describe("rejectContactRequest", () => {
+    const REJECT_DOC_ID = "ccdd".repeat(16);
+
     it("dispatches reject and tracks rejecting state", async () => {
       useDashPayStore.setState({ selectedIdentityId: IDENTITY_ID });
       (commands.dashpayRejectContactRequest as Mock).mockResolvedValue({
@@ -633,11 +637,11 @@ describe("dashpayStore", () => {
         data: { taskId: "t1" },
       });
 
-      await useDashPayStore.getState().rejectContactRequest("2");
+      await useDashPayStore.getState().rejectContactRequest(2, REJECT_DOC_ID);
 
       expect(commands.dashpayRejectContactRequest).toHaveBeenCalledWith({
         identityId: IDENTITY_ID,
-        requestId: "2",
+        requestId: REJECT_DOC_ID,
       });
       expect(useDashPayStore.getState().rejectingIds.has(2)).toBe(true);
     });
@@ -649,7 +653,7 @@ describe("dashpayStore", () => {
         error: "Reject failed",
       });
 
-      await useDashPayStore.getState().rejectContactRequest("2");
+      await useDashPayStore.getState().rejectContactRequest(2, REJECT_DOC_ID);
 
       expect(useDashPayStore.getState().rejectingIds.size).toBe(0);
       expect(useDashPayStore.getState().requestsError).toBe("Reject failed");

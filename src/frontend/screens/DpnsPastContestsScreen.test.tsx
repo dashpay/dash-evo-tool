@@ -4,6 +4,7 @@ import { DpnsPastContestsScreen } from "./DpnsPastContestsScreen";
 import { useContestStore } from "@/stores/contestStore";
 import { renderWithProviders } from "@/test/router-utils";
 import type { ContestedName } from "@/stores/contestStore";
+import { displayId } from "@/lib/utils";
 
 // ─── Centralized mock bindings ───────────────────────────────────
 
@@ -329,19 +330,20 @@ describe("DpnsPastContestsScreen — multiple contests", () => {
   });
 
   it("shows both locked and wonBy contests together", () => {
+    const winnerId = "winner9876543210abcdef";
     useContestStore.setState({
       contestedNames: [
         makeContest({ normalizedContestedName: "locked-one", state: "locked" }),
         makeContest({
           normalizedContestedName: "won-one",
-          state: { wonBy: "winner9876543210abcdef" },
+          state: { wonBy: winnerId },
         }),
       ],
     });
     setup();
 
     expect(screen.getByText("Locked")).toBeInTheDocument();
-    expect(screen.getByText("winner98...")).toBeInTheDocument();
+    expect(screen.getByText(displayId(winnerId))).toBeInTheDocument();
   });
 
   it("filters out active contests while showing past", () => {

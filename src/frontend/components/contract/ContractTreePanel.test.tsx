@@ -9,6 +9,7 @@ import {
 } from "./ContractTreePanel";
 import type { ContractTreePanelProps, TreeSelection } from "./ContractTreePanel";
 import type { ContractSummaryDto, DataContractDto, JsonValue } from "@/bindings";
+import { displayId } from "@/lib/utils";
 
 // ─── Test fixtures ─────────────────────────────────────────────────
 
@@ -331,14 +332,15 @@ describe("ContractTreePanel", () => {
   });
 
   it("displays truncated ID when no alias", () => {
+    const id = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
     const contracts = [
       makeSummary({
-        id: "abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
+        id,
         alias: null,
       }),
     ];
     renderPanel({ contracts });
-    expect(screen.getByText("abc123...56abcd")).toBeInTheDocument();
+    expect(screen.getByText(displayId(id))).toBeInTheDocument();
   });
 
   it("filters contracts by search term", async () => {

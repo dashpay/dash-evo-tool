@@ -548,11 +548,10 @@ describe("TokenAddByIdScreen — Add to My Tokens", () => {
 
     await waitFor(() => {
       expect(vi.mocked(commands.tokenSaveLocally)).toHaveBeenCalledWith({
-        tokenInfoJson: expect.objectContaining({
-          token_id: "tok1",
-          token_name: "My Token",
-          data_contract_id: VALID_HEX_64,
-        }),
+        tokenId: "tok1",
+        contractId: VALID_HEX_64,
+        tokenPosition: 0,
+        tokenName: "My Token",
       });
     });
   });

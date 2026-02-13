@@ -38,6 +38,7 @@ function makeIncomingRequest(
     createdAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago
     respondedAt: null,
     expiresAt: null,
+    platformDocumentId: "ff".repeat(32),
     ...overrides,
   };
 }
@@ -56,6 +57,7 @@ function makeOutgoingRequest(
     createdAt: Math.floor(Date.now() / 1000) - 86400, // 1 day ago
     respondedAt: null,
     expiresAt: null,
+    platformDocumentId: "ee".repeat(32),
     ...overrides,
   };
 }
@@ -334,8 +336,9 @@ describe("ContactRequests", () => {
     it("calls acceptContactRequest when confirmed", async () => {
       const user = userEvent.setup();
       const acceptContactRequest = vi.fn();
+      const platformDocId = "ab".repeat(32);
       setupWithRequests({
-        incoming: [makeIncomingRequest({ id: 42 })],
+        incoming: [makeIncomingRequest({ id: 42, platformDocumentId: platformDocId })],
       });
       useDashPayStore.setState({ acceptContactRequest });
       renderWithProviders(<ContactRequests />);
@@ -348,7 +351,7 @@ describe("ContactRequests", () => {
       // The last one is the dialog's confirm button
       await user.click(dialogConfirmBtn[dialogConfirmBtn.length - 1]!);
 
-      expect(acceptContactRequest).toHaveBeenCalledWith("42");
+      expect(acceptContactRequest).toHaveBeenCalledWith(42, platformDocId);
     });
 
     it("does not call acceptContactRequest when canceled", async () => {
@@ -401,8 +404,9 @@ describe("ContactRequests", () => {
     it("calls rejectContactRequest when confirmed", async () => {
       const user = userEvent.setup();
       const rejectContactRequest = vi.fn();
+      const platformDocId = "cd".repeat(32);
       setupWithRequests({
-        incoming: [makeIncomingRequest({ id: 99 })],
+        incoming: [makeIncomingRequest({ id: 99, platformDocumentId: platformDocId })],
       });
       useDashPayStore.setState({ rejectContactRequest });
       renderWithProviders(<ContactRequests />);
@@ -414,7 +418,7 @@ describe("ContactRequests", () => {
       });
       await user.click(dialogConfirmBtns[dialogConfirmBtns.length - 1]!);
 
-      expect(rejectContactRequest).toHaveBeenCalledWith("99");
+      expect(rejectContactRequest).toHaveBeenCalledWith(99, platformDocId);
     });
 
     it("does not call rejectContactRequest when canceled", async () => {

@@ -105,6 +105,7 @@ impl TaskManager {
                 let done = counter_for_timeout.load(std::sync::atomic::Ordering::Relaxed);
                 tracing::trace!(
                     completed = done,
+                    remaining = subtasks.try_lock().map(|s| Some(s.len())).ok().flatten(),
                     "shutdown: timed out waiting for tasks, aborting remaining"
                 );
             }

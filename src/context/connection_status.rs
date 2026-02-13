@@ -107,6 +107,13 @@ impl ConnectionStatus {
         self.disable_zmq.store(disable, Ordering::Relaxed);
     }
 
+    /// Reset the throttle timer so the next `trigger_refresh()` fires immediately.
+    pub fn reset_timer(&self) {
+        if let Ok(mut last) = self.last_update.lock() {
+            *last = Instant::now() - REFRESH_CONNECTED;
+        }
+    }
+
     pub fn spv_connected(status: SpvStatus) -> bool {
         status.is_active()
     }
@@ -229,7 +236,11 @@ impl ConnectionStatus {
             Err(poisoned) => poisoned.into_inner(),
         };
         let now = Instant::now();
-        let timeout = if self.overall_connected() {
+        let timeout = if self.spv_status() == SpvStatus::Stopping {
+            // Poll frequently during SPV shutdown so the UI updates
+            // within ~200ms of the Stopping → Stopped transition.
+            Duration::from_millis(200)
+        } else if self.overall_connected() {
             REFRESH_CONNECTED
         } else {
             REFRESH_DISCONNECTED

@@ -770,5 +770,8 @@ impl AppContext {
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
         self.connection_status.refresh_overall();
+        // Reset the throttle timer so trigger_refresh() starts polling
+        // at 200ms intervals and picks up the Stopped transition quickly.
+        self.connection_status.reset_timer();
     }
 }

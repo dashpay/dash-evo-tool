@@ -474,6 +474,7 @@ impl NetworkChooserScreen {
             ui.horizontal(|ui| {
                 if overall_connected {
                     if current_backend_mode == CoreBackendMode::Spv {
+                        let is_stopping = spv_status == SpvStatus::Stopping;
                         let disconnect_button = egui::Button::new(
                             egui::RichText::new("Disconnect").color(DashColors::WHITE),
                         )
@@ -482,7 +483,10 @@ impl NetworkChooserScreen {
                         .corner_radius(Shape::RADIUS_MD)
                         .min_size(egui::vec2(120.0, 36.0));
 
-                        if ui.add(disconnect_button).clicked() {
+                        if ui
+                            .add_enabled(!is_stopping, disconnect_button)
+                            .clicked()
+                        {
                             self.current_app_context().stop_spv();
                         }
 

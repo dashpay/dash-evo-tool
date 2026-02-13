@@ -187,14 +187,14 @@ interface DashPayActions {
     notes: string;
     isHidden: boolean;
   }) => Promise<void>;
-  /** Update contact info on Platform (async task dispatch). */
+  /** Update contact info on Platform (async task dispatch). Returns taskId or null on IPC error. */
   updateContactInfo: (input: {
     contactId: string;
     nickname: string | null;
     note: string | null;
     isHidden: boolean;
     acceptedAccounts: number[];
-  }) => Promise<void>;
+  }) => Promise<string | null>;
 
   // ── Search actions ──
   /** Search for profiles by username prefix (async task dispatch). */
@@ -260,7 +260,7 @@ const timeouts = new TaskTimeoutManager();
 function failOp(
   set: (fn: (s: DashPayState) => Partial<DashPayState>) => void,
   opKey: string,
-  errorKey: keyof Pick<DashPayState, "requestsError" | "paymentsError">,
+  errorKey: keyof Pick<DashPayState, "contactsError" | "requestsError" | "paymentsError">,
   message: string,
 ): void {
   set((s) => {
@@ -785,8 +785,12 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
     acceptedAccounts,
   }) => {
     const { selectedIdentityId } = get();
-    if (!selectedIdentityId) return;
+    if (!selectedIdentityId) return null;
 
+    set((s) => ({
+      contactsError: null,
+      pendingOps: new Set(s.pendingOps).add("updateContactInfo"),
+    }));
     try {
       const result = await commands.dashpayUpdateContactInfo({
         identityId: selectedIdentityId,
@@ -797,10 +801,16 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
         acceptedAccounts,
       });
       if (result.status === "error") {
-        set({ contactsError: result.error });
+        failOp(set, "updateContactInfo", "contactsError", result.error);
+        return null;
       }
+      timeouts.start("updateContactInfo", () => {
+        failOp(set, "updateContactInfo", "contactsError", TIMEOUT_ERROR_MESSAGE);
+      });
+      return result.data.taskId;
     } catch (e) {
-      set({ contactsError: e instanceof Error ? e.message : String(e) });
+      failOp(set, "updateContactInfo", "contactsError", e instanceof Error ? e.message : String(e));
+      return null;
     }
   },
 
@@ -884,6 +894,9 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
           set({ paymentsRefreshing: false });
           if (state.selectedIdentityId) state.loadPayments();
         }
+        if (ops.has("updateContactInfo")) {
+          if (state.selectedIdentityId) state.loadContacts();
+        }
 
         // If no specific ops were pending, fall back to reloading everything
         if (ops.size === 0 && state.selectedIdentityId) {
@@ -944,6 +957,9 @@ export const useDashPayStore = create<DashPayStore>((set, get) => ({
         if (ops.has("search")) {
           updates.searchLoading = false;
           updates.searchError = msg;
+        }
+        if (ops.has("updateContactInfo")) {
+          updates.contactsError = msg;
         }
 
         set(updates);

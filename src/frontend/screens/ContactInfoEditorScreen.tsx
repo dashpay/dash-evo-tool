@@ -32,6 +32,8 @@ import {
 import { cn } from "@/lib/utils";
 import { toastError } from "@/lib/toastError";
 import { useDashPayStore } from "@/stores/dashpayStore";
+import { useTaskListener } from "@/hooks/useTaskListener";
+import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 
 // ─── Constants ────────────────────────────────────────────────────────
 
@@ -68,6 +70,7 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
   const [accountInput, setAccountInput] = useState("");
   const [acceptedAccounts, setAcceptedAccounts] = useState<number[]>([]);
   const [saving, setSaving] = useState(false);
+  const [taskId, setTaskId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
   const [showInfoPopup, setShowInfoPopup] = useState(false);
 
@@ -143,8 +146,8 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
         isHidden,
       });
 
-      // Update on Platform
-      await updateContactInfo({
+      // Dispatch Platform update — returns taskId or null on IPC failure
+      const id = await updateContactInfo({
         contactId,
         nickname: nickname || null,
         note: note || null,
@@ -152,12 +155,20 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
         acceptedAccounts,
       });
 
-      setMessage({ text: "Contact information updated successfully", type: "success" });
+      if (!id) {
+        // IPC dispatch failed — store already has contactsError
+        const storeError = useDashPayStore.getState().contactsError;
+        setMessage({ text: storeError ?? "Failed to update contact info.", type: "error" });
+        setSaving(false);
+        return;
+      }
+
+      // Task dispatched — stay in saving state, wait for task event
+      setTaskId(id);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setMessage({ text: msg, type: "error" });
       toastError(msg);
-    } finally {
       setSaving(false);
     }
   }, [
@@ -174,6 +185,21 @@ export function ContactInfoEditorScreen({ contactId }: ContactInfoEditorScreenPr
   const handleCancel = useCallback(() => {
     navigate({ to: "/dashpay/contact-details/$contactId", params: { contactId } });
   }, [navigate, contactId]);
+
+  // Listen for task completion/error
+  useTaskListener(
+    taskId,
+    useCallback((_event: TaskResultEvent) => {
+      setMessage({ text: "Contact information updated successfully", type: "success" });
+      setSaving(false);
+      setTaskId(null);
+    }, []),
+    useCallback((event: TaskErrorEvent) => {
+      setMessage({ text: event.message, type: "error" });
+      setSaving(false);
+      setTaskId(null);
+    }, []),
+  );
 
   // ── Render ──
   if (!selectedIdentityId) {

@@ -197,8 +197,10 @@ pub fn settings_update_onboarding_completed(
     state: tauri::State<'_, Arc<AppState>>,
     completed: bool,
 ) -> Result<(), String> {
-    let db = state.db();
-    db.update_onboarding_completed(completed)
+    let _guard = state.current_context().invalidate_settings_cache();
+    state
+        .db()
+        .update_onboarding_completed(completed)
         .map_err(|e| format!("Failed to update onboarding: {e}"))
 }
 
@@ -209,8 +211,10 @@ pub fn settings_update_show_evonode_tools(
     state: tauri::State<'_, Arc<AppState>>,
     show: bool,
 ) -> Result<(), String> {
-    let db = state.db();
-    db.update_show_evonode_tools(show)
+    let _guard = state.current_context().invalidate_settings_cache();
+    state
+        .db()
+        .update_show_evonode_tools(show)
         .map_err(|e| format!("Failed to update evonode tools setting: {e}"))
 }
 
@@ -221,8 +225,10 @@ pub fn settings_update_user_mode(
     state: tauri::State<'_, Arc<AppState>>,
     mode: UserModeDto,
 ) -> Result<(), String> {
-    let db = state.db();
-    db.update_user_mode(mode.to_backend().as_str())
+    let _guard = state.current_context().invalidate_settings_cache();
+    state
+        .db()
+        .update_user_mode(mode.to_backend().as_str())
         .map_err(|e| format!("Failed to update user mode: {e}"))
 }
 
@@ -233,8 +239,10 @@ pub fn settings_update_close_dash_qt_on_exit(
     state: tauri::State<'_, Arc<AppState>>,
     close_on_exit: bool,
 ) -> Result<(), String> {
-    let db = state.db();
-    db.update_close_dash_qt_on_exit(close_on_exit)
+    let _guard = state.current_context().invalidate_settings_cache();
+    state
+        .db()
+        .update_close_dash_qt_on_exit(close_on_exit)
         .map_err(|e| format!("Failed to update close Dash-Qt setting: {e}"))
 }
 
@@ -245,8 +253,10 @@ pub fn settings_update_auto_start_spv(
     state: tauri::State<'_, Arc<AppState>>,
     auto_start: bool,
 ) -> Result<(), String> {
-    let db = state.db();
-    db.update_auto_start_spv(auto_start)
+    let _guard = state.current_context().invalidate_settings_cache();
+    state
+        .db()
+        .update_auto_start_spv(auto_start)
         .map_err(|e| format!("Failed to update auto-start SPV setting: {e}"))
 }
 
@@ -266,8 +276,10 @@ pub fn settings_update_use_local_spv_node(
     state: tauri::State<'_, Arc<AppState>>,
     use_local: bool,
 ) -> Result<(), String> {
-    let db = state.db();
-    db.update_use_local_spv_node(use_local)
+    let _guard = state.current_context().invalidate_settings_cache();
+    state
+        .db()
+        .update_use_local_spv_node(use_local)
         .map_err(|e| format!("Failed to update use_local_spv_node: {e}"))?;
 
     // Propagate to all network SPV managers (matches egui behavior)

@@ -243,6 +243,35 @@ export const config = {
       );
       console.log(`  Wallet ${seedHash.slice(0, 8)}... loaded in backend`);
 
+      // Stop SPV and clear cached data to prevent segment crashes.
+      // The dash-spv debug build can crash on stale segment data written
+      // by a previous app instance within the same Docker run.
+      // entrypoint.sh handles cross-run staleness; this handles intra-run.
+      try {
+        await browser.executeAsync(
+          (done: (r: { ok: boolean; error?: string }) => void) => {
+            const t = (window as any).__TAURI_INTERNALS__;
+            if (!t) return done({ ok: false, error: "no bridge" });
+            t.invoke("wallet_stop_spv")
+              .then(() => done({ ok: true }))
+              .catch((e: unknown) => done({ ok: false, error: String(e) }));
+          }
+        );
+        await browser.pause(500);
+        await browser.executeAsync(
+          (done: (r: { ok: boolean; error?: string }) => void) => {
+            const t = (window as any).__TAURI_INTERNALS__;
+            if (!t) return done({ ok: false, error: "no bridge" });
+            t.invoke("wallet_clear_spv_data")
+              .then(() => done({ ok: true }))
+              .catch((e: unknown) => done({ ok: false, error: String(e) }));
+          }
+        );
+        console.log("  SPV data cleared for fresh sync");
+      } catch {
+        // Non-fatal — SPV may not have been running
+      }
+
       // Start SPV and wait for sync so the wallet can detect incoming
       // transactions (e.g. faucet funds). In 00-setup this block is skipped
       // because expectedSeedHash is null (no context file yet).

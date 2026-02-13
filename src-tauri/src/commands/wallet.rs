@@ -701,9 +701,8 @@ pub fn wallet_fund_platform_from_asset_lock(
     let platform_addr = if input.destination_address.starts_with("evo1")
         || input.destination_address.starts_with("tevo1")
     {
-        let (addr, addr_network) =
-            PlatformAddress::from_bech32m_string(&input.destination_address)
-                .map_err(|e| format!("Invalid Bech32m address: {e}"))?;
+        let (addr, addr_network) = PlatformAddress::from_bech32m_string(&input.destination_address)
+            .map_err(|e| format!("Invalid Bech32m address: {e}"))?;
         let expected_network = ctx.network();
         if addr_network != expected_network {
             return Err(format!(

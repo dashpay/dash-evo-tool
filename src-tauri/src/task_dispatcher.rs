@@ -276,11 +276,9 @@ fn classify_contest_result(result: &ContestResult) -> TaskResultPayloadDto {
                 .iter()
                 .map(|(name, choice, result)| {
                     let choice_dto = match choice {
-                        ResourceVoteChoice::TowardsIdentity(id) => {
-                            VoteChoiceDto::TowardsIdentity {
-                                identity_id: hex::encode(id.as_slice()),
-                            }
-                        }
+                        ResourceVoteChoice::TowardsIdentity(id) => VoteChoiceDto::TowardsIdentity {
+                            identity_id: hex::encode(id.as_slice()),
+                        },
                         ResourceVoteChoice::Abstain => VoteChoiceDto::Abstain,
                         ResourceVoteChoice::Lock => VoteChoiceDto::Lock,
                     };

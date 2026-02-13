@@ -49,7 +49,7 @@ describe("Wallet UI Operations", () => {
         return card.isExisting();
       },
       {
-        timeout: 15_000,
+        timeout: 30_000,
         timeoutMsg: "Wallet card did not appear in wallet list",
       }
     );

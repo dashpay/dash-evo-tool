@@ -61,8 +61,18 @@ export async function navigateToSection(
   }
   await navItem.click();
 
-  // Wait for navigation to complete — content area should update
-  await browser.pause(500);
+  // Wait for navigation to complete — verify URL changed.
+  // This catches silent click failures caused by WebDriver instability.
+  await browser.waitUntil(
+    async () => {
+      const url = await browser.getUrl();
+      return url.includes(`/${section}`);
+    },
+    {
+      timeout: 10_000,
+      timeoutMsg: `Navigation to /${section} did not complete — click may not have registered`,
+    }
+  );
 }
 
 /**

@@ -123,6 +123,56 @@ export const config = {
         interval: 1000,
       }
     );
+
+    // Verify backend is fully responsive (not just bridge available)
+    // by making an actual IPC call. Heavy startup work (wallet loading,
+    // identity scanning) can make WebDriver unstable until settled.
+    await browser.waitUntil(
+      async () => {
+        try {
+          const result = await browser.executeAsync(
+            (done: (r: { ok: boolean }) => void) => {
+              const t = (window as any).__TAURI_INTERNALS__;
+              if (!t) return done({ ok: false });
+              t.invoke("get_app_version")
+                .then(() => done({ ok: true }))
+                .catch(() => done({ ok: false }));
+            }
+          );
+          return (result as { ok: boolean })?.ok === true;
+        } catch {
+          return false;
+        }
+      },
+      {
+        timeout: 30_000,
+        interval: 2_000,
+        timeoutMsg:
+          "Backend IPC not responsive after 30s — startup may have stalled",
+      }
+    );
+
+    // If the welcome screen is visible, dismiss it so the sidebar
+    // is accessible for subsequent navigation.
+    try {
+      const welcome = await browser.$('[data-testid="welcome-screen"]');
+      if (await welcome.isExisting()) {
+        const importBtn = await browser.$("button*=Import Wallet");
+        if (await importBtn.isExisting()) {
+          await importBtn.click();
+          await browser.pause(500);
+        }
+        // Wait for sidebar to become available
+        const sidebar = await browser.$('[data-testid="sidebar"]');
+        await sidebar.waitForExist({ timeout: 10_000 });
+      }
+    } catch {
+      // Welcome screen handling is best-effort
+    }
+
+    // Allow background tasks (wallet loading, address scanning) to settle
+    // before running test commands via WebDriver.
+    await browser.pause(3_000);
   },
 
   async afterTest(

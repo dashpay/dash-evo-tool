@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::AtomicUsize};
+use std::sync::{Arc, Mutex, atomic::AtomicUsize};
 use tokio::time::{Duration, timeout};
 use tokio_util::sync::CancellationToken;
 
@@ -9,6 +9,7 @@ pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct TaskManager {
     pub cancellation_token: CancellationToken, // Cancellation token for graceful shutdown
     tasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<&'static str>>>, // Subtasks for graceful shutdown
+    active_names: Arc<Mutex<Vec<&'static str>>>, // Names of currently running tasks
 }
 
 /// TaskManager tracks spawned subtasks and allows for graceful shutdown of all tasks.
@@ -20,6 +21,7 @@ impl TaskManager {
         TaskManager {
             cancellation_token,
             tasks: subtasks,
+            active_names: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -32,6 +34,9 @@ impl TaskManager {
         F: std::future::Future<Output = ()> + Send + 'static,
         F::Output: Send + 'static,
     {
+        if let Ok(mut names) = self.active_names.lock() {
+            names.push(name);
+        }
         let subtasks = self.tasks.clone();
         tokio::spawn(spawn_subtask(subtasks, name, future));
     }
@@ -44,6 +49,7 @@ impl TaskManager {
     pub fn shutdown(&self) -> Result<(), String> {
         let cancel = self.cancellation_token.clone();
         let subtasks = self.tasks.clone();
+        let active_names = self.active_names.clone();
 
         // a bit naive synchronization to wait for shutdown
         let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
@@ -61,6 +67,7 @@ impl TaskManager {
             // Wait for all subtasks to finish within SHUTDOWN_TIMEOUT
 
             let tasks_list = subtasks.clone();
+            let names_for_join = active_names.clone();
             let timed_out = timeout(SHUTDOWN_TIMEOUT, async move {
                 let mut tasks = tasks_list.lock().await;
                 let total = tasks.len();
@@ -69,13 +76,21 @@ impl TaskManager {
                 while let Some(handle) = tasks.join_next().await {
                     let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     match &handle {
-                        Ok(name) => tracing::trace!(
-                            task = name,
-                            task_num = i,
-                            total,
-                            elapsed_ms = start.elapsed().as_millis() as u64,
-                            "shutdown: task joined OK"
-                        ),
+                        Ok(name) => {
+                            // Remove one instance of this name from active list
+                            if let Ok(mut names) = names_for_join.lock()
+                                && let Some(pos) = names.iter().position(|n| *n == *name)
+                            {
+                                names.swap_remove(pos);
+                            }
+                            tracing::trace!(
+                                task = name,
+                                task_num = i,
+                                total,
+                                elapsed_ms = start.elapsed().as_millis() as u64,
+                                "shutdown: task joined OK"
+                            );
+                        }
                         Err(e) => tracing::trace!(
                             task_num = i,
                             total,
@@ -90,10 +105,27 @@ impl TaskManager {
 
             if timed_out.is_err() {
                 let done = counter_for_timeout.load(std::sync::atomic::Ordering::Relaxed);
+                let remaining: Vec<&str> =
+                    active_names.lock().map(|n| n.clone()).unwrap_or_default();
                 tracing::trace!(
                     completed = done,
+                    remaining_count = remaining.len(),
+                    remaining_tasks = ?remaining,
                     "shutdown: timed out waiting for tasks, aborting remaining"
                 );
+
+                #[cfg(tokio_unstable)]
+                {
+                    let handle = tokio::runtime::Handle::current();
+                    let dump = handle.dump().await;
+                    for (i, task) in dump.tasks().iter().enumerate() {
+                        tracing::trace!(
+                            task_num = i,
+                            trace = %task.trace(),
+                            "shutdown: active tokio task"
+                        );
+                    }
+                }
             }
 
             // now abort all tasks

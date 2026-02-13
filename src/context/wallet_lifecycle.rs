@@ -71,6 +71,12 @@ impl AppContext {
         self.spv_setup_reconcile_listener();
         self.spv_setup_finality_listener();
         self.spv_manager.start(expected_wallets)?;
+        // Immediately reflect the new SPV status in ConnectionStatus so the
+        // UI sees the change on the next frame instead of waiting for the
+        // next throttled trigger_refresh() cycle (2-10 seconds).
+        self.connection_status
+            .set_spv_status(self.spv_manager.status().status);
+        self.connection_status.refresh_overall();
         Ok(())
     }
 
@@ -727,5 +733,11 @@ impl AppContext {
 
     pub fn stop_spv(&self) {
         self.spv_manager.stop();
+        // Immediately reflect the new SPV status in ConnectionStatus so the
+        // UI sees the change on the next frame instead of waiting for the
+        // next throttled trigger_refresh() cycle (2-10 seconds).
+        self.connection_status
+            .set_spv_status(self.spv_manager.status().status);
+        self.connection_status.refresh_overall();
     }
 }

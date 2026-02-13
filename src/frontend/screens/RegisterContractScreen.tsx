@@ -35,6 +35,7 @@ import { useWalletStore } from "@/stores/walletStore";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 import { formatCreditsAsDash } from "@/components/shared/AmountInput";
 import { toastError } from "@/lib/toastError";
+import { formatElapsed } from "@/lib/utils";
 import { toast } from "sonner";
 
 type ScreenStatus =
@@ -256,19 +257,6 @@ function findAssociatedWallet(
     }
   }
   return null;
-}
-
-/**
- * Format elapsed time as a human-readable string.
- */
-function formatElapsed(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) {
-    return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes} ${minutes === 1 ? "minute" : "minutes"} and ${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`;
 }
 
 /**

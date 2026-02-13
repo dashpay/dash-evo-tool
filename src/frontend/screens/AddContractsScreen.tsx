@@ -17,7 +17,7 @@ import { commands, events } from "@/bindings";
 import type { TaskResultEvent, TaskErrorEvent } from "@/bindings";
 import { useContractStore } from "@/stores/contractStore";
 import { toastError } from "@/lib/toastError";
-import { hexToBase58 } from "@/lib/utils";
+import { hexToBase58, formatElapsed } from "@/lib/utils";
 import { toast } from "sonner";
 
 const MAX_CONTRACTS = 10;
@@ -49,19 +49,6 @@ function parseContractId(input: string): string {
   }
 
   throw new Error(`Invalid format: expected 64-char hex or base58`);
-}
-
-/**
- * Format elapsed time as a human-readable string.
- */
-function formatElapsed(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) {
-    return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes} ${minutes === 1 ? "minute" : "minutes"} and ${remainingSeconds} ${remainingSeconds === 1 ? "second" : "seconds"}`;
 }
 
 /**

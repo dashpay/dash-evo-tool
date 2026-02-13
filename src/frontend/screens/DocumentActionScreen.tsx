@@ -46,6 +46,7 @@ import { useWalletStore } from "@/stores/walletStore";
 import type { WalletDto, SingleKeyWalletDto } from "@/bindings";
 import { Checkbox } from "@/components/ui/checkbox";
 import { formatCreditsAsDash } from "@/components/shared/AmountInput";
+import { formatElapsed } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -111,14 +112,6 @@ const BROADCAST_LABELS: Record<DocumentActionType, string> = {
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────
-
-function formatElapsed(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return `${seconds} second${seconds === 1 ? "" : "s"}`;
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = seconds % 60;
-  return `${minutes} minute${minutes === 1 ? "" : "s"} and ${remainingSeconds} second${remainingSeconds === 1 ? "" : "s"}`;
-}
 
 /** Auto-select first suitable AUTHENTICATION key (HIGH or CRITICAL, not MASTER). */
 function autoSelectKey(identity: QualifiedIdentityDto | null): number | null {

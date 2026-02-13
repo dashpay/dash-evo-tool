@@ -980,7 +980,7 @@ impl SpvManager {
     ) {
         tracing::info!("SPV request handler started");
         let network_manager = Arc::clone(&self.network_manager);
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_request_handler", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => {
@@ -1041,7 +1041,7 @@ impl SpvManager {
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_progress_watcher", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1081,7 +1081,7 @@ impl SpvManager {
         let status = Arc::clone(&self.status);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_sync_event_handler", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1152,32 +1152,33 @@ impl SpvManager {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    result = wallet_rx.recv() => {
-                        match result {
-                            Ok(_event) => {
-                                // All wallet events trigger reconcile
-                                if let Some(ref tx) = reconcile_tx {
-                                    let _ = tx.try_send(());
+        self.subtasks
+            .spawn_sync("spv_wallet_event_handler", async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        result = wallet_rx.recv() => {
+                            match result {
+                                Ok(_event) => {
+                                    // All wallet events trigger reconcile
+                                    if let Some(ref tx) = reconcile_tx {
+                                        let _ = tx.try_send(());
+                                    }
                                 }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("Wallet event handler lagged by {} events", n);
-                                // Still trigger reconcile to catch up
-                                if let Some(ref tx) = reconcile_tx {
-                                    let _ = tx.try_send(());
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!("Wallet event handler lagged by {} events", n);
+                                    // Still trigger reconcile to catch up
+                                    if let Some(ref tx) = reconcile_tx {
+                                        let _ = tx.try_send(());
+                                    }
                                 }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
-            }
-            tracing::info!("SPV wallet event handler exiting");
-        });
+                tracing::info!("SPV wallet event handler exiting");
+            });
     }
 
     fn spawn_network_event_handler(
@@ -1187,30 +1188,31 @@ impl SpvManager {
         let connected_peers = Arc::clone(&self.connected_peers);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    result = net_rx.recv() => {
-                        match result {
-                            Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
-                                if let Ok(mut guard) = connected_peers.write() {
-                                    *guard = connected_count;
+        self.subtasks
+            .spawn_sync("spv_network_event_handler", async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        result = net_rx.recv() => {
+                            match result {
+                                Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
+                                    if let Ok(mut guard) = connected_peers.write() {
+                                        *guard = connected_count;
+                                    }
                                 }
+                                Ok(_) => {
+                                    // PeerConnected / PeerDisconnected — PeersUpdated follows
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!("Network event handler lagged by {} events", n);
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
-                            Ok(_) => {
-                                // PeerConnected / PeerDisconnected — PeersUpdated follows
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("Network event handler lagged by {} events", n);
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
-            }
-            tracing::info!("SPV network event handler exiting");
-        });
+                tracing::info!("SPV network event handler exiting");
+            });
     }
 
     async fn build_client(

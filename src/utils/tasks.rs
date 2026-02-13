@@ -8,7 +8,7 @@ pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone)]
 pub struct TaskManager {
     pub cancellation_token: CancellationToken, // Cancellation token for graceful shutdown
-    tasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<()>>>, // Subtasks for graceful shutdown
+    tasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<&'static str>>>, // Subtasks for graceful shutdown
 }
 
 /// TaskManager tracks spawned subtasks and allows for graceful shutdown of all tasks.
@@ -23,31 +23,17 @@ impl TaskManager {
         }
     }
 
-    // Spawn a new future as a subtask, to beu used in asynchronous context.
-    // #[inline(always)]
-    // pub async fn spawn_async<F>(&self, future: F)
-    // where
-    //     F: std::future::Future<Output = ()> + Send + 'static,
-    //     F::Output: Send + 'static,
-    // {
-    //     spawn_subtask(self.tasks.clone(), future).await
-    // }
-
-    /// Spawn a new future as a subtask, to be used in synchronous context.
+    /// Spawn a named future as a subtask, to be used in synchronous context.
     ///
-    /// Right now only used to manage dash-qt process.
-    ///
-    /// Note we don't correctly cleanup results of the spawned tasks, causing
-    /// resource leaks. Before using this function in more places,
-    /// we must implement a proper cleanup mechanism.
+    /// The `name` label is logged during shutdown to identify slow tasks.
     #[inline(always)]
-    pub fn spawn_sync<F>(&self, future: F)
+    pub fn spawn_sync<F>(&self, name: &'static str, future: F)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
         F::Output: Send + 'static,
     {
         let subtasks = self.tasks.clone();
-        tokio::spawn(spawn_subtask(subtasks, future));
+        tokio::spawn(spawn_subtask(subtasks, name, future));
     }
 
     /// Shutdown all subtasks gracefully.
@@ -83,7 +69,8 @@ impl TaskManager {
                 while let Some(handle) = tasks.join_next().await {
                     let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     match &handle {
-                        Ok(()) => tracing::trace!(
+                        Ok(name) => tracing::trace!(
+                            task = name,
                             task_num = i,
                             total,
                             elapsed_ms = start.elapsed().as_millis() as u64,
@@ -105,7 +92,6 @@ impl TaskManager {
                 let done = counter_for_timeout.load(std::sync::atomic::Ordering::Relaxed);
                 tracing::trace!(
                     completed = done,
-                    remaining = subtasks.try_lock().map(|s| Some(s.len())).ok().flatten(),
                     "shutdown: timed out waiting for tasks, aborting remaining"
                 );
             }
@@ -139,13 +125,19 @@ impl TaskManager {
 }
 
 #[inline(always)]
-async fn spawn_subtask<F>(subtasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<()>>>, future: F)
-where
+async fn spawn_subtask<F>(
+    subtasks: Arc<tokio::sync::Mutex<tokio::task::JoinSet<&'static str>>>,
+    name: &'static str,
+    future: F,
+) where
     F: std::future::Future<Output = ()> + Send + 'static,
     F::Output: Send + 'static,
 {
     let mut subtasks_lock = subtasks.lock().await;
-    subtasks_lock.spawn(future);
+    subtasks_lock.spawn(async move {
+        future.await;
+        name
+    });
 }
 
 impl Default for TaskManager {

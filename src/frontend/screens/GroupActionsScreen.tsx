@@ -38,6 +38,7 @@ import { useIdentityStore } from "@/stores/identityStore";
 import { useContractStore } from "@/stores/contractStore";
 import { toastError } from "@/lib/toastError";
 import { displayId } from "@/lib/utils";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -120,12 +121,13 @@ export function GroupActionsScreen() {
   const [selectedContractId, setSelectedContractId] = useState("");
   const [selectedIdentityId, setSelectedIdentityId] = useState("");
   const [status, setStatus] = useState<ScreenStatus>({ type: "idle" });
-  const [elapsedMs, setElapsedMs] = useState(0);
   const [searchFilter, setSearchFilter] = useState("");
 
   // Track the task ID for matching events
   const taskIdRef = useRef<string | null>(null);
-  const elapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // ── Elapsed timer ───────────────────────────────────────────────────
+  const elapsed = useElapsedTimer(status.type === "fetching" ? status.startTime : null);
 
   // ── Derived values ──────────────────────────────────────────────────
   const filteredContracts = useMemo(
@@ -175,26 +177,6 @@ export function GroupActionsScreen() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Elapsed timer ───────────────────────────────────────────────────
-  useEffect(() => {
-    if (status.type === "fetching") {
-      elapsedTimerRef.current = setInterval(() => {
-        setElapsedMs(Date.now() - status.startTime);
-      }, 100);
-    } else {
-      if (elapsedTimerRef.current) {
-        clearInterval(elapsedTimerRef.current);
-        elapsedTimerRef.current = null;
-      }
-    }
-    return () => {
-      if (elapsedTimerRef.current) {
-        clearInterval(elapsedTimerRef.current);
-        elapsedTimerRef.current = null;
-      }
-    };
-  }, [status]);
-
   // ── Event listener ──────────────────────────────────────────────────
   useEffect(() => {
     let unlistenResult: (() => void) | null = null;
@@ -242,7 +224,6 @@ export function GroupActionsScreen() {
     if (!canFetch) return;
 
     setStatus({ type: "fetching", startTime: Date.now() });
-    setElapsedMs(0);
     setSearchFilter("");
 
     try {
@@ -400,7 +381,7 @@ export function GroupActionsScreen() {
               {status.type === "fetching" ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Fetching… ({(elapsedMs / 1000).toFixed(1)}s)
+                  Fetching…{elapsed ? ` (${elapsed})` : ""}
                 </>
               ) : (
                 <>

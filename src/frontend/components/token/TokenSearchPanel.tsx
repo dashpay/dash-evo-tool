@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { ElapsedTimer } from "@/components/feedback/ElapsedTimer";
 import {
   Search,
   X,
@@ -399,28 +400,6 @@ function ContractDetailView({
   );
 }
 
-// ─── Elapsed Timer ──────────────────────────────────────────────────
-
-function ElapsedTimer() {
-  const [elapsed, setElapsed] = useState(0);
-  const startRef = useRef<number>(0);
-
-  useEffect(() => {
-    startRef.current = Date.now();
-    const interval = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startRef.current) / 1000));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  if (elapsed < 1) return null;
-  return (
-    <span className="text-sm text-muted-foreground">
-      {elapsed} {elapsed === 1 ? "second" : "seconds"}
-    </span>
-  );
-}
-
 // ─── Main Component ─────────────────────────────────────────────────
 
 export function TokenSearchPanel({
@@ -441,6 +420,16 @@ export function TokenSearchPanel({
 }: TokenSearchPanelProps) {
   const hasResults = results.length > 0;
   const showDetail = contractDetail !== null || contractDetailLoading;
+
+  // Track when the search started so ElapsedTimer can display elapsed time
+  const [searchStartTime, setSearchStartTime] = useState<number | null>(null);
+  useEffect(() => {
+    if (searching) {
+      setSearchStartTime(Date.now());
+    } else {
+      setSearchStartTime(null);
+    }
+  }, [searching]);
 
   return (
     <div className="space-y-4">
@@ -471,7 +460,7 @@ export function TokenSearchPanel({
               <LoadingSpinner className="h-6 w-6" />
               <div className="flex flex-col items-center gap-1">
                 <span className="text-muted-foreground">Searching...</span>
-                <ElapsedTimer />
+                <ElapsedTimer startTime={searchStartTime} className="text-sm text-muted-foreground" />
               </div>
             </div>
           )}

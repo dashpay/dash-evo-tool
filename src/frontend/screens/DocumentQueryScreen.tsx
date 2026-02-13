@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   Search,
   Plus,
@@ -375,7 +376,7 @@ export function DocumentQueryScreen() {
   // Field selection dialog
   const [fieldDialogOpen, setFieldDialogOpen] = useState(false);
   // Elapsed time for waiting status
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const elapsed = useElapsedTimer(queryStatus === "waiting" ? queryStartedAt : null);
 
   const actionButtons = useActionButtons(network);
 
@@ -392,18 +393,6 @@ export function DocumentQueryScreen() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Elapsed time timer
-  useEffect(() => {
-    if (queryStatus !== "waiting" || !queryStartedAt) {
-      setElapsedSeconds(0);
-      return;
-    }
-    const interval = setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - queryStartedAt) / 1000));
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [queryStatus, queryStartedAt]);
 
   // Handle tree selection: expand contract
   const handleExpandContract = useCallback(
@@ -722,7 +711,7 @@ export function DocumentQueryScreen() {
               >
                 <Loader2 className="h-5 w-5 animate-spin text-primary" />
                 <span className="text-sm">
-                  Fetching documents... Time taken: {elapsedSeconds}s
+                  Fetching documents...{elapsed ? ` Time taken: ${elapsed}` : ""}
                 </span>
               </div>
             )}

@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/feedback";
 import { formatTokenBalance } from "@/components/token/MyTokensTable";
 import { toastError } from "@/lib/toastError";
 import { displayId } from "@/lib/utils";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -120,8 +121,7 @@ export function TokenViewClaimsScreen() {
   // ── Fetch state ─────────────────────────────────────────────────────
   const [claims, setClaims] = useState<ClaimRecord[]>([]);
   const [fetchStatus, setFetchStatus] = useState<FetchStatus>("idle");
-  const [fetchStartTime, setFetchStartTime] = useState<number>(0);
-  const [elapsedMs, setElapsedMs] = useState(0);
+  const [fetchStartTime, setFetchStartTime] = useState<number | null>(null);
   const [message, setMessage] = useState<{
     text: string;
     type: "info" | "error" | "success";
@@ -129,13 +129,7 @@ export function TokenViewClaimsScreen() {
   const activeTaskIdRef = useRef<string | null>(null);
 
   // ── Elapsed timer ───────────────────────────────────────────────────
-  useEffect(() => {
-    if (fetchStatus !== "fetching") return;
-    const interval = setInterval(() => {
-      setElapsedMs(Date.now() - fetchStartTime);
-    }, 100);
-    return () => clearInterval(interval);
-  }, [fetchStatus, fetchStartTime]);
+  const elapsed = useElapsedTimer(fetchStatus === "fetching" ? fetchStartTime : null);
 
   // ── Task result/error listeners ─────────────────────────────────────
   useEffect(() => {
@@ -192,7 +186,6 @@ export function TokenViewClaimsScreen() {
 
     setFetchStatus("fetching");
     setFetchStartTime(Date.now());
-    setElapsedMs(0);
     setMessage(null);
 
     try {
@@ -300,9 +293,9 @@ export function TokenViewClaimsScreen() {
           )}
           Fetch Claims
         </Button>
-        {fetchStatus === "fetching" && (
+        {fetchStatus === "fetching" && elapsed && (
           <span className="text-sm text-muted-foreground tabular-nums">
-            Fetching... ({(elapsedMs / 1000).toFixed(1)}s)
+            Fetching... ({elapsed})
           </span>
         )}
       </div>

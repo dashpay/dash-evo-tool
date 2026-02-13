@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   AlertTriangle,
   Calculator,
@@ -343,8 +344,10 @@ export function ReviewStep({
 
   // ── Broadcast status ─────────────────────────────────────────────────
   const [status, setStatus] = useState<ReviewStatus>({ type: "idle" });
-  const [elapsedMs, setElapsedMs] = useState(0);
   const activeTaskIdRef = useRef<string | null>(null);
+
+  // ── Elapsed timer ────────────────────────────────────────────────────
+  const elapsed = useElapsedTimer(status.type === "broadcasting" ? status.startTime : null);
 
   // ── Collapsible sections ─────────────────────────────────────────────
   const [expandedSections, setExpandedSections] = useState<Set<string>>(
@@ -376,15 +379,6 @@ export function ReviewStep({
     loadIdentities();
     loadWallets();
   }, [loadIdentities, loadWallets]);
-
-  // ── Elapsed timer ────────────────────────────────────────────────────
-  useEffect(() => {
-    if (status.type !== "broadcasting") return;
-    const interval = setInterval(() => {
-      setElapsedMs(Date.now() - status.startTime);
-    }, 100);
-    return () => clearInterval(interval);
-  }, [status]);
 
   // ── Task result/error listeners ──────────────────────────────────────
   useEffect(() => {
@@ -453,7 +447,6 @@ export function ReviewStep({
 
     setConfirmOpen(false);
     setStatus({ type: "broadcasting", startTime: Date.now() });
-    setElapsedMs(0);
 
     // Build the config JSON from all wizard state
     const configJson = buildConfigJson(
@@ -570,9 +563,11 @@ export function ReviewStep({
         <p className="text-muted-foreground">
           Broadcasting to Dash Platform. This may take a moment.
         </p>
-        <span className="text-sm text-muted-foreground tabular-nums">
-          {(elapsedMs / 1000).toFixed(1)}s elapsed
-        </span>
+        {elapsed && (
+          <span className="text-sm text-muted-foreground tabular-nums">
+            {elapsed} elapsed
+          </span>
+        )}
       </div>
     );
   }

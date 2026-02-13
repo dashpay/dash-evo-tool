@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useElapsedTimer } from "@/hooks/useElapsedTimer";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -356,8 +357,10 @@ export function TokenOperationForm({
 
   // ── Broadcast status ─────────────────────────────────────────────────
   const [status, setStatus] = useState<OperationStatus>({ type: "idle" });
-  const [elapsedMs, setElapsedMs] = useState(0);
   const activeTaskIdRef = useRef<string | null>(null);
+
+  // ── Elapsed timer ────────────────────────────────────────────────────
+  const elapsed = useElapsedTimer(status.type === "broadcasting" ? status.startTime : null);
 
   // ── Derived values ───────────────────────────────────────────────────
   const buttonLabel = useMemo(
@@ -389,15 +392,6 @@ export function TokenOperationForm({
     loadIdentities();
     loadWallets();
   }, [loadIdentities, loadWallets]);
-
-  // ── Elapsed timer ────────────────────────────────────────────────────
-  useEffect(() => {
-    if (status.type !== "broadcasting") return;
-    const interval = setInterval(() => {
-      setElapsedMs(Date.now() - status.startTime);
-    }, 100);
-    return () => clearInterval(interval);
-  }, [status]);
 
   // ── Task result/error listeners ──────────────────────────────────────
   useEffect(() => {
@@ -470,7 +464,6 @@ export function TokenOperationForm({
 
     setConfirmOpen(false);
     setStatus({ type: "broadcasting", startTime: Date.now() });
-    setElapsedMs(0);
 
     try {
       const result = await onSubmit({
@@ -616,9 +609,11 @@ export function TokenOperationForm({
               Broadcasting to Dash Platform. This may take a moment.
             </p>
           </div>
-          <span className="text-sm text-muted-foreground tabular-nums shrink-0">
-            {(elapsedMs / 1000).toFixed(1)}s
-          </span>
+          {elapsed && (
+            <span className="text-sm text-muted-foreground tabular-nums shrink-0">
+              {elapsed}
+            </span>
+          )}
         </div>
       )}
 
@@ -951,9 +946,9 @@ export function TokenOperationForm({
           Back to Tokens
         </Button>
         <div className="flex items-center gap-3">
-          {isSubmitting && (
+          {isSubmitting && elapsed && (
             <span className="text-sm text-muted-foreground tabular-nums">
-              {(elapsedMs / 1000).toFixed(1)}s
+              {elapsed}
             </span>
           )}
           <Button

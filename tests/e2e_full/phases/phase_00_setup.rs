@@ -130,9 +130,11 @@ pub fn run(
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
-        if let Some((hash, _)) = wallets.iter().next() {
-            ctx.wallet_seed_hash = Some(*hash);
-        }
+        let (hash, _) = wallets
+            .iter()
+            .next()
+            .expect("Wallet map should not be empty after successful import");
+        ctx.wallet_seed_hash = Some(*hash);
     }
     println!(
         "  Wallet imported. Seed hash prefix: {:?}",
@@ -216,10 +218,15 @@ pub fn run(
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
-        if let Some((_, wallet)) = wallets.iter().next() {
-            let w = wallet.read().unwrap();
-            ctx.balance_duffs = w.total_balance_duffs();
-        }
+        let seed_hash = ctx
+            .wallet_seed_hash
+            .as_ref()
+            .expect("Wallet seed hash must be set by this point");
+        let wallet = wallets
+            .get(seed_hash)
+            .expect("Wallet not found by seed hash after SPV sync");
+        let w = wallet.read().unwrap();
+        ctx.balance_duffs = w.total_balance_duffs();
     }
 
     // Minimum balance required for identity operations in later phases

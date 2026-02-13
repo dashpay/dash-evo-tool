@@ -50,40 +50,42 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     println!("  Send/Receive buttons visible");
 
     // 4. Open receive dialog and verify address
-    if let Some(receive_btn) = harness.query_by_label_contains("Receive") {
-        receive_btn.click();
-        harness.run_steps(10);
+    let receive_btn = harness
+        .query_by_label_contains("Receive")
+        .expect("Receive button must be visible on wallets screen");
+    receive_btn.click();
+    harness.run_steps(10);
 
-        // Verify the receive address is displayed in the dialog
-        if let Some(addr) = &ctx.receive_address {
-            let addr_short = addr.get(..8).unwrap_or(addr);
-            let found = wait_for_label(harness, addr_short, Duration::from_secs(5));
-            if found {
-                println!("  Receive dialog shows address: {}...", addr_short);
-            } else {
-                println!("  Receive dialog opened but address not found in UI");
-            }
-        }
+    let addr = ctx
+        .receive_address
+        .as_ref()
+        .expect("Receive address must be set by Phase 01");
+    let addr_short = addr.get(..8).unwrap_or(addr);
+    let found = wait_for_label(harness, addr_short, Duration::from_secs(5));
+    assert!(
+        found,
+        "Receive dialog must display wallet address (expected prefix: {})",
+        addr_short
+    );
+    println!("  Receive dialog shows address: {}...", addr_short);
 
-        // Close dialog via Escape
-        harness.key_press(egui::Key::Escape);
-        harness.run_steps(5);
-        println!("  Receive dialog closed");
-    } else {
-        println!("  Receive button not visible (skipping receive dialog test)");
-    }
+    // Close dialog via Escape
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(5);
+    println!("  Receive dialog closed");
 
     // 5. Conditional send-to-self (requires >= 0.1 DASH)
     let min_balance_for_send: u64 = 10_000_000; // 0.1 DASH in duffs
 
-    if ctx.balance_duffs < min_balance_for_send {
-        println!(
-            "  Skipping send-to-self: insufficient funds ({} < {} duffs)",
-            ctx.balance_duffs, min_balance_for_send
-        );
-        println!("  Phase 02 complete: wallet UI verified (send skipped)");
-        return;
-    }
+    assert!(
+        ctx.balance_duffs >= min_balance_for_send,
+        "Wallet balance ({} duffs / {:.8} DASH) is below the minimum ({} duffs / {:.8} DASH) \
+         required for the send-to-self test. Fund the E2E wallet and retry.",
+        ctx.balance_duffs,
+        ctx.balance_duffs as f64 / 1e8,
+        min_balance_for_send,
+        min_balance_for_send as f64 / 1e8,
+    );
 
     println!("  Attempting send-to-self (0.001 DASH)...");
 
@@ -97,20 +99,15 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // The wallet is imported without a password, so it should auto-unlock via
     // try_open_wallet_no_password(). Wait for the address input to appear.
     let addr_input_visible = wait_for_label(harness, "Enter address", Duration::from_secs(10));
-    if !addr_input_visible {
-        // Wallet might need unlock — check for unlock button
+    assert!(
+        addr_input_visible,
+        "Address input must be visible on send screen. {}",
         if harness.query_by_label_contains("Unlock Wallet").is_some() {
-            println!("  Wallet is locked, cannot proceed with send test");
-            // Navigate back
-            navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
-            println!("  Phase 02 complete: wallet UI verified (send skipped — locked)");
-            return;
+            "Wallet is locked — a passwordless import should auto-unlock"
+        } else {
+            "Send screen did not render the address input"
         }
-        println!("  Send screen address input not found, skipping send test");
-        navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
-        println!("  Phase 02 complete: wallet UI verified (send skipped)");
-        return;
-    }
+    );
 
     // Fill destination address (send to self)
     let addr = ctx
@@ -125,87 +122,71 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     println!("  Entered destination address");
 
     // Fill amount (0.001 DASH)
-    let amount_input = harness.query_by_label_contains("Enter amount");
-    if let Some(input) = amount_input {
-        input.type_text("0.001");
-        harness.run_steps(10);
-        println!("  Entered amount: 0.001 DASH");
-    } else {
-        println!("  Amount input not found, skipping send");
-        navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
-        println!("  Phase 02 complete: wallet UI verified (send skipped)");
-        return;
-    }
+    harness
+        .query_by_label_contains("Enter amount")
+        .expect("Amount input must be visible on send screen")
+        .type_text("0.001");
+    harness.run_steps(10);
+    println!("  Entered amount: 0.001 DASH");
 
     // Click the send/transaction type button.
     // For Core→Core it will be "Core Transaction".
     let tx_btn = harness
         .query_by_label_contains("Core Transaction")
-        .or_else(|| harness.query_by_label_contains("Send"));
-    if let Some(btn) = tx_btn {
-        btn.click();
-        harness.run_steps(10);
-        println!("  Clicked transaction button");
+        .or_else(|| harness.query_by_label_contains("Send"))
+        .expect("Transaction button must be visible on send screen");
+    tx_btn.click();
+    harness.run_steps(10);
+    println!("  Clicked transaction button");
 
-        // Wait for transaction result — success, complete message, or error
-        let completed = wait_until(
+    // Wait for any response (sending indicator, success, or error)
+    let got_response = wait_until(
+        harness,
+        |h| {
+            h.query_by_label_contains("Send Another").is_some()
+                || h.query_by_label_contains("Back to Wallet").is_some()
+                || h.query_by_label_contains("Dismiss").is_some()
+                || h.query_by_label_contains("Sending...").is_some()
+        },
+        Duration::from_secs(30),
+        10,
+    );
+    assert!(
+        got_response,
+        "Send screen must show a response within 30s (sending indicator, success, or error)"
+    );
+
+    // If still sending, wait for final result
+    if harness.query_by_label_contains("Sending...").is_some() {
+        let final_result = wait_until(
             harness,
             |h| {
-                // Success: SendStatus::Complete shows heading with message
                 h.query_by_label_contains("Send Another").is_some()
                     || h.query_by_label_contains("Back to Wallet").is_some()
-                    // Error status shows error text + Dismiss button
                     || h.query_by_label_contains("Dismiss").is_some()
-                    // Or still sending
-                    || h.query_by_label_contains("Sending...").is_some()
             },
-            Duration::from_secs(30),
-            10,
+            Duration::from_secs(180),
+            30,
         );
+        assert!(
+            final_result,
+            "Send transaction must complete within 180s (stuck on 'Sending...')"
+        );
+    }
 
-        if completed {
-            // If still sending, wait longer for final result
-            if harness.query_by_label_contains("Sending...").is_some() {
-                let final_result = wait_until(
-                    harness,
-                    |h| {
-                        h.query_by_label_contains("Send Another").is_some()
-                            || h.query_by_label_contains("Back to Wallet").is_some()
-                            || h.query_by_label_contains("Dismiss").is_some()
-                    },
-                    Duration::from_secs(180),
-                    30,
-                );
-                if !final_result {
-                    println!("  Send-to-self timed out waiting for result (skipping)");
-                    navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
-                    println!("  Phase 02 complete: wallet UI verified (send timed out)");
-                    return;
-                }
-            }
+    // Assert success specifically — error is a test failure
+    let is_success = harness.query_by_label_contains("Send Another").is_some()
+        || harness.query_by_label_contains("Back to Wallet").is_some();
+    assert!(
+        is_success,
+        "Send-to-self must succeed (got error/dismiss instead of success)"
+    );
+    println!("  Send-to-self succeeded!");
 
-            if harness.query_by_label_contains("Send Another").is_some()
-                || harness.query_by_label_contains("Back to Wallet").is_some()
-            {
-                println!("  Send-to-self succeeded!");
-                // Click "Back to Wallet" to return
-                if let Some(back_btn) = harness.query_by_label_contains("Back to Wallet") {
-                    back_btn.click();
-                    harness.run_steps(10);
-                }
-            } else if harness.query_by_label_contains("Dismiss").is_some() {
-                println!("  Send-to-self encountered an error (acceptable in test env)");
-                // Dismiss the error
-                if let Some(dismiss_btn) = harness.query_by_label_contains("Dismiss") {
-                    dismiss_btn.click();
-                    harness.run_steps(5);
-                }
-            }
-        } else {
-            println!("  Send-to-self: no response detected (skipping)");
-        }
-    } else {
-        println!("  Transaction button not found on send screen (skipping)");
+    // Click "Back to Wallet" to return
+    if let Some(back_btn) = harness.query_by_label_contains("Back to Wallet") {
+        back_btn.click();
+        harness.run_steps(10);
     }
 
     // Navigate back to wallets screen for next phase

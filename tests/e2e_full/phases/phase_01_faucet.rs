@@ -42,10 +42,10 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         let seed_hash = ctx.wallet_seed_hash.as_ref().unwrap();
         let wallet = wallets.get(seed_hash).unwrap();
         let mut w = wallet.write().unwrap();
-        match w.receive_address(Network::Testnet, true, Some(app_ctx)) {
-            Ok(addr) => ctx.receive_address = Some(addr.to_string()),
-            Err(e) => println!("  Warning: could not get receive address: {}", e),
-        }
+        let addr = w
+            .receive_address(Network::Testnet, true, Some(app_ctx))
+            .expect("Failed to get receive address from imported wallet");
+        ctx.receive_address = Some(addr.to_string());
     }
     println!(
         "  Receive address: {}",
@@ -62,23 +62,29 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     );
     println!("  UI shows DASH balance");
 
-    // 4. Open receive dialog via UI if button is available
-    if let Some(receive_btn) = harness.query_by_label_contains("Receive") {
-        receive_btn.click();
-        harness.run_steps(10);
+    // 4. Open receive dialog and verify address display
+    let receive_btn = harness
+        .query_by_label_contains("Receive")
+        .expect("Receive button must be visible on wallets screen");
+    receive_btn.click();
+    harness.run_steps(10);
 
-        if let Some(addr) = &ctx.receive_address {
-            let addr_short = addr.get(..8).unwrap_or(addr);
-            let found = wait_for_label(harness, addr_short, Duration::from_secs(5));
-            if found {
-                println!("  Receive dialog shows address: {}...", addr_short);
-            }
-        }
+    let addr = ctx
+        .receive_address
+        .as_ref()
+        .expect("Receive address must be set by this point");
+    let addr_short = addr.get(..8).unwrap_or(addr);
+    let found = wait_for_label(harness, addr_short, Duration::from_secs(5));
+    assert!(
+        found,
+        "Receive dialog must display wallet address (expected prefix: {})",
+        addr_short
+    );
+    println!("  Receive dialog shows address: {}...", addr_short);
 
-        // Dismiss the dialog
-        harness.key_press(egui::Key::Escape);
-        harness.run_steps(5);
-    }
+    // Dismiss the dialog
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(5);
 
     println!("  Phase 01 complete: balance verified, receive address obtained");
 }

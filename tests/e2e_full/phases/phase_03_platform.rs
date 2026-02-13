@@ -54,33 +54,27 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
     click_or_push_screen(harness, "Load Identity", ScreenType::AddExistingIdentity);
 
     // Switch to "By DPNS Name" tab
-    let Some(dpns_tab) = harness.query_by_label_contains("By DPNS Name") else {
-        println!("  'By DPNS Name' tab not found — skipping DPNS lookup");
-        navigate_to_screen(harness, RootScreenType::RootScreenIdentities);
-        return;
-    };
-    dpns_tab.click();
+    harness
+        .query_by_label_contains("By DPNS Name")
+        .expect("'By DPNS Name' tab must be visible on Load Identity screen")
+        .click();
     harness.run_steps(5);
 
     // Type a DPNS name to search for
-    let Some(name_input) = harness.query_by_label_contains("DPNS name") else {
-        println!("  DPNS name input not found — skipping DPNS lookup");
-        navigate_to_screen(harness, RootScreenType::RootScreenIdentities);
-        return;
-    };
-    name_input.type_text("quantum");
+    harness
+        .query_by_label_contains("DPNS name")
+        .expect("DPNS name input must be visible after selecting 'By DPNS Name' tab")
+        .type_text("quantum");
     harness.run_steps(5);
 
     // Click "Search by Username" button
-    let Some(search_btn) = harness.query_by_label_contains("Search by Username") else {
-        println!("  'Search by Username' button not found — skipping DPNS lookup");
-        navigate_to_screen(harness, RootScreenType::RootScreenIdentities);
-        return;
-    };
-    search_btn.click();
+    harness
+        .query_by_label_contains("Search by Username")
+        .expect("'Search by Username' button must be visible on DPNS lookup screen")
+        .click();
     harness.run_steps(10);
 
-    // Wait for result — success, not-found, or error are all acceptable
+    // Wait for result — success or not-found are acceptable; error/timeout are failures
     let completed = wait_until(
         harness,
         |h| {
@@ -94,23 +88,29 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
         Duration::from_secs(60),
         30,
     );
+    assert!(
+        completed,
+        "DPNS lookup must complete within 60s (timed out)"
+    );
 
-    if completed {
-        let succeeded = harness
-            .query_by_label_contains("Successfully loaded")
-            .is_some()
-            || harness
-                .query_by_label_contains("Finished loading")
-                .is_some();
-        if succeeded {
-            println!("  DPNS lookup succeeded: name \"quantum\" found");
-        } else {
-            println!("  DPNS lookup completed: name not found or error (acceptable)");
-        }
-        dismiss_if_present(harness);
+    let is_success = harness
+        .query_by_label_contains("Successfully loaded")
+        .is_some()
+        || harness
+            .query_by_label_contains("Finished loading")
+            .is_some();
+    let is_not_found = harness.query_by_label_contains("not found").is_some()
+        || harness.query_by_label_contains("No identity").is_some();
+    assert!(
+        is_success || is_not_found,
+        "DPNS lookup must succeed or return not-found (got platform error)"
+    );
+    if is_success {
+        println!("  DPNS lookup succeeded: name \"quantum\" found");
     } else {
-        println!("  DPNS lookup timed out (platform may be unavailable — skipping)");
+        println!("  DPNS lookup completed: name not found (acceptable)");
     }
+    dismiss_if_present(harness);
 
     navigate_to_screen(harness, RootScreenType::RootScreenIdentities);
 }
@@ -120,21 +120,17 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
     click_or_push_screen(harness, "Load Contracts", ScreenType::AddContracts);
 
     // Enter the DPNS contract ID
-    let Some(contract_input) = harness.query_by_label_contains("Contract ID") else {
-        println!("  Contract ID input not found — skipping contract fetch");
-        navigate_to_screen(harness, RootScreenType::RootScreenDocumentQuery);
-        return;
-    };
-    contract_input.type_text(DPNS_CONTRACT_ID);
+    harness
+        .query_by_label_contains("Contract ID")
+        .expect("Contract ID input must be visible on Add Contracts screen")
+        .type_text(DPNS_CONTRACT_ID);
     harness.run_steps(5);
 
     // Click "Add Contracts" submit button
-    let Some(add_btn) = harness.query_by_label_contains("Add Contracts") else {
-        println!("  'Add Contracts' button not found — skipping contract fetch");
-        navigate_to_screen(harness, RootScreenType::RootScreenDocumentQuery);
-        return;
-    };
-    add_btn.click();
+    harness
+        .query_by_label_contains("Add Contracts")
+        .expect("'Add Contracts' button must be visible on Add Contracts screen")
+        .click();
     harness.run_steps(10);
 
     // Wait for fetch result
@@ -149,24 +145,25 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
         Duration::from_secs(90),
         30,
     );
+    assert!(
+        completed,
+        "Contract fetch must complete within 90s (timed out)"
+    );
 
-    if completed
-        && harness
-            .query_by_label_contains("Successfully queried")
-            .is_some()
-    {
-        println!("  Contract fetch succeeded: DPNS contract found");
-        if let Some(back_btn) = harness.query_by_label_contains("Back to Contracts") {
-            back_btn.click();
-            harness.run_steps(10);
-            return;
-        }
-    } else if completed {
-        println!("  Contract fetch completed with error (platform may be unavailable)");
-        dismiss_if_present(harness);
+    let is_success = harness
+        .query_by_label_contains("Successfully queried")
+        .is_some();
+    assert!(
+        is_success,
+        "DPNS contract fetch must succeed — {} exists on all networks",
+        DPNS_CONTRACT_ID
+    );
+    println!("  Contract fetch succeeded: DPNS contract found");
+
+    if let Some(back_btn) = harness.query_by_label_contains("Back to Contracts") {
+        back_btn.click();
+        harness.run_steps(10);
     } else {
-        println!("  Contract fetch timed out (skipping)");
+        navigate_to_screen(harness, RootScreenType::RootScreenDocumentQuery);
     }
-
-    navigate_to_screen(harness, RootScreenType::RootScreenDocumentQuery);
 }

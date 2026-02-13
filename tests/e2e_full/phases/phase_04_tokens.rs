@@ -12,20 +12,18 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
     println!("  Navigated to token search screen");
 
     // ─── 2. Find and fill search input ───────────────────────────────
-    let Some(search_input) = harness.query_by_label_contains("Search tokens") else {
-        println!("  Token search input not found — skipping");
-        return;
-    };
-    search_input.type_text("dash");
+    harness
+        .query_by_label_contains("Search tokens")
+        .expect("Token search input must be visible on token search screen")
+        .type_text("dash");
     harness.run_steps(5);
     println!("  Typed 'dash' in search input");
 
     // ─── 3. Click search button and wait for results ─────────────────
-    let Some(search_btn) = harness.query_by_label_contains("Search") else {
-        println!("  Search button not found — skipping");
-        return;
-    };
-    search_btn.click();
+    harness
+        .query_by_label_contains("Search")
+        .expect("Search button must be visible on token search screen")
+        .click();
     harness.run_steps(10);
 
     let completed = wait_until(
@@ -42,30 +40,30 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
         30,
     );
 
-    if completed {
-        if harness.query_by_label_contains("Contract ID").is_some() {
-            println!("  Token search returned results");
-        } else if harness.query_by_label_contains("No tokens match").is_some() {
-            println!("  Token search returned no results (acceptable)");
-        } else {
-            println!("  Token search completed with error (platform may be unavailable)");
-            if let Some(dismiss) = harness.query_by_label_contains("Dismiss") {
-                dismiss.click();
-                harness.run_steps(5);
-            }
-        }
+    assert!(
+        completed,
+        "Token search must complete within 60s (timed out)"
+    );
+
+    let has_results = harness.query_by_label_contains("Contract ID").is_some();
+    let no_results = harness.query_by_label_contains("No tokens match").is_some();
+    assert!(
+        has_results || no_results,
+        "Token search must return results or 'no results' (got platform error)"
+    );
+    if has_results {
+        println!("  Token search returned results");
     } else {
-        println!("  Token search timed out (platform may be unavailable)");
+        println!("  Token search returned no results (acceptable)");
     }
 
     // ─── 4. Clear search ─────────────────────────────────────────────
-    if let Some(clear_btn) = harness.query_by_label_contains("Clear") {
-        clear_btn.click();
-        harness.run_steps(5);
-        println!("  Search cleared");
-    } else {
-        println!("  Clear button not found (skipping clear verification)");
-    }
+    harness
+        .query_by_label_contains("Clear")
+        .expect("Clear button must be visible after performing a search")
+        .click();
+    harness.run_steps(5);
+    println!("  Search cleared");
 
     println!("  Phase 04 complete: token search verified");
 }

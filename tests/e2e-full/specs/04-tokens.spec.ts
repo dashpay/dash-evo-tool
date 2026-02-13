@@ -42,32 +42,18 @@ describe("Token Search", () => {
   // ─── UI: Open search screen ────────────────────────────────────
 
   it("should open the token search screen", async () => {
-    // The token search is accessible via the "Search Tokens" tab in the left
-    // sidebar or the "Search Tokens" button in the header.
-    // Try the sidebar tab first, then fall back to the header button.
-    let navigated = false;
-
-    // Approach 1: Click "Search Tokens" tab in the tokens left panel
-    const tabs = await browser.$$('[role="tab"]');
-    for (const tab of tabs) {
-      const text = await tab.getText();
-      if (text.includes('Search Tokens') || text.includes('Search')) {
-        await tab.click();
-        navigated = true;
-        break;
-      }
-    }
-
-    if (!navigated) {
-      // Approach 2: Click "Search Tokens" button in header
-      const searchBtn = await browser.$("button*=Search Tokens");
-      if (await searchBtn.isExisting()) {
-        await searchBtn.click();
-        navigated = true;
-      }
-    }
-
-    expect(navigated).toBe(true);
+    // Click "Search Tokens" button in the tokens left sidebar nav
+    const nav = await browser.$('nav[aria-label="Tokens sections"]');
+    await nav.waitForExist({
+      timeout: 10_000,
+      timeoutMsg: "Tokens sections nav not found",
+    });
+    const searchBtn = await nav.$("button*=Search");
+    await searchBtn.waitForExist({
+      timeout: 5_000,
+      timeoutMsg: "Search Tokens button not found in tokens nav",
+    });
+    await searchBtn.click();
 
     // Wait for the search screen to load
     await browser.waitUntil(

@@ -399,6 +399,7 @@ impl ImportMnemonicScreen {
                             let response = ui.add_sized(
                                 Vec2::new(input_width, 20.0),
                                 egui::TextEdit::singleline(&mut word)
+                                    .hint_text(format!("Word {}", i + 1))
                                     .text_color(DashColors::text_primary(dark_mode))
                                     .background_color(DashColors::input_background(dark_mode)),
                             );
@@ -630,7 +631,7 @@ impl ScreenLike for ImportMnemonicScreen {
 
                     ui.horizontal(|ui| {
                         ui.label("Name:");
-                        ui.text_edit_singleline(&mut self.alias_input);
+                        ui.add(egui::TextEdit::singleline(&mut self.alias_input).hint_text("Wallet name"));
                     });
 
                     step += 1;

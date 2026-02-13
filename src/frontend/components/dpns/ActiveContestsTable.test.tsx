@@ -16,7 +16,7 @@ import { displayId } from "@/lib/utils";
 function makeContestant(overrides: Record<string, unknown> = {}) {
   return {
     id: "aaaa1111bbbb2222cccc3333dddd4444",
-    name: "alice",
+    name: "d4sh",
     info: "",
     votes: 3,
     createdAt: null,
@@ -144,8 +144,8 @@ describe("ActiveContestsTable — rendering", () => {
   it("renders multiple contests", () => {
     setup({
       contestedNames: [
-        makeContest({ normalizedContestedName: "alpha" }),
-        makeContest({ normalizedContestedName: "bravo" }),
+        makeContest({ normalizedContestedName: "alpha", contestants: [makeContestant({ name: "alpha" })] }),
+        makeContest({ normalizedContestedName: "bravo", contestants: [makeContestant({ name: "bravo" })] }),
       ],
     });
     expect(screen.getByText("alpha")).toBeInTheDocument();
@@ -484,22 +484,27 @@ describe("ActiveContestsTable — contest filtering by state", () => {
         makeContest({
           normalizedContestedName: "active1",
           state: "ongoing",
+          contestants: [makeContestant({ name: "active1" })],
         }),
         makeContest({
           normalizedContestedName: "active2",
           state: "joinable",
+          contestants: [makeContestant({ name: "active2" })],
         }),
         makeContest({
           normalizedContestedName: "active3",
           state: "unknown",
+          contestants: [makeContestant({ name: "active3" })],
         }),
         makeContest({
           normalizedContestedName: "past1",
           state: { wonBy: "winner" },
+          contestants: [makeContestant({ name: "past1" })],
         }),
         makeContest({
           normalizedContestedName: "locked1",
           state: "locked",
+          contestants: [makeContestant({ name: "locked1" })],
         }),
       ],
     });

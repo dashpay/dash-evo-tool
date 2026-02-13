@@ -11,6 +11,7 @@ import type {
   TokenOperationInput,
   MintingConfigDto,
   IdentityTokenIdentifierDto,
+  IdentityTokenAvailableActionsDto,
 } from "@/bindings";
 import type {
   TokenEntry,
@@ -18,6 +19,21 @@ import type {
 } from "@/stores/tokenStore";
 
 // ─── Token entry factories ─────────────────────────────────────────
+
+const defaultAvailableActions: IdentityTokenAvailableActionsDto = {
+  canClaim: false,
+  canEstimate: false,
+  canMint: false,
+  canBurn: false,
+  canFreeze: false,
+  canUnfreeze: false,
+  canDestroy: false,
+  canDoEmergencyAction: false,
+  canMaybePurchase: false,
+  canSetPrice: false,
+  canTransfer: true,
+  canUpdateConfig: false,
+};
 
 export function createMockToken(
   overrides?: Partial<TokenEntry>,
@@ -33,6 +49,7 @@ export function createMockToken(
     ownerAlias: "Alice",
     balance: "1000000000000", // 10,000 tokens with 8 decimals
     decimals: 8,
+    availableActions: defaultAvailableActions,
     ...overrides,
   };
 }

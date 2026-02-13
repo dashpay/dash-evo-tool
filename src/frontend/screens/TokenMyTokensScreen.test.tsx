@@ -61,6 +61,20 @@ function makeToken(overrides: Partial<TokenEntry> = {}): TokenEntry {
     ownerAlias: "Alice",
     balance: "100000000",
     decimals: 8,
+    availableActions: {
+      canClaim: false,
+      canEstimate: false,
+      canMint: true,
+      canBurn: true,
+      canFreeze: true,
+      canUnfreeze: true,
+      canDestroy: true,
+      canDoEmergencyAction: true,
+      canMaybePurchase: true,
+      canSetPrice: true,
+      canTransfer: true,
+      canUpdateConfig: true,
+    },
     ...overrides,
   };
 }

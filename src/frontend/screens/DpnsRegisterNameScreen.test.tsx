@@ -490,7 +490,7 @@ describe("DpnsRegisterNameScreen — registration", () => {
     await waitFor(() => {
       expect(screen.getByTestId("register-dpns-error")).toBeInTheDocument();
     });
-    expect(screen.getByText("Platform error: insufficient funds")).toBeInTheDocument();
+    expect(screen.getByText("Insufficient funds for this operation.")).toBeInTheDocument();
   });
 
   it("shows error state on exception during registration", async () => {
@@ -512,7 +512,7 @@ describe("DpnsRegisterNameScreen — registration", () => {
     await waitFor(() => {
       expect(screen.getByTestId("register-dpns-error")).toBeInTheDocument();
     });
-    expect(screen.getByText("Network timeout")).toBeInTheDocument();
+    expect(screen.getByText("The operation timed out. The server may be busy — try again later.")).toBeInTheDocument();
   });
 });
 
@@ -606,7 +606,7 @@ describe("DpnsRegisterNameScreen — error dismissal", () => {
       expect(screen.getByTestId("register-dpns-error")).toBeInTheDocument();
     });
 
-    await user.click(screen.getByTestId("dismiss-error-btn"));
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
 
     await waitFor(() => {
       expect(screen.getByText("Register DPNS Name")).toBeInTheDocument();

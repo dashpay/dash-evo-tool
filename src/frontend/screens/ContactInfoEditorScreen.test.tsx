@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ContactInfoEditorScreen } from "./ContactInfoEditorScreen";
@@ -18,10 +18,19 @@ vi.mock("@/bindings", async () => {
   return mockBindingsModule(createMockBindings());
 });
 
+import { events } from "@/bindings";
+
 vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
   Toaster: () => null,
 }));
+
+function fireTaskResult(payload: unknown) {
+  const listeners = vi.mocked(events.taskResultEvent.listen).mock.calls;
+  for (const [cb] of listeners) {
+    cb?.({ payload } as { payload: unknown });
+  }
+}
 
 // ─── Test Fixtures ────────────────────────────────────────────────
 
@@ -585,6 +594,11 @@ describe("ContactInfoEditorScreen", () => {
     it("shows success message after save", async () => {
       const user = userEvent.setup();
       setupWithContact(makeContact(), makePrivateInfo());
+
+      // Mock updateContactInfo to return a task ID
+      const store = useDashPayStore.getState();
+      vi.spyOn(store, "updateContactInfo").mockResolvedValue("task-save-1");
+
       renderWithProviders(
         <ContactInfoEditorScreen contactId={CONTACT_ID} />,
       );
@@ -594,6 +608,14 @@ describe("ContactInfoEditorScreen", () => {
       });
 
       await user.click(screen.getByText("Save Changes"));
+
+      // Simulate task completion event
+      await act(async () => {
+        fireTaskResult({
+          taskId: "task-save-1",
+          result: { type: "dashPayCompleted" },
+        });
+      });
 
       await waitFor(() => {
         expect(

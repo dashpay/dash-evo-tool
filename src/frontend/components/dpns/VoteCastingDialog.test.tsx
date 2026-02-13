@@ -7,7 +7,7 @@ import {
 } from "./VoteCastingDialog";
 import type { VoteCastingDialogProps } from "./VoteCastingDialog";
 import type { SelectedVote } from "@/stores/contestStore";
-import type { QualifiedIdentityDto, VoteChoiceDto } from "@/bindings";
+import type { QualifiedIdentityDto, VoteChoiceDto, VoteResultEntryDto } from "@/bindings";
 import { displayId } from "@/lib/utils";
 
 // ─── Polyfills for Radix Select in jsdom ──────────────────────────
@@ -490,15 +490,23 @@ describe("VoteCastingDialog — progress", () => {
 describe("VoteCastingDialog — completed", () => {
   it("shows success when all votes succeeded", async () => {
     const onApply = vi.fn().mockResolvedValue(undefined);
-    const { user } = setup({
+    const props = {
+      ...defaultProps,
       votingIdentities: [makeIdentity({ id: "aaa", alias: "MN-1" })],
       onApplyVotes: onApply,
-    });
+    };
+    const { user, rerender } = setup(props);
 
     // Cast Now
     await user.click(screen.getByLabelText("Vote method for MN-1"));
     await user.click(screen.getByRole("option", { name: "Cast Now" }));
     await user.click(screen.getByLabelText("Apply votes"));
+
+    // Simulate parent receiving vote results from backend
+    const voteResults: VoteResultEntryDto[] = [
+      { contestedName: "test", choice: "lock" as VoteChoiceDto, success: true, error: null },
+    ];
+    rerender(<VoteCastingDialog {...props} lastVoteResults={voteResults} />);
 
     await waitFor(() => {
       expect(
@@ -510,15 +518,22 @@ describe("VoteCastingDialog — completed", () => {
   it("shows Go to Active Contests button on completion", async () => {
     const onGoToActive = vi.fn();
     const onApply = vi.fn().mockResolvedValue(undefined);
-    const { user } = setup({
+    const props = {
+      ...defaultProps,
       votingIdentities: [makeIdentity({ id: "aaa", alias: "MN-1" })],
       onApplyVotes: onApply,
       onGoToActiveContests: onGoToActive,
-    });
+    };
+    const { user, rerender } = setup(props);
 
     await user.click(screen.getByLabelText("Vote method for MN-1"));
     await user.click(screen.getByRole("option", { name: "Cast Now" }));
     await user.click(screen.getByLabelText("Apply votes"));
+
+    const voteResults: VoteResultEntryDto[] = [
+      { contestedName: "test", choice: "lock" as VoteChoiceDto, success: true, error: null },
+    ];
+    rerender(<VoteCastingDialog {...props} lastVoteResults={voteResults} />);
 
     await waitFor(() => {
       expect(screen.getByText("Go to Active Contests")).toBeInTheDocument();
@@ -556,14 +571,21 @@ describe("VoteCastingDialog — completed", () => {
 
   it("shows cast result summary", async () => {
     const onApply = vi.fn().mockResolvedValue(undefined);
-    const { user } = setup({
+    const props = {
+      ...defaultProps,
       votingIdentities: [makeIdentity({ id: "aaa", alias: "MN-1" })],
       onApplyVotes: onApply,
-    });
+    };
+    const { user, rerender } = setup(props);
 
     await user.click(screen.getByLabelText("Vote method for MN-1"));
     await user.click(screen.getByRole("option", { name: "Cast Now" }));
     await user.click(screen.getByLabelText("Apply votes"));
+
+    const voteResults: VoteResultEntryDto[] = [
+      { contestedName: "test", choice: "lock" as VoteChoiceDto, success: true, error: null },
+    ];
+    rerender(<VoteCastingDialog {...props} lastVoteResults={voteResults} />);
 
     await waitFor(() => {
       expect(screen.getByText("Votes cast:")).toBeInTheDocument();
@@ -684,14 +706,21 @@ describe("VoteCastingDialog — accessibility", () => {
 
   it("has role=status on success message", async () => {
     const onApply = vi.fn().mockResolvedValue(undefined);
-    const { user } = setup({
+    const props = {
+      ...defaultProps,
       votingIdentities: [makeIdentity({ id: "aaa", alias: "MN-1" })],
       onApplyVotes: onApply,
-    });
+    };
+    const { user, rerender } = setup(props);
 
     await user.click(screen.getByLabelText("Vote method for MN-1"));
     await user.click(screen.getByRole("option", { name: "Cast Now" }));
     await user.click(screen.getByLabelText("Apply votes"));
+
+    const voteResults: VoteResultEntryDto[] = [
+      { contestedName: "test", choice: "lock" as VoteChoiceDto, success: true, error: null },
+    ];
+    rerender(<VoteCastingDialog {...props} lastVoteResults={voteResults} />);
 
     await waitFor(() => {
       expect(screen.getByRole("status")).toBeInTheDocument();

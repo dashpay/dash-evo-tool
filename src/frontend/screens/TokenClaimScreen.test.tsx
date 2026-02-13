@@ -307,7 +307,7 @@ describe("TokenClaimScreen", () => {
       await act(async () => {
         fireTaskResult({
           taskId: "task-estimate-1",
-          result: { type: "tokenRewardEstimate", explanation: "Estimated 500 tokens over 3 epochs" },
+          result: { type: "tokenRewardEstimate", shortExplanation: "Estimated 500 tokens over 3 epochs" },
         });
       });
 

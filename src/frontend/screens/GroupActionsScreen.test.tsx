@@ -929,7 +929,7 @@ describe("GroupActionsScreen", () => {
         expect.objectContaining({
           search: expect.objectContaining({
             groupActionId: "mint-999",
-            groupPosition: 2,
+            groupPosition: "2",
             details: JSON.stringify({ amount: 5000 }),
           }),
         }),

@@ -196,15 +196,14 @@ describe("DocumentQueryScreen", () => {
       queryText: "SELECT * FROM domain",
     });
     renderWithProviders(<DocumentQueryScreen />);
+    const store = useDocumentStore.getState();
+    const spy = vi.spyOn(store, "fetchDocumentsSql");
     await user.click(screen.getByTestId("fetch-documents-btn"));
     await waitFor(() => {
-      expect(commands.documentFetchPage).toHaveBeenCalledWith({
-        contractId: CONTRACT_ID,
-        documentTypeName: "domain",
-        whereClauses: [],
-        orderByClauses: [],
-        startAfter: null,
-      });
+      expect(spy).toHaveBeenCalledWith(
+        CONTRACT_ID,
+        "SELECT * FROM domain",
+      );
     });
   });
 
@@ -488,7 +487,7 @@ describe("DocumentQueryScreen", () => {
     await user.click(input);
     await user.keyboard("{Enter}");
     await waitFor(() => {
-      expect(commands.documentFetchPage).toHaveBeenCalled();
+      expect(useDocumentStore.getState().fetchDocumentsSql).toHaveBeenCalled();
     });
   });
 

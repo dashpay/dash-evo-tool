@@ -24,13 +24,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useDashPayStore } from "@/stores/dashpayStore";
+import {
+  useDashPayStore,
+  type PaymentDirectionFilter,
+  type PaymentSortField,
+} from "@/stores/dashpayStore";
 import { cn } from "@/lib/utils";
 import type { StoredPaymentDto } from "@/bindings";
-import type {
-  PaymentDirectionFilter,
-  PaymentSortField,
-} from "@/stores/dashpayStore";
 
 // ─── Constants ────────────────────────────────────────────────────────
 
@@ -44,6 +44,24 @@ const SORT_LABELS: Record<PaymentSortField, string> = {
   date: "Date",
   amount: "Amount",
   contact: "Contact Name",
+};
+
+const STATUS_BADGE_STYLES: Record<
+  string,
+  { label: string; className: string } | undefined
+> = {
+  confirmed: {
+    label: "confirmed",
+    className: "text-green-600 border-green-600/30",
+  },
+  pending: {
+    label: "pending",
+    className: "text-yellow-600 border-yellow-600/30",
+  },
+  failed: {
+    label: "failed",
+    className: "text-destructive border-destructive/30",
+  },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -101,6 +119,11 @@ function copyToClipboard(text: string) {
 
 function getPaymentTimestamp(payment: StoredPaymentDto): number {
   return payment.confirmedAt ?? payment.createdAt ?? 0;
+}
+
+function formatPaymentTime(payment: StoredPaymentDto): string {
+  const ts = getPaymentTimestamp(payment);
+  return ts > 0 ? formatTimestamp(ts) : "Pending";
 }
 
 // ─── Component ────────────────────────────────────────────────────────
@@ -456,35 +479,17 @@ function PaymentCard({
             <Copy className="h-3 w-3" />
           </button>
           <span className="text-xs text-muted-foreground">
-            •{" "}
-            {payment.confirmedAt
-              ? formatTimestamp(payment.confirmedAt)
-              : payment.createdAt
-                ? formatTimestamp(payment.createdAt)
-                : "Pending"}
+            • {formatPaymentTime(payment)}
           </span>
-          {payment.status === "confirmed" && (
+          {STATUS_BADGE_STYLES[payment.status] && (
             <Badge
               variant="outline"
-              className="text-[10px] px-1.5 py-0 text-green-600 border-green-600/30"
+              className={cn(
+                "text-[10px] px-1.5 py-0",
+                STATUS_BADGE_STYLES[payment.status]!.className,
+              )}
             >
-              confirmed
-            </Badge>
-          )}
-          {payment.status === "pending" && (
-            <Badge
-              variant="outline"
-              className="text-[10px] px-1.5 py-0 text-yellow-600 border-yellow-600/30"
-            >
-              pending
-            </Badge>
-          )}
-          {payment.status === "failed" && (
-            <Badge
-              variant="outline"
-              className="text-[10px] px-1.5 py-0 text-destructive border-destructive/30"
-            >
-              failed
+              {STATUS_BADGE_STYLES[payment.status]!.label}
             </Badge>
           )}
         </div>

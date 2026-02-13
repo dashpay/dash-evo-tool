@@ -76,6 +76,7 @@ import { LoadingSpinner } from "@/components/feedback";
 import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
 import type { TokenEntry } from "@/stores/tokenStore";
 import type { TokenSortColumn, TokenSortOrder } from "@/stores/tokenStore";
+import type { IdentityTokenAvailableActionsDto } from "@/bindings";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -209,22 +210,24 @@ interface ActionMenuItem {
   icon: typeof Send;
   separatorBefore?: boolean;
   danger?: boolean;
+  /** Key into IdentityTokenAvailableActionsDto — if set, item is hidden when false. */
+  permissionKey?: keyof IdentityTokenAvailableActionsDto;
 }
 
 const ACTION_MENU_ITEMS: ActionMenuItem[] = [
-  { action: "transfer", label: "Transfer", icon: Send },
-  { action: "mint", label: "Mint", icon: Coins },
-  { action: "burn", label: "Burn", icon: Flame },
-  { action: "freeze", label: "Freeze", icon: Snowflake, separatorBefore: true },
-  { action: "unfreeze", label: "Unfreeze", icon: Sun },
-  { action: "destroyFrozen", label: "Destroy Frozen Funds", icon: Trash2 },
-  { action: "pause", label: "Pause", icon: Pause, separatorBefore: true },
-  { action: "resume", label: "Resume", icon: Play },
-  { action: "claim", label: "Claim", icon: Gift, separatorBefore: true },
-  { action: "viewClaims", label: "View Claims", icon: Eye },
-  { action: "setPrice", label: "Set Price", icon: Tag, separatorBefore: true },
-  { action: "purchase", label: "Purchase", icon: ShoppingCart },
-  { action: "updateConfig", label: "Update Config", icon: Settings, separatorBefore: true },
+  { action: "transfer", label: "Transfer", icon: Send, permissionKey: "canTransfer" },
+  { action: "mint", label: "Mint", icon: Coins, permissionKey: "canMint" },
+  { action: "burn", label: "Burn", icon: Flame, permissionKey: "canBurn" },
+  { action: "freeze", label: "Freeze", icon: Snowflake, separatorBefore: true, permissionKey: "canFreeze" },
+  { action: "unfreeze", label: "Unfreeze", icon: Sun, permissionKey: "canUnfreeze" },
+  { action: "destroyFrozen", label: "Destroy Frozen Funds", icon: Trash2, permissionKey: "canDestroy" },
+  { action: "pause", label: "Pause", icon: Pause, separatorBefore: true, permissionKey: "canDoEmergencyAction" },
+  { action: "resume", label: "Resume", icon: Play, permissionKey: "canDoEmergencyAction" },
+  { action: "claim", label: "Claim", icon: Gift, separatorBefore: true, permissionKey: "canClaim" },
+  { action: "viewClaims", label: "View Claims", icon: Eye, permissionKey: "canClaim" },
+  { action: "setPrice", label: "Set Price", icon: Tag, separatorBefore: true, permissionKey: "canSetPrice" },
+  { action: "purchase", label: "Purchase", icon: ShoppingCart, permissionKey: "canMaybePurchase" },
+  { action: "updateConfig", label: "Update Config", icon: Settings, separatorBefore: true, permissionKey: "canUpdateConfig" },
   { action: "moreInfo", label: "More Info", icon: Info, separatorBefore: true },
   { action: "remove", label: "Remove", icon: X, separatorBefore: true, danger: true },
 ];
@@ -835,7 +838,11 @@ function IdentityBalanceRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
-            {ACTION_MENU_ITEMS.map((item) => (
+            {ACTION_MENU_ITEMS.filter(
+              (item) =>
+                !item.permissionKey ||
+                entry.availableActions[item.permissionKey],
+            ).map((item) => (
               <ActionMenuEntry
                 key={item.action}
                 item={item}

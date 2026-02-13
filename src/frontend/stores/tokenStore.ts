@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { commands, events } from "../bindings";
 import type {
+  IdentityTokenAvailableActionsDto,
   IdentityTokenBalanceDto,
   IdentityTokenIdentifierDto,
   JsonValue,
@@ -39,6 +40,8 @@ export interface TokenEntry {
   balance: string;
   /** Decimals for display formatting. */
   decimals: number;
+  /** Available actions for this identity on this token. */
+  availableActions: IdentityTokenAvailableActionsDto;
 }
 
 // ─── Search result types ────────────────────────────────────────────
@@ -512,6 +515,7 @@ export const useTokenStore = create<TokenStore>((set, get) => ({
                   ownerAlias: null,
                   balance: b.balance,
                   decimals: b.decimals,
+                  availableActions: b.availableActions,
                 }),
               );
               set({ tokens: sortTokens(entries, sortColumn, sortOrder) });

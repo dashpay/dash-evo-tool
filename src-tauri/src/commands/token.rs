@@ -14,8 +14,10 @@ use crate::DispatchTaskResponse;
 
 use dash_evo_tool::backend_task::tokens::TokenTask;
 use dash_evo_tool::backend_task::BackendTask;
+use dash_evo_tool::model::tokens::{
+    get_available_token_actions_for_identity, IdentityTokenIdentifier,
+};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
-use dash_evo_tool::model::tokens::IdentityTokenIdentifier;
 
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::TokenContractPosition;
@@ -1355,22 +1357,44 @@ pub fn token_get_my_balances(
         .identity_token_balances()
         .map_err(|e| format!("Failed to read token balances: {e}"))?;
 
+    let in_dev_mode = ctx.is_developer_mode();
+
     Ok(balances
         .into_values()
         .map(|b| {
             let decimals = b.token_config.conventions().decimals();
-            crate::dto::token::IdentityTokenBalanceDto {
-                token_id: hex::encode(b.token_id.to_buffer()),
-                token_alias: b.token_alias,
-                identity_id: hex::encode(b.identity_id.to_buffer()),
-                balance: b.balance.to_string(),
-                estimated_unclaimed_rewards: b
-                    .estimated_unclaimed_rewards
-                    .map(|r| r.to_string()),
-                data_contract_id: hex::encode(b.data_contract_id.to_buffer()),
-                token_position: b.token_position,
-                decimals,
-                available_actions: crate::dto::token::IdentityTokenAvailableActionsDto {
+
+            // Compute real permissions by looking up the identity and contract.
+            // If either lookup fails, gracefully degrade to all-false.
+            let actions = (|| {
+                let identity = ctx.get_identity_by_id(&b.identity_id).ok()??;
+                let qualified_contract = ctx.get_contract_by_id(&b.data_contract_id).ok()??;
+                Some(get_available_token_actions_for_identity(
+                    Some(b.balance),
+                    &identity,
+                    &b.token_config,
+                    &qualified_contract.contract,
+                    in_dev_mode,
+                    None,
+                ))
+            })();
+
+            let available_actions = match actions {
+                Some(a) => crate::dto::token::IdentityTokenAvailableActionsDto {
+                    can_claim: a.can_claim,
+                    can_estimate: a.can_estimate,
+                    can_mint: a.can_mint,
+                    can_burn: a.can_burn,
+                    can_freeze: a.can_freeze,
+                    can_unfreeze: a.can_unfreeze,
+                    can_destroy: a.can_destroy,
+                    can_do_emergency_action: a.can_do_emergency_action,
+                    can_maybe_purchase: a.can_maybe_purchase,
+                    can_set_price: a.can_set_price,
+                    can_transfer: a.can_transfer,
+                    can_update_config: a.can_update_config,
+                },
+                None => crate::dto::token::IdentityTokenAvailableActionsDto {
                     can_claim: false,
                     can_estimate: false,
                     can_mint: false,
@@ -1384,6 +1408,18 @@ pub fn token_get_my_balances(
                     can_transfer: false,
                     can_update_config: false,
                 },
+            };
+
+            crate::dto::token::IdentityTokenBalanceDto {
+                token_id: hex::encode(b.token_id.to_buffer()),
+                token_alias: b.token_alias,
+                identity_id: hex::encode(b.identity_id.to_buffer()),
+                balance: b.balance.to_string(),
+                estimated_unclaimed_rewards: b.estimated_unclaimed_rewards.map(|r| r.to_string()),
+                data_contract_id: hex::encode(b.data_contract_id.to_buffer()),
+                token_position: b.token_position,
+                decimals,
+                available_actions,
             }
         })
         .collect())

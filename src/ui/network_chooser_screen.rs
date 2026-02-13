@@ -16,7 +16,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncStage};
+use dash_sdk::dash_spv::sync::{SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, Ui};
@@ -1308,19 +1308,22 @@ impl NetworkChooserScreen {
     }
 
     fn render_spv_sync_progress(&mut self, ui: &mut Ui, snapshot: &SpvStatusSnapshot) {
-        if let Some(detailed) = &snapshot.detailed_progress {
-            match detailed.sync_stage {
-                SyncStage::DownloadingFilterHeaders { current, target } => {
+        if let Some(progress) = &snapshot.sync_progress {
+            if let Ok(fh) = progress.filter_headers() {
+                if fh.state() == SyncState::Syncing {
+                    let current = fh.current_height();
+                    let target = fh.target_height();
                     let baseline = current.min(target);
                     if let Some(existing) = self.filter_headers_stage_start {
                         self.filter_headers_stage_start = Some(existing.min(target));
                     } else {
                         self.filter_headers_stage_start = Some(baseline);
                     }
-                }
-                _ => {
+                } else {
                     self.filter_headers_stage_start = None;
                 }
+            } else {
+                self.filter_headers_stage_start = None;
             }
         } else {
             self.filter_headers_stage_start = None;
@@ -1328,7 +1331,6 @@ impl NetworkChooserScreen {
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        // Raw sync status display
         egui::Frame::new()
             .fill(DashColors::glass_white(dark_mode))
             .corner_radius(Shape::RADIUS_SM)
@@ -1342,12 +1344,10 @@ impl NetworkChooserScreen {
 
                 ui.add_space(8.0);
 
-                // Display sync information in a grid
                 egui::Grid::new("spv_sync_info")
                     .num_columns(2)
                     .spacing([16.0, 4.0])
                     .show(ui, |ui| {
-                        // Show current status detail
                         if let Some(detail) = self.spv_status_detail(snapshot) {
                             ui.label(
                                 egui::RichText::new("Status:")
@@ -1357,9 +1357,7 @@ impl NetworkChooserScreen {
                             ui.end_row();
                         }
 
-                        // Prefer detailed header progress when available
-                        if snapshot.detailed_progress.is_some() {
-                            // Add separator between status and progress bars
+                        if snapshot.sync_progress.is_some() {
                             ui.separator();
                             ui.separator();
                             ui.end_row();
@@ -1373,7 +1371,7 @@ impl NetworkChooserScreen {
                             ui.add(egui::ProgressBar::new(headers_progress).show_percentage());
                             ui.end_row();
 
-                            // Validating headers progress (formerly masternode lists)
+                            // Masternode Lists progress
                             ui.label(
                                 egui::RichText::new("Masternode Lists:")
                                     .color(DashColors::text_secondary(dark_mode)),
@@ -1404,70 +1402,12 @@ impl NetworkChooserScreen {
                             ui.add(egui::ProgressBar::new(filters_progress).show_percentage());
                             ui.end_row();
 
-                            // Blocks progress bar
+                            // Blocks progress
                             ui.label(
                                 egui::RichText::new("Blocks:")
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
                             let blocks_progress = self.calculate_blocks_progress(snapshot);
-                            ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
-                            ui.end_row();
-                        } else if let Some(ev) = &snapshot.sync_progress {
-                            // Event-driven progress (updates most frequently)
-                            ui.label(
-                                egui::RichText::new("Synced:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.label(format!("Headers height: {}", ev.header_height));
-                            ui.end_row();
-
-                            // Add separator between stats and progress bars
-                            ui.separator();
-                            ui.separator();
-                            ui.end_row();
-
-                            // Progress bars for different components
-                            let headers_progress = self.calculate_headers_progress(snapshot);
-                            ui.label(
-                                egui::RichText::new("Headers:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.add(egui::ProgressBar::new(headers_progress).show_percentage());
-                            ui.end_row();
-
-                            let validating_progress =
-                                self.calculate_validating_headers_progress(snapshot);
-                            ui.label(
-                                egui::RichText::new("Masternode Lists:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.add(egui::ProgressBar::new(validating_progress).show_percentage());
-                            ui.end_row();
-
-                            let filter_headers_progress =
-                                self.calculate_filter_headers_progress(snapshot);
-                            ui.label(
-                                egui::RichText::new("Filter Headers:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.add(
-                                egui::ProgressBar::new(filter_headers_progress).show_percentage(),
-                            );
-                            ui.end_row();
-
-                            let filters_progress = self.calculate_filters_progress(snapshot);
-                            ui.label(
-                                egui::RichText::new("Filters:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
-                            ui.add(egui::ProgressBar::new(filters_progress).show_percentage());
-                            ui.end_row();
-
-                            let blocks_progress = self.calculate_blocks_progress(snapshot);
-                            ui.label(
-                                egui::RichText::new("Blocks:")
-                                    .color(DashColors::text_secondary(dark_mode)),
-                            );
                             ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
                             ui.end_row();
                         }
@@ -1630,94 +1570,76 @@ impl NetworkChooserScreen {
     }
 
     fn calculate_headers_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {
-        if let Some(detailed) = &snapshot.detailed_progress {
-            match &detailed.sync_stage {
-                SyncStage::DownloadingHeaders { start, end } => {
-                    // Respect restored checkpoints: show progress relative to the download window.
-                    if end > start {
-                        let window = (end - start) as f32;
-                        let current = detailed.sync_progress.header_height;
-                        let clamped = current.clamp(*start, *end) - start;
-                        (clamped as f32 / window).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    }
+        let Some(progress) = &snapshot.sync_progress else {
+            return 0.0;
+        };
+        let Ok(headers) = progress.headers() else {
+            return 0.0;
+        };
+        match headers.state() {
+            SyncState::Syncing => {
+                let target = headers.target_height();
+                if target == 0 {
+                    return 0.0;
                 }
-                SyncStage::ValidatingHeaders { .. }
-                | SyncStage::StoringHeaders { .. }
-                | SyncStage::DownloadingFilterHeaders { .. }
-                | SyncStage::DownloadingFilters { .. }
-                | SyncStage::DownloadingBlocks { .. }
-                | SyncStage::Complete => 1.0,
-                SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
+                (headers.current_height() as f32 / target as f32).clamp(0.0, 1.0)
             }
-        } else if let Some(progress) = &snapshot.sync_progress {
-            if progress.header_height == 0 {
-                0.0
-            } else {
-                // Without detailed context fall back to comparing against masternode progress
-                (progress.masternode_height as f32 / progress.header_height as f32).clamp(0.0, 1.0)
-            }
-        } else {
-            0.0
+            SyncState::Synced => 1.0,
+            _ => 0.0,
         }
     }
 
     fn calculate_filter_headers_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {
-        if let Some(detailed) = &snapshot.detailed_progress {
-            if detailed.peer_best_height == 0 {
-                return 0.0;
-            }
-            match &detailed.sync_stage {
-                SyncStage::DownloadingFilterHeaders { current, target } => {
-                    let current = *current;
-                    let target = *target;
-                    if target == 0 {
-                        return 0.0;
-                    }
-
-                    let start = self
-                        .filter_headers_stage_start
-                        .unwrap_or(current)
-                        .min(target);
-                    let span = target.saturating_sub(start);
-                    if span == 0 {
-                        if current >= target { 1.0 } else { 0.0 }
-                    } else {
-                        let progress = current.saturating_sub(start);
-                        (progress as f32 / span as f32).clamp(0.0, 1.0)
-                    }
+        let Some(progress) = &snapshot.sync_progress else {
+            return 0.0;
+        };
+        let Ok(fh) = progress.filter_headers() else {
+            return 0.0;
+        };
+        match fh.state() {
+            SyncState::Syncing => {
+                let target = fh.target_height();
+                if target == 0 {
+                    return 0.0;
                 }
-                SyncStage::DownloadingFilters { .. }
-                | SyncStage::DownloadingBlocks { .. }
-                | SyncStage::Complete => (detailed.sync_progress.filter_header_height as f32
-                    / detailed.peer_best_height as f32)
-                    .clamp(0.0, 1.0),
-                SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
+                let start = self
+                    .filter_headers_stage_start
+                    .unwrap_or(fh.current_height())
+                    .min(target);
+                let span = target.saturating_sub(start);
+                if span == 0 {
+                    if fh.current_height() >= target {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    let done = fh.current_height().saturating_sub(start);
+                    (done as f32 / span as f32).clamp(0.0, 1.0)
+                }
             }
-        } else {
-            0.0
+            SyncState::Synced => 1.0,
+            _ => 0.0,
         }
     }
 
     fn calculate_filters_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {
-        if let Some(detailed) = &snapshot.detailed_progress {
-            match &detailed.sync_stage {
-                SyncStage::DownloadingFilters { completed, total } => {
-                    if *total == 0 {
-                        0.0
-                    } else {
-                        (*completed as f32 / *total as f32).clamp(0.0, 1.0)
-                    }
+        let Some(progress) = &snapshot.sync_progress else {
+            return 0.0;
+        };
+        let Ok(filters) = progress.filters() else {
+            return 0.0;
+        };
+        match filters.state() {
+            SyncState::Syncing => {
+                let target = filters.target_height();
+                if target == 0 {
+                    return 0.0;
                 }
-                SyncStage::DownloadingBlocks { .. } | SyncStage::Complete => 1.0,
-                SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
+                (filters.downloaded() as f32 / target as f32).clamp(0.0, 1.0)
             }
-        } else {
-            0.0
+            SyncState::Synced => 1.0,
+            _ => 0.0,
         }
     }
 
@@ -1725,33 +1647,22 @@ impl NetworkChooserScreen {
         if snapshot.status == SpvStatus::Running {
             return 1.0;
         }
-
-        if let Some(detailed) = &snapshot.detailed_progress {
-            match &detailed.sync_stage {
-                SyncStage::ValidatingHeaders { .. } | SyncStage::StoringHeaders { .. } => {
-                    if detailed.peer_best_height == 0 {
-                        0.0
-                    } else {
-                        let best_height = detailed.peer_best_height as f32;
-                        let validated = detailed.sync_progress.masternode_height as f32;
-                        (validated / best_height).clamp(0.0, 1.0)
-                    }
+        let Some(progress) = &snapshot.sync_progress else {
+            return 0.0;
+        };
+        let Ok(mn) = progress.masternodes() else {
+            return 0.0;
+        };
+        match mn.state() {
+            SyncState::Syncing => {
+                let target = mn.target_height();
+                if target == 0 {
+                    return 0.0;
                 }
-                SyncStage::DownloadingFilterHeaders { .. }
-                | SyncStage::DownloadingFilters { .. }
-                | SyncStage::DownloadingBlocks { .. }
-                | SyncStage::Complete => 1.0,
-                SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
+                (mn.current_height() as f32 / target as f32).clamp(0.0, 1.0)
             }
-        } else if let Some(progress) = &snapshot.sync_progress {
-            if progress.header_height == 0 {
-                0.0
-            } else {
-                (progress.masternode_height as f32 / progress.header_height as f32).clamp(0.0, 1.0)
-            }
-        } else {
-            0.0
+            SyncState::Synced => 1.0,
+            _ => 0.0,
         }
     }
 
@@ -1759,26 +1670,22 @@ impl NetworkChooserScreen {
         if snapshot.status == SpvStatus::Running {
             return 1.0;
         }
-
-        if let Some(detailed) = &snapshot.detailed_progress {
-            match &detailed.sync_stage {
-                SyncStage::DownloadingBlocks { .. } => {
-                    if detailed.peer_best_height == 0 {
-                        0.0
-                    } else {
-                        let processed_height = detailed
-                            .sync_progress
-                            .last_synced_filter_height
-                            .unwrap_or(0);
-                        (processed_height as f32 / detailed.peer_best_height as f32).clamp(0.0, 1.0)
-                    }
+        let Some(progress) = &snapshot.sync_progress else {
+            return 0.0;
+        };
+        let Ok(blocks) = progress.blocks() else {
+            return 0.0;
+        };
+        match blocks.state() {
+            SyncState::Syncing => {
+                let requested = blocks.requested();
+                if requested == 0 {
+                    return 0.0;
                 }
-                SyncStage::Complete => 1.0,
-                SyncStage::Failed(_) => 0.0,
-                _ => 0.0,
+                (blocks.processed() as f32 / requested as f32).clamp(0.0, 1.0)
             }
-        } else {
-            0.0
+            SyncState::Synced => 1.0,
+            _ => 0.0,
         }
     }
 
@@ -1805,53 +1712,71 @@ impl NetworkChooserScreen {
             return Some(err.clone());
         }
 
-        if let Some(progress) = snapshot.detailed_progress.as_ref() {
-            return Some(Self::format_detailed_progress(progress));
+        if let Some(progress) = snapshot.sync_progress.as_ref() {
+            return Some(Self::format_sync_progress(progress));
         }
 
         snapshot.last_error.clone()
     }
 
-    fn format_detailed_progress(progress: &DetailedSyncProgress) -> String {
-        let mut message = match &progress.sync_stage {
-            SyncStage::Connecting => "Connecting to peers".to_string(),
-            SyncStage::QueryingPeerHeight => "Querying peer heights".to_string(),
-            SyncStage::DownloadingHeaders { .. } => {
-                format!(
-                    "Headers: {} / {}",
-                    progress.sync_progress.header_height, progress.peer_best_height,
-                )
-            }
-            SyncStage::ValidatingHeaders { batch_size } => {
-                format!(
-                    "Masternode lists (batch {batch_size}) | Height {}",
-                    progress.sync_progress.masternode_height
-                )
-            }
-            SyncStage::StoringHeaders { batch_size } => {
-                format!(
-                    "Storing headers (batch {batch_size}) | Height {}",
-                    progress.sync_progress.header_height
-                )
-            }
-            SyncStage::Complete => "Sync complete".to_string(),
-            SyncStage::Failed(reason) => format!("Failed: {reason}"),
-            SyncStage::DownloadingFilterHeaders { current, target } => {
-                format!("Filter headers: {current} / {target}")
-            }
-            SyncStage::DownloadingFilters { completed, total } => {
-                format!("Filters: {completed} / {total}")
-            }
-            SyncStage::DownloadingBlocks { pending } => {
-                format!("Blocks: {pending}")
-            }
-        };
-
-        if progress.sync_progress.peer_count > 0 {
-            message = format!("{message} | Peers: {}", progress.sync_progress.peer_count);
+    fn format_sync_progress(progress: &SpvSyncProgress) -> String {
+        // Check each manager's state to determine what to display,
+        // preferring later pipeline stages.
+        if let Ok(blocks) = progress.blocks()
+            && blocks.state() == SyncState::Syncing
+        {
+            return format!(
+                "Blocks: {} requested, {} processed",
+                blocks.requested(),
+                blocks.processed()
+            );
+        }
+        if let Ok(filters) = progress.filters()
+            && filters.state() == SyncState::Syncing
+        {
+            return format!(
+                "Filters: {} / {}",
+                filters.downloaded(),
+                filters.target_height()
+            );
+        }
+        if let Ok(fh) = progress.filter_headers()
+            && fh.state() == SyncState::Syncing
+        {
+            return format!(
+                "Filter headers: {} / {}",
+                fh.current_height(),
+                fh.target_height()
+            );
+        }
+        if let Ok(mn) = progress.masternodes()
+            && mn.state() == SyncState::Syncing
+        {
+            return format!(
+                "Masternode lists: {} / {}",
+                mn.current_height(),
+                mn.target_height()
+            );
+        }
+        if let Ok(headers) = progress.headers()
+            && headers.state() == SyncState::Syncing
+        {
+            return format!(
+                "Headers: {} / {}",
+                headers.current_height(),
+                headers.target_height()
+            );
         }
 
-        message
+        if progress.is_synced() {
+            "Sync complete".to_string()
+        } else {
+            match progress.state() {
+                SyncState::WaitingForConnections => "Connecting to peers".to_string(),
+                SyncState::Error => "Sync error".to_string(),
+                _ => "Syncing...".to_string(),
+            }
+        }
     }
 }
 

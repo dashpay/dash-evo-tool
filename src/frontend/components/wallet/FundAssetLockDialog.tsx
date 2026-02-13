@@ -194,9 +194,9 @@ function FundAssetLockContent({
                 {wallet.platformAddresses.map((addr) => {
                   const balanceDuffs = addr.balance / CREDITS_PER_DUFF;
                   return (
-                    <SelectItem key={addr.address} value={addr.address}>
+                    <SelectItem key={addr.bech32MAddress} value={addr.bech32MAddress}>
                       <span className="font-mono text-xs">
-                        {truncateString(addr.address)}
+                        {truncateString(addr.bech32MAddress)}
                       </span>
                       <span className="ml-2 text-xs text-muted-foreground">
                         ({formatAmount(balanceDuffs, DUFFS_DECIMAL_PLACES)} DASH)

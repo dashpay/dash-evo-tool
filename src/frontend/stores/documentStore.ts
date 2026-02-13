@@ -546,8 +546,6 @@ export const useDocumentStore = create<DocumentStore>((set, get) => ({
       nextCursors: [null],
       hasNextPage: false,
       searchFilter: "",
-      treeSelection: null,
-      jsonContractId: null,
     });
   },
 

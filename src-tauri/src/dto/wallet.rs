@@ -128,6 +128,8 @@ pub enum AssetLockProofDetailsDto {
 pub struct PlatformAddressDto {
     /// The Core address string.
     pub address: String,
+    /// The DIP-18 Bech32m-encoded platform address (e.g. `tevo1...` / `evo1...`).
+    pub bech32m_address: String,
     /// Balance in credits.
     pub balance: CreditsDto,
     /// Current nonce.

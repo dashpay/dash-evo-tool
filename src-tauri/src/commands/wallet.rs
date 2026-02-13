@@ -288,7 +288,7 @@ fn parse_single_key_hash(hex_str: &str) -> Result<[u8; 32], String> {
 }
 
 /// Convert an HD `Wallet` to its DTO representation (no private key data).
-fn wallet_to_dto(wallet: &Wallet) -> WalletDto {
+fn wallet_to_dto(wallet: &Wallet, network: dash_sdk::dpp::dashcore::Network) -> WalletDto {
     let seed_hash_hex = hex::encode(wallet.seed_hash());
 
     // Build address list from watched_addresses (which have AddressInfo with path info)
@@ -375,10 +375,17 @@ fn wallet_to_dto(wallet: &Wallet) -> WalletDto {
     let platform_addresses: Vec<PlatformAddressDto> = wallet
         .platform_address_info
         .iter()
-        .map(|(addr, info)| PlatformAddressDto {
-            address: addr.to_string(),
-            balance: info.balance,
-            nonce: info.nonce as u64,
+        .map(|(addr, info)| {
+            use dash_sdk::dpp::address_funds::PlatformAddress;
+            let bech32m_address = PlatformAddress::try_from(addr.clone())
+                .map(|pa| pa.to_bech32m_string(network))
+                .unwrap_or_else(|_| addr.to_string());
+            PlatformAddressDto {
+                address: addr.to_string(),
+                bech32m_address,
+                balance: info.balance,
+                nonce: info.nonce as u64,
+            }
         })
         .collect();
 
@@ -467,6 +474,39 @@ pub async fn wallet_generate_receive_address(
         }) => Ok(GenerateReceiveAddressResponseDto { address }),
         other => Err(format!("Unexpected result: {:?}", other)),
     }
+}
+
+/// Generate a new platform (DIP-17) receive address for an HD wallet.
+///
+/// Returns the Bech32m-encoded address (e.g. `tevo1...`/`evo1...`).
+#[tauri::command]
+#[specta::specta]
+pub async fn wallet_generate_platform_address(
+    state: tauri::State<'_, Arc<AppState>>,
+    input: GenerateReceiveAddressInput,
+) -> Result<GenerateReceiveAddressResponseDto, String> {
+    use dash_sdk::dpp::address_funds::PlatformAddress;
+
+    let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
+    let ctx = state.current_context();
+    let network = ctx.network();
+    let wallet_arc = ctx
+        .wallet_by_seed_hash(&seed_hash)
+        .ok_or_else(|| format!("Wallet not found for seed hash {}", input.wallet_seed_hash))?;
+
+    let mut wallet_guard = wallet_arc
+        .write()
+        .map_err(|e| format!("Failed to lock wallet: {e}"))?;
+
+    let address = wallet_guard
+        .platform_receive_address(network, true, Some(ctx))
+        .map_err(|e| format!("Failed to generate platform address: {e}"))?;
+
+    let bech32m = PlatformAddress::try_from(address)
+        .map(|pa| pa.to_bech32m_string(network))
+        .map_err(|e| format!("Failed to encode address: {e}"))?;
+
+    Ok(GenerateReceiveAddressResponseDto { address: bech32m })
 }
 
 /// Fetch platform address balances for a wallet.
@@ -627,7 +667,6 @@ pub fn wallet_fund_platform_from_asset_lock(
     input: FundPlatformFromAssetLockInput,
 ) -> Result<DispatchTaskResponse, String> {
     use dash_sdk::dpp::address_funds::PlatformAddress;
-    use dash_sdk::dpp::dashcore::address::NetworkUnchecked;
     use std::collections::BTreeMap;
 
     let seed_hash = parse_wallet_seed_hash(&input.wallet_seed_hash)?;
@@ -896,7 +935,7 @@ pub async fn wallet_create(
     let guard = wallet_arc
         .read()
         .map_err(|e| format!("Failed to read wallet: {e}"))?;
-    Ok(wallet_to_dto(&guard))
+    Ok(wallet_to_dto(&guard, ctx.network()))
 }
 
 /// Import an HD wallet from an existing BIP39 mnemonic.
@@ -1057,7 +1096,7 @@ pub async fn wallet_import_mnemonic(
     let guard = wallet_arc
         .read()
         .map_err(|e| format!("Failed to read wallet: {e}"))?;
-    Ok(wallet_to_dto(&guard))
+    Ok(wallet_to_dto(&guard, ctx.network()))
 }
 
 /// Import a single-key wallet from a private key (WIF or hex).
@@ -1122,12 +1161,13 @@ pub fn wallet_import_private_key(
 pub fn wallet_list_all(state: tauri::State<'_, Arc<AppState>>) -> Result<WalletListDto, String> {
     let ctx = state.current_context();
 
+    let network = ctx.network();
     let hd_wallets: Vec<WalletDto> = ctx
         .loaded_wallets()
         .iter()
         .filter_map(|(_, arc)| {
             let guard = arc.read().ok()?;
-            Some(wallet_to_dto(&guard))
+            Some(wallet_to_dto(&guard, network))
         })
         .collect();
 
@@ -1175,7 +1215,7 @@ pub fn wallet_get_hd(
     let guard = wallet_arc
         .read()
         .map_err(|e| format!("Failed to read wallet: {e}"))?;
-    Ok(wallet_to_dto(&guard))
+    Ok(wallet_to_dto(&guard, ctx.network()))
 }
 
 /// Get a single-key wallet by key hash.

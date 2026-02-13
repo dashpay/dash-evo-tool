@@ -159,10 +159,11 @@ describe("Bindings: commands object", () => {
     expect(coreCmds.length).toBe(10);
   });
 
-  it("contains all 27 wallet commands", () => {
+  it("contains all 28 wallet commands", () => {
     const cmds = commands as unknown as Record<string, unknown>;
     const walletCmds = [
       "walletGenerateReceiveAddress",
+      "walletGeneratePlatformAddress",
       "walletFetchPlatformAddressBalances",
       "walletTransferPlatformCredits",
       "walletWithdrawFromPlatformAddress",
@@ -193,7 +194,7 @@ describe("Bindings: commands object", () => {
     for (const cmd of walletCmds) {
       assertIsFunction(cmds, cmd);
     }
-    expect(walletCmds.length).toBe(27);
+    expect(walletCmds.length).toBe(28);
   });
 
   it("contains all 11 contract commands", () => {
@@ -389,9 +390,9 @@ describe("Bindings: commands object", () => {
     expect(settingsCmds.length).toBe(17);
   });
 
-  it("total command count is 204", () => {
+  it("total command count is 206", () => {
     const allKeys = Object.keys(commands);
-    expect(allKeys.length).toBe(204);
+    expect(allKeys.length).toBe(206);
   });
 });
 

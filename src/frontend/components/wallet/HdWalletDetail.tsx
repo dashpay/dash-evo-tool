@@ -288,11 +288,11 @@ function AddressTable({
 }: AddressTableProps) {
   const parentRef = useRef<HTMLDivElement>(null);
 
-  // Build a lookup for platform address balances
-  const platformBalanceMap = useMemo(() => {
-    const map = new Map<string, number>();
+  // Build a lookup for platform address info (balance + bech32m display address)
+  const platformInfoMap = useMemo(() => {
+    const map = new Map<string, { balance: number; bech32MAddress: string }>();
     for (const pa of platformAddresses) {
-      map.set(pa.address, pa.balance);
+      map.set(pa.address, { balance: pa.balance, bech32MAddress: pa.bech32MAddress });
     }
     return map;
   }, [platformAddresses]);
@@ -305,7 +305,7 @@ function AddressTable({
         const category = categorizeAddress(a.derivationPath);
         if (category === "platform") {
           // For platform addresses, check platform balance
-          const credits = platformBalanceMap.get(a.address) ?? 0;
+          const credits = platformInfoMap.get(a.address)?.balance ?? 0;
           return credits > 0;
         }
         return a.balance > 0;
@@ -345,7 +345,7 @@ function AddressTable({
     hideZeroBalances,
     sortColumn,
     sortOrder,
-    platformBalanceMap,
+    platformInfoMap,
   ]);
 
   const useVirtual = sortedAddresses.length > VIRTUAL_THRESHOLD;
@@ -374,20 +374,24 @@ function AddressTable({
   function renderAddressRow(addr: WalletAddressDto) {
     const category = categorizeAddress(addr.derivationPath);
     const isPlatform = category === "platform";
-    const platformCredits = platformBalanceMap.get(addr.address);
-    const displayBalance = isPlatform && platformCredits != null
-      ? formatCreditsAsDash(platformCredits)
+    const platformInfo = isPlatform ? platformInfoMap.get(addr.address) : undefined;
+    const displayBalance = isPlatform && platformInfo != null
+      ? formatCreditsAsDash(platformInfo.balance)
       : formatDash(addr.balance);
     const displayReceived = isPlatform ? "N/A" : formatDash(addr.totalReceived);
+    // Show Bech32m address for platform rows, Core address otherwise
+    const displayAddress = isPlatform && platformInfo
+      ? platformInfo.bech32MAddress
+      : addr.address;
 
     return (
       <TableRow key={`${addr.address}-${addr.derivationPath}`}>
         <TableCell className="font-mono text-xs max-w-[200px]">
           <div className="flex items-center gap-1">
-            <span className="truncate" title={addr.address}>
-              {addr.address}
+            <span className="truncate" title={displayAddress}>
+              {displayAddress}
             </span>
-            <CopyButton value={addr.address} />
+            <CopyButton value={displayAddress} />
           </div>
         </TableCell>
         <TableCell className="text-right font-mono text-xs">

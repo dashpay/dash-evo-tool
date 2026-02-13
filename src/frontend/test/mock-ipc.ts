@@ -96,6 +96,7 @@ export type CommandName =
   | "coreRecoverAssetLocks"
   // Wallet
   | "walletGenerateReceiveAddress"
+  | "walletGeneratePlatformAddress"
   | "walletFetchPlatformAddressBalances"
   | "walletTransferPlatformCredits"
   | "walletWithdrawFromPlatformAddress"
@@ -379,6 +380,7 @@ function buildDefaultCommands(history: CallHistory): Record<CommandName, Mock> {
 
     // -- Wallet --
     walletGenerateReceiveAddress: resolvesOk("walletGenerateReceiveAddress", { address: "XmockGeneratedAddress123" }),
+    walletGeneratePlatformAddress: resolvesOk("walletGeneratePlatformAddress", { address: "tevo1mockplatformaddress123" }),
     walletFetchPlatformAddressBalances: dispatchOk("walletFetchPlatformAddressBalances"),
     walletTransferPlatformCredits: dispatchOk("walletTransferPlatformCredits"),
     walletWithdrawFromPlatformAddress: dispatchOk("walletWithdrawFromPlatformAddress"),

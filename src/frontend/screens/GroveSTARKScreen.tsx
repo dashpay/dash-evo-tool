@@ -46,7 +46,7 @@ type ProofMode = "generate" | "verify";
 type GenerateStatus =
   | { type: "idle" }
   | { type: "generating"; taskId: string; startTime: number }
-  | { type: "success"; proofBase64: string }
+  | { type: "success"; proofBase64: string; stateRootHash: string; proofSize: number; generationTimeMs: number }
   | { type: "error"; message: string };
 
 type VerifyStatus =
@@ -343,6 +343,9 @@ export function GroveSTARKScreen() {
               setGenerateStatus({
                 type: "success",
                 proofBase64: result.proofBase64,
+                stateRootHash: result.stateRootHash,
+                proofSize: result.proofSize,
+                generationTimeMs: result.generationTimeMs,
               });
             } else {
               setGenerateStatus({
@@ -950,6 +953,30 @@ function GenerateModeContent({
               label="Copy Proof"
               size="sm"
             />
+          </div>
+          <div className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+            <span className="font-medium text-green-700 dark:text-green-300">
+              Proof Hash:
+            </span>
+            <span className="font-mono text-xs text-green-600 dark:text-green-400 break-all">
+              {generateStatus.stateRootHash}
+            </span>
+            <span className="font-medium text-green-700 dark:text-green-300">
+              Proof Size:
+            </span>
+            <span className="text-green-600 dark:text-green-400">
+              {generateStatus.proofSize >= 1024
+                ? `${(generateStatus.proofSize / 1024).toFixed(1)} KB`
+                : `${generateStatus.proofSize.toLocaleString()} bytes`}
+            </span>
+            <span className="font-medium text-green-700 dark:text-green-300">
+              Generation Time:
+            </span>
+            <span className="text-green-600 dark:text-green-400">
+              {generateStatus.generationTimeMs >= 1000
+                ? `${(generateStatus.generationTimeMs / 1000).toFixed(1)} seconds`
+                : `${generateStatus.generationTimeMs} ms`}
+            </span>
           </div>
           <p className="mt-2 text-xs text-green-600 dark:text-green-400">
             The proof has been generated. Copy it to share or paste it in the

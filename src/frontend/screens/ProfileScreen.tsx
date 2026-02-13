@@ -5,6 +5,7 @@ import {
   Info,
   Loader2,
   CheckCircle,
+  Lock,
 } from "lucide-react";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
@@ -14,6 +15,7 @@ import {
   ConfirmationDialog,
   WalletUnlockDialog,
 } from "@/components/shared";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -150,14 +152,17 @@ export function ProfileScreen() {
     [identities, selectedIdentityId],
   );
 
-  // Determine wallet alias for the unlock dialog
-  const walletAlias = useMemo(() => {
-    if (!selectedIdentity) return "Wallet";
-    const hash = selectedIdentity.associatedWalletHashes[0];
-    if (!hash) return "Wallet";
-    const wallet = wallets.find((w) => w.seedHash === hash);
-    return wallet?.alias ?? "Wallet";
+  const unlockWallet = useWalletStore((s) => s.unlockWallet);
+
+  // ── Associated wallet & lock state ──
+  const associatedWallet = useMemo(() => {
+    if (!selectedIdentity) return null;
+    const hashes = selectedIdentity.associatedWalletHashes;
+    if (!hashes || hashes.length === 0) return null;
+    return wallets.find((w) => hashes.includes(w.seedHash)) ?? null;
   }, [selectedIdentity, wallets]);
+
+  const walletAlias = associatedWallet?.alias ?? "Wallet";
 
   // ── Edit state ──
   const [editing, setEditing] = useState(false);
@@ -175,6 +180,8 @@ export function ProfileScreen() {
   // ── Dialog state ──
   const [showDiscardDialog, setShowDiscardDialog] = useState(false);
   const [showWalletUnlock, setShowWalletUnlock] = useState(false);
+  const [walletUnlockError, setWalletUnlockError] = useState<string | null>(null);
+  const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<Set<string>>(new Set());
   const [showGuidelinesSheet, setShowGuidelinesSheet] = useState(false);
   const [showAvatarGuidelinesSheet, setShowAvatarGuidelinesSheet] = useState(false);
   const [showAvatarDialog, setShowAvatarDialog] = useState(false);
@@ -183,6 +190,12 @@ export function ProfileScreen() {
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
   // Track whether we dispatched a save, so we can detect completion
   const [saveDispatched, setSaveDispatched] = useState(false);
+
+  // ── Derived: wallet locked state ──
+  const walletLocked =
+    !!associatedWallet &&
+    associatedWallet.usesPassword &&
+    !walletUnlockedHashes.has(associatedWallet.seedHash);
 
   // Reset state when identity changes (React pattern: derive state from props)
   if (trackedIdentityId !== selectedIdentityId) {
@@ -267,6 +280,12 @@ export function ProfileScreen() {
   }, [hasUnsavedChanges, cancelEditing]);
 
   const handleSave = useCallback(() => {
+    // Gate on wallet lock
+    if (walletLocked) {
+      setShowWalletUnlock(true);
+      return;
+    }
+
     const errors = validateProfile(editDisplayName, editBio, editAvatarUrl);
     if (errors.length > 0) {
       setMessage({ text: errors[0]!.message, type: "error" });
@@ -281,7 +300,7 @@ export function ProfileScreen() {
       bio: bio || null,
       avatarUrl: url || null,
     });
-  }, [editDisplayName, editBio, editAvatarUrl, updateProfile]);
+  }, [walletLocked, editDisplayName, editBio, editAvatarUrl, updateProfile]);
 
   // ── No identity selected ──
   if (!selectedIdentityId) {
@@ -499,6 +518,24 @@ export function ProfileScreen() {
             </div>
           )}
 
+          {/* Wallet locked warning */}
+          {walletLocked && (
+            <div className="flex items-center gap-2">
+              <Lock className="h-3.5 w-3.5 text-amber-500" />
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                Wallet is locked.
+              </span>
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                onClick={() => setShowWalletUnlock(true)}
+              >
+                Unlock Wallet
+              </Button>
+            </div>
+          )}
+
           {/* Action buttons */}
           <div className="flex items-center justify-end gap-3 pt-2">
             <Button
@@ -510,7 +547,7 @@ export function ProfileScreen() {
             </Button>
             <Button
               onClick={handleSave}
-              disabled={!isValid || profileSaving || identityBalance < 10000}
+              disabled={!isValid || profileSaving || identityBalance < 10000 || walletLocked}
             >
               {profileSaving ? (
                 <>
@@ -540,18 +577,34 @@ export function ProfileScreen() {
           }}
         />
 
-        {/* Wallet unlock (placeholder for future integration) */}
-        <WalletUnlockDialog
-          open={showWalletUnlock}
-          onOpenChange={setShowWalletUnlock}
-          walletAlias={walletAlias}
-          onResult={(result) => {
-            if (result.status === "unlocked") {
-              setShowWalletUnlock(false);
-              handleSave();
-            }
-          }}
-        />
+        {/* Wallet unlock dialog */}
+        {associatedWallet && (
+          <WalletUnlockDialog
+            open={showWalletUnlock}
+            onOpenChange={setShowWalletUnlock}
+            walletAlias={walletAlias}
+            error={walletUnlockError}
+            passwordHint={associatedWallet.passwordHint ?? null}
+            onResult={async (result: WalletUnlockResult) => {
+              if (result.status === "unlocked" && associatedWallet) {
+                setWalletUnlockError(null);
+                const error = await unlockWallet(
+                  { type: "hd", seedHash: associatedWallet.seedHash },
+                  result.password,
+                );
+                if (error) {
+                  setWalletUnlockError(error);
+                  return;
+                }
+                setWalletUnlockedHashes(
+                  (prev) => new Set([...prev, associatedWallet.seedHash]),
+                );
+                setShowWalletUnlock(false);
+                handleSave();
+              }
+            }}
+          />
+        )}
 
         {/* Profile guidelines sheet */}
         <Sheet open={showGuidelinesSheet} onOpenChange={setShowGuidelinesSheet}>

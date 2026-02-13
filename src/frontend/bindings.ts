@@ -799,6 +799,20 @@ async walletClearSpvData() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Clear all DIP-17 platform payment addresses for the current network.
+ *
+ * Removes platform addresses from the database and in-memory wallet state.
+ * This is a developer tool for testing platform address sync.
+ */
+async walletClearPlatformAddresses() : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("wallet_clear_platform_addresses") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Bootstrap known addresses for a wallet.
  *
  * Populates the wallet's `known_addresses` and `watched_addresses` maps
@@ -880,6 +894,21 @@ async walletNotifyLocked(walletSeedHash: string) : Promise<Result<null, string>>
 async walletGetPrivateKey(input: GetPrivateKeyInput) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("wallet_get_private_key", { input }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Validate a Dash Core address string against the current network.
+ *
+ * Returns `Ok(())` if the address is valid for the active network, or an
+ * error message describing why it's invalid (bad format, wrong network, etc.).
+ * Used by the frontend for inline address validation on input change.
+ */
+async validateCoreAddress(address: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("validate_core_address", { address }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2228,6 +2257,28 @@ async settingsGetAutoStartSpv() : Promise<Result<boolean, string>> {
 }
 },
 /**
+ * Update use_local_spv_node setting.
+ */
+async settingsUpdateUseLocalSpvNode(useLocal: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_use_local_spv_node", { useLocal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Get use_local_spv_node setting.
+ */
+async settingsGetUseLocalSpvNode() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_get_use_local_spv_node") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Open a native file dialog to select the Dash-Qt executable.
  *
  * Performs platform-specific validation:
@@ -2240,6 +2291,33 @@ async settingsGetAutoStartSpv() : Promise<Result<boolean, string>> {
  */
 async settingsPickDashQtPath() : Promise<PickDashQtPathResult> {
     return await TAURI_INVOKE("settings_pick_dash_qt_path");
+},
+/**
+ * Get the current local network RPC password from the in-memory config.
+ *
+ * Returns `None` when no local/regtest context is configured.
+ */
+async settingsGetLocalRpcPassword() : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_get_local_rpc_password") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save a new local network RPC password.
+ *
+ * Persists to `.env`, updates the in-memory config, and rebuilds the RPC
+ * client + SDK so the change takes effect immediately.
+ */
+async settingsUpdateLocalRpcPassword(password: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("settings_update_local_rpc_password", { password }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 /**
  * Check if developer mode is enabled.

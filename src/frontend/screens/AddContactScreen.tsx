@@ -9,11 +9,13 @@ import {
   Info,
   Key,
   ChevronDown,
+  Lock,
 } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { Island } from "@/components/layout/Island";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { WalletUnlockDialog } from "@/components/shared";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -198,14 +200,17 @@ export function AddContactScreen() {
     [identities, selectedIdentityId],
   );
 
-  // ── Wallet alias for unlock dialog ──
-  const walletAlias = useMemo(() => {
-    if (!selectedIdentity) return "Wallet";
-    const hash = selectedIdentity.associatedWalletHashes[0];
-    if (!hash) return "Wallet";
-    const wallet = wallets.find((w) => w.seedHash === hash);
-    return wallet?.alias ?? "Wallet";
+  const unlockWallet = useWalletStore((s) => s.unlockWallet);
+
+  // ── Associated wallet & lock state ──
+  const associatedWallet = useMemo(() => {
+    if (!selectedIdentity) return null;
+    const hashes = selectedIdentity.associatedWalletHashes;
+    if (!hashes || hashes.length === 0) return null;
+    return wallets.find((w) => hashes.includes(w.seedHash)) ?? null;
   }, [selectedIdentity, wallets]);
+
+  const walletAlias = associatedWallet?.alias ?? "Wallet";
 
   // ── Available signing keys ──
   const signingKeys = useMemo(
@@ -226,7 +231,15 @@ export function AddContactScreen() {
 
   // ── Dialog state ──
   const [showWalletUnlock, setShowWalletUnlock] = useState(false);
+  const [walletUnlockError, setWalletUnlockError] = useState<string | null>(null);
+  const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<Set<string>>(new Set());
   const [showInfoDialog, setShowInfoDialog] = useState(false);
+
+  // ── Derived: wallet locked state ──
+  const walletLocked =
+    !!associatedWallet &&
+    associatedWallet.usesPassword &&
+    !walletUnlockedHashes.has(associatedWallet.seedHash);
 
   // ── Auto-select best key when identity changes ──
   if (trackedIdentityId !== selectedIdentityId) {
@@ -288,6 +301,12 @@ export function AddContactScreen() {
   // ── Handlers ──
 
   const handleSend = useCallback(async () => {
+    // Gate on wallet lock
+    if (walletLocked) {
+      setShowWalletUnlock(true);
+      return;
+    }
+
     // Client-side validation
     const uv = validateUsernameOrId(usernameOrId);
     if (!uv.valid) {
@@ -324,6 +343,7 @@ export function AddContactScreen() {
     // Task dispatched — stay in "sending", wait for task event
     setTaskId(id);
   }, [
+    walletLocked,
     usernameOrId,
     accountLabel,
     selectedIdentity,
@@ -369,13 +389,25 @@ export function AddContactScreen() {
   }, [navigate]);
 
   const handleWalletUnlockResult = useCallback(
-    (result: { status: "unlocked" | "cancelled" }) => {
-      if (result.status === "unlocked") {
+    async (result: WalletUnlockResult) => {
+      if (result.status === "unlocked" && associatedWallet) {
+        setWalletUnlockError(null);
+        const error = await unlockWallet(
+          { type: "hd", seedHash: associatedWallet.seedHash },
+          result.password,
+        );
+        if (error) {
+          setWalletUnlockError(error);
+          return;
+        }
+        setWalletUnlockedHashes(
+          (prev) => new Set([...prev, associatedWallet.seedHash]),
+        );
         setShowWalletUnlock(false);
         handleSend();
       }
     },
-    [handleSend],
+    [associatedWallet, unlockWallet, handleSend],
   );
 
   // ── No identity selected ──
@@ -712,6 +744,24 @@ export function AddContactScreen() {
         )}
       </div>
 
+      {/* Wallet locked warning */}
+      {walletLocked && (
+        <div className="flex items-center gap-2 px-1">
+          <Lock className="h-3.5 w-3.5 text-amber-500" />
+          <span className="text-xs text-amber-600 dark:text-amber-400">
+            Wallet is locked.
+          </span>
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-xs"
+            onClick={() => setShowWalletUnlock(true)}
+          >
+            Unlock Wallet
+          </Button>
+        </div>
+      )}
+
       {/* Action bar */}
       <Separator className="mt-6 mb-4" />
       <div className="flex items-center justify-between px-1">
@@ -720,7 +770,7 @@ export function AddContactScreen() {
         </Button>
         <Button
           onClick={handleSend}
-          disabled={!canSend || screenState === "sending"}
+          disabled={!canSend || screenState === "sending" || walletLocked}
           data-testid="send-button"
         >
           {screenState === "sending" ? (
@@ -760,12 +810,16 @@ export function AddContactScreen() {
       </Dialog>
 
       {/* Wallet Unlock Dialog */}
-      <WalletUnlockDialog
-        open={showWalletUnlock}
-        onOpenChange={setShowWalletUnlock}
-        walletAlias={walletAlias}
-        onResult={handleWalletUnlockResult}
-      />
+      {associatedWallet && (
+        <WalletUnlockDialog
+          open={showWalletUnlock}
+          onOpenChange={setShowWalletUnlock}
+          walletAlias={walletAlias}
+          error={walletUnlockError}
+          passwordHint={associatedWallet.passwordHint ?? null}
+          onResult={handleWalletUnlockResult}
+        />
+      )}
     </Island>
   );
 }

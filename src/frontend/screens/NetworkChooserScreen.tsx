@@ -83,6 +83,7 @@ export function NetworkChooserScreen() {
   const [disableZmq, setDisableZmq] = useState(false);
   const [closeDashQtOnExit, setCloseDashQtOnExit] = useState(true);
   const [autoStartSpv, setAutoStartSpv] = useState(false);
+  const [useLocalSpvNode, setUseLocalSpvNode] = useState(false);
   const [dashQtPath, setDashQtPath] = useState<string | null>(null);
   const [localPassword, setLocalPassword] = useState("");
   const [showLocalPassword, setShowLocalPassword] = useState(false);
@@ -130,6 +131,15 @@ export function NetworkChooserScreen() {
       }
 
       try {
+        const pw = await commands.settingsGetLocalRpcPassword();
+        if (pw.status === "ok" && pw.data) {
+          setLocalPassword(pw.data);
+        }
+      } catch {
+        // Backend not available
+      }
+
+      try {
         const devMode = await commands.contextIsDeveloperMode();
         if (typeof devMode === "boolean") {
           setDeveloperMode(devMode);
@@ -151,6 +161,15 @@ export function NetworkChooserScreen() {
         const autoResult = await commands.settingsGetAutoStartSpv();
         if (autoResult.status === "ok") {
           setAutoStartSpv(autoResult.data);
+        }
+      } catch {
+        // Backend not available
+      }
+
+      try {
+        const localResult = await commands.settingsGetUseLocalSpvNode();
+        if (localResult.status === "ok") {
+          setUseLocalSpvNode(localResult.data);
         }
       } catch {
         // Backend not available
@@ -416,6 +435,17 @@ export function NetworkChooserScreen() {
     }
   }, [autoStartSpv]);
 
+  const handleSaveUseLocalSpvNode = useCallback(async (value: boolean) => {
+    const prev = useLocalSpvNode;
+    setUseLocalSpvNode(value);
+    try {
+      await commands.settingsUpdateUseLocalSpvNode(value);
+    } catch (e) {
+      setUseLocalSpvNode(prev);
+      toastError(e instanceof Error ? e.message : "Failed to save setting");
+    }
+  }, [useLocalSpvNode]);
+
   const handleDeveloperModeToggle = useCallback(
     async (enabled: boolean) => {
       const prev = developerMode;
@@ -477,9 +507,17 @@ export function NetworkChooserScreen() {
   }, []);
 
   const handleSaveLocalPassword = useCallback(async () => {
-    // TODO: This would need a dedicated IPC command to save the local network password
-    toast.warning("Not yet implemented — local network password saving is coming soon.");
-  }, []);
+    try {
+      const result = await commands.settingsUpdateLocalRpcPassword(localPassword);
+      if (result.status === "ok") {
+        toast.success("Local network password saved.");
+      } else {
+        toastError(result.error);
+      }
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : String(e));
+    }
+  }, [localPassword]);
 
   const isSpvActive =
     spvStatus === "running" || spvStatus === "syncing" || spvStatus === "starting";
@@ -870,8 +908,16 @@ export function NetworkChooserScreen() {
                     variant="outline"
                     size="sm"
                     onClick={async () => {
-                      // TODO: Implement clear platform addresses IPC
-                      toast.warning("Not yet implemented — clear platform addresses is coming soon.");
+                      try {
+                        const result = await commands.walletClearPlatformAddresses();
+                        if (result.status === "ok") {
+                          toast.success(`Cleared ${result.data} platform addresses for ${networkLabels[currentNetwork]}.`);
+                        } else {
+                          toast.error(`Failed to clear platform addresses: ${result.error}`);
+                        }
+                      } catch (e) {
+                        toast.error(`Failed to clear platform addresses: ${e}`);
+                      }
                     }}
                     data-testid="clear-platform-addresses"
                   >
@@ -895,7 +941,15 @@ export function NetworkChooserScreen() {
                     Choose how SPV finds peers for blockchain sync on
                     mainnet/testnet.
                   </p>
-                  {/* Note: use_local_spv_node toggle would need a dedicated IPC command */}
+                  <div className="mt-2">
+                    <CheckboxRow
+                      checked={useLocalSpvNode}
+                      onChange={handleSaveUseLocalSpvNode}
+                      label="Use local Dash Core node"
+                      description={useLocalSpvNode ? "Connect to local node at 127.0.0.1" : "Use DNS seed discovery (default)"}
+                      testId="use-local-spv-node"
+                    />
+                  </div>
                   <p className="mt-2 text-xs text-muted-foreground italic">
                     Note: Changes take effect on next SPV sync start.
                     Devnet/local networks always use configured host.

@@ -9,8 +9,8 @@ pub mod task_dispatcher;
 
 use dto::NetworkDto;
 use events::{
-    ScheduledVoteExecutedEvent, SpvStatusEvent, TaskErrorEvent, TaskResultEvent,
-    WalletUpdatedEvent, ZmqChainLockedBlockEvent, ZmqConnectionStatusEvent,
+    ScheduledVoteExecutedEvent, ScheduledVoteInProgressEvent, SpvStatusEvent, TaskErrorEvent,
+    TaskResultEvent, WalletUpdatedEvent, ZmqChainLockedBlockEvent, ZmqConnectionStatusEvent,
     ZmqIsLockedTransactionEvent,
 };
 use serde::{Deserialize, Serialize};
@@ -236,12 +236,14 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::wallet::wallet_start_spv,
             commands::wallet::wallet_stop_spv,
             commands::wallet::wallet_clear_spv_data,
+            commands::wallet::wallet_clear_platform_addresses,
             commands::wallet::wallet_bootstrap_addresses,
             commands::wallet::wallet_unlock,
             commands::wallet::wallet_lock,
             commands::wallet::wallet_notify_unlocked,
             commands::wallet::wallet_notify_locked,
             commands::wallet::wallet_get_private_key,
+            commands::wallet::validate_core_address,
             // Contract commands
             commands::contract::contract_fetch,
             commands::contract::contract_fetch_with_descriptions,
@@ -374,7 +376,11 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             commands::settings::settings_update_close_dash_qt_on_exit,
             commands::settings::settings_update_auto_start_spv,
             commands::settings::settings_get_auto_start_spv,
+            commands::settings::settings_update_use_local_spv_node,
+            commands::settings::settings_get_use_local_spv_node,
             commands::settings::settings_pick_dash_qt_path,
+            commands::settings::settings_get_local_rpc_password,
+            commands::settings::settings_update_local_rpc_password,
             // Context commands
             commands::settings::context_is_developer_mode,
             commands::settings::context_enable_developer_mode,
@@ -392,6 +398,7 @@ fn create_specta_builder() -> Builder<tauri::Wry> {
             ZmqConnectionStatusEvent,
             SpvStatusEvent,
             WalletUpdatedEvent,
+            ScheduledVoteInProgressEvent,
             ScheduledVoteExecutedEvent,
         ])
 }

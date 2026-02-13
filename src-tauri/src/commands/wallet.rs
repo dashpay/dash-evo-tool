@@ -6,9 +6,9 @@
 
 use crate::dto::common::{CreditsDto, SingleKeyHashDto, WalletSeedHashDto};
 use crate::dto::wallet::{
-    AssetLockDto, AssetLockProofDetailsDto, GenerateReceiveAddressResponseDto,
-    PlatformAddressDto, SingleKeyWalletDto, UtxoDto, WalletAddressDto, WalletDto, WalletListDto,
-    WalletRefDto, WalletTransactionDto,
+    AssetLockDto, AssetLockProofDetailsDto, GenerateReceiveAddressResponseDto, PlatformAddressDto,
+    SingleKeyWalletDto, UtxoDto, WalletAddressDto, WalletDto, WalletListDto, WalletRefDto,
+    WalletTransactionDto,
 };
 use crate::state::AppState;
 use crate::task_dispatcher;
@@ -1325,6 +1325,19 @@ pub fn wallet_clear_spv_data(state: tauri::State<'_, Arc<AppState>>) -> Result<(
     ctx.clear_spv_data()
 }
 
+/// Clear all DIP-17 platform payment addresses for the current network.
+///
+/// Removes platform addresses from the database and in-memory wallet state.
+/// This is a developer tool for testing platform address sync.
+#[tauri::command]
+#[specta::specta]
+pub fn wallet_clear_platform_addresses(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<usize, String> {
+    let ctx = state.current_context();
+    ctx.clear_platform_addresses()
+}
+
 /// Bootstrap known addresses for a wallet.
 ///
 /// Populates the wallet's `known_addresses` and `watched_addresses` maps
@@ -1526,6 +1539,31 @@ pub fn wallet_get_private_key(
         .map_err(|e| format!("Failed to derive private key: {}", e))?;
 
     Ok(private_key.to_wif())
+}
+
+// ---------------------------------------------------------------------------
+// Address validation
+// ---------------------------------------------------------------------------
+
+/// Validate a Dash Core address string against the current network.
+///
+/// Returns `Ok(())` if the address is valid for the active network, or an
+/// error message describing why it's invalid (bad format, wrong network, etc.).
+/// Used by the frontend for inline address validation on input change.
+#[tauri::command]
+#[specta::specta]
+pub fn validate_core_address(
+    state: tauri::State<'_, Arc<AppState>>,
+    address: String,
+) -> Result<(), String> {
+    let trimmed = address.trim();
+    if trimmed.is_empty() {
+        return Err("Address is empty".to_string());
+    }
+    let ctx = state.current_context();
+    let network = ctx.network();
+    parse_address_checked(trimmed, network)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

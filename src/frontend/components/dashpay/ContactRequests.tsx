@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useMemo, useCallback } from "react";
 import {
   User,
   Inbox,
@@ -7,6 +7,7 @@ import {
   Check,
   X,
   AlertTriangle,
+  Lock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +15,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { LoadingSpinner } from "@/components/feedback/LoadingSpinner";
 import { ConfirmationDialog } from "@/components/shared/ConfirmationDialog";
+import { WalletUnlockDialog } from "@/components/shared";
+import type { WalletUnlockResult } from "@/components/shared/WalletUnlockDialog";
 import { useDashPayStore } from "@/stores/dashpayStore";
+import { useIdentityStore } from "@/stores/identityStore";
+import { useWalletStore } from "@/stores/walletStore";
 import type { StoredContactRequestDto } from "@/bindings";
 import { displayId } from "@/lib/utils";
 
@@ -232,6 +237,39 @@ export function ContactRequests({ onAddContact }: ContactRequestsProps) {
   const rejectContactRequest = useDashPayStore(
     (s) => s.rejectContactRequest,
   );
+  const selectedIdentityId = useDashPayStore((s) => s.selectedIdentityId);
+  const identities = useIdentityStore((s) => s.identities);
+  const wallets = useWalletStore((s) => s.hdWallets);
+  const unlockWallet = useWalletStore((s) => s.unlockWallet);
+
+  // ── Associated wallet & lock state ──
+  const selectedIdentity = useMemo(
+    () => identities.find((i) => i.id === selectedIdentityId) ?? null,
+    [identities, selectedIdentityId],
+  );
+
+  const associatedWallet = useMemo(() => {
+    if (!selectedIdentity) return null;
+    const hashes = selectedIdentity.associatedWalletHashes;
+    if (!hashes || hashes.length === 0) return null;
+    return wallets.find((w) => hashes.includes(w.seedHash)) ?? null;
+  }, [selectedIdentity, wallets]);
+
+  const walletAlias = associatedWallet?.alias ?? "Wallet";
+
+  const [showWalletUnlock, setShowWalletUnlock] = useState(false);
+  const [walletUnlockError, setWalletUnlockError] = useState<string | null>(null);
+  const [walletUnlockedHashes, setWalletUnlockedHashes] = useState<Set<string>>(new Set());
+  const [pendingAction, setPendingAction] = useState<{
+    type: "accept" | "reject";
+    dbRowId: number;
+    platformId: string;
+  } | null>(null);
+
+  const walletLocked =
+    !!associatedWallet &&
+    associatedWallet.usesPassword &&
+    !walletUnlockedHashes.has(associatedWallet.seedHash);
 
   const [activeSubTab, setActiveSubTab] = useState<"incoming" | "outgoing">(
     "incoming",
@@ -256,6 +294,17 @@ export function ContactRequests({ onAddContact }: ContactRequestsProps) {
     [],
   );
 
+  const dispatchAction = useCallback(
+    (type: "accept" | "reject", dbRowId: number, platformId: string) => {
+      if (type === "accept") {
+        acceptContactRequest(dbRowId, platformId);
+      } else {
+        rejectContactRequest(dbRowId, platformId);
+      }
+    },
+    [acceptContactRequest, rejectContactRequest],
+  );
+
   const handleConfirmResult = useCallback(
     (status: "confirmed" | "canceled") => {
       if (status === "confirmed" && confirmDialog.request) {
@@ -263,18 +312,52 @@ export function ContactRequests({ onAddContact }: ContactRequestsProps) {
         if (!platformId) {
           // Old DB row without platform document ID — trigger a refresh
           useDashPayStore.getState().refreshContactRequests();
+          setConfirmDialog({ open: false, type: "accept", request: null });
           return;
         }
         const dbRowId = confirmDialog.request.id;
-        if (confirmDialog.type === "accept") {
-          acceptContactRequest(dbRowId, platformId);
-        } else {
-          rejectContactRequest(dbRowId, platformId);
+        const actionType = confirmDialog.type;
+
+        // Gate on wallet lock
+        if (walletLocked) {
+          setPendingAction({ type: actionType, dbRowId, platformId });
+          setShowWalletUnlock(true);
+          setConfirmDialog({ open: false, type: "accept", request: null });
+          return;
         }
+
+        dispatchAction(actionType, dbRowId, platformId);
       }
       setConfirmDialog({ open: false, type: "accept", request: null });
     },
-    [confirmDialog, acceptContactRequest, rejectContactRequest],
+    [confirmDialog, walletLocked, dispatchAction],
+  );
+
+  const handleWalletUnlockResult = useCallback(
+    async (result: WalletUnlockResult) => {
+      if (result.status === "unlocked" && associatedWallet) {
+        setWalletUnlockError(null);
+        const error = await unlockWallet(
+          { type: "hd", seedHash: associatedWallet.seedHash },
+          result.password,
+        );
+        if (error) {
+          setWalletUnlockError(error);
+          return;
+        }
+        setWalletUnlockedHashes(
+          (prev) => new Set([...prev, associatedWallet.seedHash]),
+        );
+        setShowWalletUnlock(false);
+
+        // Replay the pending action
+        if (pendingAction) {
+          dispatchAction(pendingAction.type, pendingAction.dbRowId, pendingAction.platformId);
+          setPendingAction(null);
+        }
+      }
+    },
+    [associatedWallet, unlockWallet, pendingAction, dispatchAction],
   );
 
   if (requestsLoading) {
@@ -299,6 +382,24 @@ export function ContactRequests({ onAddContact }: ContactRequestsProps) {
         >
           <AlertTriangle className="h-4 w-4 shrink-0" />
           <span>{requestsError}</span>
+        </div>
+      )}
+
+      {/* Wallet locked warning */}
+      {walletLocked && (
+        <div className="flex items-center gap-2">
+          <Lock className="h-3.5 w-3.5 text-amber-500" />
+          <span className="text-xs text-amber-600 dark:text-amber-400">
+            Wallet is locked. Unlock to accept or reject requests.
+          </span>
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-xs"
+            onClick={() => setShowWalletUnlock(true)}
+          >
+            Unlock Wallet
+          </Button>
         </div>
       )}
 
@@ -383,6 +484,18 @@ export function ContactRequests({ onAddContact }: ContactRequestsProps) {
         danger
         onResult={handleConfirmResult}
       />
+
+      {/* Wallet unlock dialog */}
+      {associatedWallet && (
+        <WalletUnlockDialog
+          open={showWalletUnlock}
+          onOpenChange={setShowWalletUnlock}
+          walletAlias={walletAlias}
+          error={walletUnlockError}
+          passwordHint={associatedWallet.passwordHint ?? null}
+          onResult={handleWalletUnlockResult}
+        />
+      )}
     </div>
   );
 }

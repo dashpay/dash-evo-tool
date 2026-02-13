@@ -26,6 +26,38 @@ impl AppContext {
         self.spv_manager.clear_data_dir()
     }
 
+    pub fn clear_platform_addresses(&self) -> Result<usize, String> {
+        let count = self
+            .db
+            .clear_all_platform_addresses(&self.network)
+            .map_err(|e| format!("Failed to clear platform addresses: {e}"))?;
+
+        if let Ok(wallets) = self.wallets.read() {
+            for wallet_arc in wallets.values() {
+                if let Ok(mut wallet) = wallet_arc.write() {
+                    wallet.platform_address_info.clear();
+                    wallet
+                        .known_addresses
+                        .retain(|_, path| !path.is_platform_payment(self.network));
+                    wallet
+                        .watched_addresses
+                        .retain(|path, _| !path.is_platform_payment(self.network));
+                    let platform_addrs: Vec<_> = wallet
+                        .address_balances
+                        .keys()
+                        .filter(|addr| !wallet.known_addresses.contains_key(*addr))
+                        .cloned()
+                        .collect();
+                    for addr in platform_addrs {
+                        wallet.address_balances.remove(&addr);
+                    }
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
     pub fn clear_network_database(&self) -> Result<(), String> {
         self.db
             .clear_network_data(self.network)

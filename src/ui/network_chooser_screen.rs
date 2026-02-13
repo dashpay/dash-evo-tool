@@ -55,6 +55,8 @@ pub struct NetworkChooserScreen {
     backend_modes: HashMap<Network, CoreBackendMode>,
     headers_stage_start: Option<u32>,
     filter_headers_stage_start: Option<u32>,
+    blocks_stage_start: Option<u32>,
+    blocks_target_height: u32,
     spv_clear_dialog: Option<ConfirmationDialog>,
     spv_clear_message: Option<SpvClearMessage>,
     db_clear_dialog: Option<ConfirmationDialog>,
@@ -150,6 +152,8 @@ impl NetworkChooserScreen {
             backend_modes,
             headers_stage_start: None,
             filter_headers_stage_start: None,
+            blocks_stage_start: None,
+            blocks_target_height: 0,
             spv_clear_dialog: None,
             spv_clear_message: None,
             db_clear_dialog: None,
@@ -1346,9 +1350,30 @@ impl NetworkChooserScreen {
             } else {
                 self.filter_headers_stage_start = None;
             }
+
+            // Capture target height from headers and blocks (only increases).
+            if let Ok(headers) = progress.headers() {
+                self.blocks_target_height =
+                    self.blocks_target_height.max(headers.target_height());
+            }
+            if let Ok(blocks) = progress.blocks() {
+                // last_processed is a lower bound for chain height
+                self.blocks_target_height =
+                    self.blocks_target_height.max(blocks.last_processed());
+
+                if blocks.state() == SyncState::Syncing && self.blocks_stage_start.is_none() {
+                    self.blocks_stage_start = Some(blocks.last_processed());
+                }
+                if blocks.state() == SyncState::Synced {
+                    self.blocks_stage_start = None;
+                }
+            }
         } else {
             self.headers_stage_start = None;
             self.filter_headers_stage_start = None;
+            self.blocks_stage_start = None;
+            // Don't reset blocks_target_height here — it will be refreshed
+            // from headers/blocks on the next sync and only increases.
         }
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -1430,7 +1455,19 @@ impl NetworkChooserScreen {
                                     .color(DashColors::text_secondary(dark_mode)),
                             );
                             let blocks_progress = self.calculate_blocks_progress(snapshot);
-                            ui.add(egui::ProgressBar::new(blocks_progress).show_percentage());
+                            let blocks_text = snapshot
+                                .sync_progress
+                                .as_ref()
+                                .and_then(|p| p.blocks().ok())
+                                .map(|b| {
+                                    format!(
+                                        "{} / {}",
+                                        b.last_processed(),
+                                        self.blocks_target_height
+                                    )
+                                })
+                                .unwrap_or_default();
+                            ui.add(egui::ProgressBar::new(blocks_progress).text(blocks_text));
                             ui.end_row();
                         }
                     });
@@ -1728,21 +1765,24 @@ impl NetworkChooserScreen {
         let Ok(blocks) = progress.blocks() else {
             return 0.0;
         };
-        match blocks.state() {
-            SyncState::Syncing => {
-                // Blocks are sparse (only filter-matched blocks are fetched),
-                // so processed/requested measures actual work done vs work needed.
-                let requested = blocks.requested();
-                if requested == 0 {
-                    return 0.0;
-                }
-                (blocks.processed() as f32 / requested as f32).clamp(0.0, 1.0)
-            }
-            SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+        if blocks.state() == SyncState::Synced {
+            return 1.0;
+        }
+        // Use last_processed height relative to the tracked target height.
+        // Don't branch on SyncState — blocks can transiently leave Syncing
+        // (e.g. WaitForEvents between batches) while still making progress.
+        let target = self.blocks_target_height;
+        if target == 0 {
+            return 0.0;
+        }
+        let current = blocks.last_processed();
+        let start = self.blocks_stage_start.unwrap_or(current).min(target);
+        let span = target.saturating_sub(start);
+        if span == 0 {
+            if current >= target { 1.0 } else { 0.0 }
+        } else {
+            let done = current.saturating_sub(start);
+            (done as f32 / span as f32).clamp(0.0, 1.0)
         }
     }
 

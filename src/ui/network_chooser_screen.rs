@@ -53,6 +53,7 @@ pub struct NetworkChooserScreen {
     theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
     backend_modes: HashMap<Network, CoreBackendMode>,
+    headers_stage_start: Option<u32>,
     filter_headers_stage_start: Option<u32>,
     spv_clear_dialog: Option<ConfirmationDialog>,
     spv_clear_message: Option<SpvClearMessage>,
@@ -147,6 +148,7 @@ impl NetworkChooserScreen {
             theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
             backend_modes,
+            headers_stage_start: None,
             filter_headers_stage_start: None,
             spv_clear_dialog: None,
             spv_clear_message: None,
@@ -1309,6 +1311,25 @@ impl NetworkChooserScreen {
 
     fn render_spv_sync_progress(&mut self, ui: &mut Ui, snapshot: &SpvStatusSnapshot) {
         if let Some(progress) = &snapshot.sync_progress {
+            // Track headers download window start for checkpoint-aware progress
+            if let Ok(headers) = progress.headers() {
+                if headers.state() == SyncState::Syncing {
+                    let current = headers.current_height();
+                    let target = headers.target_height();
+                    let baseline = current.min(target);
+                    if let Some(existing) = self.headers_stage_start {
+                        self.headers_stage_start = Some(existing.min(target));
+                    } else {
+                        self.headers_stage_start = Some(baseline);
+                    }
+                } else {
+                    self.headers_stage_start = None;
+                }
+            } else {
+                self.headers_stage_start = None;
+            }
+
+            // Track filter headers download window start
             if let Ok(fh) = progress.filter_headers() {
                 if fh.state() == SyncState::Syncing {
                     let current = fh.current_height();
@@ -1326,6 +1347,7 @@ impl NetworkChooserScreen {
                 self.filter_headers_stage_start = None;
             }
         } else {
+            self.headers_stage_start = None;
             self.filter_headers_stage_start = None;
         }
 
@@ -1582,10 +1604,29 @@ impl NetworkChooserScreen {
                 if target == 0 {
                     return 0.0;
                 }
-                (headers.current_height() as f32 / target as f32).clamp(0.0, 1.0)
+                // Use download window to show progress relative to remaining work,
+                // so checkpoint-resumed syncs start near 0% rather than jumping ahead.
+                let start = self
+                    .headers_stage_start
+                    .unwrap_or(headers.current_height())
+                    .min(target);
+                let span = target.saturating_sub(start);
+                if span == 0 {
+                    if headers.current_height() >= target {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                } else {
+                    let done = headers.current_height().saturating_sub(start);
+                    (done as f32 / span as f32).clamp(0.0, 1.0)
+                }
             }
             SyncState::Synced => 1.0,
-            _ => 0.0,
+            SyncState::Initializing
+            | SyncState::WaitingForConnections
+            | SyncState::WaitForEvents
+            | SyncState::Error => 0.0,
         }
     }
 
@@ -1619,7 +1660,10 @@ impl NetworkChooserScreen {
                 }
             }
             SyncState::Synced => 1.0,
-            _ => 0.0,
+            SyncState::Initializing
+            | SyncState::WaitingForConnections
+            | SyncState::WaitForEvents
+            | SyncState::Error => 0.0,
         }
     }
 
@@ -1636,10 +1680,15 @@ impl NetworkChooserScreen {
                 if target == 0 {
                     return 0.0;
                 }
-                (filters.downloaded() as f32 / target as f32).clamp(0.0, 1.0)
+                // Use current_height (storage tip) for height-based progress,
+                // not downloaded() which is a session-level count.
+                (filters.current_height() as f32 / target as f32).clamp(0.0, 1.0)
             }
             SyncState::Synced => 1.0,
-            _ => 0.0,
+            SyncState::Initializing
+            | SyncState::WaitingForConnections
+            | SyncState::WaitForEvents
+            | SyncState::Error => 0.0,
         }
     }
 
@@ -1662,7 +1711,10 @@ impl NetworkChooserScreen {
                 (mn.current_height() as f32 / target as f32).clamp(0.0, 1.0)
             }
             SyncState::Synced => 1.0,
-            _ => 0.0,
+            SyncState::Initializing
+            | SyncState::WaitingForConnections
+            | SyncState::WaitForEvents
+            | SyncState::Error => 0.0,
         }
     }
 
@@ -1678,6 +1730,8 @@ impl NetworkChooserScreen {
         };
         match blocks.state() {
             SyncState::Syncing => {
+                // Blocks are sparse (only filter-matched blocks are fetched),
+                // so processed/requested measures actual work done vs work needed.
                 let requested = blocks.requested();
                 if requested == 0 {
                     return 0.0;
@@ -1685,7 +1739,10 @@ impl NetworkChooserScreen {
                 (blocks.processed() as f32 / requested as f32).clamp(0.0, 1.0)
             }
             SyncState::Synced => 1.0,
-            _ => 0.0,
+            SyncState::Initializing
+            | SyncState::WaitingForConnections
+            | SyncState::WaitForEvents
+            | SyncState::Error => 0.0,
         }
     }
 
@@ -1713,69 +1770,76 @@ impl NetworkChooserScreen {
         }
 
         if let Some(progress) = snapshot.sync_progress.as_ref() {
-            return Some(Self::format_sync_progress(progress));
+            return Some(Self::format_sync_progress(
+                progress,
+                snapshot.connected_peers,
+            ));
         }
 
         snapshot.last_error.clone()
     }
 
-    fn format_sync_progress(progress: &SpvSyncProgress) -> String {
+    fn format_sync_progress(progress: &SpvSyncProgress, connected_peers: usize) -> String {
         // Check each manager's state to determine what to display,
         // preferring later pipeline stages.
-        if let Ok(blocks) = progress.blocks()
+        let stage_message = if let Ok(blocks) = progress.blocks()
             && blocks.state() == SyncState::Syncing
         {
-            return format!(
+            format!(
                 "Blocks: {} requested, {} processed",
                 blocks.requested(),
                 blocks.processed()
-            );
-        }
-        if let Ok(filters) = progress.filters()
+            )
+        } else if let Ok(filters) = progress.filters()
             && filters.state() == SyncState::Syncing
         {
-            return format!(
+            format!(
                 "Filters: {} / {}",
-                filters.downloaded(),
+                filters.current_height(),
                 filters.target_height()
-            );
-        }
-        if let Ok(fh) = progress.filter_headers()
+            )
+        } else if let Ok(fh) = progress.filter_headers()
             && fh.state() == SyncState::Syncing
         {
-            return format!(
+            format!(
                 "Filter headers: {} / {}",
                 fh.current_height(),
                 fh.target_height()
-            );
-        }
-        if let Ok(mn) = progress.masternodes()
+            )
+        } else if let Ok(mn) = progress.masternodes()
             && mn.state() == SyncState::Syncing
         {
-            return format!(
-                "Masternode lists: {} / {}",
+            format!(
+                "Masternode lists: {} diffs | Height {} / {}",
+                mn.diffs_processed(),
                 mn.current_height(),
                 mn.target_height()
-            );
-        }
-        if let Ok(headers) = progress.headers()
+            )
+        } else if let Ok(headers) = progress.headers()
             && headers.state() == SyncState::Syncing
         {
-            return format!(
+            format!(
                 "Headers: {} / {}",
                 headers.current_height(),
                 headers.target_height()
-            );
-        }
-
-        if progress.is_synced() {
+            )
+        } else if progress.is_synced() {
             "Sync complete".to_string()
         } else {
             match progress.state() {
                 SyncState::WaitingForConnections => "Connecting to peers".to_string(),
+                SyncState::WaitForEvents => "Querying peer heights".to_string(),
                 SyncState::Error => "Sync error".to_string(),
-                _ => "Syncing...".to_string(),
+                SyncState::Initializing | SyncState::Syncing | SyncState::Synced => {
+                    "Syncing...".to_string()
+                }
             }
+        };
+
+        if connected_peers > 0 {
+            format!("{stage_message} | Peers: {connected_peers}")
+        } else {
+            stage_message
         }
     }
 }

@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## Migration Context
 
 This is the **Tauri + React frontend** for Dash Evo Tool, being migrated from an egui (Rust immediate-mode GUI) frontend. The egui screens in `src/ui/` remain as the **authoritative reference** for expected behavior, screen flows, and business logic. When investigating bugs or implementing features, compare against the egui implementation.

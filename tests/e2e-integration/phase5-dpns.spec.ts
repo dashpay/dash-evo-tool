@@ -177,7 +177,7 @@ test.describe("Active Contests", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -191,7 +191,7 @@ test.describe("Active Contests", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -212,7 +212,7 @@ test.describe("Active Contests", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -229,7 +229,7 @@ test.describe("Active Contests", () => {
 
   test("shows filter input for contests", async ({ page, mockIPC }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -259,7 +259,7 @@ test.describe("Active Contests", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -282,7 +282,7 @@ test.describe("Active Contests", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -310,7 +310,7 @@ test.describe("Active Contests", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -346,7 +346,7 @@ test.describe("Active Contests", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -382,7 +382,7 @@ test.describe("Active Contests", () => {
 
   test("sortable column headers are present", async ({ page, mockIPC }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -403,7 +403,7 @@ test.describe("Active Contests", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -414,7 +414,7 @@ test.describe("Active Contests", () => {
     await page.getByRole("button", { name: /Register DPNS name/i }).click();
 
     // Should navigate to register name screen
-    await page.waitForURL(/dpns-register/, { timeout: 5000 });
+    await page.waitForURL(/dpns\/register/, { timeout: 5000 });
   });
 });
 
@@ -428,7 +428,7 @@ test.describe("Vote Casting Dialog", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -470,7 +470,7 @@ test.describe("Vote Casting Dialog", () => {
 
   test("dialog shows selected votes summary", async ({ page, mockIPC }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -512,7 +512,7 @@ test.describe("Vote Casting Dialog", () => {
     mockIPC,
   }) => {
     await mockIPC.navigateWithHandlers(
-      "/contracts/dpns-active",
+      "/contracts/dpns/active",
       activeContestsHandlers(),
     );
 
@@ -562,7 +562,7 @@ test.describe("Past Contests", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-past", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/past", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [],
@@ -577,7 +577,7 @@ test.describe("Past Contests", () => {
   });
 
   test("shows Refresh button", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-past", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/past", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [],
@@ -596,7 +596,7 @@ test.describe("Past Contests", () => {
   });
 
   test("shows filter input", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-past", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/past", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [],
@@ -629,7 +629,7 @@ test.describe("Past Contests", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-past", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/past", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [],
@@ -661,7 +661,7 @@ test.describe("Past Contests", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-past", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/past", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [],
@@ -702,7 +702,7 @@ test.describe("Owned Names", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-owned", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/owned", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -717,7 +717,7 @@ test.describe("Owned Names", () => {
   });
 
   test("shows Refresh button", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-owned", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/owned", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -736,7 +736,7 @@ test.describe("Owned Names", () => {
   });
 
   test("renders owned names from mock data", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-owned", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/owned", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -766,7 +766,7 @@ test.describe("Owned Names", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-owned", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/owned", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -786,7 +786,7 @@ test.describe("Owned Names", () => {
   });
 
   test("shows filter input for owned names", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-owned", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/owned", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -807,7 +807,7 @@ test.describe("Owned Names", () => {
   });
 
   test("shows empty state when no names owned", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-owned", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/owned", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -835,7 +835,7 @@ test.describe("Scheduled Votes", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-scheduled", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/scheduled", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [],
@@ -853,7 +853,7 @@ test.describe("Scheduled Votes", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-scheduled", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/scheduled", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [createScheduledVote()],
       identity_list_local: [createVotingIdentity()],
@@ -878,7 +878,7 @@ test.describe("Scheduled Votes", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-scheduled", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/scheduled", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [createScheduledVote()],
       identity_list_local: [createVotingIdentity()],
@@ -901,7 +901,7 @@ test.describe("Scheduled Votes", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-scheduled", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/scheduled", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [createScheduledVote()],
       identity_list_local: [createVotingIdentity()],
@@ -924,7 +924,7 @@ test.describe("Scheduled Votes", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-scheduled", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/scheduled", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [createScheduledVote()],
       identity_list_local: [createVotingIdentity()],
@@ -950,7 +950,7 @@ test.describe("Scheduled Votes", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-scheduled", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/scheduled", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [],
@@ -969,7 +969,7 @@ test.describe("Scheduled Votes", () => {
   });
 
   test("filter input is present", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-scheduled", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/scheduled", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [createScheduledVote()],
       identity_list_local: [createVotingIdentity()],
@@ -996,7 +996,7 @@ test.describe("Scheduled Votes", () => {
 
 test.describe("Register DPNS Name", () => {
   test("renders register name screen", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-register", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/register", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -1011,7 +1011,7 @@ test.describe("Register DPNS Name", () => {
   });
 
   test("shows identity selector", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-register", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/register", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -1031,7 +1031,7 @@ test.describe("Register DPNS Name", () => {
   });
 
   test("shows name input with .dash suffix", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-register", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/register", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -1051,7 +1051,7 @@ test.describe("Register DPNS Name", () => {
   });
 
   test("validates name input - too short", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-register", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/register", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -1076,7 +1076,7 @@ test.describe("Register DPNS Name", () => {
   });
 
   test("shows Register button", async ({ page, mockIPC }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-register", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/register", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],
@@ -1099,7 +1099,7 @@ test.describe("Register DPNS Name", () => {
     page,
     mockIPC,
   }) => {
-    await mockIPC.navigateWithHandlers("/contracts/dpns-register", {
+    await mockIPC.navigateWithHandlers("/contracts/dpns/register", {
       contested_query_dpns_contests: { taskId: "mock-task-id" },
       contested_get_scheduled_votes: [],
       identity_list_local: [createVotingIdentity()],

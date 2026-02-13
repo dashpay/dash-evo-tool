@@ -145,7 +145,7 @@ test.describe("My Tokens Screen", () => {
       page.getByRole("button", { name: /Add Token by ID/i }),
     ).toBeVisible();
     await expect(
-      page.getByRole("button", { name: /Search Tokens/i }),
+      page.getByRole("button", { name: /Search Tokens/i }).first(),
     ).toBeVisible();
     await expect(
       page.getByRole("button", { name: /Create Token/i }),
@@ -235,7 +235,7 @@ test.describe("My Tokens Screen", () => {
       timeout: 10000,
     });
 
-    await page.getByRole("button", { name: /Search Tokens/i }).click();
+    await page.getByRole("button", { name: /Search Tokens/i }).first().click();
     await page.waitForURL(/search/, { timeout: 5000 });
   });
 

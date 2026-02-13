@@ -65,6 +65,7 @@ test.describe("Group Actions Screen", () => {
   });
 
   test("breadcrumbs contain Contracts link", async ({ page }) => {
-    await expect(page.getByText("Contracts")).toBeVisible({ timeout: 5000 });
+    const breadcrumb = page.getByRole("navigation", { name: "Breadcrumb" });
+    await expect(breadcrumb.getByText("Contracts")).toBeVisible({ timeout: 5000 });
   });
 });

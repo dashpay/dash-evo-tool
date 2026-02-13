@@ -30,8 +30,9 @@ test.describe("Token My Tokens Screen", () => {
   });
 
   test("renders Search Tokens button", async ({ page }) => {
+    // Two "Search Tokens" buttons exist: sidebar nav + action bar. Use .first() for assertion.
     await expect(
-      page.getByRole("button", { name: /search tokens/i }),
+      page.getByRole("button", { name: /search tokens/i }).first(),
     ).toBeVisible({ timeout: 5000 });
   });
 
@@ -48,7 +49,8 @@ test.describe("Token My Tokens Screen", () => {
   });
 
   test("navigates to Search Tokens when button clicked", async ({ page }) => {
-    await page.getByRole("button", { name: /search tokens/i }).click();
+    // Two "Search Tokens" buttons exist: sidebar nav + action bar. Use .first() for click.
+    await page.getByRole("button", { name: /search tokens/i }).first().click();
     await expect(page).toHaveURL(/\/tokens\/search/);
   });
 

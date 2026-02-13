@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 test.describe("DPNS Register Name Screen", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/contracts/dpns-register");
+    await page.goto("/contracts/dpns/register");
   });
 
   test("renders Register DPNS Name heading", async ({ page }) => {
@@ -36,7 +36,7 @@ test.describe("DPNS Register Name Screen", () => {
     const backBtn = page.getByTestId("back-btn");
     await expect(backBtn).toBeVisible({ timeout: 5000 });
     await backBtn.click();
-    await expect(page).toHaveURL(/\/contracts\/dpns-active/);
+    await expect(page).toHaveURL(/\/contracts\/dpns\/active/);
   });
 
   test("shows validation feedback when typing a valid name", async ({

@@ -361,7 +361,7 @@ test.describe("Journey 1: New User Onboarding", () => {
       identity_local_dpns_names: [],
     });
 
-    await page.goto("/contracts/dpns-register");
+    await page.goto("/contracts/dpns/register");
     await mockIPC.waitForInit();
 
     // Register name screen should appear with identity selector
@@ -523,8 +523,8 @@ test.describe("Journey 2: Token Creation and Transfer", () => {
       timeout: 10000,
     });
 
-    // Click Search Tokens button
-    const searchBtn = page.getByRole("button", { name: /Search Tokens/i });
+    // Click Search Tokens button (sidebar nav + action bar both have this; use .first())
+    const searchBtn = page.getByRole("button", { name: /Search Tokens/i }).first();
     await expect(searchBtn).toBeVisible({ timeout: 5000 });
     await searchBtn.click();
 

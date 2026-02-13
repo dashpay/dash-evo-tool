@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 test.describe("DPNS Active Contests Screen", () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto("/contracts/dpns-active");
+    await page.goto("/contracts/dpns/active");
   });
 
   test("renders Active Contests heading", async ({ page }) => {
@@ -62,7 +62,7 @@ test.describe("DPNS Active Contests Screen", () => {
     await expect(page).toHaveURL(/\/wallets/);
 
     // Navigate back to DPNS active contests
-    await page.goto("/contracts/dpns-active");
+    await page.goto("/contracts/dpns/active");
     await expect(
       page.getByRole("heading", { name: "Active Contests" }),
     ).toBeVisible({ timeout: 5000 });

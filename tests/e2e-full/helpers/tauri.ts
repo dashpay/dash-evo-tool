@@ -260,7 +260,13 @@ export async function dismissDialog(): Promise<void> {
  */
 export async function takeScreenshot(name: string): Promise<string> {
   const screenshotPath = `./test-results/screenshot-${name}-${Date.now()}.png`;
-  await browser.saveScreenshot(screenshotPath);
+  try {
+    await browser.saveScreenshot(screenshotPath);
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.log(`  Failed to save screenshot: ${msg}`);
+    return screenshotPath;
+  }
   return screenshotPath;
 }
 

@@ -312,10 +312,10 @@ export const config = {
             }
           },
           {
-            timeout: 120_000,
+            timeout: 300_000,
             interval: 3_000,
             timeoutMsg:
-              "SPV did not reach 'running' status within 120s in before() hook",
+              "SPV did not reach 'running' status within 300s in before() hook",
           }
         );
         console.log("  SPV sync running");

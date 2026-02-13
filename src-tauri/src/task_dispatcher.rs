@@ -419,6 +419,9 @@ fn classify_token_result(result: &TokenResult) -> TaskResultPayloadDto {
 /// Classify a `ContractResult` into a typed payload.
 ///
 /// `WithDescriptions` carries transient data (not stored in DB).
+/// `Fetched` and `FetchedWithTokenPosition` extract token info from the DataContract
+/// so the frontend can display found tokens (used by "Add Token by ID").
+/// `NotFound` signals that the contract/token was not found on Platform.
 /// All other contract results signal generic completion.
 fn classify_contract_result(result: &ContractResult) -> TaskResultPayloadDto {
     match result {
@@ -451,7 +454,86 @@ fn classify_contract_result(result: &ContractResult) -> TaskResultPayloadDto {
 
             TaskResultPayloadDto::ContractWithDescriptions { contracts }
         }
+        ContractResult::Fetched(data_contract) => {
+            classify_fetched_contract(data_contract, None)
+        }
+        ContractResult::FetchedWithTokenPosition(data_contract, pos) => {
+            classify_fetched_contract(data_contract, Some(*pos))
+        }
+        ContractResult::NotFound => TaskResultPayloadDto::TokenNotFound,
         _ => TaskResultPayloadDto::ContractCompleted,
+    }
+}
+
+/// Extract token info from a fetched `DataContract` and return it as
+/// `ContractWithDescriptions`. When `specific_position` is `Some`, only the
+/// token at that position is included; otherwise all tokens are returned.
+fn classify_fetched_contract(
+    data_contract: &dash_sdk::dpp::data_contract::DataContract,
+    specific_position: Option<dash_sdk::dpp::data_contract::TokenContractPosition>,
+) -> TaskResultPayloadDto {
+    use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+    use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
+
+    let tokens_map = data_contract.tokens();
+    if tokens_map.is_empty() {
+        return TaskResultPayloadDto::TokenNotFound;
+    }
+
+    let token_dtos: Vec<ContractTokenInfoDto> = tokens_map
+        .iter()
+        .filter(|(pos, _)| {
+            specific_position.map_or(true, |sp| **pos == sp)
+        })
+        .filter_map(|(pos, cfg)| {
+            let token_config = match data_contract.expected_token_configuration(*pos) {
+                Ok(config) => config,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping token at position {} in contract {}: {}",
+                        pos,
+                        data_contract.id(),
+                        e
+                    );
+                    return None;
+                }
+            };
+
+            let name = token_config
+                .conventions()
+                .singular_form_by_language_code_or_default("en")
+                .to_string();
+
+            let token_id = data_contract
+                .token_id(*pos)
+                .unwrap_or_default();
+
+            let config_json = serde_json::to_value(token_config).ok();
+
+            Some(ContractTokenInfoDto {
+                token_id: hex::encode(token_id.to_buffer()),
+                name,
+                description: cfg.description().clone(),
+                token_position: *pos,
+                configuration_json: config_json,
+            })
+        })
+        .collect();
+
+    if token_dtos.is_empty() {
+        return TaskResultPayloadDto::TokenNotFound;
+    }
+
+    let contract = ContractWithTokensDto {
+        contract_id: hex::encode(data_contract.id().to_buffer()),
+        description: None,
+        tokens: token_dtos,
+    };
+
+    TaskResultPayloadDto::ContractWithDescriptions {
+        contracts: vec![contract],
     }
 }
 

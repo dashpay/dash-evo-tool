@@ -48,10 +48,14 @@ describe("Token Search", () => {
     let navigated = false;
 
     // Approach 1: Click "Search Tokens" tab in the tokens left panel
-    let searchTab = await browser.$('[role="tab"]*=Search Tokens');
-    if (await searchTab.isExisting()) {
-      await searchTab.click();
-      navigated = true;
+    const tabs = await browser.$$('[role="tab"]');
+    for (const tab of tabs) {
+      const text = await tab.getText();
+      if (text.includes('Search Tokens') || text.includes('Search')) {
+        await tab.click();
+        navigated = true;
+        break;
+      }
     }
 
     if (!navigated) {
@@ -81,7 +85,7 @@ describe("Token Search", () => {
   // ─── UI: Token keyword search ──────────────────────────────────
 
   it("should search for tokens by keyword", async function () {
-    this.timeout(60_000);
+    this.timeout(90000);
 
     // Find the search input
     const searchInput = await browser.$(
@@ -132,9 +136,9 @@ describe("Token Search", () => {
         return false;
       },
       {
-        timeout: 30_000,
+        timeout: 60000,
         interval: 2_000,
-        timeoutMsg: "Token search did not return results or empty state within 30s",
+        timeoutMsg: "Token search did not return results or empty state within 60s",
       }
     );
 

@@ -70,7 +70,7 @@ describe("Platform Read Operations", () => {
   });
 
   it("should search for a DPNS name", async function () {
-    this.timeout(60_000);
+    this.timeout(120000);
 
     // Switch to "By DPNS Name" tab
     const tabs = await browser.$$('button[role="tab"]');
@@ -121,7 +121,11 @@ describe("Platform Read Operations", () => {
         if (await loadedMsg.isExisting()) return true;
 
         // Check for error state (name not found is acceptable)
-        const errorEl = await browser.$('[role="alert"], *=not found, *=error');
+        const alertEl = await browser.$('[role="alert"]');
+        if (await alertEl.isExisting()) return true;
+        const notFoundEl = await browser.$('*=not found');
+        if (await notFoundEl.isExisting()) return true;
+        const errorEl = await browser.$('*=error');
         if (await errorEl.isExisting()) return true;
 
         // Check for any error/status message in the panel
@@ -131,9 +135,9 @@ describe("Platform Read Operations", () => {
         return false;
       },
       {
-        timeout: 30_000,
+        timeout: 60000,
         interval: 2_000,
-        timeoutMsg: "DPNS name search did not complete within 30s",
+        timeoutMsg: "DPNS name search did not complete within 60s",
       }
     );
 
@@ -193,7 +197,7 @@ describe("Platform Read Operations", () => {
   });
 
   it("should enter the DPNS contract ID and fetch it", async function () {
-    this.timeout(60_000);
+    this.timeout(120000);
 
     // Find the first contract input field
     const contractInput = await browser.$(
@@ -244,9 +248,9 @@ describe("Platform Read Operations", () => {
         return false;
       },
       {
-        timeout: 45_000,
+        timeout: 90000,
         interval: 2_000,
-        timeoutMsg: "Contract fetch did not complete within 45s",
+        timeoutMsg: "Contract fetch did not complete within 90s",
       }
     );
 

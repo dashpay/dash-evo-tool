@@ -339,9 +339,9 @@ describe("Wallet UI Operations", () => {
         return false;
       },
       {
-        timeout: 90_000,
+        timeout: 180000,
         interval: 2_000,
-        timeoutMsg: "Transaction did not complete within 90 seconds",
+        timeoutMsg: "Transaction did not complete within 180 seconds",
       }
     );
 

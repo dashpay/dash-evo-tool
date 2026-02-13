@@ -25,6 +25,7 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
+import { formatElapsed } from "@/lib/utils";
 
 // ─── Constants ──────────────────────────────────────────────────────
 
@@ -570,20 +571,13 @@ export function SingleKeySendScreen() {
   // ─── Sending state ─────────────────────────────────────────────
 
   if (sendStatus.state === "sending") {
-    const formatElapsed = (secs: number) => {
-      if (secs < 60) return `${secs} second${secs === 1 ? "" : "s"}`;
-      const min = Math.floor(secs / 60);
-      const sec = secs % 60;
-      return `${min} minute${min === 1 ? "" : "s"} ${sec} second${sec === 1 ? "" : "s"}`;
-    };
-
     return (
       <Island className="flex flex-1 items-center justify-center">
         <div className="text-center space-y-6">
           <Loader2 className="h-12 w-12 animate-spin text-primary mx-auto" />
           <h2 className="text-2xl font-semibold">Sending...</h2>
           <p className="text-muted-foreground">
-            Time elapsed: {formatElapsed(elapsed)}
+            Time elapsed: {formatElapsed(elapsed * 1000)}
           </p>
         </div>
 

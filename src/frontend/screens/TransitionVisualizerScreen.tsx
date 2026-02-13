@@ -24,7 +24,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+import { cn, formatElapsed } from "@/lib/utils";
 import { toastError } from "@/lib/toastError";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -315,13 +315,6 @@ export function TransitionVisualizerScreen() {
     parseState.status === "success" &&
     (broadcastStatus.type === "idle" || broadcastStatus.type === "error");
 
-  const formatElapsed = (seconds: number): string => {
-    if (seconds < 60) return `${seconds} second${seconds !== 1 ? "s" : ""}`;
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins} minute${mins !== 1 ? "s" : ""} ${secs} second${secs !== 1 ? "s" : ""}`;
-  };
-
   return (
     <ToolPageLayout
       title="Transition Visualizer"
@@ -417,7 +410,7 @@ export function TransitionVisualizerScreen() {
             <div className="flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
               <Loader2 className="size-4 animate-spin text-blue-600 dark:text-blue-400" />
               <span className="text-sm text-blue-700 dark:text-blue-300">
-                Broadcasting… Time taken so far: {formatElapsed(elapsedSeconds)}
+                Broadcasting… Time taken so far: {formatElapsed(elapsedSeconds * 1000)}
               </span>
             </div>
           )}

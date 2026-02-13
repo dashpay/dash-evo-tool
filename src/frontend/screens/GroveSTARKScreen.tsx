@@ -34,7 +34,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn, displayId } from "@/lib/utils";
+import { cn, displayId, formatElapsed } from "@/lib/utils";
 import { toastError } from "@/lib/toastError";
 import { useIdentityStore } from "@/stores/identityStore";
 import { useContractStore } from "@/stores/contractStore";
@@ -148,15 +148,6 @@ const SYSTEM_CONTRACT_ALIASES = [
   "token_history",
   "withdrawals",
 ];
-
-// ─── Helpers ──────────────────────────────────────────────────────────
-
-function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${seconds} second${seconds !== 1 ? "s" : ""}`;
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins} minute${mins !== 1 ? "s" : ""} ${secs} second${secs !== 1 ? "s" : ""}`;
-}
 
 /**
  * GroveSTARK Zero-Knowledge Proofs tool screen.
@@ -922,7 +913,7 @@ function GenerateModeContent({
                 Generating ZK proof...
               </p>
               <p className="text-xs text-blue-600 dark:text-blue-400">
-                Time elapsed: {formatElapsed(elapsedSeconds)}
+                Time elapsed: {formatElapsed(elapsedSeconds * 1000)}
               </p>
             </div>
           </div>
@@ -1069,7 +1060,7 @@ function VerifyModeContent({
                 Verifying proof...
               </p>
               <p className="text-xs text-blue-600 dark:text-blue-400">
-                Time elapsed: {formatElapsed(elapsedSeconds)}
+                Time elapsed: {formatElapsed(elapsedSeconds * 1000)}
               </p>
             </div>
           </div>

@@ -13,7 +13,7 @@ import { commands, events } from "@/bindings";
 import type { TaskResultEvent } from "@/bindings";
 import { toastError } from "@/lib/toastError";
 import { toast } from "sonner";
-import { displayId, hexToBase58 } from "@/lib/utils";
+import { displayId, formatElapsed, hexToBase58 } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────
 
@@ -116,10 +116,10 @@ export function TokenAddByIdScreen() {
         if (cancelled) return;
         const { result } = event.payload;
 
-        if (result.type === "tokenCompleted" && statusRef.current === "searching") {
+        // Handle fetched contract with token descriptions (from FetchTokenByContractId / FetchTokenByTokenId)
+        if (result.type === "contractWithDescriptions" && statusRef.current === "searching") {
           stopTimer();
-          const payload = "data" in result ? result.data : undefined;
-          const tokens = extractFoundTokens(payload);
+          const tokens = mapContractResultToFoundTokens(result.contracts);
           if (tokens.length > 0) {
             setFoundTokens(tokens);
             setStatus("found");
@@ -129,6 +129,14 @@ export function TokenAddByIdScreen() {
           }
         }
 
+        // Handle token not found
+        if (result.type === "tokenNotFound" && statusRef.current === "searching") {
+          stopTimer();
+          setErrorMessage("No token or contract found for the given ID.");
+          setStatus("error");
+        }
+
+        // Handle generic token completion (e.g. after saving a token locally)
         if (result.type === "tokenCompleted" && addingTokenIdRef.current !== null) {
           const token = foundTokensRef.current.find((t) => t.tokenId === addingTokenIdRef.current);
           toast.success(`"${token?.name ?? "Token"}" added to My Tokens`);
@@ -258,11 +266,6 @@ export function TokenAddByIdScreen() {
     });
     setInfoDialogOpen(true);
   }, []);
-
-  const formatElapsed = (ms: number) => {
-    const seconds = (ms / 1000).toFixed(1);
-    return `${seconds}s`;
-  };
 
   return (
     <div className="flex flex-1 flex-col gap-4 p-4">
@@ -475,60 +478,110 @@ function TokenResultCard({
 // ─── Payload extraction ─────────────────────────────────────────────
 
 /**
- * Extract found tokens from a TaskResultEvent payload.
- * Handles both single token and array of tokens from the backend.
+ * Map contractWithDescriptions result payload to FoundToken[].
  */
-function extractFoundTokens(payload: unknown): FoundToken[] {
-  if (!payload || typeof payload !== "object") return [];
-
-  // Could be an array
-  if (Array.isArray(payload)) {
-    return payload
-      .map(normalizeFoundToken)
-      .filter(Boolean) as FoundToken[];
+function mapContractResultToFoundTokens(
+  contracts: Array<{
+    contractId: string;
+    description: string | null;
+    tokens: Array<{
+      tokenId: string;
+      name: string;
+      description: string | null;
+      tokenPosition: number;
+      configurationJson: unknown;
+    }>;
+  }>,
+): FoundToken[] {
+  const result: FoundToken[] = [];
+  for (const contract of contracts) {
+    for (const token of contract.tokens) {
+      const config = parseTokenConfig(token.configurationJson);
+      result.push({
+        tokenId: token.tokenId,
+        contractId: contract.contractId,
+        name: token.name || null,
+        description: token.description,
+        decimals: config.decimals,
+        tokenPosition: token.tokenPosition,
+        baseSupply: config.baseSupply,
+        maxSupply: config.maxSupply,
+        ownerIdentityId: config.ownerIdentityId,
+        paused: config.paused,
+        configurationJson: token.configurationJson,
+      });
+    }
   }
-
-  const p = payload as Record<string, unknown>;
-
-  // Could have a tokens array
-  if (Array.isArray(p.tokens)) {
-    return (p.tokens as unknown[])
-      .map(normalizeFoundToken)
-      .filter(Boolean) as FoundToken[];
-  }
-
-  // Could be a single token
-  const single = normalizeFoundToken(payload);
-  if (single) return [single];
-
-  // Could be contract info with token info embedded
-  if (p.token_name || p.name || p.tokenId || p.token_id) {
-    const token = normalizeFoundToken(payload);
-    if (token) return [token];
-  }
-
-  return [];
+  return result;
 }
 
-function normalizeFoundToken(raw: unknown): FoundToken | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Record<string, unknown>;
-
-  const tokenId = (r.tokenId ?? r.token_id) as string | undefined;
-  if (!tokenId) return null;
-
-  return {
-    tokenId,
-    contractId: ((r.contractId ?? r.contract_id ?? r.data_contract_id) as string) || "",
-    name: ((r.name ?? r.token_name) as string) || null,
-    description: ((r.description) as string) || null,
-    decimals: ((r.decimals) as number) ?? 8,
-    tokenPosition: ((r.tokenPosition ?? r.token_position) as number) || 0,
-    baseSupply: ((r.baseSupply ?? r.base_supply) as string) || null,
-    maxSupply: ((r.maxSupply ?? r.max_supply) as string) || null,
-    ownerIdentityId: ((r.ownerIdentityId ?? r.owner_identity_id) as string) || null,
-    paused: Boolean(r.paused),
-    configurationJson:
-      r.configurationJson ?? r.configuration_json ?? r.token_configuration ?? null,
+/**
+ * Parse the versioned TokenConfiguration JSON to extract display fields.
+ * The structure is typically: { V0: { conventions: { V0: { decimals, ... } }, base_supply, max_supply, ... } }
+ */
+function parseTokenConfig(configJson: unknown): {
+  decimals: number;
+  baseSupply: string | null;
+  maxSupply: string | null;
+  ownerIdentityId: string | null;
+  paused: boolean;
+} {
+  const defaults = {
+    decimals: 8,
+    baseSupply: null as string | null,
+    maxSupply: null as string | null,
+    ownerIdentityId: null as string | null,
+    paused: false,
   };
+
+  if (!configJson || typeof configJson !== "object") return defaults;
+
+  // Unwrap versioned envelope (e.g. { V0: { ... } })
+  const inner = unwrapVersioned(configJson);
+  if (!inner) return defaults;
+
+  // Extract conventions → decimals
+  const conventions = unwrapVersioned(inner.conventions);
+  if (conventions && typeof conventions.decimals === "number") {
+    defaults.decimals = conventions.decimals;
+  }
+
+  // Extract base_supply
+  if (inner.base_supply != null) {
+    defaults.baseSupply = String(inner.base_supply);
+  }
+
+  // Extract max_supply
+  if (inner.max_supply != null) {
+    defaults.maxSupply = String(inner.max_supply);
+  }
+
+  // Extract new_tokens_destination_identity
+  if (inner.new_tokens_destination_identity) {
+    const destId = typeof inner.new_tokens_destination_identity === "string"
+      ? inner.new_tokens_destination_identity
+      : null;
+    if (destId) defaults.ownerIdentityId = destId;
+  }
+
+  // Extract paused state from manual_minting/manual_burning or a direct `paused` flag
+  if (typeof inner.paused === "boolean") {
+    defaults.paused = inner.paused;
+  }
+
+  return defaults;
+}
+
+/** Unwrap a versioned enum like { V0: { ... } } to its inner object. */
+function unwrapVersioned(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  // Try V0, V1, etc.
+  for (const key of Object.keys(obj)) {
+    if (/^V\d+$/.test(key) && obj[key] && typeof obj[key] === "object") {
+      return obj[key] as Record<string, unknown>;
+    }
+  }
+  // If no version wrapper, return the object itself
+  return obj;
 }

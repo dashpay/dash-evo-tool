@@ -329,7 +329,16 @@ jobs:
             libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf \
             libgtk-3-dev libayatana-appindicator3-dev \
             libxdo-dev libssl-dev \
-            webkit2gtk-driver xvfb dbus-x11
+            webkit2gtk-driver xvfb dbus-x11 unzip
+
+      - name: Install protoc
+        run: |
+          PB_ARCH=$(dpkg --print-architecture)
+          if [ "$PB_ARCH" = "arm64" ]; then PB_ARCH="aarch_64"; else PB_ARCH="x86_64"; fi
+          curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-${PB_ARCH}.zip" -o /tmp/protoc.zip
+          sudo unzip -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          rm /tmp/protoc.zip
+          protoc --version
 
       - name: Install tauri-driver
         run: cargo install tauri-driver
@@ -368,6 +377,11 @@ jobs:
           export DISPLAY=:99
           sleep 1
 
+          # Start frontend static server (debug builds use devUrl http://localhost:1420)
+          PORT=1420 node docker/e2e/static-server.cjs &
+          DEV_SERVER_PID=$!
+          sleep 1
+
           # Start tauri-driver
           tauri-driver --port 4444 &
           DRIVER_PID=$!
@@ -378,6 +392,7 @@ jobs:
           npx wdio tests/e2e-full/wdio.conf.ts 2>&1 | tee test-results/e2e-full/wdio-output.log || TEST_EXIT=$?
 
           # Cleanup
+          kill $DEV_SERVER_PID 2>/dev/null || true
           kill $DRIVER_PID 2>/dev/null || true
           kill $XVFB_PID 2>/dev/null || true
 
@@ -401,5 +416,5 @@ jobs:
         if: failure()
         with:
           name: e2e-full-screenshots
-          path: tests/e2e-full/screenshots/
+          path: test-results/screenshot-*.png
           retention-days: 7

@@ -95,8 +95,8 @@ describe("Token Search", () => {
     await searchInput.setValue("dash");
     await browser.pause(300);
 
-    // Click the "Search" button
-    const searchBtn = await browser.$("button*=Search");
+    // Click the search submit button (not the sidebar "Search Tokens" tab)
+    const searchBtn = await browser.$("button=Search");
     await searchBtn.waitForExist({ timeout: 5_000 });
     await browser.waitUntil(
       async () => searchBtn.isEnabled(),

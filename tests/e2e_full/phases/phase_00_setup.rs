@@ -5,6 +5,7 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::spv::SpvStatus;
 use dash_evo_tool::ui::{RootScreenType, Screen};
 use dash_sdk::dpp::dashcore::Network;
+use egui::accesskit;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::collections::BTreeSet;
@@ -36,11 +37,11 @@ fn import_wallet_via_ui(
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
     println!("  On wallets screen");
 
-    // Click "Import Wallet" button
-    let found = wait_for_label(harness, "Import Wallet", Duration::from_secs(5));
+    // Click "Import Wallet" button (use role+label to avoid matching instructional text)
+    let found = wait_for_button(harness, "Import Wallet", Duration::from_secs(5));
     assert!(found, "Import Wallet button not found on wallets screen");
     harness
-        .query_by_label_contains("Import Wallet")
+        .query_by_role_and_label(accesskit::Role::Button, "Import Wallet")
         .expect("Import Wallet button should be visible")
         .click();
     harness.run_steps(10);

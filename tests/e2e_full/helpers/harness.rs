@@ -1,5 +1,6 @@
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::ui::RootScreenType;
+use egui::accesskit;
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
 
@@ -36,12 +37,31 @@ where
 }
 
 /// Wait until a label containing `text` appears in the UI.
+/// Safe with ambiguous matches — returns true if at least one node matches.
 pub fn wait_for_label(harness: &mut Harness<'_, AppState>, text: &str, timeout: Duration) -> bool {
     wait_until(
         harness,
         |h| {
             use egui_kittest::kittest::Queryable;
-            h.query_by_label_contains(text).is_some()
+            h.query_all_by_label_contains(text).next().is_some()
+        },
+        timeout,
+        5,
+    )
+}
+
+/// Wait until a button with the exact label appears in the UI.
+pub fn wait_for_button(
+    harness: &mut Harness<'_, AppState>,
+    label: &str,
+    timeout: Duration,
+) -> bool {
+    wait_until(
+        harness,
+        |h| {
+            use egui_kittest::kittest::Queryable;
+            h.query_by_role_and_label(accesskit::Role::Button, label)
+                .is_some()
         },
         timeout,
         5,
@@ -49,6 +69,7 @@ pub fn wait_for_label(harness: &mut Harness<'_, AppState>, text: &str, timeout: 
 }
 
 /// Wait until a label containing `text` disappears from the UI.
+/// Safe with ambiguous matches — returns true when no nodes match.
 pub fn wait_for_label_gone(
     harness: &mut Harness<'_, AppState>,
     text: &str,
@@ -58,7 +79,7 @@ pub fn wait_for_label_gone(
         harness,
         |h| {
             use egui_kittest::kittest::Queryable;
-            h.query_by_label_contains(text).is_none()
+            h.query_all_by_label_contains(text).next().is_none()
         },
         timeout,
         5,

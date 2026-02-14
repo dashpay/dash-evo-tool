@@ -12,13 +12,9 @@ mod phases;
 #[test]
 #[ignore]
 fn e2e_full_testnet_journey() {
-    let mnemonic = std::env::var("E2E_WALLET_MNEMONIC")
+    // Validate presence early so we fail fast before booting the app
+    std::env::var("E2E_WALLET_MNEMONIC")
         .expect("E2E_WALLET_MNEMONIC env var required (BIP39 testnet mnemonic, pre-funded)");
-    let word_count = mnemonic.split_whitespace().count();
-    assert!(
-        [12, 15, 18, 21, 24].contains(&word_count),
-        "E2E_WALLET_MNEMONIC has {word_count} words, expected 12/15/18/21/24"
-    );
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
     let _guard = rt.enter();
@@ -29,7 +25,7 @@ fn e2e_full_testnet_journey() {
     phases::phase_smoke::run(&mut harness);
 
     println!("\n=== Phase 0: Setup (Wallet Import + SPV Sync) ===");
-    phases::phase_00_setup::run(&mut harness, &mut ctx, &rt);
+    phases::phase_00_setup::run(&mut harness, &mut ctx);
 
     println!("\n=== Phase 1: Balance Verification ===");
     phases::phase_01_faucet::run(&mut harness, &mut ctx);

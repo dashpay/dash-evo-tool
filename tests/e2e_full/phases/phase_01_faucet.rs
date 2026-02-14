@@ -4,7 +4,6 @@ use dash_evo_tool::app::AppState;
 use dash_evo_tool::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
 use std::time::Duration;
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
@@ -12,15 +11,10 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     let balance = {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
-        let seed_hash = ctx
-            .wallet_seed_hash
-            .as_ref()
-            .expect("No wallet seed hash from Phase 0");
         let wallet = wallets
-            .get(seed_hash)
+            .get(ctx.seed_hash())
             .expect("Wallet not found in AppContext");
-        let w = wallet.read().unwrap();
-        w.total_balance_duffs()
+        wallet.read().unwrap().total_balance_duffs()
     };
 
     assert!(
@@ -39,10 +33,10 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
-        let seed_hash = ctx.wallet_seed_hash.as_ref().unwrap();
-        let wallet = wallets.get(seed_hash).unwrap();
-        let mut w = wallet.write().unwrap();
-        let addr = w
+        let wallet = wallets.get(ctx.seed_hash()).unwrap();
+        let addr = wallet
+            .write()
+            .unwrap()
             .receive_address(Network::Testnet, true, Some(app_ctx))
             .expect("Failed to get receive address from imported wallet");
         ctx.receive_address = Some(addr.to_string());
@@ -67,30 +61,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     println!("  UI shows wallet card with alias");
 
     // 4. Open receive dialog and verify address display
-    let receive_btn = harness
-        .query_by_label_contains("Receive")
-        .expect("Receive button must be visible on wallets screen");
-    receive_btn.click();
-    harness.run_steps(10);
-
     let addr = ctx
         .receive_address
         .as_ref()
         .expect("Receive address must be set by this point");
-    let addr_short = addr.get(..8).unwrap_or(addr);
-    let found = wait_for_label(harness, addr_short, Duration::from_secs(5));
-    assert!(
-        found,
-        "Receive dialog must display wallet address (expected prefix: {})",
-        addr_short
-    );
-    println!("  Receive dialog shows address: {}...", addr_short);
-
-    // Dismiss the dialog and verify it closed
-    harness.key_press(egui::Key::Escape);
-    harness.run_steps(5);
-    let dismissed = wait_for_label_gone(harness, addr_short, Duration::from_secs(5));
-    assert!(dismissed, "Receive dialog must close after pressing Escape");
+    open_and_verify_receive_dialog(harness, addr);
 
     println!("  Phase 01 complete: balance verified, receive address obtained");
 }

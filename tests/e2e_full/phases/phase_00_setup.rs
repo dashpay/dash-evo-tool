@@ -1,4 +1,4 @@
-use crate::helpers::context::TestContext;
+use crate::helpers::context::{TestContext, seed_hash_prefix};
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::model::wallet::WalletSeedHash;
@@ -137,20 +137,15 @@ fn import_wallet_via_ui(
         ctx.wallet_seed_hash = Some(*new_keys[0]);
     }
     println!(
-        "  Wallet imported. Seed hash prefix: {:?}",
-        ctx.wallet_seed_hash
-            .map(|h| format!("{:02x}{:02x}{:02x}{:02x}", h[0], h[1], h[2], h[3]))
+        "  Wallet imported. Seed hash prefix: {}",
+        seed_hash_prefix(ctx.seed_hash())
     );
 
     // Navigate back to wallets screen (dismiss the success screen)
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
 }
 
-pub fn run(
-    harness: &mut Harness<'_, AppState>,
-    ctx: &mut TestContext,
-    _rt: &tokio::runtime::Runtime,
-) {
+pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // 1. Read & validate mnemonic
     let mnemonic =
         std::env::var("E2E_WALLET_MNEMONIC").expect("E2E_WALLET_MNEMONIC env var required");
@@ -176,8 +171,8 @@ pub fn run(
         ctx.wallet_seed_hash = Some(seed_hash);
         ctx.wallet_reused = true;
         println!(
-            "  Reusing existing wallet. Seed hash prefix: {:02x}{:02x}{:02x}{:02x}",
-            seed_hash[0], seed_hash[1], seed_hash[2], seed_hash[3]
+            "  Reusing existing wallet. Seed hash prefix: {}",
+            seed_hash_prefix(&seed_hash)
         );
     } else {
         // 5–10. Import wallet via UI
@@ -257,15 +252,10 @@ pub fn run(
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
-        let seed_hash = ctx
-            .wallet_seed_hash
-            .as_ref()
-            .expect("Wallet seed hash must be set by this point");
         let wallet = wallets
-            .get(seed_hash)
+            .get(ctx.seed_hash())
             .expect("Wallet not found by seed hash after SPV sync");
-        let w = wallet.read().unwrap();
-        ctx.balance_duffs = w.total_balance_duffs();
+        ctx.balance_duffs = wallet.read().unwrap().total_balance_duffs();
     }
 
     // Minimum balance required for identity operations in later phases

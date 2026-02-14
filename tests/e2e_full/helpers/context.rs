@@ -11,6 +11,15 @@ pub struct TestContext {
     pub wallet_reused: bool,
 }
 
+impl TestContext {
+    /// Returns the wallet seed hash, panicking if not yet set.
+    pub fn seed_hash(&self) -> &WalletSeedHash {
+        self.wallet_seed_hash
+            .as_ref()
+            .expect("wallet_seed_hash must be set (did Phase 0 complete?)")
+    }
+}
+
 impl Default for TestContext {
     fn default() -> Self {
         Self {
@@ -22,4 +31,12 @@ impl Default for TestContext {
             wallet_reused: false,
         }
     }
+}
+
+/// Format first 4 bytes of a seed hash as a hex prefix string.
+pub fn seed_hash_prefix(hash: &WalletSeedHash) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        hash[0], hash[1], hash[2], hash[3]
+    )
 }

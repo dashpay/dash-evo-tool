@@ -1,4 +1,4 @@
-use crate::helpers::context::TestContext;
+use crate::helpers::context::{TestContext, seed_hash_prefix};
 use crate::helpers::harness::wait_until;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::spv::SpvStatus;
@@ -7,10 +7,7 @@ use std::time::Duration;
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
     // ─── 1. Stop SPV sync ──────────────────────────────────────────────
-    {
-        let app_ctx = harness.state().current_app_context();
-        app_ctx.spv_manager.stop();
-    }
+    harness.state().current_app_context().spv_manager.stop();
     println!("  SPV sync stopped");
 
     // ─── 2. Wait for SPV to finish stopping ────────────────────────────
@@ -27,11 +24,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         spv_stopped,
         "SPV should not be running after stop (still Running after 30s)"
     );
-    {
-        let app_ctx = harness.state().current_app_context();
-        let status = app_ctx.spv_manager.status();
-        println!("  SPV status after stop: {:?}", status.status);
-    }
+    let final_status = harness.state().current_app_context().spv_manager.status();
+    println!("  SPV status after stop: {:?}", final_status.status);
 
     // ─── 3. Remove test wallet from database ───────────────────────────
     if let Some(seed_hash) = &ctx.wallet_seed_hash {
@@ -51,7 +45,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
     println!(
         "  Wallet seed:    {}",
         ctx.wallet_seed_hash
-            .map(|h| format!("{:x?}...", &h[..4]))
+            .as_ref()
+            .map(seed_hash_prefix)
             .unwrap_or_else(|| "N/A".to_string())
     );
     println!(

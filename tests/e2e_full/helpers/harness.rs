@@ -79,6 +79,32 @@ pub fn navigate_to_screen(harness: &mut Harness<'_, AppState>, screen: RootScree
     harness.run_steps(15);
 }
 
+/// Open the receive dialog, verify the address is displayed, close it with Escape,
+/// and verify it was dismissed. Assumes the wallet screen is already visible.
+pub fn open_and_verify_receive_dialog(harness: &mut Harness<'_, AppState>, address: &str) {
+    use egui_kittest::kittest::Queryable;
+
+    let receive_btn = harness
+        .query_by_label_contains("Receive")
+        .expect("Receive button must be visible on wallets screen");
+    receive_btn.click();
+    harness.run_steps(10);
+
+    let addr_short = address.get(..8).unwrap_or(address);
+    let found = wait_for_label(harness, addr_short, Duration::from_secs(5));
+    assert!(
+        found,
+        "Receive dialog must display wallet address (expected prefix: {})",
+        addr_short
+    );
+    println!("  Receive dialog shows address: {}...", addr_short);
+
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(5);
+    let dismissed = wait_for_label_gone(harness, addr_short, Duration::from_secs(5));
+    assert!(dismissed, "Receive dialog must close after pressing Escape");
+}
+
 /// Navigate to a root screen by clicking the sidebar label, verifying the
 /// left panel rendered correctly and that navigation reaches the expected screen.
 pub fn navigate_to_screen_by_click(

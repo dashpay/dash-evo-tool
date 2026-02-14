@@ -31,31 +31,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     println!("  Send/Receive buttons visible");
 
     // 3. Open receive dialog and verify address
-    let receive_btn = harness
-        .query_by_label_contains("Receive")
-        .expect("Receive button must be visible on wallets screen");
-    receive_btn.click();
-    harness.run_steps(10);
-
     let addr = ctx
         .receive_address
         .as_ref()
         .expect("Receive address must be set by Phase 01");
-    let addr_short = addr.get(..8).unwrap_or(addr);
-    let found = wait_for_label(harness, addr_short, Duration::from_secs(5));
-    assert!(
-        found,
-        "Receive dialog must display wallet address (expected prefix: {})",
-        addr_short
-    );
-    println!("  Receive dialog shows address: {}...", addr_short);
-
-    // Close dialog via Escape and verify it dismissed
-    harness.key_press(egui::Key::Escape);
-    harness.run_steps(5);
-    let dismissed = wait_for_label_gone(harness, addr_short, Duration::from_secs(5));
-    assert!(dismissed, "Receive dialog must close after pressing Escape");
-    println!("  Receive dialog closed");
+    open_and_verify_receive_dialog(harness, addr);
 
     // 4. Conditional send-to-self (requires >= 0.1 DASH)
     let min_balance_for_send: u64 = 10_000_000; // 0.1 DASH in duffs
@@ -73,9 +53,10 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     println!("  Attempting send-to-self (0.001 DASH)...");
 
     // Click "Send" button to open the send screen
-    let send_btn = harness.query_by_label_contains("Send");
-    assert!(send_btn.is_some(), "Send button not found");
-    send_btn.unwrap().click();
+    harness
+        .query_by_label_contains("Send")
+        .expect("Send button not found")
+        .click();
     harness.run_steps(15);
 
     // The send screen should now be pushed onto the screen stack.

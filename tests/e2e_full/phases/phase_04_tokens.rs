@@ -79,9 +79,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
         }
 
         if has_error {
+            let error_detail =
+                capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
             println!(
-                "  Token search returned platform error (attempt {}/{})",
-                attempt, MAX_RETRIES
+                "  Token search error (attempt {}/{}): {}",
+                attempt, MAX_RETRIES, error_detail
             );
             // Dismiss error and retry
             dismiss_if_present(harness);
@@ -89,9 +91,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
 
             if attempt == MAX_RETRIES {
                 panic!(
-                    "Token search failed with platform error after {} retries. \
-                     Platform must be reachable for E2E tests.",
-                    MAX_RETRIES
+                    "Token search failed after {} retries. Last error: {}",
+                    MAX_RETRIES, error_detail
                 );
             }
             continue;

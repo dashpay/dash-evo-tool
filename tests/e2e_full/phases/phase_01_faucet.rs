@@ -8,8 +8,8 @@ use egui_kittest::kittest::Queryable;
 use std::time::Duration;
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
-    // 1. Navigate to wallets screen and verify wallet card
-    navigate_to_screen_by_click(
+    // 1. Navigate to wallets screen and verify sidebar label
+    verify_sidebar_label_and_navigate(
         harness,
         "Wallets",
         RootScreenType::RootScreenWalletsBalances,
@@ -22,18 +22,49 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     );
     println!("  UI shows wallet card with alias");
 
-    // 2. Verify the wallet screen renders a balance label containing "Balance:" and "DASH".
-    //    This proves the rendering pipeline works end-to-end — the wallet screen formats
-    //    and displays the balance (format!(" Balance: {}", Self::format_dash(current_balance))).
-    let has_balance_label = harness
+    // 2. Verify the wallet screen renders a balance label containing "Balance:" and "DASH",
+    //    then parse and verify the actual balance value matches ctx.balance_duffs.
+    let balance_text = harness
         .query_all_by_label_contains("Balance:")
-        .any(|node| format!("{:?}", node).contains("DASH"));
+        .find_map(|node| {
+            let s = format!("{:?}", node);
+            if s.contains("DASH") { Some(s) } else { None }
+        })
+        .expect(
+            "Wallet screen must render a 'Balance:' label containing 'DASH'. \
+             This means the UI rendering pipeline is broken or the wallet has no balance to display.",
+        );
+
+    // Parse numeric value from the label text.
+    // The label format is: " Balance: X.XXXXXXXX DASH"
+    // We extract the substring between "Balance:" and "DASH".
+    let ui_balance: f64 = {
+        let start = balance_text
+            .find("Balance:")
+            .expect("Balance: prefix not found in label");
+        let after_prefix = &balance_text[start + "Balance:".len()..];
+        let end = after_prefix
+            .find("DASH")
+            .expect("DASH suffix not found in label");
+        after_prefix[..end]
+            .trim()
+            .parse::<f64>()
+            .expect("Could not parse balance value as a number")
+    };
+    let expected_balance = ctx.balance_duffs as f64 / 1e8;
+
+    // Allow small floating-point tolerance
     assert!(
-        has_balance_label,
-        "Wallet screen must render a 'Balance:' label containing 'DASH'. \
-         This means the UI rendering pipeline is broken or the wallet has no balance to display."
+        (ui_balance - expected_balance).abs() < 0.00000002,
+        "UI balance ({} DASH) doesn't match wallet balance ({} DASH / {} duffs)",
+        ui_balance,
+        expected_balance,
+        ctx.balance_duffs
     );
-    println!("  'Balance:' label with DASH unit found in UI");
+    println!(
+        "  Balance value verified: {:.8} DASH matches wallet state",
+        ui_balance
+    );
 
     // 3. Get receive address and verify it's a valid testnet P2PKH address (starts with 'y')
     {

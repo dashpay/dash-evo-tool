@@ -1,3 +1,4 @@
+use crate::helpers::context::TestContext;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::ui::{RootScreenType, ScreenLike, ScreenType};
 use egui_kittest::Harness;
@@ -101,46 +102,28 @@ pub fn verify_receive_button_visible(harness: &mut Harness<'_, AppState>) {
     println!("  Receive button visible (wallet is selected)");
 }
 
-/// Navigate to a root screen by clicking the sidebar label, verifying the
-/// left panel rendered correctly and that navigation reaches the expected screen.
-pub fn navigate_to_screen_by_click(
+/// Verify the sidebar renders a label for the given screen, then navigate
+/// directly. AccessKit cannot click sidebar labels (they're non-interactive
+/// text beneath icon buttons), so we verify presence and navigate directly.
+pub fn verify_sidebar_label_and_navigate(
     harness: &mut Harness<'_, AppState>,
     label: &str,
-    expected: RootScreenType,
+    target: RootScreenType,
 ) {
     use egui_kittest::kittest::Queryable;
 
     harness.state_mut().screen_stack.clear();
     harness.run_steps(5);
 
-    // Verify the sidebar label is rendered (proves the left panel is present)
-    let node = harness
-        .query_by_label_contains(label)
-        .unwrap_or_else(|| panic!("Sidebar label '{}' must be visible for navigation", label));
-    node.click();
-    harness.run_steps(15);
-
-    // If clicking the label didn't navigate (sidebar labels are non-interactive
-    // text beneath icon buttons), set the screen directly as a fallback.
-    if harness.state().selected_main_screen != expected {
-        harness.state_mut().selected_main_screen = expected;
-    }
-
-    // Always call refresh_on_arrival so the screen picks up wallets/identities
-    // added after initial creation (e.g., wallets imported in Phase 0).
-    harness
-        .state_mut()
-        .active_root_screen_mut()
-        .refresh_on_arrival();
-    harness.run_steps(15);
-
-    assert_eq!(
-        harness.state().selected_main_screen,
-        expected,
-        "Navigation to '{}' did not switch to expected screen {:?}",
-        label,
-        expected,
+    // Verify the sidebar label is rendered (proves the left panel works)
+    assert!(
+        harness.query_by_label_contains(label).is_some(),
+        "Sidebar label '{}' must be visible (left panel rendering broken?)",
+        label
     );
+    println!("  Sidebar label '{}' verified", label);
+
+    navigate_to_screen(harness, target);
 }
 
 /// Push a screen onto the screen stack by type.
@@ -181,5 +164,31 @@ pub fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
     if let Some(dismiss) = harness.query_by_label_contains("Dismiss") {
         dismiss.click();
         harness.run_steps(5);
+    }
+}
+
+/// Capture the text of a visible error label (format: "Error: <message>").
+/// Returns None if no error label is visible.
+pub fn capture_error_text(harness: &Harness<'_, AppState>) -> Option<String> {
+    use egui_kittest::kittest::Queryable;
+    harness
+        .query_all_by_label_contains("Error:")
+        .next()
+        .map(|node| format!("{:?}", node))
+}
+
+/// Emergency cleanup after a panic — stop SPV and remove the test wallet.
+/// Both operations are synchronous (CancellationToken + rusqlite/RwLock),
+/// so they are safe to call in a panic handler.
+pub fn emergency_cleanup(harness: &Harness<'_, AppState>, ctx: &TestContext) {
+    harness.state().current_app_context().spv_manager.stop();
+    eprintln!("  Emergency: SPV stop requested");
+
+    if let Some(seed_hash) = &ctx.wallet_seed_hash {
+        let app_ctx = harness.state().current_app_context();
+        match app_ctx.remove_wallet(seed_hash) {
+            Ok(()) => eprintln!("  Emergency: wallet removed"),
+            Err(e) => eprintln!("  Emergency: wallet removal failed: {}", e),
+        }
     }
 }

@@ -82,9 +82,11 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
         } else if is_not_found {
             println!("  DPNS lookup completed: name not found (acceptable)");
         } else if has_error {
+            let error_detail =
+                capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
             println!(
-                "  DPNS lookup returned platform error (attempt {}/{})",
-                attempt, MAX_RETRIES
+                "  DPNS lookup error (attempt {}/{}): {}",
+                attempt, MAX_RETRIES, error_detail
             );
             dismiss_if_present(harness);
             harness.state_mut().screen_stack.pop();
@@ -93,9 +95,8 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
                 continue;
             }
             panic!(
-                "DPNS lookup failed with platform error after {} retries. \
-                 Platform must be reachable for E2E tests.",
-                MAX_RETRIES
+                "DPNS lookup failed after {} retries. Last error: {}",
+                MAX_RETRIES, error_detail
             );
         } else {
             panic!("DPNS lookup reached unexpected state");
@@ -155,10 +156,12 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
             return;
         }
 
-        // Transient platform error -- retry
+        // Transient platform error -- capture details and retry
+        let error_detail =
+            capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
         println!(
-            "  Contract fetch returned error (attempt {}/{})",
-            attempt, MAX_RETRIES
+            "  Contract fetch error (attempt {}/{}): {}",
+            attempt, MAX_RETRIES, error_detail
         );
         dismiss_if_present(harness);
         harness.state_mut().screen_stack.pop();
@@ -166,8 +169,8 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
 
         if attempt == MAX_RETRIES {
             panic!(
-                "DPNS contract fetch failed after {} attempts -- {} should exist on all networks",
-                MAX_RETRIES, DPNS_CONTRACT_ID
+                "DPNS contract fetch failed after {} attempts. Last error: {}",
+                MAX_RETRIES, error_detail
             );
         }
     }

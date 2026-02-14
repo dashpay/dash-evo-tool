@@ -197,9 +197,30 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         timeout_secs, retry_count, MAX_SPV_RETRIES
     );
     ctx.spv_synced = true;
-    println!("  SPV sync complete!");
+    println!("  SPV reached Running status");
 
-    // 13. Save wallet balance to context and validate
+    // 13. Wait for balance reconciliation after SPV sync
+    // SPV reaching "Running" means the service is active, but wallet balance
+    // is updated asynchronously via reconcile_spv_wallets(). Poll until non-zero.
+    const MIN_BALANCE_DUFFS: u64 = 100_000; // 0.001 DASH
+    let balance_timeout = Duration::from_secs(120);
+    let balance_ready = wait_until(
+        harness,
+        |h| {
+            let app_ctx = h.state().current_app_context();
+            let wallets = app_ctx.wallets.read().unwrap();
+            if let Some(seed_hash) = &ctx.wallet_seed_hash
+                && let Some(wallet) = wallets.get(seed_hash)
+            {
+                return wallet.read().unwrap().total_balance_duffs() >= MIN_BALANCE_DUFFS;
+            }
+            false
+        },
+        balance_timeout,
+        60, // ~1s between checks
+    );
+
+    // Read final balance
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
@@ -209,15 +230,14 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         ctx.balance_duffs = wallet.read().unwrap().total_balance_duffs();
     }
 
-    // Minimum balance required for identity operations in later phases
-    const MIN_BALANCE_DUFFS: u64 = 100_000; // 0.001 DASH
     assert!(
-        ctx.balance_duffs >= MIN_BALANCE_DUFFS,
-        "Wallet balance ({} duffs / {:.8} DASH) is below the minimum ({} duffs) \
-         required for E2E tests. Please fund the wallet.",
+        balance_ready,
+        "Wallet balance ({} duffs / {:.8} DASH) did not reach minimum ({} duffs) \
+         within {}s after SPV sync. Please fund the wallet.",
         ctx.balance_duffs,
         ctx.balance_duffs as f64 / 1e8,
         MIN_BALANCE_DUFFS,
+        balance_timeout.as_secs(),
     );
 
     println!(

@@ -1,6 +1,5 @@
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::ui::RootScreenType;
-use egui::accesskit;
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
 
@@ -44,24 +43,6 @@ pub fn wait_for_label(harness: &mut Harness<'_, AppState>, text: &str, timeout: 
         |h| {
             use egui_kittest::kittest::Queryable;
             h.query_all_by_label_contains(text).next().is_some()
-        },
-        timeout,
-        5,
-    )
-}
-
-/// Wait until a button with the exact label appears in the UI.
-pub fn wait_for_button(
-    harness: &mut Harness<'_, AppState>,
-    label: &str,
-    timeout: Duration,
-) -> bool {
-    wait_until(
-        harness,
-        |h| {
-            use egui_kittest::kittest::Queryable;
-            h.query_by_role_and_label(accesskit::Role::Button, label)
-                .is_some()
         },
         timeout,
         5,

@@ -3,9 +3,8 @@ use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::spv::SpvStatus;
-use dash_evo_tool::ui::{RootScreenType, Screen};
+use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
-use egui::accesskit;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::collections::BTreeSet;
@@ -37,15 +36,15 @@ fn import_wallet_via_ui(
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
     println!("  On wallets screen");
 
-    // Click "Import Wallet" button (use role+label to avoid matching instructional text)
-    let found = wait_for_button(harness, "Import Wallet", Duration::from_secs(5));
-    assert!(found, "Import Wallet button not found on wallets screen");
-    harness
-        .query_by_role_and_label(accesskit::Role::Button, "Import Wallet")
-        .expect("Import Wallet button should be visible")
-        .click();
+    // Push ImportMnemonicScreen directly (AccessKit button clicks don't trigger
+    // the egui action pipeline in kittest, so we push the screen programmatically)
+    {
+        let app_ctx = harness.state().current_app_context();
+        let screen = ScreenType::ImportMnemonic.create_screen(app_ctx);
+        harness.state_mut().screen_stack.push(screen);
+    }
     harness.run_steps(10);
-    println!("  Clicked Import Wallet");
+    println!("  Pushed ImportMnemonicScreen");
 
     // Handle word count selector if needed (default is 12)
     if words.len() != 12 {

@@ -125,6 +125,32 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             "  Reusing existing wallet. Seed hash prefix: {}",
             seed_hash_prefix(&seed_hash)
         );
+
+        // Unlock the wallet so SPV can register its addresses.
+        // Wallets loaded from DB are in a closed state — SPV needs the
+        // seed bytes to build the bloom filter and discover transactions.
+        let app_ctx = harness.state().current_app_context().clone();
+        let wallet_arc = {
+            let wallets = app_ctx.wallets.read().unwrap();
+            wallets.get(&seed_hash).cloned()
+        };
+        // Drop wallets lock before calling bootstrap/unlock methods
+        if let Some(wallet_arc) = wallet_arc {
+            {
+                let mut w = wallet_arc.write().unwrap();
+                if !w.is_open() {
+                    w.wallet_seed
+                        .open_no_password()
+                        .unwrap_or_else(|e| panic!("Failed to unlock reused wallet: {}", e));
+                    println!("  Wallet unlocked (no password)");
+                } else {
+                    println!("  Wallet already open");
+                }
+            }
+            app_ctx.bootstrap_wallet_addresses(&wallet_arc);
+            app_ctx.handle_wallet_unlocked(&wallet_arc);
+            println!("  Wallet bootstrapped for SPV");
+        }
     } else {
         // 5–10. Import wallet via UI
         import_wallet_via_ui(harness, ctx, &words);

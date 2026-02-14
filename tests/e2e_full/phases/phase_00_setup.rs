@@ -41,12 +41,7 @@ fn import_wallet_via_ui(
     };
 
     // Push ImportMnemonicScreen and configure it directly
-    {
-        let app_ctx = harness.state().current_app_context();
-        let screen = ScreenType::ImportMnemonic.create_screen(app_ctx);
-        harness.state_mut().screen_stack.push(screen);
-    }
-    harness.run_steps(5);
+    push_screen(harness, ScreenType::ImportMnemonic);
 
     if let Some(Screen::ImportMnemonicScreen(screen)) = harness.state_mut().screen_stack.last_mut()
     {

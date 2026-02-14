@@ -10,26 +10,14 @@ use std::time::Duration;
 const DPNS_CONTRACT_ID: &str = "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec";
 
 pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
-    // ─── 1. DPNS Name Lookup via UI ─────────────────────────────────
     run_dpns_lookup(harness);
-
-    // ─── 2. Contract Fetch via UI ───────────────────────────────────
     run_contract_fetch(harness);
 
-    // ─── 3. Platform Info ───────────────────────────────────────────
     println!(
         "  Platform info: network={:?}",
         harness.state().chosen_network
     );
     println!("  Phase 03 complete: platform reads verified");
-}
-
-/// Dismiss an error dialog if the "Dismiss" button is present.
-fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
-    if let Some(dismiss) = harness.query_by_label_contains("Dismiss") {
-        dismiss.click();
-        harness.run_steps(5);
-    }
 }
 
 fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
@@ -38,12 +26,7 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
     for attempt in 1..=MAX_RETRIES {
         // Navigate to Load Identity screen each attempt (clean slate)
         navigate_to_screen(harness, RootScreenType::RootScreenIdentities);
-        {
-            let app_ctx = harness.state().current_app_context();
-            let screen = ScreenType::AddExistingIdentity.create_screen(app_ctx);
-            harness.state_mut().screen_stack.push(screen);
-        }
-        harness.run_steps(10);
+        push_screen(harness, ScreenType::AddExistingIdentity);
 
         // Switch to "By DPNS Name" tab
         harness
@@ -52,19 +35,8 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
             .click();
         harness.run_steps(15);
 
-        // Type a DPNS name to search for.
-        harness
-            .query_all_by_role(egui::accesskit::Role::TextInput)
-            .next()
-            .expect("DPNS name TextInput must exist after selecting 'By DPNS Name' tab")
-            .click();
-        harness.run_steps(5);
-        harness
-            .query_all_by_role(egui::accesskit::Role::TextInput)
-            .next()
-            .unwrap()
-            .type_text("quantum");
-        harness.run_steps(10);
+        // Type a DPNS name to search for
+        type_into_text_input(harness, 0, "quantum");
 
         // Click "Search by Username" button
         harness
@@ -107,39 +79,34 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
 
         if is_success {
             println!("  DPNS lookup succeeded: name \"quantum\" found");
-            dismiss_if_present(harness);
-            harness.state_mut().screen_stack.pop();
-            harness.run_steps(5);
-            return;
-        }
-        if is_not_found {
+        } else if is_not_found {
             println!("  DPNS lookup completed: name not found (acceptable)");
-            dismiss_if_present(harness);
-            harness.state_mut().screen_stack.pop();
-            harness.run_steps(5);
-            return;
-        }
-        if has_error {
+        } else if has_error {
             println!(
                 "  DPNS lookup returned platform error (attempt {}/{})",
                 attempt, MAX_RETRIES
             );
             dismiss_if_present(harness);
-            // Pop the screen for a clean retry
             harness.state_mut().screen_stack.pop();
             harness.run_steps(10);
             if attempt < MAX_RETRIES {
                 continue;
             }
-            // On final attempt, accept error as a pass — testnet can be flaky
+            // On final attempt, accept error as a pass -- testnet can be flaky
             println!(
                 "  DPNS lookup: accepting transient error after {} retries",
                 MAX_RETRIES
             );
             return;
+        } else {
+            panic!("DPNS lookup reached unexpected state");
         }
 
-        panic!("DPNS lookup reached unexpected state");
+        // Common cleanup for success/not-found paths
+        dismiss_if_present(harness);
+        harness.state_mut().screen_stack.pop();
+        harness.run_steps(5);
+        return;
     }
 }
 
@@ -147,28 +114,12 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
     const MAX_RETRIES: u32 = 3;
 
     for attempt in 1..=MAX_RETRIES {
-        // Push AddContracts screen fresh each attempt so the text input is empty.
+        // Push AddContracts screen fresh each attempt so the text input is empty
         navigate_to_screen(harness, RootScreenType::RootScreenDocumentQuery);
-        {
-            let app_ctx = harness.state().current_app_context();
-            let screen = ScreenType::AddContracts.create_screen(app_ctx);
-            harness.state_mut().screen_stack.push(screen);
-        }
-        harness.run_steps(10);
+        push_screen(harness, ScreenType::AddContracts);
 
-        // Enter the DPNS contract ID (click to focus, then type)
-        harness
-            .query_all_by_role(egui::accesskit::Role::TextInput)
-            .next()
-            .expect("Contract ID TextInput must exist on Add Contracts screen")
-            .click();
-        harness.run_steps(5);
-        harness
-            .query_all_by_role(egui::accesskit::Role::TextInput)
-            .next()
-            .unwrap()
-            .type_text(DPNS_CONTRACT_ID);
-        harness.run_steps(5);
+        // Enter the DPNS contract ID
+        type_into_text_input(harness, 0, DPNS_CONTRACT_ID);
 
         // Click "Fetch Contracts" submit button
         harness
@@ -195,17 +146,17 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
             "Contract fetch must complete within 90s (timed out)"
         );
 
-        let is_success = harness
+        if harness
             .query_by_label_contains("Successfully queried")
-            .is_some();
-        if is_success {
+            .is_some()
+        {
             println!("  Contract fetch succeeded: DPNS contract found");
             harness.state_mut().screen_stack.pop();
             harness.run_steps(5);
             return;
         }
 
-        // Transient platform error — retry
+        // Transient platform error -- retry
         println!(
             "  Contract fetch returned error (attempt {}/{})",
             attempt, MAX_RETRIES
@@ -216,7 +167,7 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
 
         if attempt == MAX_RETRIES {
             panic!(
-                "DPNS contract fetch failed after {} attempts — {} should exist on all networks",
+                "DPNS contract fetch failed after {} attempts -- {} should exist on all networks",
                 MAX_RETRIES, DPNS_CONTRACT_ID
             );
         }

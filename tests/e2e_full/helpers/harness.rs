@@ -1,5 +1,5 @@
 use dash_evo_tool::app::AppState;
-use dash_evo_tool::ui::{RootScreenType, ScreenLike};
+use dash_evo_tool::ui::{RootScreenType, ScreenLike, ScreenType};
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
 
@@ -141,4 +141,45 @@ pub fn navigate_to_screen_by_click(
         label,
         expected,
     );
+}
+
+/// Push a screen onto the screen stack by type.
+/// Creates the screen from the current AppContext and runs a few frames
+/// to let the UI settle.
+pub fn push_screen(harness: &mut Harness<'_, AppState>, screen_type: ScreenType) {
+    let app_ctx = harness.state().current_app_context();
+    let screen = screen_type.create_screen(app_ctx);
+    harness.state_mut().screen_stack.push(screen);
+    harness.run_steps(10);
+}
+
+/// Click the Nth TextInput (by AccessKit role), type text into it, and
+/// run a few frames for the UI to process the input.
+///
+/// `nth` is zero-indexed: 0 = first TextInput, 1 = second, etc.
+pub fn type_into_text_input(harness: &mut Harness<'_, AppState>, nth: usize, text: &str) {
+    use egui_kittest::kittest::Queryable;
+
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .nth(nth)
+        .unwrap_or_else(|| panic!("TextInput #{} must exist on screen", nth))
+        .click();
+    harness.run_steps(5);
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .nth(nth)
+        .unwrap()
+        .type_text(text);
+    harness.run_steps(10);
+}
+
+/// Dismiss an error/info dialog if the "Dismiss" button is present.
+pub fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
+    use egui_kittest::kittest::Queryable;
+
+    if let Some(dismiss) = harness.query_by_label_contains("Dismiss") {
+        dismiss.click();
+        harness.run_steps(5);
+    }
 }

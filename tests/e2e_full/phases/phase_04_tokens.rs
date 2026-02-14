@@ -21,18 +21,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
         "'Enter Keyword' label must be visible on token search screen"
     );
 
-    harness
-        .query_all_by_role(egui::accesskit::Role::TextInput)
-        .next()
-        .expect("Token keyword TextInput must exist on token search screen")
-        .click();
-    harness.run_steps(5);
-    harness
-        .query_all_by_role(egui::accesskit::Role::TextInput)
-        .next()
-        .unwrap()
-        .type_text("dash");
-    harness.run_steps(5);
+    type_into_text_input(harness, 0, "dash");
     println!("  Typed 'dash' in search input");
 
     // ─── 3. Click search button and wait for results ─────────────────

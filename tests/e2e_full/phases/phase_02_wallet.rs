@@ -18,17 +18,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     println!("  Wallet card with alias visible");
 
     // 2. Verify Send/Receive buttons visible (wallet is already selected from Phase 0/1)
-    // Use exact label match for "Receive" to avoid ambiguity with "Total Received (DASH)"
-    let send_visible = harness.query_by_label("Send").is_some();
     assert!(
-        send_visible,
+        harness.query_by_label("Send").is_some(),
         "Send button must be visible after selecting wallet"
     );
     verify_receive_button_visible(harness);
     println!("  Send/Receive buttons visible");
-
-    // 3. Verify receive button visible (proves wallet is selected and action buttons rendered)
-    verify_receive_button_visible(harness);
 
     // 4. Conditional send-to-self (requires >= 0.1 DASH)
     let min_balance_for_send: u64 = 10_000_000; // 0.1 DASH in duffs
@@ -76,43 +71,17 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         "Send screen must show 'Send to' label for destination input"
     );
 
-    // Find text inputs by role (hint_text doesn't appear in AccessKit labels).
-    // The send screen's destination address input is the first TextInput.
+    // Type destination address into the first TextInput
     let addr = ctx
         .receive_address
         .as_ref()
         .expect("No receive address from Phase 01")
         .clone();
-
-    // Click the destination input to focus it, then type the address.
-    // We must drop the borrow from query before calling run_steps.
-    harness
-        .query_all_by_role(egui::accesskit::Role::TextInput)
-        .next()
-        .expect("Destination address TextInput must exist on send screen")
-        .click();
-    harness.run_steps(5);
-    harness
-        .query_all_by_role(egui::accesskit::Role::TextInput)
-        .next()
-        .unwrap()
-        .type_text(&addr);
-    harness.run_steps(10);
+    type_into_text_input(harness, 0, &addr);
     println!("  Entered destination address");
 
-    // The amount input: click to focus, then type (re-query each time to avoid borrow issues)
-    harness
-        .query_all_by_role(egui::accesskit::Role::TextInput)
-        .nth(1)
-        .expect("Amount TextInput must exist on send screen")
-        .click();
-    harness.run_steps(5);
-    harness
-        .query_all_by_role(egui::accesskit::Role::TextInput)
-        .nth(1)
-        .unwrap()
-        .type_text("0.001");
-    harness.run_steps(10);
+    // Type amount into the second TextInput
+    type_into_text_input(harness, 1, "0.001");
     println!("  Entered amount: 0.001 DASH");
 
     // Click the send/transaction type button.

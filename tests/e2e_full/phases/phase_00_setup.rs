@@ -12,25 +12,18 @@ use std::time::{Duration, Instant};
 
 const E2E_WALLET_ALIAS: &str = "E2E Test Wallet";
 
-/// Check if a wallet already exists that we can reuse.
-/// Prefers a wallet with the E2E alias; falls back to the first wallet found.
+/// Check if a wallet with the E2E alias already exists that we can reuse.
+/// Only matches by exact alias — never grabs unrelated wallets.
 fn find_existing_e2e_wallet(harness: &Harness<'_, AppState>) -> Option<WalletSeedHash> {
     let app_ctx = harness.state().current_app_context();
     let wallets = app_ctx.wallets.read().unwrap();
-    if wallets.is_empty() {
-        return None;
-    }
-
-    // Prefer wallet with matching alias
     for (seed_hash, wallet) in wallets.iter() {
         let w = wallet.read().unwrap();
         if w.alias.as_deref() == Some(E2E_WALLET_ALIAS) {
             return Some(*seed_hash);
         }
     }
-
-    // Fallback: take first wallet
-    wallets.keys().next().copied()
+    None
 }
 
 /// Import a wallet via the UI flow (steps 4–10 of the original setup).

@@ -12,16 +12,33 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
     println!("  Navigated to token search screen");
 
     // ─── 2. Find and fill search input ───────────────────────────────
+    // hint_text ("Search tokens") is not visible to AccessKit, so find the
+    // TextInput by role instead.  The "Enter Keyword:" label proves we are
+    // on the right screen.
+    let on_screen = wait_for_label(harness, "Enter Keyword", Duration::from_secs(10));
+    assert!(
+        on_screen,
+        "'Enter Keyword' label must be visible on token search screen"
+    );
+
     harness
-        .query_by_label_contains("Search tokens")
-        .expect("Token search input must be visible on token search screen")
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .expect("Token keyword TextInput must exist on token search screen")
+        .click();
+    harness.run_steps(5);
+    harness
+        .query_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .unwrap()
         .type_text("dash");
     harness.run_steps(5);
     println!("  Typed 'dash' in search input");
 
     // ─── 3. Click search button and wait for results ─────────────────
+    // Use exact label match — "Search" button (not "Search Tokens by Keyword" heading)
     harness
-        .query_by_label_contains("Search")
+        .query_by_label("Search")
         .expect("Search button must be visible on token search screen")
         .click();
     harness.run_steps(10);

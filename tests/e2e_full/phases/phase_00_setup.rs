@@ -159,29 +159,51 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         import_wallet_via_ui(harness, ctx, &words);
     }
 
-    // 11. Start SPV sync
+    // 11. Clear stale cached wallet state so the balance/UTXO check below only
+    //     passes after a FRESH SPV reconciliation (not from DB-cached values
+    //     left over from a previous run).
+    {
+        let app_ctx = harness.state().current_app_context();
+        let wallets = app_ctx.wallets.read().unwrap();
+        if let Some(seed_hash) = &ctx.wallet_seed_hash
+            && let Some(wallet) = wallets.get(seed_hash)
+        {
+            let mut w = wallet.write().unwrap();
+            w.utxos.clear();
+            w.update_spv_balances(0, 0, 0);
+        }
+    }
+
+    // 12. Start SPV via AppContext::start_spv() which registers the reconcile
+    //     and finality listeners BEFORE launching the sync loop.  Without the
+    //     reconcile listener, balance updates from SPV never propagate to wallets.
     {
         let app_ctx = harness.state().current_app_context().clone();
-        let wallet_count = app_ctx.wallets.read().unwrap().len();
-        app_ctx
-            .spv_manager
-            .start(wallet_count)
-            .expect("SPV start failed");
+        app_ctx.start_spv().expect("SPV start failed");
     }
-    println!("  SPV sync started, waiting for completion...");
+    println!("  SPV sync started (with reconcile listener), waiting for completion...");
 
-    // 12. Poll for SPV Running status
+    // 12. Poll for balance availability (primary) or SPV Running status.
+    //
+    // Balance is populated via the reconcile listener as soon as filters + blocks
+    // are scanned — this completes MUCH earlier than full SPV sync because
+    // masternode list validation (Syncing 0/N) can stall for extended periods
+    // on testnet with limited peers.  We treat the balance being ready as
+    // sufficient to proceed; SpvStatus::Running is a nice-to-have.
+    const MIN_BALANCE_DUFFS: u64 = 100_000; // 0.001 DASH
+    const MAX_SPV_RETRIES: u32 = 3;
+
     let timeout_secs: u64 = std::env::var("E2E_SPV_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1800); // 30 min default
-
-    const MAX_SPV_RETRIES: u32 = 3;
+        .unwrap_or(600); // 10 min default
 
     let start = Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
     let mut retry_count: u32 = 0;
     let mut spv_synced = false;
+    let mut balance_ready = false;
+    let mut last_log = Instant::now();
 
     while start.elapsed() < timeout {
         harness.run_steps(60); // ~1s at 60fps
@@ -191,10 +213,43 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             app_ctx.spv_manager.status()
         };
 
+        // Check balance using max_balance() (sum of UTXOs in memory) rather than
+        // total_balance_duffs() which can return a cached DB value from a previous run.
+        // UTXOs are populated by reconcile_spv_wallets() which also syncs the SPV
+        // WalletManager state — so non-zero max_balance proves the WalletManager
+        // has UTXOs available for building transactions.
+        if !balance_ready {
+            let app_ctx = harness.state().current_app_context();
+            let wallets = app_ctx.wallets.read().unwrap();
+            if let Some(seed_hash) = &ctx.wallet_seed_hash
+                && let Some(wallet) = wallets.get(seed_hash)
+            {
+                let w = wallet.read().unwrap();
+                let utxo_balance = w.max_balance();
+                if utxo_balance >= MIN_BALANCE_DUFFS {
+                    balance_ready = true;
+                    println!(
+                        "  UTXOs ready: {} duffs ({:.8} DASH) at {:.0}s",
+                        utxo_balance,
+                        utxo_balance as f64 / 1e8,
+                        start.elapsed().as_secs_f64(),
+                    );
+                }
+            }
+        }
+
+        // Check whether SPV has synced headers (required for building transactions —
+        // the chain height is used for lock time calculation).
+        let header_height = status
+            .sync_progress
+            .as_ref()
+            .map(|p| p.header_height)
+            .unwrap_or(0);
+
+        // Check SPV status
         match status.status {
             SpvStatus::Running => {
                 spv_synced = true;
-                break;
             }
             SpvStatus::Error => {
                 let err_msg = status.last_error.as_deref().unwrap_or("unknown");
@@ -208,65 +263,79 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                     );
                     let app_ctx = harness.state().current_app_context().clone();
                     app_ctx.spv_manager.stop();
-                    harness.run_steps(120); // ~2s cooldown (non-blocking)
-                    let wallet_count = app_ctx.wallets.read().unwrap().len();
+                    harness.run_steps(120); // ~2s cooldown
                     app_ctx
-                        .spv_manager
-                        .start(wallet_count)
+                        .start_spv()
                         .unwrap_or_else(|e| panic!("SPV restart failed: {}", e));
                 }
             }
             _ => {}
         }
+
+        // We can proceed once:
+        // 1. Balance is ready (wallet has funds)
+        // 2. SPV is at least Syncing (network manager live, can broadcast)
+        // 3. Header height is known (required for transaction lock time)
+        // We don't require Running (full masternode validation can stall on testnet).
+        let spv_network_ready = matches!(status.status, SpvStatus::Syncing | SpvStatus::Running);
+        if balance_ready && spv_network_ready && header_height > 0 {
+            println!(
+                "  SPV {:?}, header_height={} — proceeding{}",
+                status.status,
+                header_height,
+                if spv_synced { "" } else { " without full sync" },
+            );
+            break;
+        }
+
+        // Log progress every 30s so we can diagnose hangs
+        if last_log.elapsed() > Duration::from_secs(30) {
+            let stage_info = status
+                .detailed_progress
+                .as_ref()
+                .map(|d| format!("{:.1}% stage={:?}", d.percentage, d.sync_stage))
+                .unwrap_or_else(|| "no progress info".to_string());
+            println!(
+                "  SPV status: {:?} ({:.0}s elapsed, peers={}, {})",
+                status.status,
+                start.elapsed().as_secs_f64(),
+                status.connected_peers,
+                stage_info,
+            );
+            last_log = Instant::now();
+        }
     }
 
-    assert!(
-        spv_synced,
-        "SPV sync did not reach Running within {}s (retries: {}/{})",
-        timeout_secs, retry_count, MAX_SPV_RETRIES
-    );
-    ctx.spv_synced = true;
-    println!("  SPV reached Running status");
+    ctx.spv_synced = spv_synced;
 
-    // 13. Wait for balance reconciliation after SPV sync
-    // SPV reaching "Running" means the service is active, but wallet balance
-    // is updated asynchronously via reconcile_spv_wallets(). Poll until non-zero.
-    const MIN_BALANCE_DUFFS: u64 = 100_000; // 0.001 DASH
-    let balance_timeout = Duration::from_secs(120);
-    let balance_ready = wait_until(
-        harness,
-        |h| {
-            let app_ctx = h.state().current_app_context();
-            let wallets = app_ctx.wallets.read().unwrap();
-            if let Some(seed_hash) = &ctx.wallet_seed_hash
-                && let Some(wallet) = wallets.get(seed_hash)
-            {
-                return wallet.read().unwrap().total_balance_duffs() >= MIN_BALANCE_DUFFS;
-            }
-            false
-        },
-        balance_timeout,
-        60, // ~1s between checks
-    );
-
-    // Read final balance
+    // Read final balance and print wallet diagnostics
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
         let wallet = wallets
             .get(ctx.seed_hash())
             .expect("Wallet not found by seed hash after SPV sync");
-        ctx.balance_duffs = wallet.read().unwrap().total_balance_duffs();
+        let w = wallet.read().unwrap();
+        ctx.balance_duffs = w.total_balance_duffs();
+        println!(
+            "  Wallet diagnostics: total_balance={}, confirmed={}, max_balance(utxos)={}, utxo_addrs={}, is_open={}",
+            w.total_balance_duffs(),
+            w.confirmed_balance_duffs(),
+            w.max_balance(),
+            w.utxos.len(),
+            w.is_open(),
+        );
     }
 
     assert!(
         balance_ready,
         "Wallet balance ({} duffs / {:.8} DASH) did not reach minimum ({} duffs) \
-         within {}s after SPV sync. Please fund the wallet.",
+         within {}s. SPV status: {:?}. Please fund the wallet.",
         ctx.balance_duffs,
         ctx.balance_duffs as f64 / 1e8,
         MIN_BALANCE_DUFFS,
-        balance_timeout.as_secs(),
+        timeout_secs,
+        if spv_synced { "Running" } else { "Syncing" },
     );
 
     println!(

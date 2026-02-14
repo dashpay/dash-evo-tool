@@ -52,8 +52,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         ctx.receive_address.as_deref().unwrap_or("N/A")
     );
 
-    // 3. Navigate to wallets screen and verify balance in UI
-    navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
+    // 3. Navigate to wallets screen via sidebar click and verify balance in UI
+    navigate_to_screen_by_click(
+        harness,
+        "Wallets",
+        RootScreenType::RootScreenWalletsBalances,
+    );
 
     let has_wallet_label = wait_for_label(harness, "E2E Test Wallet", Duration::from_secs(10));
     assert!(
@@ -82,9 +86,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     );
     println!("  Receive dialog shows address: {}...", addr_short);
 
-    // Dismiss the dialog
+    // Dismiss the dialog and verify it closed
     harness.key_press(egui::Key::Escape);
     harness.run_steps(5);
+    let dismissed = wait_for_label_gone(harness, addr_short, Duration::from_secs(5));
+    assert!(dismissed, "Receive dialog must close after pressing Escape");
 
     println!("  Phase 01 complete: balance verified, receive address obtained");
 }

@@ -1,7 +1,7 @@
 use crate::helpers::context::TestContext;
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
-use dash_evo_tool::ui::{RootScreenType, ScreenType};
+use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::time::Duration;
@@ -24,23 +24,6 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
     println!("  Phase 03 complete: platform reads verified");
 }
 
-/// Click a button by label, falling back to pushing the screen directly if not found.
-fn click_or_push_screen(
-    harness: &mut Harness<'_, AppState>,
-    button_label: &str,
-    screen_type: ScreenType,
-) {
-    if let Some(btn) = harness.query_by_label_contains(button_label) {
-        btn.click();
-    } else {
-        println!("  {button_label} button not found — pushing screen directly");
-        let app_ctx = harness.state().current_app_context();
-        let screen = screen_type.create_screen(app_ctx);
-        harness.state_mut().screen_stack.push(screen);
-    }
-    harness.run_steps(10);
-}
-
 /// Dismiss an error dialog if the "Dismiss" button is present.
 fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
     if let Some(dismiss) = harness.query_by_label_contains("Dismiss") {
@@ -50,8 +33,13 @@ fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
 }
 
 fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
-    navigate_to_screen(harness, RootScreenType::RootScreenIdentities);
-    click_or_push_screen(harness, "Load Identity", ScreenType::AddExistingIdentity);
+    navigate_to_screen_by_click(harness, "Identities", RootScreenType::RootScreenIdentities);
+
+    harness
+        .query_by_label_contains("Load Identity")
+        .expect("'Load Identity' button must be visible on Identities screen")
+        .click();
+    harness.run_steps(10);
 
     // Switch to "By DPNS Name" tab
     harness
@@ -126,8 +114,17 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
 }
 
 fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
-    navigate_to_screen(harness, RootScreenType::RootScreenDocumentQuery);
-    click_or_push_screen(harness, "Load Contracts", ScreenType::AddContracts);
+    navigate_to_screen_by_click(
+        harness,
+        "Contracts",
+        RootScreenType::RootScreenDocumentQuery,
+    );
+
+    harness
+        .query_by_label_contains("Load Contracts")
+        .expect("'Load Contracts' button must be visible on Contracts screen")
+        .click();
+    harness.run_steps(10);
 
     // Enter the DPNS contract ID
     harness

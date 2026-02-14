@@ -1,7 +1,7 @@
 use crate::helpers::context::TestContext;
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
-use dash_evo_tool::ui::{RootScreenType, Screen};
+use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::time::Duration;
@@ -17,42 +17,20 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     );
     println!("  Wallet card with alias visible");
 
-    // 2. Select wallet — the wallet should already be selected from Phase 0/1,
-    //    but verify by checking the combo box shows our alias
-    let has_wallet = wait_for_label(harness, "E2E Test Wallet", Duration::from_secs(5));
-    if !has_wallet {
-        // Try clicking the wallet selector to find our wallet
-        println!("  Wallet not pre-selected, attempting to select...");
-        // Set it programmatically via the wallets screen's selected wallet
-        let app_ctx = harness.state().current_app_context();
-        let wallets = app_ctx.wallets.read().unwrap();
-        if let Some(seed_hash) = &ctx.wallet_seed_hash
-            && let Some(wallet_arc) = wallets.get(seed_hash)
-        {
-            let wallet_clone = wallet_arc.clone();
-            drop(wallets);
-            if let Some(Screen::WalletsBalancesScreen(screen)) = harness
-                .state_mut()
-                .main_screens
-                .get_mut(&RootScreenType::RootScreenWalletsBalances)
-            {
-                screen.select_hd_wallet(wallet_clone);
-            }
-            harness.run_steps(10);
-        }
-    }
-    println!("  Wallet selected");
-
-    // 3. Verify Send/Receive buttons visible
+    // 2. Verify Send/Receive buttons visible (wallet is already selected from Phase 0/1)
     let send_visible = harness.query_by_label_contains("Send").is_some();
+    assert!(
+        send_visible,
+        "Send button must be visible after selecting wallet"
+    );
     let receive_visible = harness.query_by_label_contains("Receive").is_some();
     assert!(
-        send_visible || receive_visible,
-        "Send and/or Receive buttons should be visible after selecting wallet"
+        receive_visible,
+        "Receive button must be visible after selecting wallet"
     );
     println!("  Send/Receive buttons visible");
 
-    // 4. Open receive dialog and verify address
+    // 3. Open receive dialog and verify address
     let receive_btn = harness
         .query_by_label_contains("Receive")
         .expect("Receive button must be visible on wallets screen");
@@ -72,12 +50,14 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     );
     println!("  Receive dialog shows address: {}...", addr_short);
 
-    // Close dialog via Escape
+    // Close dialog via Escape and verify it dismissed
     harness.key_press(egui::Key::Escape);
     harness.run_steps(5);
+    let dismissed = wait_for_label_gone(harness, addr_short, Duration::from_secs(5));
+    assert!(dismissed, "Receive dialog must close after pressing Escape");
     println!("  Receive dialog closed");
 
-    // 5. Conditional send-to-self (requires >= 0.1 DASH)
+    // 4. Conditional send-to-self (requires >= 0.1 DASH)
     let min_balance_for_send: u64 = 10_000_000; // 0.1 DASH in duffs
 
     assert!(

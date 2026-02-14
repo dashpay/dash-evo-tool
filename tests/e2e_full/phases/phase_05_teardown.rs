@@ -33,7 +33,16 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         println!("  SPV status after stop: {:?}", status.status);
     }
 
-    // ─── 3. Log test summary ───────────────────────────────────────────
+    // ─── 3. Remove test wallet from database ───────────────────────────
+    if let Some(seed_hash) = &ctx.wallet_seed_hash {
+        let app_ctx = harness.state().current_app_context();
+        match app_ctx.remove_wallet(seed_hash) {
+            Ok(()) => println!("  Removed test wallet from database"),
+            Err(e) => println!("  Warning: could not remove test wallet: {}", e),
+        }
+    }
+
+    // ─── 4. Log test summary ───────────────────────────────────────────
     println!();
     println!("  =======================================");
     println!("  E2E Test Suite Summary");
@@ -51,6 +60,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         ctx.balance_duffs as f64 / 1e8
     );
     println!("  SPV synced:     {}", ctx.spv_synced);
+    println!("  Wallet reused:  {}", ctx.wallet_reused);
     println!(
         "  Receive addr:   {}",
         ctx.receive_address.as_deref().unwrap_or("N/A")

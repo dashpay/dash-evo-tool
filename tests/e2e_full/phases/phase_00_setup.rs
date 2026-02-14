@@ -10,36 +10,40 @@ use egui_kittest::kittest::Queryable;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-pub fn run(
+const E2E_WALLET_ALIAS: &str = "E2E Test Wallet";
+
+/// Check if a wallet already exists that we can reuse.
+/// Prefers a wallet with the E2E alias; falls back to the first wallet found.
+fn find_existing_e2e_wallet(harness: &Harness<'_, AppState>) -> Option<WalletSeedHash> {
+    let app_ctx = harness.state().current_app_context();
+    let wallets = app_ctx.wallets.read().unwrap();
+    if wallets.is_empty() {
+        return None;
+    }
+
+    // Prefer wallet with matching alias
+    for (seed_hash, wallet) in wallets.iter() {
+        let w = wallet.read().unwrap();
+        if w.alias.as_deref() == Some(E2E_WALLET_ALIAS) {
+            return Some(*seed_hash);
+        }
+    }
+
+    // Fallback: take first wallet
+    wallets.keys().next().copied()
+}
+
+/// Import a wallet via the UI flow (steps 4–10 of the original setup).
+fn import_wallet_via_ui(
     harness: &mut Harness<'_, AppState>,
     ctx: &mut TestContext,
-    _rt: &tokio::runtime::Runtime,
+    words: &[&str],
 ) {
-    // 1. Read & validate mnemonic
-    let mnemonic =
-        std::env::var("E2E_WALLET_MNEMONIC").expect("E2E_WALLET_MNEMONIC env var required");
-    let words: Vec<&str> = mnemonic.split_whitespace().collect();
-    assert!(
-        [12, 15, 18, 21, 24].contains(&words.len()),
-        "Mnemonic has {} words, expected 12/15/18/21/24",
-        words.len()
-    );
-    println!("  Mnemonic: {} words", words.len());
-
-    // 2. Dismiss welcome screen
-    dismiss_welcome_screen(harness);
-    harness.run_steps(10);
-
-    // 3. Switch to testnet
-    harness.state_mut().change_network(Network::Testnet);
-    harness.run_steps(10);
-    println!("  Switched to testnet");
-
-    // 4. Navigate to wallets screen
+    // Navigate to wallets screen
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
     println!("  On wallets screen");
 
-    // 5. Click "Import Wallet" button
+    // Click "Import Wallet" button
     let found = wait_for_label(harness, "Import Wallet", Duration::from_secs(5));
     assert!(found, "Import Wallet button not found on wallets screen");
     harness
@@ -49,10 +53,8 @@ pub fn run(
     harness.run_steps(10);
     println!("  Clicked Import Wallet");
 
-    // 6. Handle word count selector if needed (default is 12)
+    // Handle word count selector if needed (default is 12)
     if words.len() != 12 {
-        // Access ImportMnemonicScreen on the stack and set length directly,
-        // since ComboBox interaction via AccessKit is unreliable.
         if let Some(Screen::ImportMnemonicScreen(screen)) =
             harness.state_mut().screen_stack.last_mut()
         {
@@ -64,11 +66,7 @@ pub fn run(
         println!("  Set seed phrase length to {}", words.len());
     }
 
-    // 7. Type mnemonic words into input fields
-    // Each input has hint_text "Word N" from Phase 2 AccessKit labels.
-    // We iterate sequentially: after typing into "Word 1", its accessible
-    // name changes from the hint to the typed text, so subsequent queries
-    // for "Word 2" etc. won't accidentally match filled fields.
+    // Type mnemonic words into input fields
     for (i, word) in words.iter().enumerate() {
         let label = format!("Word {}", i + 1);
         let found = wait_for_label(harness, &label, Duration::from_secs(5));
@@ -80,23 +78,20 @@ pub fn run(
             .type_text(word);
         harness.run_steps(2);
     }
-    // Extra steps for seed phrase validation to complete
     harness.run_steps(10);
     println!("  Entered all {} mnemonic words", words.len());
 
-    // 8. Set wallet alias
+    // Set wallet alias
     let found = wait_for_label(harness, "Wallet name", Duration::from_secs(5));
     assert!(found, "Wallet name input not found");
     harness
         .query_by_label_contains("Wallet name")
         .expect("Wallet alias input should be visible")
-        .type_text("E2E Test Wallet");
+        .type_text(E2E_WALLET_ALIAS);
     harness.run_steps(5);
-    println!("  Set wallet alias to 'E2E Test Wallet'");
+    println!("  Set wallet alias to '{}'", E2E_WALLET_ALIAS);
 
-    // 9. Click save button
-    // Capture wallet keys before save so we can diff to find the newly imported one,
-    // regardless of pre-existing wallets from previous runs.
+    // Click save button — capture wallet keys before save for diffing
     let initial_wallet_keys: BTreeSet<WalletSeedHash> = {
         let app_ctx = harness.state().current_app_context();
         app_ctx.wallets.read().unwrap().keys().copied().collect()
@@ -111,7 +106,7 @@ pub fn run(
     harness.run_steps(10);
     println!("  Clicked Save Wallet");
 
-    // 10. Wait for NEW wallet to appear in AppContext
+    // Wait for NEW wallet to appear in AppContext
     let wallet_imported = wait_until(
         harness,
         |h| {
@@ -149,6 +144,45 @@ pub fn run(
 
     // Navigate back to wallets screen (dismiss the success screen)
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
+}
+
+pub fn run(
+    harness: &mut Harness<'_, AppState>,
+    ctx: &mut TestContext,
+    _rt: &tokio::runtime::Runtime,
+) {
+    // 1. Read & validate mnemonic
+    let mnemonic =
+        std::env::var("E2E_WALLET_MNEMONIC").expect("E2E_WALLET_MNEMONIC env var required");
+    let words: Vec<&str> = mnemonic.split_whitespace().collect();
+    assert!(
+        [12, 15, 18, 21, 24].contains(&words.len()),
+        "Mnemonic has {} words, expected 12/15/18/21/24",
+        words.len()
+    );
+    println!("  Mnemonic: {} words", words.len());
+
+    // 2. Dismiss welcome screen
+    dismiss_welcome_screen(harness);
+    harness.run_steps(10);
+
+    // 3. Switch to testnet
+    harness.state_mut().change_network(Network::Testnet);
+    harness.run_steps(10);
+    println!("  Switched to testnet");
+
+    // 4. Check if wallet already exists (idempotent re-run support)
+    if let Some(seed_hash) = find_existing_e2e_wallet(harness) {
+        ctx.wallet_seed_hash = Some(seed_hash);
+        ctx.wallet_reused = true;
+        println!(
+            "  Reusing existing wallet. Seed hash prefix: {:02x}{:02x}{:02x}{:02x}",
+            seed_hash[0], seed_hash[1], seed_hash[2], seed_hash[3]
+        );
+    } else {
+        // 5–10. Import wallet via UI
+        import_wallet_via_ui(harness, ctx, &words);
+    }
 
     // 11. Start SPV sync
     {
@@ -246,8 +280,9 @@ pub fn run(
     );
 
     println!(
-        "  Setup complete. Balance: {} duffs ({:.8} DASH)",
+        "  Setup complete. Balance: {} duffs ({:.8} DASH){}",
         ctx.balance_duffs,
-        ctx.balance_duffs as f64 / 1e8
+        ctx.balance_duffs as f64 / 1e8,
+        if ctx.wallet_reused { " (reused)" } else { "" }
     );
 }

@@ -8,6 +8,7 @@ pub struct TestContext {
     pub balance_duffs: u64,
     pub spv_synced: bool,
     pub network: String,
+    pub wallet_reused: bool,
 }
 
 impl Default for TestContext {
@@ -18,6 +19,7 @@ impl Default for TestContext {
             balance_duffs: 0,
             spv_synced: false,
             network: "testnet".to_string(),
+            wallet_reused: false,
         }
     }
 }

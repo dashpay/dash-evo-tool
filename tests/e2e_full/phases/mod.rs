@@ -4,3 +4,4 @@ pub mod phase_02_wallet;
 pub mod phase_03_platform;
 pub mod phase_04_tokens;
 pub mod phase_05_teardown;
+pub mod phase_smoke;

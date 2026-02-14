@@ -25,6 +25,9 @@ fn e2e_full_testnet_journey() {
     let mut harness = helpers::harness::create_e2e_harness(&rt);
     let mut ctx = helpers::context::TestContext::default();
 
+    println!("\n=== Smoke: App Initialization ===");
+    phases::phase_smoke::run(&mut harness);
+
     println!("\n=== Phase 0: Setup (Wallet Import + SPV Sync) ===");
     phases::phase_00_setup::run(&mut harness, &mut ctx, &rt);
 

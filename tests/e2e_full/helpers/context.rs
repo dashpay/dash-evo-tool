@@ -9,6 +9,10 @@ pub struct TestContext {
     pub spv_synced: bool,
     pub network: String,
     pub wallet_reused: bool,
+    /// max_balance() snapshot taken before send-to-self (Phase 2)
+    pub pre_send_balance: u64,
+    /// wallet.transactions.len() snapshot taken before send-to-self (Phase 2)
+    pub pre_send_tx_count: usize,
 }
 
 impl TestContext {
@@ -29,6 +33,8 @@ impl Default for TestContext {
             spv_synced: false,
             network: "testnet".to_string(),
             wallet_reused: false,
+            pre_send_balance: 0,
+            pre_send_tx_count: 0,
         }
     }
 }

@@ -27,7 +27,7 @@ fn e2e_full_testnet_journey() {
     println!("\n=== Phase 0: Setup (Wallet Import + SPV Sync) ===");
     phases::phase_00_setup::run(&mut harness, &mut ctx);
 
-    println!("\n=== Phase 1: Balance Verification ===");
+    println!("\n=== Phase 1: Wallet UI + Balance Display ===");
     phases::phase_01_faucet::run(&mut harness, &mut ctx);
 
     println!("\n=== Phase 2: Wallet UI Operations ===");

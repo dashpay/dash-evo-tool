@@ -92,12 +92,11 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
             if attempt < MAX_RETRIES {
                 continue;
             }
-            // On final attempt, accept error as a pass -- testnet can be flaky
-            println!(
-                "  DPNS lookup: accepting transient error after {} retries",
+            panic!(
+                "DPNS lookup failed with platform error after {} retries. \
+                 Platform must be reachable for E2E tests.",
                 MAX_RETRIES
             );
-            return;
         } else {
             panic!("DPNS lookup reached unexpected state");
         }

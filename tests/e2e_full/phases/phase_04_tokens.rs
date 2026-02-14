@@ -6,70 +6,97 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::time::Duration;
 
+const MAX_RETRIES: u32 = 3;
+
 pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
-    // ─── 1. Navigate to token search screen ──────────────────────────
-    navigate_to_screen(harness, RootScreenType::RootScreenTokenSearch);
-    println!("  Navigated to token search screen");
+    for attempt in 1..=MAX_RETRIES {
+        // ─── 1. Navigate to token search screen (fresh each attempt) ───
+        navigate_to_screen(harness, RootScreenType::RootScreenTokenSearch);
 
-    // ─── 2. Find and fill search input ───────────────────────────────
-    // hint_text ("Search tokens") is not visible to AccessKit, so find the
-    // TextInput by role instead.  The "Enter Keyword:" label proves we are
-    // on the right screen.
-    let on_screen = wait_for_label(harness, "Enter Keyword", Duration::from_secs(10));
-    assert!(
-        on_screen,
-        "'Enter Keyword' label must be visible on token search screen"
-    );
+        let on_screen = wait_for_label(harness, "Enter Keyword", Duration::from_secs(10));
+        assert!(
+            on_screen,
+            "'Enter Keyword' label must be visible on token search screen"
+        );
 
-    type_into_text_input(harness, 0, "dash");
-    println!("  Typed 'dash' in search input");
+        if attempt == 1 {
+            println!("  Navigated to token search screen");
+        }
 
-    // ─── 3. Click search button and wait for results ─────────────────
-    // Use exact label match — "Search" button (not "Search Tokens by Keyword" heading)
-    harness
-        .query_by_label("Search")
-        .expect("Search button must be visible on token search screen")
-        .click();
-    harness.run_steps(10);
+        type_into_text_input(harness, 0, "dash");
+        println!(
+            "  Typed 'dash' in search input (attempt {}/{})",
+            attempt, MAX_RETRIES
+        );
 
-    let completed = wait_until(
-        harness,
-        |h| {
-            // Results found (table has Contract ID column header)
-            h.query_by_label_contains("Contract ID").is_some()
-                // No results
-                || h.query_by_label_contains("No tokens match").is_some()
-                // Error
-                || h.query_by_label_contains("Error").is_some()
-        },
-        Duration::from_secs(60),
-        30,
-    );
+        // ─── 2. Click search button and wait for results ───────────────
+        harness
+            .query_by_label("Search")
+            .expect("Search button must be visible on token search screen")
+            .click();
+        harness.run_steps(10);
 
-    assert!(
-        completed,
-        "Token search must complete within 60s (timed out)"
-    );
+        let completed = wait_until(
+            harness,
+            |h| {
+                h.query_by_label_contains("Contract ID").is_some()
+                    || h.query_by_label_contains("No tokens match").is_some()
+                    || h.query_by_label_contains("Error").is_some()
+            },
+            Duration::from_secs(60),
+            30,
+        );
 
-    let has_results = harness.query_by_label_contains("Contract ID").is_some();
-    let no_results = harness.query_by_label_contains("No tokens match").is_some();
-    assert!(
-        has_results || no_results,
-        "Token search must return results or 'no results' (got platform error)"
-    );
-    if has_results {
-        println!("  Token search returned results");
-    } else {
-        println!("  Token search returned no results (acceptable)");
+        assert!(
+            completed,
+            "Token search must complete within 60s (timed out)"
+        );
+
+        let has_results = harness.query_by_label_contains("Contract ID").is_some();
+        let no_results = harness.query_by_label_contains("No tokens match").is_some();
+        let has_error = harness.query_by_label_contains("Error").is_some();
+
+        if has_results {
+            println!("  Token search returned results for 'dash'");
+
+            // Clear search before leaving
+            if let Some(clear_btn) = harness.query_by_label_contains("Clear") {
+                clear_btn.click();
+                harness.run_steps(5);
+                println!("  Search cleared");
+            }
+
+            println!("  Phase 04 complete: token search verified");
+            return;
+        }
+
+        if no_results {
+            panic!(
+                "Token search for 'dash' returned no results. \
+                 The keyword 'dash' consistently returns results on testnet — \
+                 empty results means the query mechanism or token contract is broken."
+            );
+        }
+
+        if has_error {
+            println!(
+                "  Token search returned platform error (attempt {}/{})",
+                attempt, MAX_RETRIES
+            );
+            // Dismiss error and retry
+            dismiss_if_present(harness);
+            harness.run_steps(10);
+
+            if attempt == MAX_RETRIES {
+                panic!(
+                    "Token search failed with platform error after {} retries. \
+                     Platform must be reachable for E2E tests.",
+                    MAX_RETRIES
+                );
+            }
+            continue;
+        }
+
+        panic!("Token search reached unexpected state");
     }
-
-    // ─── 4. Clear search ─────────────────────────────────────────────
-    harness
-        .query_by_label_contains("Clear")
-        .expect("Clear button must be visible after performing a search")
-        .click();
-    harness.run_steps(5);
-    println!("  Search cleared");
-
-    println!("  Phase 04 complete: token search verified");
 }

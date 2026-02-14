@@ -25,6 +25,22 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     verify_receive_button_visible(harness);
     println!("  Send/Receive buttons visible");
 
+    // 3. Snapshot pre-send state for post-send verification
+    {
+        let app_ctx = harness.state().current_app_context();
+        let wallets = app_ctx.wallets.read().unwrap();
+        let wallet = wallets
+            .get(ctx.seed_hash())
+            .expect("Wallet not found for pre-send snapshot");
+        let w = wallet.read().unwrap();
+        ctx.pre_send_balance = w.max_balance();
+        ctx.pre_send_tx_count = w.transactions.len();
+        println!(
+            "  Pre-send snapshot: balance={} duffs, tx_count={}",
+            ctx.pre_send_balance, ctx.pre_send_tx_count
+        );
+    }
+
     // 4. Conditional send-to-self (requires >= 0.1 DASH)
     let min_balance_for_send: u64 = 10_000_000; // 0.1 DASH in duffs
 
@@ -54,7 +70,6 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     );
 
     // The send screen should now be pushed onto the screen stack.
-    // The "Send Dash" heading should be visible since the screen is on the stack.
     let send_screen_visible = wait_for_label(harness, "Send Dash", Duration::from_secs(10));
     assert!(
         send_screen_visible,
@@ -62,9 +77,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         harness.state().screen_stack.len(),
     );
 
-    // The "Send to" label should be visible (rendered by render_destination_input).
-    // Note: hint_text on TextEdit may not appear in the AccessKit tree, so we check
-    // the "Send to" label instead of the hint text.
+    // The "Send to" label should be visible
     let send_to_visible = harness.query_by_label_contains("Send to").is_some();
     assert!(
         send_to_visible,
@@ -84,9 +97,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     type_into_text_input(harness, 1, "0.001");
     println!("  Entered amount: 0.001 DASH");
 
-    // Click the send/transaction type button.
-    // For Core→Core it will be "Core Transaction".
-    // Use exact label match to target the Button, not the "Transaction type: Core Transaction" label.
+    // Click the send/transaction type button
     let tx_btn = harness
         .query_by_label("Core Transaction")
         .expect("Core Transaction button must be visible on send screen");
@@ -94,9 +105,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     harness.run_steps(10);
     println!("  Clicked transaction button");
 
-    // Wait for the final result: success (Send Another / Back to Wallet) or
-    // failure (Dismiss / any error dialog).  This skips the intermediate "Sending..."
-    // state and waits for the transaction to complete.
+    // Wait for the final result
     let got_final_result = wait_until(
         harness,
         |h| {
@@ -132,6 +141,109 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     }
     println!("  Send-to-self succeeded!");
 
+    // ─── Post-send verification ────────────────────────────────────────
+    // The broadcast was successful but SPV peers may not have relayed the
+    // transaction back through the bloom filter yet.  Poll until the wallet
+    // state reflects the send (balance decreases or tx count increases).
+    println!("  Waiting for SPV to reconcile post-send state...");
+    let seed_hash = *ctx.seed_hash();
+    let pre_balance = ctx.pre_send_balance;
+    let pre_tx_count = ctx.pre_send_tx_count;
+
+    let reconciled = wait_until(
+        harness,
+        |h| {
+            let app_ctx = h.state().current_app_context();
+            let wallets = app_ctx.wallets.read().unwrap();
+            if let Some(wallet) = wallets.get(&seed_hash) {
+                let w = wallet.read().unwrap();
+                w.max_balance() < pre_balance || w.transactions.len() > pre_tx_count
+            } else {
+                false
+            }
+        },
+        Duration::from_secs(120),
+        30,
+    );
+
+    // Read final state for assertions and diagnostics
+    {
+        let app_ctx = harness.state().current_app_context();
+        let wallets = app_ctx.wallets.read().unwrap();
+        let wallet = wallets
+            .get(ctx.seed_hash())
+            .expect("Wallet not found for post-send verification");
+        let w = wallet.read().unwrap();
+
+        let post_balance = w.max_balance();
+        let post_tx_count = w.transactions.len();
+
+        println!(
+            "  Post-send: balance={} duffs (was {}), tx_count={} (was {})",
+            post_balance, ctx.pre_send_balance, post_tx_count, ctx.pre_send_tx_count
+        );
+
+        assert!(
+            reconciled,
+            "Wallet state must update within 120s after send-to-self. \
+             Balance: {} -> {} duffs, tx_count: {} -> {}. \
+             SPV reconciliation may be broken.",
+            ctx.pre_send_balance, post_balance, ctx.pre_send_tx_count, post_tx_count
+        );
+
+        // a) Balance must decrease (self-send returns the amount, only fee is lost)
+        assert!(
+            post_balance < ctx.pre_send_balance,
+            "Balance must decrease after send-to-self (fee deducted). \
+             Pre: {} duffs, Post: {} duffs.",
+            ctx.pre_send_balance,
+            post_balance
+        );
+
+        // b) Fee must be reasonable (< 1M duffs / 0.01 DASH)
+        let fee = ctx.pre_send_balance - post_balance;
+        assert!(
+            fee < 1_000_000,
+            "Transaction fee is unreasonably high: {} duffs ({:.8} DASH). \
+             Expected < 1,000,000 duffs (0.01 DASH).",
+            fee,
+            fee as f64 / 1e8
+        );
+        println!("  Fee paid: {} duffs ({:.8} DASH)", fee, fee as f64 / 1e8);
+
+        // c) Transaction count — unconfirmed txs may not appear in SPV history
+        //    until the next block, so this is a soft check.  The balance decrease
+        //    already proves the send worked and UTXOs reconciled.
+        if post_tx_count > ctx.pre_send_tx_count {
+            println!(
+                "  Transaction count increased: {} -> {}",
+                ctx.pre_send_tx_count, post_tx_count
+            );
+
+            // d) Verify newest transaction is outgoing
+            if let Some(newest_tx) = w.transactions.last() {
+                assert!(
+                    newest_tx.is_outgoing(),
+                    "Newest transaction must be outgoing (net_amount={}) for a send-to-self",
+                    newest_tx.net_amount
+                );
+                println!(
+                    "  Newest tx: net_amount={} duffs (outgoing={})",
+                    newest_tx.net_amount,
+                    newest_tx.is_outgoing()
+                );
+            }
+        } else {
+            println!(
+                "  Transaction count unchanged ({}) — unconfirmed tx not yet in SPV history (expected)",
+                post_tx_count
+            );
+        }
+
+        // e) Update ctx.balance_duffs for subsequent phases
+        ctx.balance_duffs = w.total_balance_duffs();
+    }
+
     // Click "Back to Wallet" to return
     if let Some(back_btn) = harness.query_by_label_contains("Back to Wallet") {
         back_btn.click();
@@ -140,5 +252,5 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
 
     // Navigate back to wallets screen for next phase
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
-    println!("  Phase 02 complete: wallet UI operations verified");
+    println!("  Phase 02 complete: wallet UI operations verified with post-send assertions");
 }

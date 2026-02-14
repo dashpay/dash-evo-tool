@@ -313,11 +313,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         let w = wallet.read().unwrap();
         ctx.balance_duffs = w.total_balance_duffs();
         println!(
-            "  Wallet diagnostics: total_balance={}, confirmed={}, max_balance(utxos)={}, utxo_addrs={}, is_open={}",
+            "  Wallet diagnostics: total_balance={}, confirmed={}, max_balance(utxos)={}, utxo_addrs={}, tx_count={}, is_open={}",
             w.total_balance_duffs(),
             w.confirmed_balance_duffs(),
             w.max_balance(),
             w.utxos.len(),
+            w.transactions.len(),
             w.is_open(),
         );
     }

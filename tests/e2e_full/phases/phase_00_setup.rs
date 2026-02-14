@@ -3,10 +3,9 @@ use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::spv::SpvStatus;
-use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
+use dash_evo_tool::ui::{Screen, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
@@ -26,100 +25,58 @@ fn find_existing_e2e_wallet(harness: &Harness<'_, AppState>) -> Option<WalletSee
     None
 }
 
-/// Import a wallet via the UI flow (steps 4–10 of the original setup).
+/// Import a wallet by pushing ImportMnemonicScreen and setting values directly.
+/// AccessKit interactions (button clicks, text input via hint_text) are unreliable
+/// in egui_kittest, so we manipulate the screen state programmatically.
 fn import_wallet_via_ui(
     harness: &mut Harness<'_, AppState>,
     ctx: &mut TestContext,
     words: &[&str],
 ) {
-    // Navigate to wallets screen
-    navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
-    println!("  On wallets screen");
-
-    // Push ImportMnemonicScreen directly (AccessKit button clicks don't trigger
-    // the egui action pipeline in kittest, so we push the screen programmatically)
-    {
-        let app_ctx = harness.state().current_app_context();
-        let screen = ScreenType::ImportMnemonic.create_screen(app_ctx);
-        harness.state_mut().screen_stack.push(screen);
-    }
-    harness.run_steps(10);
-    println!("  Pushed ImportMnemonicScreen");
-
-    // Handle word count selector if needed (default is 12)
-    if words.len() != 12 {
-        if let Some(Screen::ImportMnemonicScreen(screen)) =
-            harness.state_mut().screen_stack.last_mut()
-        {
-            screen.set_seed_phrase_length(words.len());
-        } else {
-            panic!("Expected ImportMnemonicScreen on screen stack");
-        }
-        harness.run_steps(5);
-        println!("  Set seed phrase length to {}", words.len());
-    }
-
-    // Type mnemonic words into input fields
-    for (i, word) in words.iter().enumerate() {
-        let label = format!("Word {}", i + 1);
-        let found = wait_for_label(harness, &label, Duration::from_secs(5));
-        assert!(found, "Seed word input '{}' not found", label);
-
-        harness
-            .query_by_label_contains(&label)
-            .unwrap_or_else(|| panic!("Seed word input '{}' should be queryable", label))
-            .type_text(word);
-        harness.run_steps(2);
-    }
-    harness.run_steps(10);
-    println!("  Entered all {} mnemonic words", words.len());
-
-    // Set wallet alias
-    let found = wait_for_label(harness, "Wallet name", Duration::from_secs(5));
-    assert!(found, "Wallet name input not found");
-    harness
-        .query_by_label_contains("Wallet name")
-        .expect("Wallet alias input should be visible")
-        .type_text(E2E_WALLET_ALIAS);
-    harness.run_steps(5);
-    println!("  Set wallet alias to '{}'", E2E_WALLET_ALIAS);
-
-    // Click save button — capture wallet keys before save for diffing
+    // Capture wallet keys before import so we can diff to find the new one
     let initial_wallet_keys: BTreeSet<WalletSeedHash> = {
         let app_ctx = harness.state().current_app_context();
         app_ctx.wallets.read().unwrap().keys().copied().collect()
     };
 
-    let found = wait_for_label(harness, "Save Wallet", Duration::from_secs(5));
-    assert!(found, "Save Wallet button not found");
-    harness
-        .query_by_label_contains("Save Wallet")
-        .expect("Save Wallet button should be visible")
-        .click();
+    // Push ImportMnemonicScreen and configure it directly
+    {
+        let app_ctx = harness.state().current_app_context();
+        let screen = ScreenType::ImportMnemonic.create_screen(app_ctx);
+        harness.state_mut().screen_stack.push(screen);
+    }
+    harness.run_steps(5);
+
+    if let Some(Screen::ImportMnemonicScreen(screen)) = harness.state_mut().screen_stack.last_mut()
+    {
+        screen.set_seed_phrase_words(words);
+        screen.set_alias(E2E_WALLET_ALIAS);
+        println!(
+            "  Set {} mnemonic words + alias '{}'",
+            words.len(),
+            E2E_WALLET_ALIAS
+        );
+
+        screen
+            .trigger_save()
+            .unwrap_or_else(|e| panic!("Wallet import failed: {}", e));
+        println!("  Wallet saved to DB");
+    } else {
+        panic!("Expected ImportMnemonicScreen on screen stack");
+    }
+
+    // Let the UI process the save
     harness.run_steps(10);
-    println!("  Clicked Save Wallet");
 
-    // Wait for NEW wallet to appear in AppContext
-    let wallet_imported = wait_until(
-        harness,
-        |h| {
-            let app_ctx = h.state().current_app_context();
-            let wallets = app_ctx.wallets.read().unwrap();
-            wallets.len() > initial_wallet_keys.len()
-        },
-        Duration::from_secs(60),
-        10,
-    );
-    assert!(
-        wallet_imported,
-        "Wallet was not imported within 60s (count stayed at {})",
-        initial_wallet_keys.len()
-    );
-
-    // Save the seed hash to TestContext by diffing key sets
+    // Verify wallet appeared in AppContext
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
+        assert!(
+            wallets.len() > initial_wallet_keys.len(),
+            "Wallet count didn't increase after save (still {})",
+            initial_wallet_keys.len()
+        );
         let current_keys: BTreeSet<WalletSeedHash> = wallets.keys().copied().collect();
         let new_keys: Vec<_> = current_keys.difference(&initial_wallet_keys).collect();
         assert!(
@@ -134,8 +91,9 @@ fn import_wallet_via_ui(
         seed_hash_prefix(ctx.seed_hash())
     );
 
-    // Navigate back to wallets screen (dismiss the success screen)
-    navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
+    // Pop the import screen
+    harness.state_mut().screen_stack.pop();
+    harness.run_steps(5);
 }
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {

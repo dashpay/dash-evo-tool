@@ -93,6 +93,26 @@ impl ImportMnemonicScreen {
         self.seed_phrase_words.resize(length, String::new());
     }
 
+    /// Set all seed phrase words and parse the mnemonic (for testing).
+    pub fn set_seed_phrase_words(&mut self, words: &[&str]) {
+        self.selected_seed_phrase_length = words.len();
+        self.seed_phrase_words = words.iter().map(|w| w.to_string()).collect();
+        if let Ok(mnemonic) = Mnemonic::parse_normalized(words.join(" ").as_str()) {
+            self.seed_phrase = Some(mnemonic);
+            self.error = None;
+        }
+    }
+
+    /// Set the wallet alias (for testing).
+    pub fn set_alias(&mut self, alias: &str) {
+        self.alias_input = alias.to_string();
+    }
+
+    /// Trigger wallet import — stores to DB and adds to AppContext (for testing).
+    pub fn trigger_save(&mut self) -> Result<AppAction, String> {
+        self.save_wallet()
+    }
+
     fn try_parse_private_key(&mut self) {
         let input = self.private_key_input.trim();
         if input.is_empty() {

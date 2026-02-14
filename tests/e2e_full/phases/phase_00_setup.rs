@@ -2,6 +2,7 @@ use crate::helpers::context::{TestContext, seed_hash_prefix};
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_evo_tool::spv::CoreBackendMode;
 use dash_evo_tool::spv::SpvStatus;
 use dash_evo_tool::ui::{Screen, ScreenType};
 use dash_sdk::dpp::dashcore::Network;
@@ -112,10 +113,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     dismiss_welcome_screen(harness);
     harness.run_steps(10);
 
-    // 3. Switch to testnet
+    // 3. Switch to testnet and enable SPV mode
     harness.state_mut().change_network(Network::Testnet);
     harness.run_steps(10);
-    println!("  Switched to testnet");
+    let app_ctx = harness.state().current_app_context().clone();
+    app_ctx.set_core_backend_mode(CoreBackendMode::Spv);
+    println!("  Switched to testnet (SPV mode)");
 
     // 4. Check if wallet already exists (idempotent re-run support)
     if let Some(seed_hash) = find_existing_e2e_wallet(harness) {

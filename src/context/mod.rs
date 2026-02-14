@@ -53,7 +53,7 @@ pub struct AppContext {
     developer_mode: AtomicBool,
     #[allow(dead_code)] // May be used for devnet identification
     pub(crate) devnet_name: Option<String>,
-    pub(crate) db: Arc<Database>,
+    pub db: Arc<Database>,
     pub(crate) sdk: RwLock<Sdk>,
     // Context providers for SDK, so we can switch when backend mode changes
     spv_context_provider: RwLock<SpvProvider>,

@@ -3,5 +3,7 @@ pub mod phase_01_faucet;
 pub mod phase_02_wallet;
 pub mod phase_03_platform;
 pub mod phase_04_tokens;
-pub mod phase_05_teardown;
+pub mod phase_05_identity;
+pub mod phase_06_dpns;
+pub mod phase_07_teardown;
 pub mod phase_smoke;

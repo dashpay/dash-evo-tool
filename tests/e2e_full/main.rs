@@ -40,8 +40,14 @@ fn e2e_full_testnet_journey() {
         println!("\n=== Phase 4: Token Search ===");
         phases::phase_04_tokens::run(&mut harness, &mut ctx);
 
-        println!("\n=== Phase 5: Teardown ===");
-        phases::phase_05_teardown::run(&mut harness, &ctx);
+        println!("\n=== Phase 5: Identity Creation ===");
+        phases::phase_05_identity::run(&mut harness, &mut ctx);
+
+        println!("\n=== Phase 6: DPNS Name Registration ===");
+        phases::phase_06_dpns::run(&mut harness, &mut ctx);
+
+        println!("\n=== Phase 7: Teardown ===");
+        phases::phase_07_teardown::run(&mut harness, &ctx);
     }));
 
     if let Err(payload) = test_result {

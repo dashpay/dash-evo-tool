@@ -1,4 +1,5 @@
 use dash_evo_tool::model::wallet::WalletSeedHash;
+use dash_sdk::platform::Identifier;
 
 /// Shared test state persisted across phases within a single test run.
 /// Replaces the react-native test-context.ts JSON file approach.
@@ -13,6 +14,10 @@ pub struct TestContext {
     pub pre_send_balance: u64,
     /// wallet.transactions.len() snapshot taken before send-to-self (Phase 2)
     pub pre_send_tx_count: usize,
+    /// Identity ID created in Phase 5
+    pub identity_id: Option<Identifier>,
+    /// DPNS name registered in Phase 6
+    pub dpns_name: Option<String>,
 }
 
 impl TestContext {
@@ -35,6 +40,8 @@ impl Default for TestContext {
             wallet_reused: false,
             pre_send_balance: 0,
             pre_send_tx_count: 0,
+            identity_id: None,
+            dpns_name: None,
         }
     }
 }

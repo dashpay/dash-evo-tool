@@ -50,7 +50,7 @@ pub struct RegisterDpnsNameScreen {
     pub selected_qualified_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
-    name_input: String,
+    pub name_input: String,
     register_dpns_name_status: RegisterDpnsNameStatus,
     pub app_context: Arc<AppContext>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,

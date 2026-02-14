@@ -2,6 +2,7 @@ use crate::helpers::context::{TestContext, seed_hash_prefix};
 use crate::helpers::harness::wait_until;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::spv::SpvStatus;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui_kittest::Harness;
 use std::time::Duration;
 
@@ -27,7 +28,19 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
     let final_status = harness.state().current_app_context().spv_manager.status();
     println!("  SPV status after stop: {:?}", final_status.status);
 
-    // ─── 3. Remove test wallet from database ───────────────────────────
+    // ─── 3. Remove test identity from database ─────────────────────────
+    if let Some(identity_id) = &ctx.identity_id {
+        let app_ctx = harness.state().current_app_context();
+        match app_ctx
+            .db
+            .delete_local_qualified_identity(identity_id, app_ctx)
+        {
+            Ok(()) => println!("  Removed E2E identity from database"),
+            Err(e) => println!("  Warning: could not remove E2E identity: {}", e),
+        }
+    }
+
+    // ─── 4. Remove test wallet from database ───────────────────────────
     if let Some(seed_hash) = &ctx.wallet_seed_hash {
         let app_ctx = harness.state().current_app_context();
         match app_ctx.remove_wallet(seed_hash) {
@@ -36,7 +49,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         }
     }
 
-    // ─── 4. Log test summary ───────────────────────────────────────────
+    // ─── 5. Log test summary ───────────────────────────────────────────
     println!();
     println!("  =======================================");
     println!("  E2E Test Suite Summary");
@@ -60,8 +73,18 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         "  Receive addr:   {}",
         ctx.receive_address.as_deref().unwrap_or("N/A")
     );
+    println!(
+        "  Identity ID:    {}",
+        ctx.identity_id
+            .map(|id| id.to_string(Encoding::Base58))
+            .unwrap_or_else(|| "N/A".to_string())
+    );
+    println!(
+        "  DPNS name:      {}",
+        ctx.dpns_name.as_deref().unwrap_or("N/A")
+    );
     println!("  =======================================");
     println!();
 
-    println!("  Phase 05 complete: teardown finished");
+    println!("  Phase 07 complete: teardown finished");
 }

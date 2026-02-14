@@ -28,9 +28,10 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
     let final_status = harness.state().current_app_context().spv_manager.status();
     println!("  SPV status after stop: {:?}", final_status.status);
 
-    // ─── 3. Remove test identity from database ─────────────────────────
+    // ─── 3. Remove test identity and wallet from database ──────────────
+    let app_ctx = harness.state().current_app_context();
+
     if let Some(identity_id) = &ctx.identity_id {
-        let app_ctx = harness.state().current_app_context();
         match app_ctx
             .db
             .delete_local_qualified_identity(identity_id, app_ctx)
@@ -40,16 +41,14 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         }
     }
 
-    // ─── 4. Remove test wallet from database ───────────────────────────
     if let Some(seed_hash) = &ctx.wallet_seed_hash {
-        let app_ctx = harness.state().current_app_context();
         match app_ctx.remove_wallet(seed_hash) {
             Ok(()) => println!("  Removed test wallet from database"),
             Err(e) => println!("  Warning: could not remove test wallet: {}", e),
         }
     }
 
-    // ─── 5. Log test summary ───────────────────────────────────────────
+    // ─── 4. Log test summary ───────────────────────────────────────────
     println!();
     println!("  =======================================");
     println!("  E2E Test Suite Summary");

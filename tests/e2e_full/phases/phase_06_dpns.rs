@@ -37,25 +37,20 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         let configured = {
             let stack = &mut harness.state_mut().screen_stack;
             if let Some(Screen::RegisterDpnsNameScreen(screen)) = stack.last_mut() {
-                // Refresh the identity list from database — the identity was
-                // just created in Phase 5 and may not have been loaded by the
+                // Refresh identity list from database -- the identity was just
+                // created in Phase 5 and may not have been loaded by the
                 // screen's constructor.
                 screen.qualified_identities = screen
                     .app_context
                     .load_local_user_identities()
                     .unwrap_or_default();
-                // Select the identity created in Phase 5
                 screen.select_identity(identity_id);
                 screen.show_identity_selector = false;
-                // Set the name
                 screen.name_input = dpns_name.clone();
-                // Verify identity was actually selected
                 if screen.selected_qualified_identity.is_none() {
                     println!("  Warning: select_identity did not find identity in list");
-                    false
-                } else {
-                    true
                 }
+                screen.selected_qualified_identity.is_some()
             } else {
                 false
             }
@@ -111,15 +106,13 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         }
 
         // ─── 6. Check for success ────────────────────────────────────────
-        let success = harness
+        if harness
             .query_by_label_contains("DPNS Name Registered!")
-            .is_some();
-
-        if success {
+            .is_some()
+        {
             ctx.dpns_name = Some(format!("{}.dash", dpns_name));
             println!("  DPNS name registered: {}.dash", dpns_name);
 
-            // Pop the screen
             harness.state_mut().screen_stack.pop();
             harness.run_steps(10);
 

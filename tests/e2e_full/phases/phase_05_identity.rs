@@ -24,21 +24,10 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         let configured = {
             let stack = &mut harness.state_mut().screen_stack;
             if let Some(Screen::AddNewIdentityScreen(screen)) = stack.last_mut() {
-                // Set funding method to wallet balance
-                {
-                    let mut fm = screen.funding_method.write().unwrap();
-                    *fm = FundingMethod::UseWalletBalance;
-                }
-                // Set step to ReadyToCreate so the button appears
-                {
-                    let mut step = screen.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ReadyToCreate;
-                }
-                // Set alias
+                *screen.funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
+                *screen.step.write().unwrap() = WalletFundedScreenStep::ReadyToCreate;
                 screen.alias_input = "E2E Identity".to_string();
-                // Set funding amount: 0.01 DASH = 1_000_000 duffs
                 screen.funding_amount = Some(Amount::new_dash(0.01));
-                // Generate identity keys from wallet
                 if let Err(e) = screen.ensure_correct_identity_keys() {
                     println!("  Warning: ensure_correct_identity_keys failed: {}", e);
                     false
@@ -60,19 +49,14 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         // ─── 3. Let UI render with configured state ──────────────────────
         harness.run_steps(30);
 
-        // ─── 4. Click "Create Identity" button ──────────────────────────
-        let clicked = if let Some(btn) = harness.query_by_label("Create Identity") {
+        // ─── 4. Click "Create Identity" button ───────────────────────────
+        if let Some(btn) = harness.query_by_label("Create Identity") {
             btn.click();
             harness.run_steps(10);
-            true
         } else {
             println!("  'Create Identity' button not found, retrying...");
             harness.state_mut().screen_stack.pop();
             harness.run_steps(5);
-            continue;
-        };
-
-        if !clicked {
             continue;
         }
 
@@ -106,11 +90,10 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         }
 
         // ─── 6. Check for success ────────────────────────────────────────
-        let success = harness
+        if harness
             .query_by_label_contains("Identity Registered Successfully!")
-            .is_some();
-
-        if success {
+            .is_some()
+        {
             // Read the identity ID from the screen
             let identity_id = {
                 let stack = &harness.state().screen_stack;
@@ -128,24 +111,19 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                 println!("  Warning: success screen shown but no identity ID found");
             }
 
-            // Pop the screen
             harness.state_mut().screen_stack.pop();
             harness.run_steps(10);
 
             // ─── 7. Verify identity appears on Identities screen ─────────
             navigate_to_screen(harness, RootScreenType::RootScreenIdentities);
-
-            // Wait briefly for the identities list to load
             harness.run_steps(30);
 
             if let Some(id) = ctx.identity_id {
-                // Check for any identity-related content on screen
-                // The identity may appear by alias or by ID
                 let id_str = id.to_string(Encoding::Base58);
-                let found_by_id = harness.query_by_label_contains(&id_str).is_some();
-                let found_by_alias = harness.query_by_label_contains("E2E Identity").is_some();
+                let found = harness.query_by_label_contains(&id_str).is_some()
+                    || harness.query_by_label_contains("E2E Identity").is_some();
 
-                if found_by_id || found_by_alias {
+                if found {
                     println!("  Identity verified on Identities screen");
                 } else {
                     println!(

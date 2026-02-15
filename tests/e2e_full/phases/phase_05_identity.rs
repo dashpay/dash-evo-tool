@@ -4,7 +4,7 @@ use dash_evo_tool::app::AppState;
 use dash_evo_tool::model::amount::Amount;
 use dash_evo_tool::ui::identities::add_new_identity_screen::FundingMethod;
 use dash_evo_tool::ui::identities::funding_common::WalletFundedScreenStep;
-use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
+use dash_evo_tool::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -12,6 +12,9 @@ use egui_kittest::kittest::Queryable;
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // SPV readiness gate — identity creation builds an asset lock transaction
     ensure_spv_tx_ready(harness, ctx);
+
+    // Run validation sub-tests before the main identity creation attempt
+    run_validation_tests(harness);
 
     for attempt in 1..=PLATFORM_MAX_RETRIES {
         println!(
@@ -140,4 +143,129 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         // ─── Error path: classify, dismiss, retry ─────────────────────────
         handle_retry_error(harness, "Identity creation", attempt, true);
     }
+}
+
+/// Client-side validation tests for identity creation.
+/// Each sub-test pushes a fresh AddNewIdentityScreen, configures an invalid
+/// state, verifies the app handles it correctly, then pops the screen.
+/// No network calls — these run in < 1 second total.
+fn run_validation_tests(harness: &mut Harness<'_, AppState>) {
+    // ─── Sub-test A: Zero funding amount → button not rendered ──────────
+    push_screen(harness, ScreenType::AddNewIdentity);
+    {
+        let stack = &mut harness.state_mut().screen_stack;
+        if let Some(Screen::AddNewIdentityScreen(screen)) = stack.last_mut() {
+            *screen.funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
+            *screen.step.write().unwrap() = WalletFundedScreenStep::ReadyToCreate;
+            screen.alias_input = "Zero Amount Test".to_string();
+            screen.funding_amount = None;
+        } else {
+            panic!("Expected AddNewIdentityScreen on screen stack");
+        }
+    }
+    harness.run_steps(POLL_STEPS);
+    assert!(
+        harness.query_by_label("Create Identity").is_none(),
+        "Create Identity button must NOT be visible when funding_amount is None"
+    );
+    println!("  Validation: zero-amount button correctly hidden");
+    harness.state_mut().screen_stack.pop();
+    harness.run_steps(SETTLE_STEPS);
+
+    // ─── Sub-test B: No master key → click silently rejected ────────────
+    push_screen(harness, ScreenType::AddNewIdentity);
+    {
+        let stack = &mut harness.state_mut().screen_stack;
+        if let Some(Screen::AddNewIdentityScreen(screen)) = stack.last_mut() {
+            *screen.funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
+            *screen.step.write().unwrap() = WalletFundedScreenStep::ReadyToCreate;
+            screen.alias_input = "No Keys Test".to_string();
+            screen.funding_amount = Some(Amount::new_dash(0.01));
+            // Deliberately skip ensure_correct_identity_keys()
+        } else {
+            panic!("Expected AddNewIdentityScreen on screen stack");
+        }
+    }
+    harness.run_steps(POLL_STEPS);
+    // Button should be visible (amount is valid), but clicking should do nothing
+    if let Some(btn) = harness.query_by_label("Create Identity") {
+        btn.click();
+        harness.run_steps(POLL_STEPS);
+    }
+    // Verify we're still on the same screen — no transition happened
+    {
+        let stack = &harness.state().screen_stack;
+        if let Some(Screen::AddNewIdentityScreen(screen)) = stack.last() {
+            let step = screen.step.read().unwrap();
+            assert!(
+                matches!(*step, WalletFundedScreenStep::ReadyToCreate),
+                "Screen must stay on ReadyToCreate when master key is missing, got {:?}",
+                *step
+            );
+        } else {
+            panic!("Expected AddNewIdentityScreen on screen stack");
+        }
+    }
+    println!("  Validation: no-key click correctly rejected (stayed on ReadyToCreate)");
+    harness.state_mut().screen_stack.pop();
+    harness.run_steps(SETTLE_STEPS);
+
+    // ─── Sub-test C: Error message display and dismiss ──────────────────
+    push_screen(harness, ScreenType::AddNewIdentity);
+    {
+        let stack = &mut harness.state_mut().screen_stack;
+        if let Some(Screen::AddNewIdentityScreen(screen)) = stack.last_mut() {
+            screen.display_message("Simulated identity error", MessageType::Error);
+        } else {
+            panic!("Expected AddNewIdentityScreen on screen stack");
+        }
+    }
+    harness.run_steps(POLL_STEPS);
+    assert!(
+        harness
+            .query_by_label_contains("Error registering identity")
+            .is_some(),
+        "Error message must be visible after display_message(Error)"
+    );
+    dismiss_if_present(harness);
+    harness.run_steps(SETTLE_STEPS);
+    assert!(
+        harness
+            .query_by_label_contains("Error registering identity")
+            .is_none(),
+        "Error message must be gone after dismiss"
+    );
+    println!("  Validation: error message displayed and dismissed");
+    harness.state_mut().screen_stack.pop();
+    harness.run_steps(SETTLE_STEPS);
+
+    // ─── Sub-test D: Step resets to ReadyToCreate on error ──────────────
+    push_screen(harness, ScreenType::AddNewIdentity);
+    {
+        let stack = &mut harness.state_mut().screen_stack;
+        if let Some(Screen::AddNewIdentityScreen(screen)) = stack.last_mut() {
+            *screen.funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
+            *screen.step.write().unwrap() = WalletFundedScreenStep::WaitingForAssetLock;
+            screen.display_message("Asset lock failed", MessageType::Error);
+        } else {
+            panic!("Expected AddNewIdentityScreen on screen stack");
+        }
+    }
+    harness.run_steps(POLL_STEPS);
+    {
+        let stack = &harness.state().screen_stack;
+        if let Some(Screen::AddNewIdentityScreen(screen)) = stack.last() {
+            let step = screen.step.read().unwrap();
+            assert!(
+                matches!(*step, WalletFundedScreenStep::ReadyToCreate),
+                "Step must reset to ReadyToCreate after error, got {:?}",
+                *step
+            );
+        } else {
+            panic!("Expected AddNewIdentityScreen on screen stack");
+        }
+    }
+    println!("  Validation: step reset to ReadyToCreate on error");
+    harness.state_mut().screen_stack.pop();
+    harness.run_steps(SETTLE_STEPS);
 }

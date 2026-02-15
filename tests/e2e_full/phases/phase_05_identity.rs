@@ -28,7 +28,6 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         // ─── 2. Configure the screen directly (ComboBox not accessible) ─
         with_identity_screen_mut(harness, |screen| {
             set_wallet_funded_ready(screen, "E2E Identity");
-            screen.funding_amount = Some(Amount::new_dash(0.01));
 
             // Hard-fail on key setup — wallet must be open
             screen.ensure_correct_identity_keys().unwrap_or_else(|e| {
@@ -39,21 +38,33 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             });
         });
 
-        // ─── 3. Let UI render with configured state ──────────────────────
+        // ─── 3. Let UI render to initialize AmountInput widget ──────────
+        // The AmountInput widget starts with `changed: true` which clears
+        // funding_amount on first render. Run one cycle to consume that
+        // initial forced-change, then set the amount.
+        harness.run_steps(POLL_STEPS);
+        with_identity_screen_mut(harness, |screen| {
+            screen.funding_amount = Some(Amount::new_dash(0.01));
+        });
         harness.run_steps(POLL_STEPS);
 
-        // Verify UI rendered the expected state
+        // Verify UI rendered the expected state.
+        // The top panel breadcrumb always has a "Create Identity" label,
+        // so count >= 2 means the action button is also rendered.
+        let create_count = harness.query_all_by_label("Create Identity").count();
         assert!(
-            harness.query_by_label("Create Identity").is_some(),
-            "'Create Identity' button must be visible after configuring screen — \
-             UI did not render ReadyToCreate state correctly"
+            create_count >= 2,
+            "'Create Identity' action button must be visible (found {} matches, \
+             need >= 2: breadcrumb + button). UI did not render ReadyToCreate state.",
+            create_count
         );
         println!("  Screen configured: Create Identity button visible");
 
-        // ─── 4. Click "Create Identity" button ───────────────────────────
+        // ─── 4. Click "Create Identity" action button (skip breadcrumb) ─
         harness
-            .query_by_label("Create Identity")
-            .expect("Create Identity button not found")
+            .query_all_by_label("Create Identity")
+            .nth(1)
+            .expect("Create Identity action button not found")
             .click();
         harness.run_steps(SETTLE_STEPS);
 

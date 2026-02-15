@@ -71,17 +71,23 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         // ─── 3. Let UI render with configured state ──────────────────────
         harness.run_steps(POLL_STEPS);
 
-        // Verify UI rendered the expected state
+        // Verify UI rendered the expected state.
+        // The top panel breadcrumb also has "Register Name", so count >= 2
+        // means the action button is rendered.
+        let reg_count = harness.query_all_by_label("Register Name").count();
         assert!(
-            harness.query_by_label("Register Name").is_some(),
-            "'Register Name' button must be visible after configuring screen"
+            reg_count >= 2,
+            "'Register Name' action button must be visible (found {} matches, \
+             need >= 2: breadcrumb + button)",
+            reg_count
         );
         println!("  Screen configured: Register Name button visible");
 
-        // ─── 4. Click "Register Name" button ─────────────────────────────
+        // ─── 4. Click "Register Name" action button (skip breadcrumb) ───
         harness
-            .query_by_label("Register Name")
-            .expect("Register Name button not found")
+            .query_all_by_label("Register Name")
+            .nth(1)
+            .expect("Register Name action button not found")
             .click();
         harness.run_steps(SETTLE_STEPS);
 

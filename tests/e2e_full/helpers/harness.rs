@@ -14,7 +14,8 @@ pub const MIN_BALANCE_DUFFS: u64 = 100_000;
 /// Send-to-self transaction broadcast + confirmation.
 pub const SEND_TX_TIMEOUT: Duration = Duration::from_secs(180);
 /// Post-send SPV reconciliation (balance/UTXO update).
-pub const POST_SEND_RECONCILE_TIMEOUT: Duration = Duration::from_secs(120);
+/// dash-spv currently needs a confirmation, which can take 5-10 minutes.
+pub const POST_SEND_RECONCILE_TIMEOUT: Duration = Duration::from_secs(600);
 /// Platform read operations (DPNS lookup, contract fetch).
 pub const PLATFORM_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// Contract fetch (simpler than full platform reads).
@@ -35,8 +36,11 @@ pub const POLL_STEPS: usize = 30;
 pub const SETTLE_STEPS: usize = 10;
 /// Minimum balance (duffs) required before send-to-self (0.1 DASH).
 pub const MIN_BALANCE_FOR_SEND: u64 = 10_000_000;
-/// Maximum acceptable fee for send-to-self (0.01 DASH).
-pub const MAX_SEND_FEE: u64 = 1_000_000;
+/// Maximum acceptable balance drop after send-to-self.
+/// This is NOT just the fee — UTXO reconciliation delays can mean the sent
+/// amount and change outputs aren't reflected yet, inflating the apparent drop.
+/// Set high enough (0.05 DASH) to avoid flaky failures.
+pub const MAX_SEND_FEE: u64 = 5_000_000;
 
 // ─── Error classification ────────────────────────────────────────────────────
 

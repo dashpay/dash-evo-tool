@@ -129,32 +129,6 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         }
 
         // ─── Error path: classify, dismiss, retry ─────────────────────────
-        let error_text = capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
-        let category = classify_error(&error_text);
-        println!(
-            "  DPNS registration error (attempt {}/{}): [{}] {}",
-            attempt,
-            PLATFORM_MAX_RETRIES,
-            category.label(),
-            error_text
-        );
-
-        if !category.is_retryable() {
-            panic!(
-                "DPNS registration failed with non-retryable error: {}",
-                error_text
-            );
-        }
-
-        dismiss_if_present(harness);
-        harness.state_mut().screen_stack.pop();
-        harness.run_steps(SETTLE_STEPS * attempt as usize);
-
-        if attempt == PLATFORM_MAX_RETRIES {
-            panic!(
-                "DPNS registration failed after {} retries. Last error: {}",
-                PLATFORM_MAX_RETRIES, error_text
-            );
-        }
+        handle_retry_error(harness, "DPNS registration", attempt, true);
     }
 }

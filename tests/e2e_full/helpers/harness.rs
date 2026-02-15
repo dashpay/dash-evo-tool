@@ -63,35 +63,49 @@ impl ErrorCategory {
     }
 }
 
+const ERROR_PATTERNS: &[(ErrorCategory, &[&str])] = &[
+    (
+        ErrorCategory::Network,
+        &[
+            "timeout",
+            "connection",
+            "network",
+            "unavailable",
+            "timed out",
+            "refused",
+            "unreachable",
+        ],
+    ),
+    (
+        ErrorCategory::Validation,
+        &[
+            "invalid",
+            "insufficient",
+            "already exists",
+            "not found",
+            "duplicate",
+            "too low",
+            "too high",
+        ],
+    ),
+    (
+        ErrorCategory::TransientPlatform,
+        &[
+            "consensus",
+            "retry",
+            "temporarily",
+            "try again",
+            "rate limit",
+        ],
+    ),
+];
+
 pub fn classify_error(error_text: &str) -> ErrorCategory {
     let lower = error_text.to_lowercase();
-    if lower.contains("timeout")
-        || lower.contains("connection")
-        || lower.contains("network")
-        || lower.contains("unavailable")
-        || lower.contains("timed out")
-        || lower.contains("refused")
-        || lower.contains("unreachable")
-    {
-        return ErrorCategory::Network;
-    }
-    if lower.contains("invalid")
-        || lower.contains("insufficient")
-        || lower.contains("already exists")
-        || lower.contains("not found")
-        || lower.contains("duplicate")
-        || lower.contains("too low")
-        || lower.contains("too high")
-    {
-        return ErrorCategory::Validation;
-    }
-    if lower.contains("consensus")
-        || lower.contains("retry")
-        || lower.contains("temporarily")
-        || lower.contains("try again")
-        || lower.contains("rate limit")
-    {
-        return ErrorCategory::TransientPlatform;
+    for (category, patterns) in ERROR_PATTERNS {
+        if patterns.iter().any(|p| lower.contains(p)) {
+            return *category;
+        }
     }
     ErrorCategory::Fatal
 }
@@ -275,20 +289,70 @@ pub fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
 /// Returns None if no error label is visible.
 pub fn capture_error_text(harness: &Harness<'_, AppState>) -> Option<String> {
     use egui_kittest::kittest::Queryable;
-    for pattern in &["Error:", "Error registering", "Error "] {
+    const PATTERNS: &[&str] = &["Error:", "Error registering", "Error "];
+    const NAME_PREFIX: &str = "name: \"";
+
+    for pattern in PATTERNS {
         if let Some(node) = harness.query_all_by_label_contains(pattern).next() {
-            let text = format!("{:?}", node);
-            // Try to extract the name from Debug output
-            if let Some(start) = text.find("name: \"") {
-                let after = &text[start + 7..];
-                if let Some(end) = after.find('"') {
-                    return Some(after[..end].to_string());
+            let debug = format!("{:?}", node);
+            // Extract the name field from the AccessKit Debug output
+            if let Some(name_start) = debug.find(NAME_PREFIX) {
+                let value_start = name_start + NAME_PREFIX.len();
+                if let Some(end) = debug[value_start..].find('"') {
+                    return Some(debug[value_start..value_start + end].to_string());
                 }
             }
-            return Some(text.chars().take(200).collect());
+            return Some(debug.chars().take(200).collect());
         }
     }
     None
+}
+
+/// Handle a retryable error during a platform operation.
+///
+/// Captures the error text, classifies it, logs it, and either panics (for
+/// non-retryable errors or final attempt) or dismisses the dialog and prepares
+/// for the next attempt. If `pop_screen` is true, pops the top screen off the
+/// stack before backoff.
+///
+/// Panics if the error is non-retryable or this was the last attempt.
+/// Returns normally when the caller should `continue` the retry loop.
+pub fn handle_retry_error(
+    harness: &mut Harness<'_, AppState>,
+    operation: &str,
+    attempt: u32,
+    pop_screen: bool,
+) {
+    let error_text = capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
+    let category = classify_error(&error_text);
+    println!(
+        "  {} error (attempt {}/{}): [{}] {}",
+        operation,
+        attempt,
+        PLATFORM_MAX_RETRIES,
+        category.label(),
+        error_text
+    );
+
+    if !category.is_retryable() {
+        panic!(
+            "{} failed with non-retryable error: {}",
+            operation, error_text
+        );
+    }
+
+    dismiss_if_present(harness);
+    if pop_screen {
+        harness.state_mut().screen_stack.pop();
+    }
+    harness.run_steps(SETTLE_STEPS * attempt as usize);
+
+    if attempt == PLATFORM_MAX_RETRIES {
+        panic!(
+            "{} failed after {} retries. Last error: {}",
+            operation, PLATFORM_MAX_RETRIES, error_text
+        );
+    }
 }
 
 // ─── SPV readiness gate ──────────────────────────────────────────────────────

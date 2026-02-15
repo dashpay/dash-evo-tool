@@ -78,33 +78,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
         }
 
         if has_error {
-            let error_text =
-                capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
-            let category = classify_error(&error_text);
-            println!(
-                "  Token search error (attempt {}/{}): [{}] {}",
-                attempt,
-                PLATFORM_MAX_RETRIES,
-                category.label(),
-                error_text
-            );
-
-            if !category.is_retryable() {
-                panic!(
-                    "Token search failed with non-retryable error: {}",
-                    error_text
-                );
-            }
-
-            dismiss_if_present(harness);
-            harness.run_steps(SETTLE_STEPS * attempt as usize);
-
-            if attempt == PLATFORM_MAX_RETRIES {
-                panic!(
-                    "Token search failed after {} retries. Last error: {}",
-                    PLATFORM_MAX_RETRIES, error_text
-                );
-            }
+            handle_retry_error(harness, "Token search", attempt, false);
             continue;
         }
 

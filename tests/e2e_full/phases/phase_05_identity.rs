@@ -138,32 +138,6 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         }
 
         // ─── Error path: classify, dismiss, retry ─────────────────────────
-        let error_text = capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
-        let category = classify_error(&error_text);
-        println!(
-            "  Identity creation error (attempt {}/{}): [{}] {}",
-            attempt,
-            PLATFORM_MAX_RETRIES,
-            category.label(),
-            error_text
-        );
-
-        if !category.is_retryable() {
-            panic!(
-                "Identity creation failed with non-retryable error: {}",
-                error_text
-            );
-        }
-
-        dismiss_if_present(harness);
-        harness.state_mut().screen_stack.pop();
-        harness.run_steps(SETTLE_STEPS * attempt as usize);
-
-        if attempt == PLATFORM_MAX_RETRIES {
-            panic!(
-                "Identity creation failed after {} retries. Last error: {}",
-                PLATFORM_MAX_RETRIES, error_text
-            );
-        }
+        handle_retry_error(harness, "Identity creation", attempt, true);
     }
 }

@@ -80,34 +80,7 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
         } else if is_not_found {
             println!("  DPNS lookup completed: name not found (acceptable)");
         } else if has_error {
-            let error_text =
-                capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
-            let category = classify_error(&error_text);
-            println!(
-                "  DPNS lookup error (attempt {}/{}): [{}] {}",
-                attempt,
-                PLATFORM_MAX_RETRIES,
-                category.label(),
-                error_text
-            );
-
-            if !category.is_retryable() {
-                panic!(
-                    "DPNS lookup failed with non-retryable error: {}",
-                    error_text
-                );
-            }
-
-            dismiss_if_present(harness);
-            harness.state_mut().screen_stack.pop();
-            harness.run_steps(SETTLE_STEPS * attempt as usize);
-
-            if attempt == PLATFORM_MAX_RETRIES {
-                panic!(
-                    "DPNS lookup failed after {} retries. Last error: {}",
-                    PLATFORM_MAX_RETRIES, error_text
-                );
-            }
+            handle_retry_error(harness, "DPNS lookup", attempt, true);
             continue;
         } else {
             panic!("DPNS lookup reached unexpected state");
@@ -167,32 +140,6 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
         }
 
         // Error path — classify and decide whether to retry
-        let error_text = capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
-        let category = classify_error(&error_text);
-        println!(
-            "  Contract fetch error (attempt {}/{}): [{}] {}",
-            attempt,
-            PLATFORM_MAX_RETRIES,
-            category.label(),
-            error_text
-        );
-
-        if !category.is_retryable() {
-            panic!(
-                "Contract fetch failed with non-retryable error: {}",
-                error_text
-            );
-        }
-
-        dismiss_if_present(harness);
-        harness.state_mut().screen_stack.pop();
-        harness.run_steps(SETTLE_STEPS * attempt as usize);
-
-        if attempt == PLATFORM_MAX_RETRIES {
-            panic!(
-                "DPNS contract fetch failed after {} attempts. Last error: {}",
-                PLATFORM_MAX_RETRIES, error_text
-            );
-        }
+        handle_retry_error(harness, "Contract fetch", attempt, true);
     }
 }

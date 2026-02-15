@@ -248,6 +248,12 @@ pub fn push_screen(harness: &mut Harness<'_, AppState>, screen_type: ScreenType)
     harness.run_steps(SETTLE_STEPS);
 }
 
+/// Pop the top screen off the stack and run settle frames.
+pub fn pop_screen(harness: &mut Harness<'_, AppState>) {
+    harness.state_mut().screen_stack.pop();
+    harness.run_steps(SETTLE_STEPS);
+}
+
 // ─── Input helpers ───────────────────────────────────────────────────────────
 
 /// Click the Nth TextInput (by AccessKit role), type text into it, and

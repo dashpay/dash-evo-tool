@@ -228,12 +228,17 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                 ctx.pre_send_tx_count, post_tx_count
             );
 
-            // d) Verify newest transaction is outgoing
-            if let Some(newest_tx) = w.transactions.last() {
+            // d) Verify newest transaction is outgoing.
+            //    The transactions vector order depends on the SDK, not position,
+            //    so find the newest by timestamp rather than using .last().
+            if let Some(newest_tx) = w.transactions.iter().max_by_key(|tx| tx.timestamp) {
                 assert!(
                     newest_tx.is_outgoing(),
-                    "Newest transaction must be outgoing (net_amount={}) for a send-to-self",
-                    newest_tx.net_amount
+                    "Newest transaction (by timestamp) must be outgoing for a send-to-self. \
+                     net_amount={}, timestamp={}, txid={}",
+                    newest_tx.net_amount,
+                    newest_tx.timestamp,
+                    newest_tx.txid
                 );
                 println!(
                     "  Newest tx: net_amount={} duffs (outgoing={})",

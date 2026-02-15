@@ -1,10 +1,9 @@
 use crate::helpers::context::{TestContext, seed_hash_prefix};
-use crate::helpers::harness::wait_until;
+use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::spv::SpvStatus;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui_kittest::Harness;
-use std::time::Duration;
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
     // ─── 1. Stop SPV sync ──────────────────────────────────────────────
@@ -18,12 +17,13 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
             let app_ctx = h.state().current_app_context();
             app_ctx.spv_manager.status().status != SpvStatus::Running
         },
-        Duration::from_secs(30),
+        SPV_STOP_TIMEOUT,
         60,
     );
     assert!(
         spv_stopped,
-        "SPV should not be running after stop (still Running after 30s)"
+        "SPV should not be running after stop (still Running after {}s)",
+        SPV_STOP_TIMEOUT.as_secs()
     );
     let final_status = harness.state().current_app_context().spv_manager.status();
     println!("  SPV status after stop: {:?}", final_status.status);
@@ -48,7 +48,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         }
     }
 
-    // ─── 4. Log test summary ───────────────────────────────────────────
+    // ─── 4. Log test summary ─────────────────────────────────────────
     println!();
     println!("  =======================================");
     println!("  E2E Test Suite Summary");
@@ -67,6 +67,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         ctx.balance_duffs as f64 / 1e8
     );
     println!("  SPV synced:     {}", ctx.spv_synced);
+    println!("  Header height:  {}", ctx.header_height);
     println!("  Wallet reused:  {}", ctx.wallet_reused);
     println!(
         "  Receive addr:   {}",

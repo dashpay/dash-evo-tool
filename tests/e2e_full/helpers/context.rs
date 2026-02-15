@@ -18,6 +18,8 @@ pub struct TestContext {
     pub identity_id: Option<Identifier>,
     /// DPNS name registered in Phase 6
     pub dpns_name: Option<String>,
+    /// SPV header height at setup completion (needed for tx lock time)
+    pub header_height: u32,
 }
 
 impl TestContext {
@@ -42,6 +44,7 @@ impl Default for TestContext {
             pre_send_tx_count: 0,
             identity_id: None,
             dpns_name: None,
+            header_height: 0,
         }
     }
 }

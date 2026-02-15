@@ -62,7 +62,7 @@ fn import_wallet_via_ui(
     }
 
     // Let the UI process the save
-    harness.run_steps(10);
+    harness.run_steps(SETTLE_STEPS);
 
     // Verify wallet appeared in AppContext
     {
@@ -106,11 +106,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
 
     // 2. Dismiss welcome screen
     dismiss_welcome_screen(harness);
-    harness.run_steps(10);
+    harness.run_steps(SETTLE_STEPS);
 
     // 3. Switch to testnet and enable SPV mode
     harness.state_mut().change_network(Network::Testnet);
-    harness.run_steps(10);
+    harness.run_steps(SETTLE_STEPS);
     let app_ctx = harness.state().current_app_context().clone();
     app_ctx.set_core_backend_mode(CoreBackendMode::Spv);
     println!("  Switched to testnet (SPV mode)");
@@ -178,20 +178,17 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     }
     println!("  SPV sync started (with reconcile listener), waiting for completion...");
 
-    // 12. Poll for balance availability (primary) or SPV Running status.
+    // 13. Poll for balance availability (primary) or SPV Running status.
     //
     // Balance is populated via the reconcile listener as soon as filters + blocks
     // are scanned — this completes MUCH earlier than full SPV sync because
     // masternode list validation (Syncing 0/N) can stall for extended periods
     // on testnet with limited peers.  We treat the balance being ready as
     // sufficient to proceed; SpvStatus::Running is a nice-to-have.
-    const MIN_BALANCE_DUFFS: u64 = 100_000; // 0.001 DASH
-    const MAX_SPV_RETRIES: u32 = 3;
-
     let timeout_secs: u64 = std::env::var("E2E_SPV_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(600); // 10 min default
+        .unwrap_or(SPV_SYNC_TIMEOUT_SECS);
 
     let start = Instant::now();
     let timeout = Duration::from_secs(timeout_secs);
@@ -250,11 +247,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                 let err_msg = status.last_error.as_deref().unwrap_or("unknown");
                 println!("  SPV error detected: {}", err_msg);
 
-                if retry_count < MAX_SPV_RETRIES {
+                if retry_count < PLATFORM_MAX_RETRIES {
                     retry_count += 1;
                     println!(
                         "  Retrying SPV sync ({}/{})...",
-                        retry_count, MAX_SPV_RETRIES
+                        retry_count, PLATFORM_MAX_RETRIES
                     );
                     let app_ctx = harness.state().current_app_context().clone();
                     app_ctx.spv_manager.stop();
@@ -274,6 +271,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         // We don't require Running (full masternode validation can stall on testnet).
         let spv_network_ready = matches!(status.status, SpvStatus::Syncing | SpvStatus::Running);
         if balance_ready && spv_network_ready && header_height > 0 {
+            ctx.header_height = header_height;
             println!(
                 "  SPV {:?}, header_height={} — proceeding{}",
                 status.status,

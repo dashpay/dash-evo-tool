@@ -4,16 +4,14 @@ use dash_evo_tool::app::AppState;
 use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use std::time::Duration;
-
-const MAX_RETRIES: u32 = 3;
 
 pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
-    for attempt in 1..=MAX_RETRIES {
+    for attempt in 1..=PLATFORM_MAX_RETRIES {
         // ─── 1. Navigate to token search screen (fresh each attempt) ───
         navigate_to_screen(harness, RootScreenType::RootScreenTokenSearch);
 
-        let on_screen = wait_for_label(harness, "Enter Keyword", Duration::from_secs(10));
+        let on_screen =
+            wait_for_label(harness, "Enter Keyword", std::time::Duration::from_secs(10));
         assert!(
             on_screen,
             "'Enter Keyword' label must be visible on token search screen"
@@ -26,7 +24,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
         type_into_text_input(harness, 0, "dash");
         println!(
             "  Typed 'dash' in search input (attempt {}/{})",
-            attempt, MAX_RETRIES
+            attempt, PLATFORM_MAX_RETRIES
         );
 
         // ─── 2. Click search button and wait for results ───────────────
@@ -34,7 +32,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
             .query_by_label("Search")
             .expect("Search button must be visible on token search screen")
             .click();
-        harness.run_steps(10);
+        harness.run_steps(SETTLE_STEPS);
 
         let completed = wait_until(
             harness,
@@ -43,13 +41,14 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
                     || h.query_by_label_contains("No tokens match").is_some()
                     || h.query_by_label_contains("Error").is_some()
             },
-            Duration::from_secs(60),
-            30,
+            TOKEN_SEARCH_TIMEOUT,
+            POLL_STEPS,
         );
 
         assert!(
             completed,
-            "Token search must complete within 60s (timed out)"
+            "Token search must complete within {}s (timed out)",
+            TOKEN_SEARCH_TIMEOUT.as_secs()
         );
 
         let has_results = harness.query_by_label_contains("Contract ID").is_some();
@@ -79,20 +78,31 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
         }
 
         if has_error {
-            let error_detail =
+            let error_text =
                 capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
+            let category = classify_error(&error_text);
             println!(
-                "  Token search error (attempt {}/{}): {}",
-                attempt, MAX_RETRIES, error_detail
+                "  Token search error (attempt {}/{}): [{}] {}",
+                attempt,
+                PLATFORM_MAX_RETRIES,
+                category.label(),
+                error_text
             );
-            // Dismiss error and retry
-            dismiss_if_present(harness);
-            harness.run_steps(10);
 
-            if attempt == MAX_RETRIES {
+            if !category.is_retryable() {
+                panic!(
+                    "Token search failed with non-retryable error: {}",
+                    error_text
+                );
+            }
+
+            dismiss_if_present(harness);
+            harness.run_steps(SETTLE_STEPS * attempt as usize);
+
+            if attempt == PLATFORM_MAX_RETRIES {
                 panic!(
                     "Token search failed after {} retries. Last error: {}",
-                    MAX_RETRIES, error_detail
+                    PLATFORM_MAX_RETRIES, error_text
                 );
             }
             continue;

@@ -7,6 +7,9 @@ use egui_kittest::kittest::Queryable;
 use std::time::Duration;
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
+    // SPV readiness gate — re-verify before building core transactions
+    ensure_spv_tx_ready(harness, ctx);
+
     // 1. Navigate to wallets screen and verify wallet card
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
 
@@ -42,16 +45,14 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     }
 
     // 4. Conditional send-to-self (requires >= 0.1 DASH)
-    let min_balance_for_send: u64 = 10_000_000; // 0.1 DASH in duffs
-
     assert!(
-        ctx.balance_duffs >= min_balance_for_send,
+        ctx.balance_duffs >= MIN_BALANCE_FOR_SEND,
         "Wallet balance ({} duffs / {:.8} DASH) is below the minimum ({} duffs / {:.8} DASH) \
          required for the send-to-self test. Fund the E2E wallet and retry.",
         ctx.balance_duffs,
         ctx.balance_duffs as f64 / 1e8,
-        min_balance_for_send,
-        min_balance_for_send as f64 / 1e8,
+        MIN_BALANCE_FOR_SEND,
+        MIN_BALANCE_FOR_SEND as f64 / 1e8,
     );
 
     println!("  Attempting send-to-self (0.001 DASH)...");
@@ -62,7 +63,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         .query_by_label("Send")
         .expect("Send button not found")
         .click();
-    harness.run_steps(30);
+    harness.run_steps(POLL_STEPS);
     let stack_after = harness.state().screen_stack.len();
     println!(
         "  Screen stack: {} -> {} after Send click",
@@ -102,7 +103,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         .query_by_label("Core Transaction")
         .expect("Core Transaction button must be visible on send screen");
     tx_btn.click();
-    harness.run_steps(10);
+    harness.run_steps(SETTLE_STEPS);
     println!("  Clicked transaction button");
 
     // Wait for the final result
@@ -113,8 +114,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                 || h.query_by_label_contains("Back to Wallet").is_some()
                 || h.query_by_label_contains("Dismiss").is_some()
         },
-        Duration::from_secs(180),
-        30,
+        SEND_TX_TIMEOUT,
+        POLL_STEPS,
     );
 
     // Dump visible labels for diagnostics
@@ -130,7 +131,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
 
     assert!(
         got_final_result,
-        "Send transaction must complete within 180s"
+        "Send transaction must complete within {}s",
+        SEND_TX_TIMEOUT.as_secs()
     );
 
     // Assert success specifically — error is a test failure.
@@ -162,8 +164,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                 false
             }
         },
-        Duration::from_secs(120),
-        30,
+        POST_SEND_RECONCILE_TIMEOUT,
+        POLL_STEPS,
     );
 
     // Read final state for assertions and diagnostics
@@ -185,10 +187,14 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
 
         assert!(
             reconciled,
-            "Wallet state must update within 120s after send-to-self. \
+            "Wallet state must update within {}s after send-to-self. \
              Balance: {} -> {} duffs, tx_count: {} -> {}. \
              SPV reconciliation may be broken.",
-            ctx.pre_send_balance, post_balance, ctx.pre_send_tx_count, post_tx_count
+            POST_SEND_RECONCILE_TIMEOUT.as_secs(),
+            ctx.pre_send_balance,
+            post_balance,
+            ctx.pre_send_tx_count,
+            post_tx_count
         );
 
         // a) Balance must decrease (self-send returns the amount, only fee is lost)
@@ -200,14 +206,16 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             post_balance
         );
 
-        // b) Fee must be reasonable (< 1M duffs / 0.01 DASH)
+        // b) Fee must be reasonable
         let fee = ctx.pre_send_balance - post_balance;
         assert!(
-            fee < 1_000_000,
+            fee < MAX_SEND_FEE,
             "Transaction fee is unreasonably high: {} duffs ({:.8} DASH). \
-             Expected < 1,000,000 duffs (0.01 DASH).",
+             Expected < {} duffs ({:.8} DASH).",
             fee,
-            fee as f64 / 1e8
+            fee as f64 / 1e8,
+            MAX_SEND_FEE,
+            MAX_SEND_FEE as f64 / 1e8
         );
         println!("  Fee paid: {} duffs ({:.8} DASH)", fee, fee as f64 / 1e8);
 
@@ -247,7 +255,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // Click "Back to Wallet" to return
     if let Some(back_btn) = harness.query_by_label_contains("Back to Wallet") {
         back_btn.click();
-        harness.run_steps(10);
+        harness.run_steps(SETTLE_STEPS);
     }
 
     // Navigate back to wallets screen for next phase

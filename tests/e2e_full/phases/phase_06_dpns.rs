@@ -5,10 +5,7 @@ use dash_evo_tool::ui::identities::register_dpns_name_screen::RegisterDpnsNameSo
 use dash_evo_tool::ui::{Screen, ScreenType};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-const MAX_RETRIES: u32 = 3;
-const DPNS_TIMEOUT: Duration = Duration::from_secs(180);
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     let identity_id = ctx
@@ -24,8 +21,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     let dpns_name = format!("e2etest{}", unix_secs);
     println!("  Target DPNS name: {}", dpns_name);
 
-    for attempt in 1..=MAX_RETRIES {
-        println!("  DPNS registration attempt {}/{}", attempt, MAX_RETRIES);
+    for attempt in 1..=PLATFORM_MAX_RETRIES {
+        println!(
+            "  DPNS registration attempt {}/{}",
+            attempt, PLATFORM_MAX_RETRIES
+        );
 
         // ─── 1. Push RegisterDpnsName screen ─────────────────────────────
         push_screen(
@@ -34,7 +34,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         );
 
         // ─── 2. Reload identities (just created in Phase 5) and configure ─
-        let configured = {
+        {
             let stack = &mut harness.state_mut().screen_stack;
             if let Some(Screen::RegisterDpnsNameScreen(screen)) = stack.last_mut() {
                 // Refresh identity list from database -- the identity was just
@@ -44,38 +44,46 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                     .app_context
                     .load_local_user_identities()
                     .unwrap_or_default();
+
+                // Hard assert: identity list must not be empty
+                assert!(
+                    !screen.qualified_identities.is_empty(),
+                    "No identities in database. Did Phase 5 complete?"
+                );
+
                 screen.select_identity(identity_id);
+
+                // Hard assert: identity must be selected
+                assert!(
+                    screen.selected_qualified_identity.is_some(),
+                    "select_identity({}) failed — identity not in list of {} identities",
+                    identity_id,
+                    screen.qualified_identities.len()
+                );
+
                 screen.show_identity_selector = false;
                 screen.name_input = dpns_name.clone();
-                if screen.selected_qualified_identity.is_none() {
-                    println!("  Warning: select_identity did not find identity in list");
-                }
-                screen.selected_qualified_identity.is_some()
             } else {
-                false
+                panic!("Expected RegisterDpnsNameScreen on screen stack");
             }
-        };
-
-        if !configured {
-            println!("  Failed to configure RegisterDpnsNameScreen, retrying...");
-            harness.state_mut().screen_stack.pop();
-            harness.run_steps(5);
-            continue;
         }
 
         // ─── 3. Let UI render with configured state ──────────────────────
-        harness.run_steps(30);
+        harness.run_steps(POLL_STEPS);
+
+        // Verify UI rendered the expected state
+        assert!(
+            harness.query_by_label("Register Name").is_some(),
+            "'Register Name' button must be visible after configuring screen"
+        );
+        println!("  Screen configured: Register Name button visible");
 
         // ─── 4. Click "Register Name" button ─────────────────────────────
-        if let Some(btn) = harness.query_by_label("Register Name") {
-            btn.click();
-            harness.run_steps(10);
-        } else {
-            println!("  'Register Name' button not found, retrying...");
-            harness.state_mut().screen_stack.pop();
-            harness.run_steps(5);
-            continue;
-        }
+        harness
+            .query_by_label("Register Name")
+            .expect("Register Name button not found")
+            .click();
+        harness.run_steps(SETTLE_STEPS);
 
         // ─── 5. Wait for success or error ────────────────────────────────
         let completed = wait_until(
@@ -84,22 +92,22 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                 h.query_by_label_contains("DPNS Name Registered!").is_some()
                     || h.query_by_label_contains("Error").is_some()
             },
-            DPNS_TIMEOUT,
-            30,
+            DPNS_REGISTRATION_TIMEOUT,
+            POLL_STEPS,
         );
 
         if !completed {
             println!(
                 "  DPNS registration timed out after {}s",
-                DPNS_TIMEOUT.as_secs()
+                DPNS_REGISTRATION_TIMEOUT.as_secs()
             );
             harness.state_mut().screen_stack.pop();
             harness.run_steps(5);
-            if attempt == MAX_RETRIES {
+            if attempt == PLATFORM_MAX_RETRIES {
                 panic!(
                     "DPNS registration timed out after {} attempts ({}s each)",
-                    MAX_RETRIES,
-                    DPNS_TIMEOUT.as_secs()
+                    PLATFORM_MAX_RETRIES,
+                    DPNS_REGISTRATION_TIMEOUT.as_secs()
                 );
             }
             continue;
@@ -114,27 +122,38 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             println!("  DPNS name registered: {}.dash", dpns_name);
 
             harness.state_mut().screen_stack.pop();
-            harness.run_steps(10);
+            harness.run_steps(SETTLE_STEPS);
 
             println!("  Phase 06 complete: DPNS registration verified");
             return;
         }
 
-        // ─── Error path: capture, dismiss, retry ─────────────────────────
-        let error_detail =
-            capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
+        // ─── Error path: classify, dismiss, retry ─────────────────────────
+        let error_text = capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
+        let category = classify_error(&error_text);
         println!(
-            "  DPNS registration error (attempt {}/{}): {}",
-            attempt, MAX_RETRIES, error_detail
+            "  DPNS registration error (attempt {}/{}): [{}] {}",
+            attempt,
+            PLATFORM_MAX_RETRIES,
+            category.label(),
+            error_text
         );
+
+        if !category.is_retryable() {
+            panic!(
+                "DPNS registration failed with non-retryable error: {}",
+                error_text
+            );
+        }
+
         dismiss_if_present(harness);
         harness.state_mut().screen_stack.pop();
-        harness.run_steps(10);
+        harness.run_steps(SETTLE_STEPS * attempt as usize);
 
-        if attempt == MAX_RETRIES {
+        if attempt == PLATFORM_MAX_RETRIES {
             panic!(
                 "DPNS registration failed after {} retries. Last error: {}",
-                MAX_RETRIES, error_detail
+                PLATFORM_MAX_RETRIES, error_text
             );
         }
     }

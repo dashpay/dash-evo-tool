@@ -8,57 +8,58 @@ use dash_evo_tool::ui::{RootScreenType, Screen, ScreenType};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use std::time::Duration;
-
-const MAX_RETRIES: u32 = 3;
-const IDENTITY_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
-    for attempt in 1..=MAX_RETRIES {
-        println!("  Identity creation attempt {}/{}", attempt, MAX_RETRIES);
+    // SPV readiness gate — identity creation builds an asset lock transaction
+    ensure_spv_tx_ready(harness, ctx);
+
+    for attempt in 1..=PLATFORM_MAX_RETRIES {
+        println!(
+            "  Identity creation attempt {}/{}",
+            attempt, PLATFORM_MAX_RETRIES
+        );
 
         // ─── 1. Push AddNewIdentity screen ───────────────────────────────
         push_screen(harness, ScreenType::AddNewIdentity);
 
         // ─── 2. Configure the screen directly (ComboBox not accessible) ─
-        let configured = {
+        {
             let stack = &mut harness.state_mut().screen_stack;
             if let Some(Screen::AddNewIdentityScreen(screen)) = stack.last_mut() {
                 *screen.funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
                 *screen.step.write().unwrap() = WalletFundedScreenStep::ReadyToCreate;
                 screen.alias_input = "E2E Identity".to_string();
                 screen.funding_amount = Some(Amount::new_dash(0.01));
-                if let Err(e) = screen.ensure_correct_identity_keys() {
-                    println!("  Warning: ensure_correct_identity_keys failed: {}", e);
-                    false
-                } else {
-                    true
-                }
-            } else {
-                false
-            }
-        };
 
-        if !configured {
-            println!("  Failed to configure AddNewIdentityScreen, retrying...");
-            harness.state_mut().screen_stack.pop();
-            harness.run_steps(5);
-            continue;
+                // Hard-fail on key setup — wallet must be open
+                screen.ensure_correct_identity_keys().unwrap_or_else(|e| {
+                    panic!(
+                        "ensure_correct_identity_keys() failed: {}. Is wallet open?",
+                        e
+                    )
+                });
+            } else {
+                panic!("Expected AddNewIdentityScreen on screen stack");
+            }
         }
 
         // ─── 3. Let UI render with configured state ──────────────────────
-        harness.run_steps(30);
+        harness.run_steps(POLL_STEPS);
+
+        // Verify UI rendered the expected state
+        assert!(
+            harness.query_by_label("Create Identity").is_some(),
+            "'Create Identity' button must be visible after configuring screen — \
+             UI did not render ReadyToCreate state correctly"
+        );
+        println!("  Screen configured: Create Identity button visible");
 
         // ─── 4. Click "Create Identity" button ───────────────────────────
-        if let Some(btn) = harness.query_by_label("Create Identity") {
-            btn.click();
-            harness.run_steps(10);
-        } else {
-            println!("  'Create Identity' button not found, retrying...");
-            harness.state_mut().screen_stack.pop();
-            harness.run_steps(5);
-            continue;
-        }
+        harness
+            .query_by_label("Create Identity")
+            .expect("Create Identity button not found")
+            .click();
+        harness.run_steps(SETTLE_STEPS);
 
         // ─── 5. Wait for success or error ────────────────────────────────
         let completed = wait_until(
@@ -68,22 +69,22 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                     .is_some()
                     || h.query_by_label_contains("Error").is_some()
             },
-            IDENTITY_TIMEOUT,
-            30,
+            IDENTITY_CREATION_TIMEOUT,
+            POLL_STEPS,
         );
 
         if !completed {
             println!(
                 "  Identity creation timed out after {}s",
-                IDENTITY_TIMEOUT.as_secs()
+                IDENTITY_CREATION_TIMEOUT.as_secs()
             );
             harness.state_mut().screen_stack.pop();
             harness.run_steps(5);
-            if attempt == MAX_RETRIES {
+            if attempt == PLATFORM_MAX_RETRIES {
                 panic!(
                     "Identity creation timed out after {} attempts ({}s each)",
-                    MAX_RETRIES,
-                    IDENTITY_TIMEOUT.as_secs()
+                    PLATFORM_MAX_RETRIES,
+                    IDENTITY_CREATION_TIMEOUT.as_secs()
                 );
             }
             continue;
@@ -112,11 +113,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             }
 
             harness.state_mut().screen_stack.pop();
-            harness.run_steps(10);
+            harness.run_steps(SETTLE_STEPS);
 
             // ─── 7. Verify identity appears on Identities screen ─────────
             navigate_to_screen(harness, RootScreenType::RootScreenIdentities);
-            harness.run_steps(30);
+            harness.run_steps(POLL_STEPS);
 
             if let Some(id) = ctx.identity_id {
                 let id_str = id.to_string(Encoding::Base58);
@@ -136,21 +137,32 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             return;
         }
 
-        // ─── Error path: capture, dismiss, retry ─────────────────────────
-        let error_detail =
-            capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
+        // ─── Error path: classify, dismiss, retry ─────────────────────────
+        let error_text = capture_error_text(harness).unwrap_or_else(|| "unknown error".to_string());
+        let category = classify_error(&error_text);
         println!(
-            "  Identity creation error (attempt {}/{}): {}",
-            attempt, MAX_RETRIES, error_detail
+            "  Identity creation error (attempt {}/{}): [{}] {}",
+            attempt,
+            PLATFORM_MAX_RETRIES,
+            category.label(),
+            error_text
         );
+
+        if !category.is_retryable() {
+            panic!(
+                "Identity creation failed with non-retryable error: {}",
+                error_text
+            );
+        }
+
         dismiss_if_present(harness);
         harness.state_mut().screen_stack.pop();
-        harness.run_steps(10);
+        harness.run_steps(SETTLE_STEPS * attempt as usize);
 
-        if attempt == MAX_RETRIES {
+        if attempt == PLATFORM_MAX_RETRIES {
             panic!(
                 "Identity creation failed after {} retries. Last error: {}",
-                MAX_RETRIES, error_detail
+                PLATFORM_MAX_RETRIES, error_text
             );
         }
     }

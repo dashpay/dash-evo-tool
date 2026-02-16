@@ -18,6 +18,7 @@ pub use profile_search::ProfileSearchScreen;
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::ScreenType;
+use crate::ui::theme::DashColors;
 use egui::{Frame, Margin, RichText, Ui};
 use std::sync::Arc;
 
@@ -38,7 +39,7 @@ pub fn render_no_identities_card(ui: &mut Ui, app_context: &Arc<AppContext>) -> 
                     RichText::new("No Identities Loaded")
                         .strong()
                         .size(25.0)
-                        .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                        .color(DashColors::text_primary(dark_mode)),
                 );
 
                 ui.add_space(5.0);
@@ -55,7 +56,7 @@ pub fn render_no_identities_card(ui: &mut Ui, app_context: &Arc<AppContext>) -> 
                     RichText::new("Here's what you can do:")
                         .strong()
                         .size(18.0)
-                        .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                        .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.add_space(5.0);
 
@@ -70,7 +71,7 @@ pub fn render_no_identities_card(ui: &mut Ui, app_context: &Arc<AppContext>) -> 
                         .color(egui::Color32::WHITE)
                         .strong(),
                 )
-                .fill(crate::ui::theme::DashColors::DASH_BLUE)
+                .fill(DashColors::DASH_BLUE)
                 .min_size(egui::vec2(150.0, 36.0));
 
                 if ui.add(button).clicked() {

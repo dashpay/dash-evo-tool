@@ -117,7 +117,7 @@ impl PlatformInfoScreen {
                 // Show spinner with Dash blue color
                 ui.add(
                     egui::widgets::Spinner::default()
-                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                        .color(DashColors::DASH_BLUE),
                 );
 
                 ui.add_space(10.0);

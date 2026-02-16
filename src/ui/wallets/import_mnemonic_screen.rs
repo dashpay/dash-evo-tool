@@ -399,12 +399,8 @@ impl ImportMnemonicScreen {
                             let response = ui.add_sized(
                                 Vec2::new(input_width, 20.0),
                                 egui::TextEdit::singleline(&mut word)
-                                    .text_color(crate::ui::theme::DashColors::text_primary(
-                                        dark_mode,
-                                    ))
-                                    .background_color(
-                                        crate::ui::theme::DashColors::input_background(dark_mode),
-                                    ),
+                                    .text_color(DashColors::text_primary(dark_mode))
+                                    .background_color(DashColors::input_background(dark_mode)),
                             );
 
                             if response.changed() {
@@ -452,8 +448,8 @@ impl ImportMnemonicScreen {
             Vec2::new(ui.available_width() - 20.0, 40.0),
             egui::TextEdit::singleline(&mut self.private_key_input)
                 .hint_text("Enter private key (WIF: 51-52 chars, or hex: 64 chars)")
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .password(true),
         );
 

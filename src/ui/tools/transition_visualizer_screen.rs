@@ -156,8 +156,8 @@ impl TransitionVisualizerScreen {
             TextEdit::multiline(&mut self.input_data)
                 .desired_rows(6)
                 .desired_width(ui.available_width())
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .code_editor(),
         );
 
@@ -210,8 +210,8 @@ impl TransitionVisualizerScreen {
                     TextEdit::multiline(&mut json.clone())
                         .desired_rows(10)
                         .desired_width(ui.available_width())
-                        .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                        .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                        .text_color(DashColors::text_primary(dark_mode))
+                        .background_color(DashColors::input_background(dark_mode))
                         .font(egui::TextStyle::Monospace),
                 );
 

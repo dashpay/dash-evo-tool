@@ -160,8 +160,8 @@ impl RegisterDataContractScreen {
             TextEdit::multiline(&mut self.contract_json_input)
                 .desired_rows(12)
                 .desired_width(ui.available_width())
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .code_editor(),
         );
         if response.changed() {
@@ -224,18 +224,18 @@ impl RegisterDataContractScreen {
                 ui.add_space(10.0);
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 Frame::new()
-                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))
                     .corner_radius(5.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Estimated Fee:")
-                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                                    .color(DashColors::text_secondary(dark_mode)),
                             );
                             ui.label(
                                 RichText::new(format_credits_as_dash(estimated_fee))
-                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .color(DashColors::text_primary(dark_mode))
                                     .strong(),
                             );
                         });

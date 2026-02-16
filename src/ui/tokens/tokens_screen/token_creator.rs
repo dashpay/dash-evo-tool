@@ -1585,8 +1585,8 @@ impl TokensScreen {
             let schemas_response = ui.add_sized(
                 [ui.available_width(), 120.0],
                 TextEdit::multiline(&mut self.document_schemas_input)
-                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                    .text_color(DashColors::text_primary(dark_mode))
+                    .background_color(DashColors::input_background(dark_mode)),
             );
 
             if schemas_response.changed() {

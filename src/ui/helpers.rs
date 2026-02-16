@@ -5,6 +5,7 @@ use crate::{
     context::AppContext,
     model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity},
     ui::contracts_documents::group_actions_screen::GroupActionsScreen,
+    ui::theme::DashColors,
     ui::{RootScreenType, Screen, identities::keys::add_key_screen::AddKeyScreen},
 };
 use arboard::Clipboard;
@@ -964,13 +965,13 @@ pub fn show_success_screen_with_info(
                         egui::RichText::new(title)
                             .size(16.0)
                             .strong()
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new(description)
                             .size(14.0)
-                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
                 },
             );
@@ -1055,13 +1056,13 @@ pub fn show_group_token_success_screen_with_fee(
                         egui::RichText::new(title)
                             .size(16.0)
                             .strong()
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new(description)
                             .size(14.0)
-                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
                 },
             );

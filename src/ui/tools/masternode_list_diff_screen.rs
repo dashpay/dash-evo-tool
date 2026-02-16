@@ -1565,7 +1565,7 @@ impl MasternodeListDiffScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let message_color = match msg_type {
             MessageType::Error => DashColors::ERROR,
-            MessageType::Info => crate::ui::theme::DashColors::text_primary(dark_mode),
+            MessageType::Info => DashColors::text_primary(dark_mode),
             // Dark green for success text
             MessageType::Success => Color32::DARK_GREEN,
         };
@@ -1624,11 +1624,11 @@ impl MasternodeListDiffScreen {
                 let style = ui.style_mut();
                 // Force spinner (fg stroke) to Dash Blue
                 style.visuals.widgets.inactive.fg_stroke.color =
-                    crate::ui::theme::DashColors::DASH_BLUE;
+                    DashColors::DASH_BLUE;
                 style.visuals.widgets.active.fg_stroke.color =
-                    crate::ui::theme::DashColors::DASH_BLUE;
+                    DashColors::DASH_BLUE;
                 style.visuals.widgets.hovered.fg_stroke.color =
-                    crate::ui::theme::DashColors::DASH_BLUE;
+                    DashColors::DASH_BLUE;
                 ui.add(egui::Spinner::new());
             });
             let label = match pending {

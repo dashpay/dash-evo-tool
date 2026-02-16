@@ -1228,7 +1228,7 @@ impl ScreenLike for AddNewIdentityScreen {
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.add(
                         egui::TextEdit::singleline(&mut self.alias_input)
-                            .hint_text(egui::RichText::new("e.g., My Main Identity").color(crate::ui::theme::DashColors::text_secondary(dark_mode)))
+                            .hint_text(egui::RichText::new("e.g., My Main Identity").color(DashColors::text_secondary(dark_mode)))
                             .desired_width(250.0),
                     );
                 });
@@ -1237,7 +1237,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.label(
                     egui::RichText::new("Note: This is a Dash Evo Tool nickname, not a DPNS username.")
                         .small()
-                        .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                        .color(DashColors::text_secondary(dark_mode)),
                 );
 
                 ui.add_space(10.0);

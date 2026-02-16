@@ -716,18 +716,18 @@ impl UpdateTokenConfigScreen {
         ui.add_space(10.0);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()
-            .fill(crate::ui::theme::DashColors::surface(dark_mode))
+            .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))
             .corner_radius(5.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Estimated Fee:")
-                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.label(
                         RichText::new(format_credits_as_dash(estimated_fee))
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .color(DashColors::text_primary(dark_mode))
                             .strong(),
                     );
                 });
@@ -859,8 +859,8 @@ impl UpdateTokenConfigScreen {
                             [300.0, 22.0],
                             egui::TextEdit::singleline(id_str)
                                 .hint_text("Enter base58 identity")
-                                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                                .background_color(crate::ui::theme::DashColors::input_background(
+                                .text_color(DashColors::text_primary(dark_mode))
+                                .background_color(DashColors::input_background(
                                     dark_mode,
                                 )),
                         );

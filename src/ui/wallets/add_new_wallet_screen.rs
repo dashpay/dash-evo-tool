@@ -380,16 +380,16 @@ impl AddNewWalletScreen {
                         RichText::new("Recommended Next Steps:")
                             .size(16.0)
                             .strong()
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(12.0);
 
                     // Step 1: Fund wallet
                     ui.horizontal(|ui| {
                         let step_color = if self.funds_received {
-                            crate::ui::theme::DashColors::success_color(dark_mode)
+                            DashColors::success_color(dark_mode)
                         } else {
-                            crate::ui::theme::DashColors::text_secondary(dark_mode)
+                            DashColors::text_secondary(dark_mode)
                         };
                         ui.label(
                             RichText::new("1.")
@@ -416,12 +416,12 @@ impl AddNewWalletScreen {
                             RichText::new("2.")
                                 .size(14.0)
                                 .strong()
-                                .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                                .color(DashColors::text_secondary(dark_mode)),
                         );
                         ui.label(
                             RichText::new("Create a Platform Identity to register a username and interact with apps")
                                 .size(14.0)
-                                .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                                .color(DashColors::text_secondary(dark_mode)),
                         );
                     });
                 },

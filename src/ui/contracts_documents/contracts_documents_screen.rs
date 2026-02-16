@@ -187,8 +187,8 @@ impl DocumentQueryScreen {
             ui.add(
                 egui::TextEdit::singleline(&mut self.document_query)
                     .desired_width(text_width)
-                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                    .text_color(DashColors::text_primary(dark_mode))
+                    .background_color(DashColors::input_background(dark_mode)),
             );
 
             ui.add_space(spacing);
@@ -478,8 +478,8 @@ impl DocumentQueryScreen {
             egui::TextEdit::multiline(&mut combined_string)
                 .desired_rows(10)
                 // Remove desired_width to respect parent container margins
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .font(egui::TextStyle::Monospace),
         );
     }

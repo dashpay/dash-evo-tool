@@ -126,8 +126,8 @@ impl ContractVisualizerScreen {
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)
                 .desired_width(ui.available_width())
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .code_editor(),
         );
         if resp.changed() {

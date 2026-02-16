@@ -397,7 +397,7 @@ impl IdentitiesScreen {
                         RichText::new("No Identities Loaded")
                             .strong()
                             .size(25.0)
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
 
                     // A separator line for visual clarity
@@ -415,7 +415,7 @@ impl IdentitiesScreen {
                         RichText::new("Here’s what you can do:")
                             .strong()
                             .size(18.0)
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(5.0);
 
@@ -734,7 +734,7 @@ impl IdentitiesScreen {
 
                                                                     let key_label = self.format_key_name(key);
                                                                     let button = if holding_private_key.is_some() {
-                                                                        egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
+                                                                        egui::Button::new(&key_label).fill(DashColors::selected(dark_mode))
                                                                     } else {
                                                                         egui::Button::new(&key_label)
                                                                     };
@@ -765,7 +765,7 @@ impl IdentitiesScreen {
 
                                                                         let key_label = self.format_key_name(key);
                                                                         let button = if holding_private_key.is_some() {
-                                                                            egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
+                                                                            egui::Button::new(&key_label).fill(DashColors::selected(dark_mode))
                                                                         } else {
                                                                             egui::Button::new(&key_label)
                                                                         };

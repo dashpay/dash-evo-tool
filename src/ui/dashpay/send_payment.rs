@@ -23,8 +23,35 @@ use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
+use chrono::{LocalResult, TimeZone, Utc};
+use chrono_humanize::HumanTime;
 use egui::{Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
+
+/// Format a timestamp (seconds or milliseconds since epoch) as a human-readable
+/// relative time string (e.g. "3 hours ago"). Returns `None` if the timestamp
+/// is zero or cannot be parsed.
+fn format_relative_time(timestamp: u64) -> Option<String> {
+    if timestamp == 0 {
+        return None;
+    }
+    let dt_result = if timestamp > 1_000_000_000_000 {
+        Utc.timestamp_millis_opt(timestamp as i64)
+    } else {
+        Utc.timestamp_opt(timestamp as i64, 0)
+    };
+    match dt_result {
+        LocalResult::Single(dt) => {
+            let human = HumanTime::from(dt).to_string();
+            if human.contains("seconds") {
+                Some("just now".to_string())
+            } else {
+                Some(human)
+            }
+        }
+        _ => None,
+    }
+}
 
 const PAYMENT_GUIDELINES_INFO_TEXT: &str = "Payment Guidelines:\n\n\
     Payments to contacts use encrypted payment channels.\n\n\
@@ -767,11 +794,16 @@ impl PaymentHistory {
                                     );
 
                                     // Timestamp
-                                    ui.label(
-                                        RichText::new("• 2 days ago")
-                                            .small()
-                                            .color(DashColors::text_secondary(dark_mode)),
-                                    );
+                                    let payment_time_text = format_relative_time(payment.timestamp)
+                                        .map(|t| format!("• {}", t))
+                                        .unwrap_or_default();
+                                    if !payment_time_text.is_empty() {
+                                        ui.label(
+                                            RichText::new(payment_time_text)
+                                                .small()
+                                                .color(DashColors::text_secondary(dark_mode)),
+                                        );
+                                    }
                                 });
                             });
                         });

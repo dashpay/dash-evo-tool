@@ -17,9 +17,38 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
+use chrono::{LocalResult, TimeZone, Utc};
+use chrono_humanize::HumanTime;
 use egui::{Frame, Margin, RichText, ScrollArea, Ui};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
+
+/// Format a timestamp (seconds or milliseconds since epoch) as a human-readable
+/// relative time string (e.g. "3 hours ago"). Returns `None` if the timestamp
+/// is zero or cannot be parsed.
+fn format_relative_time(timestamp: u64) -> Option<String> {
+    if timestamp == 0 {
+        return None;
+    }
+    // Distinguish seconds vs milliseconds: timestamps after year ~2001 in millis
+    // exceed 1_000_000_000_000, while second-based timestamps won't until year 33658.
+    let dt_result = if timestamp > 1_000_000_000_000 {
+        Utc.timestamp_millis_opt(timestamp as i64)
+    } else {
+        Utc.timestamp_opt(timestamp as i64, 0)
+    };
+    match dt_result {
+        LocalResult::Single(dt) => {
+            let human = HumanTime::from(dt).to_string();
+            if human.contains("seconds") {
+                Some("just now".to_string())
+            } else {
+                Some(human)
+            }
+        }
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ContactRequest {
@@ -593,8 +622,11 @@ impl ContactRequests {
                                         }
 
                                         // Timestamp
+                                        let time_text = format_relative_time(request.timestamp)
+                                            .map(|t| format!("Received: {}", t))
+                                            .unwrap_or_else(|| "Received: unknown".to_string());
                                         ui.label(
-                                            RichText::new("Received: 1 day ago").small().color(DashColors::text_secondary(dark_mode)),
+                                            RichText::new(time_text).small().color(DashColors::text_secondary(dark_mode)),
                                         );
                                     });
 
@@ -772,7 +804,10 @@ impl ContactRequests {
 
                                         // Status
                                         ui.label(RichText::new("Status: Pending").small().color(DashColors::text_secondary(dark_mode)));
-                                        ui.label(RichText::new("Sent: 2 days ago").small().color(DashColors::text_secondary(dark_mode)));
+                                        let sent_time_text = format_relative_time(request.timestamp)
+                                            .map(|t| format!("Sent: {}", t))
+                                            .unwrap_or_else(|| "Sent: unknown".to_string());
+                                        ui.label(RichText::new(sent_time_text).small().color(DashColors::text_secondary(dark_mode)));
                                     });
 
                                     ui.with_layout(

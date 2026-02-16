@@ -270,15 +270,21 @@ impl AppState {
         // Validate that the saved network has an available context; fall back to mainnet if not
         let chosen_network = match settings.network {
             Network::Testnet if testnet_app_context.is_none() => {
-                tracing::warn!("Saved network is Testnet but context unavailable, defaulting to mainnet");
+                tracing::warn!(
+                    "Saved network is Testnet but context unavailable, defaulting to mainnet"
+                );
                 Network::Dash
             }
             Network::Devnet if devnet_app_context.is_none() => {
-                tracing::warn!("Saved network is Devnet but context unavailable, defaulting to mainnet");
+                tracing::warn!(
+                    "Saved network is Devnet but context unavailable, defaulting to mainnet"
+                );
                 Network::Dash
             }
             Network::Regtest if local_app_context.is_none() => {
-                tracing::warn!("Saved network is Regtest but context unavailable, defaulting to mainnet");
+                tracing::warn!(
+                    "Saved network is Regtest but context unavailable, defaulting to mainnet"
+                );
                 Network::Dash
             }
             other => other,
@@ -720,7 +726,9 @@ impl AppState {
                 if let Some(ctx) = self.testnet_app_context.as_ref() {
                     ctx
                 } else {
-                    tracing::error!("BUG: Testnet app context not available but network is set to Testnet. Falling back to mainnet to avoid crash.");
+                    tracing::error!(
+                        "BUG: Testnet app context not available but network is set to Testnet. Falling back to mainnet to avoid crash."
+                    );
                     &self.mainnet_app_context
                 }
             }
@@ -728,7 +736,9 @@ impl AppState {
                 if let Some(ctx) = self.devnet_app_context.as_ref() {
                     ctx
                 } else {
-                    tracing::error!("BUG: Devnet app context not available but network is set to Devnet. Falling back to mainnet to avoid crash.");
+                    tracing::error!(
+                        "BUG: Devnet app context not available but network is set to Devnet. Falling back to mainnet to avoid crash."
+                    );
                     &self.mainnet_app_context
                 }
             }
@@ -736,7 +746,9 @@ impl AppState {
                 if let Some(ctx) = self.local_app_context.as_ref() {
                     ctx
                 } else {
-                    tracing::error!("BUG: Local/Regtest app context not available but network is set to Regtest. Falling back to mainnet to avoid crash.");
+                    tracing::error!(
+                        "BUG: Local/Regtest app context not available but network is set to Regtest. Falling back to mainnet to avoid crash."
+                    );
                     &self.mainnet_app_context
                 }
             }

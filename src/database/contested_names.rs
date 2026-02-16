@@ -76,11 +76,12 @@ impl Database {
             let awarded_to_id = awarded_to
                 .map(|id| {
                     Identifier::from_bytes(&id).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "Invalid awarded_to identifier ({} bytes): {}",
-                            id.len(),
-                            e
-                        ))
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Blob,
+                            format!("Invalid awarded_to identifier ({} bytes): {}", id.len(), e)
+                                .into(),
+                        )
                     })
                 })
                 .transpose()?;
@@ -128,11 +129,16 @@ impl Database {
             {
                 let contestant = Contestant {
                     id: Identifier::from_bytes(&identity_id).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "Invalid identity_id identifier ({} bytes): {}",
-                            identity_id.len(),
-                            e
-                        ))
+                        rusqlite::Error::FromSqlConversionFailure(
+                            7,
+                            rusqlite::types::Type::Blob,
+                            format!(
+                                "Invalid identity_id identifier ({} bytes): {}",
+                                identity_id.len(),
+                                e
+                            )
+                            .into(),
+                        )
                     })?,
                     name: contestant_name,
                     info: identity_info.unwrap_or_default(),
@@ -141,11 +147,16 @@ impl Database {
                     created_at_block_height,
                     created_at_core_block_height,
                     document_id: Identifier::from_bytes(&document_id).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "Invalid document_id identifier ({} bytes): {}",
-                            document_id.len(),
-                            e
-                        ))
+                        rusqlite::Error::FromSqlConversionFailure(
+                            13,
+                            rusqlite::types::Type::Blob,
+                            format!(
+                                "Invalid document_id identifier ({} bytes): {}",
+                                document_id.len(),
+                                e
+                            )
+                            .into(),
+                        )
                     })?,
                 };
 
@@ -235,11 +246,12 @@ impl Database {
             let awarded_to_id = awarded_to
                 .map(|id| {
                     Identifier::from_bytes(&id).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "Invalid awarded_to identifier ({} bytes): {}",
-                            id.len(),
-                            e
-                        ))
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Blob,
+                            format!("Invalid awarded_to identifier ({} bytes): {}", id.len(), e)
+                                .into(),
+                        )
                     })
                 })
                 .transpose()?;
@@ -287,11 +299,16 @@ impl Database {
             {
                 let contestant = Contestant {
                     id: Identifier::from_bytes(&identity_id).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "Invalid identity_id identifier ({} bytes): {}",
-                            identity_id.len(),
-                            e
-                        ))
+                        rusqlite::Error::FromSqlConversionFailure(
+                            7,
+                            rusqlite::types::Type::Blob,
+                            format!(
+                                "Invalid identity_id identifier ({} bytes): {}",
+                                identity_id.len(),
+                                e
+                            )
+                            .into(),
+                        )
                     })?,
                     name: contestant_name,
                     info: identity_info.unwrap_or_default(),
@@ -300,11 +317,16 @@ impl Database {
                     created_at_block_height,
                     created_at_core_block_height,
                     document_id: Identifier::from_bytes(&document_id).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "Invalid document_id identifier ({} bytes): {}",
-                            document_id.len(),
-                            e
-                        ))
+                        rusqlite::Error::FromSqlConversionFailure(
+                            13,
+                            rusqlite::types::Type::Blob,
+                            format!(
+                                "Invalid document_id identifier ({} bytes): {}",
+                                document_id.len(),
+                                e
+                            )
+                            .into(),
+                        )
                     })?,
                 };
 
@@ -360,11 +382,16 @@ impl Database {
                     .as_ref()
                     .map(|id| {
                         Identifier::from_bytes(id).map_err(|e| {
-                            rusqlite::Error::InvalidParameterName(format!(
-                                "Invalid awarded_to identifier ({} bytes): {}",
-                                id.len(),
-                                e
-                            ))
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Blob,
+                                format!(
+                                    "Invalid awarded_to identifier ({} bytes): {}",
+                                    id.len(),
+                                    e
+                                )
+                                .into(),
+                            )
                         })
                     })
                     .transpose()?;

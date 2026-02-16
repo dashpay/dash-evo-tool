@@ -268,7 +268,7 @@ fn format_withdrawal_documents_with_daily_limit(
          Recent Withdrawals:\n    {}",
         total_amount as f64 / (dash_to_credits!(1) as f64),
         daily_withdrawal_limit as f64 / (dash_to_credits!(1) as f64),
-        daily_withdrawal_limit.saturating_sub(0) as f64 / (dash_to_credits!(1) as f64), // We don't have 24h amount
+        daily_withdrawal_limit as f64 / (dash_to_credits!(1) as f64), // TODO: subtract actual 24h withdrawal amount when available
         amounts.join("\n    ")
     ))
 }

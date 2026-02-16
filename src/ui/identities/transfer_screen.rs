@@ -501,10 +501,13 @@ impl ScreenLike for TransferScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        let identities = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default();
+        let identities = match self.app_context.load_local_qualified_identities() {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("Failed to load identities during refresh: {}", e);
+                Vec::new()
+            }
+        };
         if let Some(refreshed) = identities
             .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())

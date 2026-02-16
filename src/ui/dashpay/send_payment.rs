@@ -19,8 +19,6 @@ use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use chrono::{LocalResult, TimeZone, Utc};
-use chrono_humanize::HumanTime;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -28,30 +26,7 @@ use dash_sdk::platform::Identifier;
 use egui::{Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
 
-/// Format a timestamp (seconds or milliseconds since epoch) as a human-readable
-/// relative time string (e.g. "3 hours ago"). Returns `None` if the timestamp
-/// is zero or cannot be parsed.
-fn format_relative_time(timestamp: u64) -> Option<String> {
-    if timestamp == 0 {
-        return None;
-    }
-    let dt_result = if timestamp > 1_000_000_000_000 {
-        Utc.timestamp_millis_opt(timestamp as i64)
-    } else {
-        Utc.timestamp_opt(timestamp as i64, 0)
-    };
-    match dt_result {
-        LocalResult::Single(dt) => {
-            let human = HumanTime::from(dt).to_string();
-            if human.contains("seconds") {
-                Some("just now".to_string())
-            } else {
-                Some(human)
-            }
-        }
-        _ => None,
-    }
-}
+use super::format_relative_time;
 
 const PAYMENT_GUIDELINES_INFO_TEXT: &str = "Payment Guidelines:\n\n\
     Payments to contacts use encrypted payment channels.\n\n\

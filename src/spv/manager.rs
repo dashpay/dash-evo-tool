@@ -394,7 +394,10 @@ impl SpvManager {
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
 
-        let stop_token = CancellationToken::new();
+        // Derive stop_token as a child of the global cancellation token so that
+        // global shutdown automatically cancels SPV without requiring an explicit
+        // SpvManager::stop() call.  SpvManager::stop() can still cancel it early.
+        let stop_token = self.subtasks.cancellation_token.child_token();
         {
             let mut guard = self
                 .stop_token
@@ -404,13 +407,12 @@ impl SpvManager {
         }
 
         let manager = Arc::clone(self);
-        let global_cancel = self.subtasks.cancellation_token.clone();
 
         // Spawn SPV loop as a task on the main tokio runtime
         self.subtasks.spawn_sync("spv_main_loop", async move {
             let manager_for_loop = Arc::clone(&manager);
             if let Err(err) = manager_for_loop
-                .run_spv_loop(stop_token, global_cancel, expected_wallet_count)
+                .run_spv_loop(stop_token, expected_wallet_count)
                 .await
             {
                 tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
@@ -780,7 +782,6 @@ impl SpvManager {
     async fn run_spv_loop(
         self: Arc<Self>,
         stop_token: CancellationToken,
-        global_cancel: CancellationToken,
         expected_wallet_count: usize,
     ) -> Result<(), String> {
         // Wait for all expected wallets to be fully loaded into the WalletManager
@@ -814,7 +815,7 @@ impl SpvManager {
                     );
                     break;
                 }
-                if stop_token.is_cancelled() || global_cancel.is_cancelled() {
+                if stop_token.is_cancelled() {
                     return Ok(());
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -887,7 +888,7 @@ impl SpvManager {
         // Run sync and monitor with the client owned in this scope
         let result = self
             .clone()
-            .run_sync_and_monitor(client, command_receiver, stop_token, global_cancel)
+            .run_sync_and_monitor(client, command_receiver, stop_token)
             .await;
 
         // Clear the interface and network manager since the client is done
@@ -921,14 +922,12 @@ impl SpvManager {
         mut client: SpvClient,
         command_receiver: mpsc::UnboundedReceiver<DashSpvClientCommand>,
         stop_token: CancellationToken,
-        global_cancel: CancellationToken,
     ) -> Result<(), String> {
         // Monitor network continuously - this handles initial sync and ongoing monitoring
         // Requests are handled through the DashSpvClientInterface command channel
         enum Outcome {
             MonitorCompleted(Result<(), dash_sdk::dash_spv::SpvError>),
-            StopRequested,
-            GlobalCancelled,
+            Cancelled,
         }
 
         let outcome = {
@@ -936,15 +935,13 @@ impl SpvManager {
             let monitor_future = client.monitor_network(command_receiver, monitor_cancel.clone());
             tokio::pin!(monitor_future);
 
+            // stop_token is a child of global_cancel, so it fires on either
+            // explicit SpvManager::stop() or application-wide shutdown.
             tokio::select! {
                 result = &mut monitor_future => Outcome::MonitorCompleted(result),
                 _ = stop_token.cancelled() => {
                     monitor_cancel.cancel();
-                    Outcome::StopRequested
-                },
-                _ = global_cancel.cancelled() => {
-                    monitor_cancel.cancel();
-                    Outcome::GlobalCancelled
+                    Outcome::Cancelled
                 },
             }
         }; // monitor_future is dropped here, releasing the mutable borrow
@@ -963,7 +960,7 @@ impl SpvManager {
                 let _ = self.write_status(SpvStatus::Error);
                 Err(message)
             }
-            Outcome::StopRequested | Outcome::GlobalCancelled => {
+            Outcome::Cancelled => {
                 let _ = self.write_status(SpvStatus::Stopped);
                 Ok(())
             }

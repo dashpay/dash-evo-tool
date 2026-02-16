@@ -443,9 +443,7 @@ impl Database {
                 })?;
 
             let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName(
-                    "Seed hash should be 32 bytes".to_string(),
-                )
+                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
             })?;
             let closed_wallet_seed = ClosedKeyItem {
                 seed_hash: seed_hash_array,
@@ -803,9 +801,7 @@ impl Database {
             let raw_transaction: Vec<u8> = row.get(9)?;
 
             let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName(
-                    "Seed hash should be 32 bytes".to_string(),
-                )
+                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
             })?;
             let txid = Txid::from_slice(&txid_bytes).map_err(|e| {
                 rusqlite::Error::InvalidParameterName(format!("Invalid transaction txid: {}", e))
@@ -906,9 +902,7 @@ impl Database {
             let nonce: i64 = row.get(3)?;
             let last_full_sync_balance: Option<i64> = row.get(4)?;
             let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName(
-                    "Seed hash should be 32 bytes".to_string(),
-                )
+                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
             })?;
             Ok((
                 seed_hash_array,

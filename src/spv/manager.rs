@@ -137,9 +137,9 @@ pub(crate) enum AssetLockFinalityEvent {
 }
 
 /// Manages SPV client lifecycle and exposes status updates.
-/// Uses dash-spv's built-in state management while maintaining a dedicated runtime for performance.
+/// Uses dash-spv's built-in state management, running as a spawned task on the main tokio runtime.
 ///
-/// The client itself is owned by the background runtime thread and accessed through
+/// The client itself is owned by the background task and accessed through
 /// its internally-shared components (wallet, storage, etc.) rather than through additional locking.
 pub struct SpvManager {
     network: Network,
@@ -406,37 +406,27 @@ impl SpvManager {
         let manager = Arc::clone(self);
         let global_cancel = self.subtasks.cancellation_token.clone();
 
-        // Spawn a dedicated OS thread with a multi-thread Tokio runtime for SPV operations
-        // This ensures SPV sync doesn't compete with UI thread resources
-        std::thread::Builder::new()
-            .name("spv".to_string())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(4)
-                    .enable_all()
-                    .thread_name("spv-rt")
-                    .build()
-                    .expect("Failed to create SPV runtime");
+        // Spawn SPV loop as a task on the main tokio runtime
+        self.subtasks.spawn_sync("spv_main_loop", async move {
+            let manager_for_loop = Arc::clone(&manager);
+            if let Err(err) = manager_for_loop
+                .run_spv_loop(stop_token, global_cancel, expected_wallet_count)
+                .await
+            {
+                tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
+                if let Err(e) = manager.write_last_error(Some(err.clone())) {
+                    tracing::error!("Failed to write SPV error: {}", e);
+                }
+                if let Err(e) = manager.write_status(SpvStatus::Error) {
+                    tracing::error!("Failed to write SPV status: {}", e);
+                }
+            }
 
-                rt.block_on(async move {
-                    let manager_for_loop = Arc::clone(&manager);
-                    if let Err(err) = manager_for_loop.run_spv_loop(stop_token, global_cancel, expected_wallet_count).await {
-                        tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
-                        if let Err(e) = manager.write_last_error(Some(err.clone())) {
-                            tracing::error!("Failed to write SPV error: {}", e);
-                        }
-                        if let Err(e) = manager.write_status(SpvStatus::Error) {
-                            tracing::error!("Failed to write SPV status: {}", e);
-                        }
-                    }
-
-                    // Clean up on exit
-                    if let Ok(mut guard) = manager.stop_token.lock() {
-                        *guard = None;
-                    }
-                });
-            })
-            .map_err(|e| format!("Failed to spawn SPV thread: {e}"))?;
+            // Clean up on exit
+            if let Ok(mut guard) = manager.stop_token.lock() {
+                *guard = None;
+            }
+        });
 
         Ok(())
     }
@@ -706,14 +696,21 @@ impl SpvManager {
             format!("ExtendedPrivKey::new_master failed: {e}")
         })?;
         seed_bytes.zeroize();
-        let xprv_str = xprv.to_string();
+        let mut xprv_str = xprv.to_string();
 
         let account_options = Self::default_account_creation_options();
 
         let wallet_id = match wm.import_wallet_from_extended_priv_key(&xprv_str, account_options) {
-            Ok(id) => id,
-            Err(WalletError::WalletExists(id)) => id,
+            Ok(id) => {
+                xprv_str.zeroize();
+                id
+            }
+            Err(WalletError::WalletExists(id)) => {
+                xprv_str.zeroize();
+                id
+            }
             Err(err) => {
+                xprv_str.zeroize();
                 return Err(format!(
                     "import_wallet_from_extended_priv_key failed: {err}"
                 ));
@@ -1302,10 +1299,28 @@ fn build_spv_data_dir(network: Network, config: &NetworkConfig) -> Result<PathBu
     let network_dir = match network {
         Network::Dash => "mainnet".to_string(),
         Network::Testnet => "testnet".to_string(),
-        Network::Devnet => config
-            .devnet_name
-            .clone()
-            .unwrap_or_else(|| "devnet".to_string()),
+        Network::Devnet => {
+            let name = config
+                .devnet_name
+                .clone()
+                .unwrap_or_else(|| "devnet".to_string());
+            // Sanitize to prevent path traversal (e.g. "../../etc")
+            let sanitized: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            if sanitized.is_empty() {
+                "devnet".to_string()
+            } else {
+                sanitized
+            }
+        }
         Network::Regtest => "regtest".to_string(),
         other => format!("{other:?}"),
     };

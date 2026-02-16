@@ -482,6 +482,11 @@ impl ContactsList {
                                 );
                                 ui.selectable_value(
                                     &mut self.search_filter,
+                                    SearchFilter::Recent,
+                                    "Recent",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
                                     SearchFilter::Hidden,
                                     "Hidden",
                                 );
@@ -514,6 +519,11 @@ impl ContactsList {
                                     &mut self.sort_order,
                                     SortOrder::Username,
                                     "Username",
+                                );
+                                ui.selectable_value(
+                                    &mut self.sort_order,
+                                    SortOrder::DateAdded,
+                                    "Date added",
                                 );
                                 ui.selectable_value(
                                     &mut self.sort_order,

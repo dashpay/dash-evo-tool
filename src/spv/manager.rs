@@ -434,12 +434,15 @@ impl SpvManager {
     }
 
     pub fn stop(&self) {
+        tracing::info!("SpvManager::stop() called");
         let maybe_token = self.stop_token.lock().ok().and_then(|g| g.clone());
 
         if let Some(token) = maybe_token {
+            tracing::info!("SpvManager::stop(): cancelling stop_token, setting Stopping");
             let _ = self.write_status(SpvStatus::Stopping);
             token.cancel();
         } else {
+            tracing::debug!("SpvManager::stop(): no stop_token, setting Stopped immediately");
             let _ = self.write_status(SpvStatus::Stopped);
         }
     }
@@ -946,8 +949,23 @@ impl SpvManager {
             }
         }; // monitor_future is dropped here, releasing the mutable borrow
 
+        tracing::info!(
+            "run_sync_and_monitor: outcome = {}",
+            match &outcome {
+                Outcome::MonitorCompleted(Ok(())) => "MonitorCompleted(Ok)",
+                Outcome::MonitorCompleted(Err(_)) => "MonitorCompleted(Err)",
+                Outcome::Cancelled => "Cancelled",
+            }
+        );
+
         // Stop the client after monitoring completes or is cancelled
+        tracing::info!("run_sync_and_monitor: calling client.stop()...");
+        let stop_start = std::time::Instant::now();
         let _ = client.stop().await;
+        tracing::info!(
+            "run_sync_and_monitor: client.stop() took {:?}",
+            stop_start.elapsed()
+        );
 
         match outcome {
             Outcome::MonitorCompleted(Ok(())) => {

@@ -267,6 +267,7 @@ impl ConnectionStatus {
             CoreBackendMode::Spv => {
                 // SPV status is updated elsewhere
                 let spv_status = app_context.spv_manager().status().status;
+                tracing::trace!("ConnectionStatus: polled SPV status = {:?}", spv_status);
                 self.set_spv_status(spv_status);
             }
             CoreBackendMode::Rpc => {

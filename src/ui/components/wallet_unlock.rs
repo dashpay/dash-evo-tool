@@ -79,9 +79,7 @@ pub trait ScreenWithWalletUnlock {
                             .password(!local_show_password)
                             .hint_text("Enter password")
                             .text_color(DashColors::text_primary(dark_mode))
-                            .background_color(DashColors::input_background(
-                                dark_mode,
-                            )),
+                            .background_color(DashColors::input_background(dark_mode)),
                     );
 
                     if password_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))

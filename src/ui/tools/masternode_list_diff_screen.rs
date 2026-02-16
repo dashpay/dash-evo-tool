@@ -1623,12 +1623,9 @@ impl MasternodeListDiffScreen {
             ui.scope(|ui| {
                 let style = ui.style_mut();
                 // Force spinner (fg stroke) to Dash Blue
-                style.visuals.widgets.inactive.fg_stroke.color =
-                    DashColors::DASH_BLUE;
-                style.visuals.widgets.active.fg_stroke.color =
-                    DashColors::DASH_BLUE;
-                style.visuals.widgets.hovered.fg_stroke.color =
-                    DashColors::DASH_BLUE;
+                style.visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
+                style.visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
+                style.visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
                 ui.add(egui::Spinner::new());
             });
             let label = match pending {

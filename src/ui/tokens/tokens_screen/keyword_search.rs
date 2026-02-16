@@ -139,7 +139,7 @@ impl TokensScreen {
                 }
             }
             ContractSearchStatus::ErrorMessage(e) => {
-                let error_color = DashColors::ERROR;
+                let error_color = DashColors::error_color(ui.visuals().dark_mode);
                 let msg = e.clone();
                 Frame::new()
                     .fill(error_color.gamma_multiply(0.1))

@@ -1114,7 +1114,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 let button_color = if validation_result.is_ok() {
                     DashColors::ACTION_BUTTON_BLUE
                 } else {
-                    Color32::from_rgb(100, 100, 100)
+                    DashColors::BUTTON_DISABLED
                 };
 
                 let button = egui::Button::new(RichText::new(set_price_text).color(Color32::WHITE))

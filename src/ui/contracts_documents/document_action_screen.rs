@@ -618,7 +618,7 @@ impl DocumentActionScreen {
             }
         } else if self.broadcast_status == BroadcastStatus::Fetched {
             ui.add_space(10.0);
-            let error_color = DashColors::ERROR;
+            let error_color = DashColors::error_color(ui.visuals().dark_mode);
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))
@@ -1798,7 +1798,7 @@ impl DocumentActionScreen {
 
                 if let Some(ref msg) = self.backend_message {
                     ui.add_space(10.0);
-                    let error_color = DashColors::ERROR;
+                    let error_color = DashColors::error_color(ui.visuals().dark_mode);
                     let msg = msg.clone();
                     Frame::new()
                         .fill(error_color.gamma_multiply(0.1))

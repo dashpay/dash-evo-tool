@@ -860,9 +860,7 @@ impl UpdateTokenConfigScreen {
                             egui::TextEdit::singleline(id_str)
                                 .hint_text("Enter base58 identity")
                                 .text_color(DashColors::text_primary(dark_mode))
-                                .background_color(DashColors::input_background(
-                                    dark_mode,
-                                )),
+                                .background_color(DashColors::input_background(dark_mode)),
                         );
 
                         if !id_str.is_empty() {

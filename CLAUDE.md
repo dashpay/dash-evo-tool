@@ -39,6 +39,11 @@ Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 
 **Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.
 
+## Documentation
+
+- **docs/ai-design** should contain architecture and technical design files, grouped in subdirectories prefixed with ISO-formatted date
+- end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
+
 ### Core Module Structure
 
 - **app.rs** - `AppState`: owns all screens, polls task results each frame, dispatches to visible screen

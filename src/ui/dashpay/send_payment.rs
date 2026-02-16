@@ -19,12 +19,12 @@ use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use chrono::{LocalResult, TimeZone, Utc};
+use chrono_humanize::HumanTime;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use chrono::{LocalResult, TimeZone, Utc};
-use chrono_humanize::HumanTime;
 use egui::{Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
 

@@ -15,7 +15,7 @@ This document describes how to connect Dash Evo Tool to a local Dash Platform ne
 
 ## Configuration
 
-Local network configuration is stored in the application `.env` file using the `LOCAL_` prefix. The `.env` file location depends on the OS:
+Local network configuration is stored in the application `.env` file using the `LOCAL_` prefix. If the file does not exist yet, copy [`.env.example`](../.env.example) to the appropriate directory and rename it to `.env`. The `.env` file location depends on the OS:
 
 | OS      | Path                                                    |
 |---------|---------------------------------------------------------|

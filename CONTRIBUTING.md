@@ -25,7 +25,7 @@ rustup update
 On Ubuntu, install build tools, SSL libraries, and related packages:
 
 ```shell
-sudo apt install -y build-essential libssl-dev pkg-config unzip
+sudo apt install -y build-essential libssl-dev pkg-config clang cmake libsqlite3-dev unzip
 ```
 
 On other Unix-like systems, use the equivalent package management commands.

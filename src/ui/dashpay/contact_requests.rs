@@ -366,11 +366,14 @@ impl ContactRequests {
 
     /// Trigger backend fetches for identity profiles that aren't cached locally.
     fn fetch_unresolved_profiles(&self, unresolved_ids: Vec<Identifier>) -> AppAction {
-        if unresolved_ids.is_empty() || self.selected_identity.is_none() {
+        let Some(identity) = self.selected_identity.as_ref() else {
+            return AppAction::None;
+        };
+        if unresolved_ids.is_empty() {
             return AppAction::None;
         }
 
-        let identity = self.selected_identity.as_ref().unwrap().clone();
+        let identity = identity.clone();
         let tasks: Vec<BackendTask> = unresolved_ids
             .into_iter()
             .map(|contact_id| {

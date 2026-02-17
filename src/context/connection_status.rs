@@ -111,6 +111,13 @@ impl ConnectionStatus {
         self.disable_zmq.store(disable, Ordering::Relaxed);
     }
 
+    /// Reset the throttle timer so the next `trigger_refresh()` fires immediately.
+    pub fn reset_timer(&self) {
+        if let Ok(mut last) = self.last_update.lock() {
+            *last = Instant::now() - REFRESH_CONNECTED;
+        }
+    }
+
     pub fn dapi_total_endpoints(&self) -> u16 {
         self.dapi_total_endpoints.load(Ordering::Relaxed)
     }
@@ -272,7 +279,11 @@ impl ConnectionStatus {
             Err(poisoned) => poisoned.into_inner(),
         };
         let now = Instant::now();
-        let timeout = if self.overall_connected() {
+        let timeout = if self.spv_status() == SpvStatus::Stopping {
+            // Poll frequently during SPV shutdown so the UI updates
+            // within ~200ms of the Stopping → Stopped transition.
+            Duration::from_millis(200)
+        } else if self.overall_connected() {
             REFRESH_CONNECTED
         } else {
             REFRESH_DISCONNECTED
@@ -299,6 +310,7 @@ impl ConnectionStatus {
             CoreBackendMode::Spv => {
                 // SPV status is updated elsewhere
                 let spv_status = app_context.spv_manager().status().status;
+                tracing::trace!("ConnectionStatus: polled SPV status = {:?}", spv_status);
                 self.set_spv_status(spv_status);
             }
             CoreBackendMode::Rpc => {

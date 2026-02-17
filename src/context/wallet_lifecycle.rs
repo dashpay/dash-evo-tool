@@ -71,6 +71,12 @@ impl AppContext {
         self.spv_setup_reconcile_listener();
         self.spv_setup_finality_listener();
         self.spv_manager.start(expected_wallets)?;
+        // Immediately reflect the new SPV status in ConnectionStatus so the
+        // UI sees the change on the next frame instead of waiting for the
+        // next throttled trigger_refresh() cycle (2-10 seconds).
+        self.connection_status
+            .set_spv_status(self.spv_manager.status().status);
+        self.connection_status.refresh_overall();
         Ok(())
     }
 
@@ -119,7 +125,7 @@ impl AppContext {
 
     fn queue_spv_wallet_load(self: &Arc<Self>, seed_hash: WalletSeedHash, seed_bytes: [u8; 64]) {
         let spv = Arc::clone(&self.spv_manager);
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_wallet_load", async move {
             if let Err(error) = spv.load_wallet_from_seed(seed_hash, seed_bytes).await {
                 tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to load SPV wallet from seed");
             }
@@ -128,7 +134,7 @@ impl AppContext {
 
     fn queue_spv_wallet_unload(self: &Arc<Self>, seed_hash: WalletSeedHash) {
         let spv = Arc::clone(&self.spv_manager);
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_wallet_unload", async move {
             if let Err(error) = spv.unload_wallet(seed_hash).await {
                 tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to unload SPV wallet");
             }
@@ -144,17 +150,18 @@ impl AppContext {
     ) {
         let ctx = Arc::clone(self);
         let wallet_clone = Arc::clone(wallet);
-        self.subtasks.spawn_sync(async move {
-            if let Err(error) = ctx
-                .discover_identities_from_wallet(&wallet_clone, max_identity_index)
-                .await
-            {
-                tracing::warn!(
-                    %error,
-                    "Failed to discover identities from wallet"
-                );
-            }
-        });
+        self.subtasks
+            .spawn_sync("wallet_identity_discovery", async move {
+                if let Err(error) = ctx
+                    .discover_identities_from_wallet(&wallet_clone, max_identity_index)
+                    .await
+                {
+                    tracing::warn!(
+                        %error,
+                        "Failed to discover identities from wallet"
+                    );
+                }
+            });
     }
 
     pub fn bootstrap_loaded_wallets(self: &Arc<Self>) {
@@ -174,16 +181,17 @@ impl AppContext {
         if self.core_backend_mode() == CoreBackendMode::Rpc {
             for wallet in wallets {
                 let ctx = Arc::clone(self);
-                self.subtasks.spawn_sync(async move {
-                    if let Err(e) =
-                        tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
-                            .await
-                            .map_err(|e| format!("Task join error: {}", e))
-                            .and_then(|r| r.map(|_| ()))
-                    {
-                        tracing::warn!("Failed to auto-refresh wallet UTXOs on startup: {}", e);
-                    }
-                });
+                self.subtasks
+                    .spawn_sync("refresh_wallet_utxos", async move {
+                        if let Err(e) =
+                            tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                                .await
+                                .map_err(|e| format!("Task join error: {}", e))
+                                .and_then(|r| r.map(|_| ()))
+                        {
+                            tracing::warn!("Failed to auto-refresh wallet UTXOs on startup: {}", e);
+                        }
+                    });
             }
 
             let single_key_wallets: Vec<_> = {
@@ -192,20 +200,21 @@ impl AppContext {
             };
             for wallet in single_key_wallets {
                 let ctx = Arc::clone(self);
-                self.subtasks.spawn_sync(async move {
-                    if let Err(e) = tokio::task::spawn_blocking(move || {
-                        ctx.refresh_single_key_wallet_info(wallet)
-                    })
-                    .await
-                    .map_err(|e| format!("Task join error: {}", e))
-                    .and_then(|r| r)
-                    {
-                        tracing::warn!(
-                            "Failed to auto-refresh single key wallet UTXOs on startup: {}",
-                            e
-                        );
-                    }
-                });
+                self.subtasks
+                    .spawn_sync("refresh_single_key_wallet_utxos", async move {
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            ctx.refresh_single_key_wallet_info(wallet)
+                        })
+                        .await
+                        .map_err(|e| format!("Task join error: {}", e))
+                        .and_then(|r| r)
+                        {
+                            tracing::warn!(
+                                "Failed to auto-refresh single key wallet UTXOs on startup: {}",
+                                e
+                            );
+                        }
+                    });
             }
         }
     }
@@ -405,14 +414,29 @@ impl AppContext {
     pub fn spv_setup_finality_listener(self: &Arc<Self>) {
         let rx = self.spv_manager.register_finality_channel();
         let ctx = Arc::clone(self);
-        self.subtasks.spawn_sync(async move {
-            tokio::pin!(rx);
-            while let Some(event) = rx.recv().await {
-                if let Err(e) = ctx.handle_spv_finality_event(event).await {
-                    tracing::debug!("SPV finality event error: {}", e);
+        let cancel = self.subtasks.cancellation_token.clone();
+        self.subtasks
+            .spawn_sync("spv_finality_listener", async move {
+                tokio::pin!(rx);
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        maybe = rx.recv() => {
+                            let Some(event) = maybe else { break; };
+                            // Wrap handler in select so cancellation can interrupt
+                            // even when blocked on locks held by the SPV sync thread.
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                result = ctx.handle_spv_finality_event(event) => {
+                                    if let Err(e) = result {
+                                        tracing::debug!("SPV finality event error: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-            }
-        });
+            });
     }
 
     async fn handle_spv_finality_event(&self, event: AssetLockFinalityEvent) -> Result<(), String> {
@@ -488,20 +512,37 @@ impl AppContext {
         use tokio::time::{Duration, Instant, sleep};
         let rx = self.spv_manager.register_reconcile_channel();
         let ctx = Arc::clone(self);
-        self.subtasks.spawn_sync(async move {
+        let cancel = self.subtasks.cancellation_token.clone();
+        self.subtasks.spawn_sync("spv_reconcile_listener", async move {
             tokio::pin!(rx);
             let mut last = Instant::now();
             loop {
                 tokio::select! {
+                    _ = cancel.cancelled() => break,
                     maybe = rx.recv() => {
                         if maybe.is_none() { break; }
                         // simple debounce window
                         if last.elapsed() > Duration::from_millis(300) {
-                            if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
+                            // Wrap in select so cancellation can interrupt when
+                            // blocked on locks held by the SPV sync thread.
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                result = ctx.reconcile_spv_wallets() => {
+                                    if let Err(e) = result { tracing::debug!("SPV reconcile error: {}", e); }
+                                }
+                            }
                             last = Instant::now();
                         } else {
-                            sleep(Duration::from_millis(300)).await;
-                            if let Err(e) = ctx.reconcile_spv_wallets().await { tracing::debug!("SPV reconcile error: {}", e); }
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                _ = sleep(Duration::from_millis(300)) => {}
+                            }
+                            tokio::select! {
+                                _ = cancel.cancelled() => break,
+                                result = ctx.reconcile_spv_wallets() => {
+                                    if let Err(e) = result { tracing::debug!("SPV reconcile error: {}", e); }
+                                }
+                            }
                             last = Instant::now();
                         }
                     }
@@ -727,5 +768,14 @@ impl AppContext {
 
     pub fn stop_spv(&self) {
         self.spv_manager.stop();
+        // Immediately reflect the new SPV status in ConnectionStatus so the
+        // UI sees the change on the next frame instead of waiting for the
+        // next throttled trigger_refresh() cycle (2-10 seconds).
+        self.connection_status
+            .set_spv_status(self.spv_manager.status().status);
+        self.connection_status.refresh_overall();
+        // Reset the throttle timer so trigger_refresh() starts polling
+        // at 200ms intervals and picks up the Stopped transition quickly.
+        self.connection_status.reset_timer();
     }
 }

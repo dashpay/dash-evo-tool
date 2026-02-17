@@ -64,6 +64,27 @@ jobs:
           sed -i "s|protoc-25.2-linux-x86_64.zip|${{ matrix.protoc-zip }}|g" flatpak/org.dash.DashEvoTool.yml
           sed -i "s|sha256: 78ab9c3288919bdaa6cfcec6127a04813cf8a0ce406afa625e48e816abee2878|sha256: ${{ matrix.protoc-sha256 }}|" flatpak/org.dash.DashEvoTool.yml
 
+      - name: Prepare Cargo cache
+        run: mkdir -p cargo-cache/registry cargo-cache/git cargo-target
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            cargo-cache
+            cargo-target
+          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-flatpak-${{ matrix.arch }}-
+
+      - name: Bind-mount Cargo cache into Flatpak sandbox
+        run: |
+          WORKSPACE="$(pwd)"
+          sed -i "/- --share=network/a\\
+              - --bind-mount=/run/build/dash-evo-tool/cargo=${WORKSPACE}/cargo-cache\\n\
+              - --bind-mount=/run/build/dash-evo-tool/target=${WORKSPACE}/cargo-target" \
+            flatpak/org.dash.DashEvoTool.yml
+
       - name: Cache Flatpak builder
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
         with:
@@ -79,6 +100,21 @@ jobs:
       - name: Create Flatpak bundle
         run: |
           flatpak build-bundle flatpak-repo dash-evo-tool-linux-${{ matrix.arch }}.flatpak org.dash.DashEvoTool
+
+      - name: Clean Cargo cache for storage
+        run: |
+          rm -rf cargo-target/release/incremental
+          rm -rf cargo-cache/registry/src
+          echo "=== Cargo cache sizes ==="
+          du -sh cargo-cache cargo-target || true
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684  # v4.2.3
+        with:
+          path: |
+            cargo-cache
+            cargo-target
+          key: cargo-flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Upload Flatpak bundle as artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

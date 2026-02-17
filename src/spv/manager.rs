@@ -8,9 +8,8 @@ use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::sync::SyncEvent;
-use dash_sdk::dash_spv::sync::SyncProgress as WatchSyncProgress;
-use dash_sdk::dash_spv::sync::SyncState;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, SyncStage, ValidationMode};
+use dash_sdk::dash_spv::sync::SyncProgress as SpvSyncProgress;
+use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -115,8 +114,7 @@ impl From<u8> for SpvStatus {
 #[derive(Debug, Clone, Default)]
 pub struct SpvStatusSnapshot {
     pub status: SpvStatus,
-    pub sync_progress: Option<SyncProgress>,
-    pub detailed_progress: Option<DetailedSyncProgress>,
+    pub sync_progress: Option<SpvSyncProgress>,
     pub last_error: Option<String>,
     pub started_at: Option<SystemTime>,
     pub last_updated: Option<SystemTime>,
@@ -156,8 +154,7 @@ pub struct SpvManager {
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,
     started_at: Arc<RwLock<Option<SystemTime>>>,
-    sync_progress_state: Arc<RwLock<Option<SyncProgress>>>,
-    detailed_progress_state: Arc<RwLock<Option<DetailedSyncProgress>>>,
+    sync_progress_state: Arc<RwLock<Option<SpvSyncProgress>>>,
     progress_updated_at: Arc<RwLock<Option<SystemTime>>>,
     // mapping DET wallet seed_hash -> SPV wallet identifier (if created)
     det_wallets: Arc<RwLock<std::collections::BTreeMap<[u8; 32], WalletId>>>,
@@ -247,34 +244,18 @@ impl SpvManager {
         Ok(())
     }
 
-    fn read_sync_progress(&self) -> SpvResult<Option<SyncProgress>> {
+    fn read_sync_progress(&self) -> SpvResult<Option<SpvSyncProgress>> {
         self.sync_progress_state
             .read()
             .map(|g| g.clone())
             .map_err(|_| SpvError::LockPoisoned("sync_progress".into()))
     }
 
-    fn write_sync_progress(&self, value: Option<SyncProgress>) -> SpvResult<()> {
+    fn write_sync_progress(&self, value: Option<SpvSyncProgress>) -> SpvResult<()> {
         let mut guard = self
             .sync_progress_state
             .write()
             .map_err(|_| SpvError::LockPoisoned("sync_progress".into()))?;
-        *guard = value;
-        Ok(())
-    }
-
-    fn read_detailed_progress(&self) -> SpvResult<Option<DetailedSyncProgress>> {
-        self.detailed_progress_state
-            .read()
-            .map(|g| g.clone())
-            .map_err(|_| SpvError::LockPoisoned("detailed_progress".into()))
-    }
-
-    fn write_detailed_progress(&self, value: Option<DetailedSyncProgress>) -> SpvResult<()> {
-        let mut guard = self
-            .detailed_progress_state
-            .write()
-            .map_err(|_| SpvError::LockPoisoned("detailed_progress".into()))?;
         *guard = value;
         Ok(())
     }
@@ -321,7 +302,6 @@ impl SpvManager {
             last_error: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
             sync_progress_state: Arc::new(RwLock::new(None)),
-            detailed_progress_state: Arc::new(RwLock::new(None)),
             progress_updated_at: Arc::new(RwLock::new(None)),
             det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             reconcile_tx: Mutex::new(None),
@@ -354,7 +334,6 @@ impl SpvManager {
         let last_error = self.read_last_error().unwrap_or(None);
         let started_at = self.read_started_at().unwrap_or(None);
         let sync_progress = self.read_sync_progress().unwrap_or(None);
-        let detailed_progress = self.read_detailed_progress().unwrap_or(None);
         let last_updated = self
             .read_progress_updated_at()
             .unwrap_or(None)
@@ -364,7 +343,6 @@ impl SpvManager {
         SpvStatusSnapshot {
             status,
             sync_progress,
-            detailed_progress,
             last_error,
             started_at,
             last_updated,
@@ -379,7 +357,6 @@ impl SpvManager {
         let last_error = self.read_last_error().unwrap_or(None);
         let started_at = self.read_started_at().unwrap_or(None);
         let sync_progress = self.read_sync_progress().unwrap_or(None);
-        let detailed_progress = self.read_detailed_progress().unwrap_or(None);
         let last_updated = self
             .read_progress_updated_at()
             .unwrap_or(None)
@@ -389,7 +366,6 @@ impl SpvManager {
         SpvStatusSnapshot {
             status,
             sync_progress,
-            detailed_progress,
             last_error,
             started_at,
             last_updated,
@@ -415,8 +391,6 @@ impl SpvManager {
         self.write_started_at(Some(SystemTime::now()))
             .map_err(|e| e.to_string())?;
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
-        self.write_detailed_progress(None)
-            .map_err(|e| e.to_string())?;
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
 
@@ -606,8 +580,6 @@ impl SpvManager {
         }
 
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
-        self.write_detailed_progress(None)
-            .map_err(|e| e.to_string())?;
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
         self.write_started_at(None).map_err(|e| e.to_string())?;
@@ -1062,11 +1034,10 @@ impl SpvManager {
 
     fn spawn_progress_watcher(
         &self,
-        mut progress_rx: tokio::sync::watch::Receiver<WatchSyncProgress>,
+        mut progress_rx: tokio::sync::watch::Receiver<SpvSyncProgress>,
     ) {
         let status = Arc::clone(&self.status);
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
-        let detailed_progress_state = Arc::clone(&self.detailed_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
@@ -1078,59 +1049,12 @@ impl SpvManager {
                         if result.is_err() {
                             break; // Channel closed
                         }
-                        let watch_progress = progress_rx.borrow();
-
-                        // Extract all available heights from WatchSyncProgress
-                        let header_height = watch_progress
-                            .headers()
-                            .map(|h| h.current_height())
-                            .unwrap_or(0);
-                        let masternode_height = watch_progress
-                            .masternodes()
-                            .map(|m| m.current_height())
-                            .unwrap_or(0);
-                        let filter_header_height = watch_progress
-                            .filter_headers()
-                            .map(|fh| fh.current_height())
-                            .unwrap_or(0);
-
-                        let sync_progress = SyncProgress {
-                            header_height,
-                            masternode_height,
-                            filter_header_height,
-                            ..Default::default()
-                        };
-
-                        // Build detailed progress with sync stage information
-                        let peer_best_height = watch_progress
-                            .headers()
-                            .map(|h| h.target_height())
-                            .unwrap_or(0);
-                        let sync_stage = Self::determine_sync_stage(&watch_progress);
-                        let detailed = DetailedSyncProgress {
-                            sync_progress: sync_progress.clone(),
-                            peer_best_height,
-                            percentage: if peer_best_height > 0 {
-                                (header_height as f64 / peer_best_height as f64 * 100.0).min(100.0)
-                            } else {
-                                0.0
-                            },
-                            headers_per_second: 0.0,
-                            bytes_per_second: 0,
-                            estimated_time_remaining: None,
-                            sync_stage,
-                            total_headers_processed: 0,
-                            total_bytes_downloaded: 0,
-                            sync_start_time: SystemTime::now(),
-                            last_update_time: SystemTime::now(),
-                        };
+                        let watch_progress = progress_rx.borrow().clone();
+                        let is_synced = watch_progress.is_synced();
 
                         // Update sync progress state
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
-                            *stored_sync = Some(sync_progress);
-                        }
-                        if let Ok(mut stored_detailed) = detailed_progress_state.write() {
-                            *stored_detailed = Some(detailed);
+                            *stored_sync = Some(watch_progress);
                         }
                         if let Ok(mut updated_at) = progress_updated_at.write() {
                             *updated_at = Some(SystemTime::now());
@@ -1138,7 +1062,7 @@ impl SpvManager {
 
                         // Update status based on progress
                         if let Ok(mut status_guard) = status.write() {
-                            if watch_progress.is_synced() {
+                            if is_synced {
                                 *status_guard = SpvStatus::Running;
                             } else if !matches!(*status_guard, SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error) {
                                 *status_guard = SpvStatus::Syncing;
@@ -1149,61 +1073,6 @@ impl SpvManager {
             }
             tracing::info!("SPV progress watcher exiting");
         });
-    }
-
-    /// Map the parallel WatchSyncProgress managers into a single UI-facing SyncStage.
-    ///
-    /// The parallel sync system has independent managers for headers, masternodes,
-    /// filter-headers, filters, and blocks. We map to a single stage by checking
-    /// which manager is actively syncing, preferring later pipeline stages.
-    fn determine_sync_stage(watch: &WatchSyncProgress) -> SyncStage {
-        // Check stages from latest to earliest in the pipeline
-        if let Ok(blocks) = watch.blocks()
-            && blocks.state() == SyncState::Syncing
-        {
-            return SyncStage::DownloadingBlocks {
-                pending: blocks.requested().saturating_sub(blocks.processed()) as usize,
-            };
-        }
-        if let Ok(filters) = watch.filters()
-            && filters.state() == SyncState::Syncing
-        {
-            return SyncStage::DownloadingFilters {
-                completed: filters.downloaded(),
-                total: filters
-                    .target_height()
-                    .saturating_sub(filters.current_height()),
-            };
-        }
-        if let Ok(fh) = watch.filter_headers()
-            && fh.state() == SyncState::Syncing
-        {
-            return SyncStage::DownloadingFilterHeaders {
-                current: fh.current_height(),
-                target: fh.target_height(),
-            };
-        }
-        if let Ok(mn) = watch.masternodes()
-            && mn.state() == SyncState::Syncing
-        {
-            return SyncStage::ValidatingHeaders {
-                batch_size: mn.diffs_processed() as usize,
-            };
-        }
-        if let Ok(headers) = watch.headers()
-            && headers.state() == SyncState::Syncing
-        {
-            return SyncStage::DownloadingHeaders {
-                start: 0,
-                end: headers.target_height(),
-            };
-        }
-
-        if watch.is_synced() {
-            SyncStage::Complete
-        } else {
-            SyncStage::Connecting
-        }
     }
 
     fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {

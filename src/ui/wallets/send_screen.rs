@@ -520,8 +520,8 @@ impl WalletSendScreen {
             return AddressType::Unknown;
         }
 
-        // Check for Platform address (Bech32m format)
-        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
+        // Check for Platform address (Bech32m format per DIP-18)
+        if crate::ui::helpers::is_platform_address_string(trimmed) {
             return AddressType::Platform;
         }
 
@@ -680,7 +680,7 @@ impl WalletSendScreen {
         let dest_type = Self::detect_address_type(&self.destination_address);
         if dest_type == AddressType::Unknown {
             return Err(
-                "Invalid destination address. Use a Dash address (X.../y...) or Platform address (evo1.../tevo1...)"
+                "Invalid destination address. Use a Dash address (X.../y...) or Platform address (dash1.../tdash1...)"
                     .to_string(),
             );
         }
@@ -1394,7 +1394,7 @@ impl WalletSendScreen {
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.destination_address)
-                        .hint_text("Enter address (X.../y.../evo1.../tevo1...)")
+                        .hint_text("Enter address (X.../y.../dash1.../tdash1...)")
                         .desired_width(f32::INFINITY),
                 );
             });
@@ -2173,7 +2173,7 @@ impl WalletSendScreen {
                             ui.label("To:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.advanced_outputs[idx].address)
-                                    .hint_text("Enter address (X.../y.../evo1.../tevo1...)")
+                                    .hint_text("Enter address (X.../y.../dash1.../tdash1...)")
                                     .desired_width(350.0),
                             );
 

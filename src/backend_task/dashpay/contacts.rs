@@ -456,7 +456,7 @@ pub async fn load_contacts(
                     .map(|s| s.to_string());
 
                 let bio = props
-                    .get("bio")
+                    .get("publicMessage")
                     .and_then(|v| v.as_text())
                     .map(|s| s.to_string());
 

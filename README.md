@@ -9,66 +9,11 @@
 
 The tool supports both Mainnet and Testnet networks. Check out the [documentation](https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/index.html) for additional information.
 
-## Table of Contents
+## Getting prebuilt binaries
 
-- [Prerequisites](#prerequisites)
-  - [Rust Installation](#rust-installation)
-  - [Dependencies](#dependencies)
-  - [Windows Runtime Dependencies](#windows-runtime-dependencies)
-  - [Dash Core Wallet Setup](#dash-core-wallet-setup)
-- [Installation](#installation)
-- [Getting Started](#getting-started)
-  - [Start the App](#start-the-app)
-  - [Application directory](#application-directory)
-  - [Connect to a Network](#connect-to-a-network)
-- [Usage](#usage)
-  - [Register a DPNS Username](#register-a-dpns-username)
-  - [Vote on an Active DPNS Contest](#vote-on-an-active-dpns-contest)
-  - [View Decoded State Transition](#view-decoded-state-transition)
-- [Switching Networks](#switching-networks)
-- [Contributing](#contributing)
-- [License](#license)
-- [Support](#support)
-- [Security Note](#security-note)
+Download the latest release from the [Releases](https://github.com/dashpay/dash-evo-tool/releases) page.
 
-## Prerequisites
-
-Before you begin, ensure you have met the following requirements:
-
-### Rust Installation
-
-- **Rust**: Install Rust using [rustup](https://rustup.rs/):
-
-  ``` shell
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
-
-- Update Rust to the latest version:
-
-  ``` shell
-  rustup update
-  ```
-
-### Dependencies
-
-- Install build-essential tools, SSL development libraries, and other required dependencies. On
-Ubuntu, use:
-
-   ``` shell
-   sudo apt install -y build-essential libssl-dev pkg-config unzip
-   ```
-
-   On other Unix-like systems, use the equivalent package management commands.
-
-- Install Protocol Buffers Compiler (protoc). Download the appropriate protoc binary for your
-system, unzip, and install:
-
-   ``` shell
-   wget https://github.com/protocolbuffers/protobuf/releases/download/v26.1/protoc-26.1-linux-x86_64.zip
-   sudo unzip protoc-*-linux-x86_64.zip -d /usr/local
-   ```
-
-### Windows Runtime Dependencies
+### Windows runtime dependencies
 
 If you use the prebuilt Windows binary, make sure the target machine has:
 
@@ -76,45 +21,11 @@ If you use the prebuilt Windows binary, make sure the target machine has:
 - OpenGL 2.0 support. If OpenGL 2.0 is not available (or the app fails to start with OpenGL-related errors), install the OpenCL, OpenGL, and Vulkan Compatibility Pack:
   https://apps.microsoft.com/detail/9nqpsl29bfff?ocid=webpdpshare
 
-### Dash Core Wallet Setup
+## Building from source
 
-- **Dash Core Wallet**: Download and install from [dash.org/wallets](https://www.dash.org/wallets/).
+See the [Contributing Guide](CONTRIBUTING.md) for prerequisites, build instructions, and development workflow.
 
-- **Synchronize Wallet**: Ensure the wallet is fully synced with the network you intend to use (Mainnet or Testnet).
-
-## Installation
-
-To install Dash Evo Tool:
-
-1. **Clone the repository**:
-
-   ``` shell
-   git clone https://github.com/dashpay/dash-evo-tool.git
-   ```
-
-2. **Navigate to the project directory**:
-
-   ``` shell
-   cd dash-evo-tool
-   ```
-
-3. **Build the project**:
-
-   ``` shell
-   cargo build --release
-   ```
-
-## Getting Started
-
-### Start the App
-
-Run the application using:
-
-``` shell
-cargo run
-```
-
-### Application directory
+## Application directory
 
 When the application runs for the first time, it creates an application directory and stores an `.env` file in it (based on [`.env.example`](.env.example)). It also stores application data in the directory. If you need to update the `.env` file, locate it in the application directory for your Operating System:
 
@@ -124,11 +35,7 @@ When the application runs for the first time, it creates an application director
 | Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config` |
 | Linux | `/home/<user>/.config/dash-evo-tool/` |
 
-#### Local Network (Development Only)
-
-For development and testing, Dash Evo Tool can connect to a dashmate-managed local network. See the [Local Network Guide](docs/local-network.md) for setup instructions.
-
-### Connect to a Network
+## Connect to a Network
 
 1. **Open Network Chooser**: In the app, navigate to the **Network Chooser** screen.
 
@@ -138,6 +45,8 @@ For development and testing, Dash Evo Tool can connect to a dashmate-managed loc
 
    - If Dash Core Wallet is running and synced, the status will show **Online**.
    - If not, the app attempts to start Dash Core Wallet automatically.
+
+To switch networks later, return to the Network Chooser and select a different network. Ensure Dash Core Wallet is fully synchronized before proceeding.
 
 ## Usage
 
@@ -192,52 +101,9 @@ For development and testing, Dash Evo Tool can connect to a dashmate-managed loc
    - Paste a hex or base58 encoded state transition into the input box at the top.
    - View the decoded details displayed below.
 
-## Switching Networks
-
-1. **Open Network Chooser**:
-
-   - Go to the **Network Chooser** screen.
-
-2. **Select Network**:
-
-   - Choose the network you'd like to interact with (**Mainnet** or **Testnet**).
-
-3. **Check Wallet Status**:
-
-   - If Dash Core Wallet is already running on that network, the status column will show **Online**.
-   - If not, click **Start** to launch Dash Core Wallet on the selected network.
-
-4. **Wait for Sync**:
-
-   - Ensure Dash Core Wallet is fully synchronized before proceeding.
-
 ## Contributing
 
-Contributions are welcome!
-
-- **Fork the Repository**: Click the **Fork** button on the GitHub repository page.
-
-- **Create a Branch**:
-
-  ``` shell
-  git checkout -b feature/YourFeatureName
-  ```
-
-- **Commit Changes**: Make your changes and commit them with descriptive messages.
-
-  ``` shell
-  git commit -m "Add feature: YourFeatureName"
-  ```
-
-- **Push to Branch**:
-
-  ``` shell
-  git push origin feature/YourFeatureName
-  ```
-
-- **Submit Pull Request**: Open a pull request on GitHub and describe your changes.
-
-- **Follow Guidelines**: Please ensure your code adheres to the project's coding standards and passes all tests.
+Contributions are welcome! See the [Contributing Guide](CONTRIBUTING.md) for details.
 
 ## License
 

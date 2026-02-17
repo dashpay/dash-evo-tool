@@ -11,7 +11,7 @@ This document describes how to connect Dash Evo Tool to a local Dash Platform ne
    dashmate group start
    ```
 
-2. **Dash Evo Tool** built from source (see [README](../README.md)).
+2. **Dash Evo Tool** built from source (see [Contributing Guide](../CONTRIBUTING.md)).
 
 ## Configuration
 

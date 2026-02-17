@@ -4,7 +4,7 @@ This document describes how to connect Dash Evo Tool to a local Dash Platform ne
 
 ## Prerequisites
 
-1. **dashmate** installed and a local network running. Typically set up via:
+1. **dashmate** installed and a local network running. See the [Dashmate documentation](https://docs.dash.org/en/stable/docs/user/network/dashmate/) for installation requirements (Docker, Node.js) and usage instructions, or the [Evonode setup guide](https://docs.dash.org/en/stable/docs/user/masternodes/setup-evonode.html) for full server configuration details. A local network is typically set up via:
 
    ```shell
    dashmate setup local

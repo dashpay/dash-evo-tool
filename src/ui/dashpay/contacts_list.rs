@@ -1089,7 +1089,10 @@ impl ScreenLike for ContactsList {
                             nickname: contact_data.nickname.clone(),
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
-                            created_at: None, // Will be set by database on save
+                            created_at: Some(std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64), // Fallback to current time for filter/sort
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
 
@@ -1133,7 +1136,10 @@ impl ScreenLike for ContactsList {
                             nickname: contact_data.nickname,
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
-                            created_at: None, // No database timestamp available
+                            created_at: Some(std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64), // Fallback to current time for filter/sort
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
                     }

@@ -168,14 +168,9 @@ impl AppContext {
                 request_id,
             } => contact_requests::reject_contact_request(self, sdk, identity, request_id).await,
             DashPayTask::LoadPaymentHistory { identity } => {
-                // Load locally stored payment records from database.
-                // Full blockchain-based history (scanning DIP-15 addresses via SPV)
-                // remains deferred until SPV support is available.
+                // Reuse the shared payment history loader to avoid duplicating logic.
                 let identity_id = identity.identity.id();
-                let stored = self
-                    .db
-                    .load_payment_history(&identity_id, 100)
-                    .map_err(|e| format!("Failed to load payment history: {}", e))?;
+                let records = payments::load_payment_history(self, &identity_id, None).await?;
 
                 let network_str = self.network.to_string();
                 let contacts = self
@@ -183,36 +178,38 @@ impl AppContext {
                     .load_dashpay_contacts(&identity_id, &network_str)
                     .unwrap_or_default();
 
-                let mut results = Vec::new();
-                for sp in stored {
-                    let is_incoming = sp.to_identity_id == identity_id.to_buffer().to_vec();
-                    let contact_bytes = if is_incoming {
-                        &sp.from_identity_id
-                    } else {
-                        &sp.to_identity_id
-                    };
+                let results: Vec<_> = records
+                    .into_iter()
+                    .map(|rec| {
+                        let is_incoming = rec.to_identity == identity_id;
+                        let contact_id = if is_incoming {
+                            rec.from_identity
+                        } else {
+                            rec.to_identity
+                        };
 
-                    let contact_name = contacts
-                        .iter()
-                        .find(|c| c.contact_identity_id == *contact_bytes)
-                        .and_then(|c| c.username.clone().or(c.display_name.clone()))
-                        .unwrap_or_else(|| {
-                            if let Ok(cid) = Identifier::from_bytes(contact_bytes) {
-                                let s = cid.to_string(Encoding::Base58);
+                        let contact_name = contacts
+                            .iter()
+                            .find(|c| {
+                                Identifier::from_bytes(&c.contact_identity_id)
+                                    .map(|id| id == contact_id)
+                                    .unwrap_or(false)
+                            })
+                            .and_then(|c| c.username.clone().or(c.display_name.clone()))
+                            .unwrap_or_else(|| {
+                                let s = contact_id.to_string(Encoding::Base58);
                                 format!("Unknown ({})", &s[..s.len().min(8)])
-                            } else {
-                                "Unknown".to_string()
-                            }
-                        });
+                            });
 
-                    results.push((
-                        sp.tx_id,
-                        contact_name,
-                        sp.amount as u64,
-                        is_incoming,
-                        sp.memo.unwrap_or_default(),
-                    ));
-                }
+                        (
+                            rec.tx_id.unwrap_or_default(),
+                            contact_name,
+                            rec.amount,
+                            is_incoming,
+                            rec.memo.unwrap_or_default(),
+                        )
+                    })
+                    .collect();
 
                 Ok(BackendTaskSuccessResult::DashPayPaymentHistory(results))
             }

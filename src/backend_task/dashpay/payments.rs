@@ -19,7 +19,7 @@ pub struct PaymentRecord {
     pub from_identity: Identifier,
     pub to_identity: Identifier,
     pub from_address: Option<Address>,
-    pub to_address: Address,
+    pub to_address: Option<Address>,
     pub amount: u64,
     pub tx_id: Option<String>,
     pub memo: Option<String>,
@@ -303,7 +303,7 @@ pub async fn send_payment_to_contact_impl(
         from_identity: from_identity.identity.id(),
         to_identity: to_contact_id,
         from_address: None,
-        to_address: to_address.clone(),
+        to_address: Some(to_address.clone()),
         amount: amount_duffs,
         tx_id: Some(txid.clone()),
         memo: memo.clone(),
@@ -375,9 +375,29 @@ pub async fn load_payment_history(
 
         let status = match sp.status.as_str() {
             "confirmed" => PaymentStatus::Confirmed(1),
-            "failed" => PaymentStatus::Failed(sp.status.clone()),
+            "failed" => PaymentStatus::Failed("Transaction failed".to_string()),
             "pending" => PaymentStatus::Pending,
             _ => PaymentStatus::Broadcast,
+        };
+
+        let amount = if sp.amount < 0 {
+            tracing::warn!(
+                "Payment {} has negative amount {}, clamping to 0",
+                sp.id, sp.amount
+            );
+            0u64
+        } else {
+            sp.amount as u64
+        };
+
+        let timestamp = if sp.created_at < 0 {
+            tracing::warn!(
+                "Payment {} has negative timestamp {}, using 0",
+                sp.id, sp.created_at
+            );
+            0u64
+        } else {
+            sp.created_at as u64
         };
 
         records.push(PaymentRecord {
@@ -385,15 +405,11 @@ pub async fn load_payment_history(
             from_identity: from_id,
             to_identity: to_id,
             from_address: None,
-            to_address: Address::p2pkh(
-                &dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x02; 33])
-                    .map_err(|e| format!("Key error: {}", e))?,
-                app_context.network,
-            ),
-            amount: sp.amount as u64,
+            to_address: None,
+            amount,
             tx_id: Some(sp.tx_id),
             memo: sp.memo,
-            timestamp: sp.created_at as u64,
+            timestamp,
             status,
             address_index: 0,
         });
@@ -449,7 +465,7 @@ mod tests {
             from_identity: from_id,
             to_identity: to_id,
             from_address: None,
-            to_address: create_test_address(),
+            to_address: Some(create_test_address()),
             amount: 100_000_000, // 1 Dash
             tx_id: None,
             memo: Some("Test payment".to_string()),
@@ -513,7 +529,7 @@ mod tests {
             from_identity: Identifier::random(),
             to_identity: Identifier::random(),
             from_address: Some(create_test_address()),
-            to_address: create_test_address(),
+            to_address: Some(create_test_address()),
             amount: 50_000_000, // 0.5 Dash
             tx_id: Some("abc123def456".to_string()),
             memo: None,
@@ -561,7 +577,7 @@ mod tests {
             from_identity: Identifier::random(),
             to_identity: Identifier::random(),
             from_address: None,
-            to_address: create_test_address(),
+            to_address: Some(create_test_address()),
             amount: 100_000_000,
             tx_id: Some("tx123".to_string()),
             memo: Some("Original memo".to_string()),

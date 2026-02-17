@@ -16,13 +16,8 @@
     </p>
   </description>
 
-  <categories>
-    <category>Finance</category>
-    <category>Network</category>
-    <category>Utility</category>
-  </categories>
-
   <url type="homepage">https://github.com/dashpay/dash-evo-tool</url>
+  <url type="bugtracker">https://github.com/dashpay/dash-evo-tool/issues</url>
 
   <launchable type="desktop-id">org.dash.DashEvoTool.desktop</launchable>
 

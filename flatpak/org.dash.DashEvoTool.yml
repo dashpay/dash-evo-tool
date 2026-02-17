@@ -18,8 +18,7 @@ finish-args:
   - --share=ipc
   # Network access for blockchain communication
   - --share=network
-  # Display server support
-  - --socket=x11
+  # Display server support (prefer Wayland, fall back to X11)
   - --socket=wayland
   - --socket=fallback-x11
   # GPU acceleration for egui rendering
@@ -68,13 +67,6 @@ modules:
           - build-dir
           - flatpak-repo
           - target
-    build-options:
-      # Network access is needed for cargo to fetch crate dependencies.
-      # flatpak-builder does not sandbox builds by default, so cargo can access the network.
-      env:
-        CARGO_HOME: /run/build/dash-evo-tool/cargo
-        PROTOC: /app/bin/protoc
-        PROTOC_INCLUDE: /app/include
     build-commands:
       - cargo build --release
       - install -Dm755 target/release/dash-evo-tool /app/bin/dash-evo-tool

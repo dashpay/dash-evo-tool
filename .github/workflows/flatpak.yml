@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - "*flatpak*"
-    tags:
-      - "v*"
   release:
     types:
       - published
@@ -43,7 +41,7 @@ jobs:
           df -h
 
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Install Flatpak and Flatpak Builder
         run: |
@@ -61,6 +59,8 @@ jobs:
             org.freedesktop.Sdk//25.08 \
             org.freedesktop.Sdk.Extension.rust-stable//25.08 \
             org.freedesktop.Sdk.Extension.llvm21//25.08
+          echo "=== Disk space after SDK install ==="
+          df -h
 
       - name: Build Flatpak
         run: |
@@ -68,18 +68,18 @@ jobs:
 
       - name: Create Flatpak bundle
         run: |
-          flatpak build-bundle repo dash-evo-tool.flatpak org.dash.DashEvoTool
+          flatpak build-bundle repo dash-evo-tool-linux-x86_64.flatpak org.dash.DashEvoTool
 
       - name: Upload Flatpak bundle as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: dash-evo-tool-flatpak
-          path: dash-evo-tool.flatpak
+          name: dash-evo-tool-linux-x86_64-flatpak
+          path: dash-evo-tool-linux-x86_64.flatpak
 
       - name: Attach bundle to release
         if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631  # v2.2.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          files: dash-evo-tool.flatpak
+          files: dash-evo-tool-linux-x86_64.flatpak

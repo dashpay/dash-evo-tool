@@ -25,6 +25,7 @@ use super::WalletsBalancesScreen;
 pub(super) struct SendDialogState {
     pub is_open: bool,
     pub address: String,
+    pub address_error: Option<String>,
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
     pub subtract_fee: bool,
@@ -146,7 +147,36 @@ impl WalletsBalancesScreen {
                 } else {
                     "Enter Core address (y.../8...)"
                 };
-                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text(hint));
+                let response = ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text(hint));
+
+                // Validate address when it changes
+                if response.changed() {
+                    if self.send_dialog.address.trim().is_empty() {
+                        self.send_dialog.address_error = None;
+                    } else {
+                        let trimmed = self.send_dialog.address.trim();
+                        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
+                            self.send_dialog.address_error = Some(
+                                "Platform addresses not supported. Use a Core address."
+                                    .to_string(),
+                            );
+                        } else {
+                            match trimmed.parse::<Address<NetworkUnchecked>>() {
+                                Ok(_) => {
+                                    self.send_dialog.address_error = None;
+                                }
+                                Err(_) => {
+                                    self.send_dialog.address_error =
+                                        Some("Invalid Core address".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(error) = &self.send_dialog.address_error {
+                    ui.colored_label(Color32::from_rgb(255, 100, 100), error);
+                }
 
                 ui.add_space(8.0);
 

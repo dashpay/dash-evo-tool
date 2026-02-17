@@ -24,6 +24,11 @@ use std::sync::Mutex;
 ///
 /// Converts into `rusqlite::Error::FromSqlConversionFailure` so it can
 /// be propagated with `?` from any function returning `rusqlite::Result`.
+///
+/// When a corrupted blob is encountered, processing stops immediately
+/// (fail-fast) rather than skipping the row. This is intentional: identity
+/// blobs contain private keys and balance data, so silently ignoring
+/// corruption could result in loss of funds.
 #[derive(Debug, thiserror::Error)]
 #[error("corrupted data detected: {0}")]
 pub(crate) struct CorruptedBlobError(pub String);

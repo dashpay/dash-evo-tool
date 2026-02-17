@@ -409,6 +409,11 @@ impl Database {
     }
 
     /// Retrieve all wallets for a specific network, including their addresses, balances, and known addresses.
+    ///
+    /// Stops on the first corrupted identity blob and returns an error for
+    /// the entire call. This is intentional — identities hold private keys
+    /// and balance data, so skipping a corrupted entry could cause loss of
+    /// funds.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();
         let conn = self.conn.lock().unwrap();

@@ -114,6 +114,11 @@ impl Database {
         Ok(())
     }
 
+    /// Returns all local identities for the current network.
+    ///
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
     pub fn get_local_qualified_identities(
         &self,
         app_context: &AppContext,
@@ -174,6 +179,9 @@ impl Database {
         Ok(identities)
     }
 
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
     #[allow(dead_code)] // May be used for filtering identities that belong to specific wallets
     pub fn get_local_qualified_identities_in_wallets(
         &self,
@@ -234,6 +242,9 @@ impl Database {
         Ok(identities)
     }
 
+    /// Returns an error if the stored identity blob is corrupted.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so ignoring corruption could cause loss of funds.
     pub fn get_identity_by_id(
         &self,
         identifier: &Identifier,
@@ -288,6 +299,9 @@ impl Database {
         Ok(identity)
     }
 
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
     pub fn get_local_voting_identities(
         &self,
         app_context: &AppContext,
@@ -312,6 +326,10 @@ impl Database {
     }
 
     /// Retrieves all local user identities along with their associated wallet IDs.
+    ///
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
     ///
     /// Caller should insert wallet references into associated_wallets before using the identities.
     #[allow(clippy::let_and_return)]

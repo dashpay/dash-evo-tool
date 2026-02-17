@@ -383,7 +383,8 @@ pub async fn load_payment_history(
         let amount = if sp.amount < 0 {
             tracing::warn!(
                 "Payment {} has negative amount {}, clamping to 0",
-                sp.id, sp.amount
+                sp.id,
+                sp.amount
             );
             0u64
         } else {
@@ -393,7 +394,8 @@ pub async fn load_payment_history(
         let timestamp = if sp.created_at < 0 {
             tracing::warn!(
                 "Payment {} has negative timestamp {}, using 0",
-                sp.id, sp.created_at
+                sp.id,
+                sp.created_at
             );
             0u64
         } else {

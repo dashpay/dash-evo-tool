@@ -43,8 +43,6 @@ pub struct NetworkConfig {
     pub devnet_name: Option<String>,
     /// Optional wallet private key to instantiate the wallet
     pub wallet_private_key: Option<String>,
-    /// Should this network be visible in the UI
-    pub show_in_ui: bool,
 }
 
 impl Config {
@@ -127,10 +125,6 @@ impl Config {
                 )
                 .map_err(|e| ConfigError::LoadError(e.to_string()))?;
             }
-
-            // Whether or not to show in UI
-            writeln!(env_file, "{}show_in_ui={}", prefix, config.show_in_ui)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
 
             // Add a blank line after each config block
             writeln!(env_file).map_err(|e| ConfigError::LoadError(e.to_string()))?;
@@ -335,7 +329,6 @@ mod tests {
             core_zmq_endpoint: Some("tcp://127.0.0.1:23708".to_string()),
             devnet_name: None,
             wallet_private_key: None,
-            show_in_ui: true,
         }
     }
 
@@ -563,7 +556,6 @@ mod tests {
             if let Some(ref zmq) = cfg.core_zmq_endpoint {
                 output.push_str(&format!("MAINNET_core_zmq_endpoint={}\n", zmq));
             }
-            output.push_str(&format!("MAINNET_show_in_ui={}\n", cfg.show_in_ui));
         }
 
         assert!(output.contains("MAINNET_dapi_addresses=https://1.1.1.1:443"));
@@ -571,7 +563,6 @@ mod tests {
         assert!(output.contains("MAINNET_core_rpc_user=dashrpc"));
         assert!(output.contains("MAINNET_core_rpc_password=password"));
         assert!(output.contains("MAINNET_core_zmq_endpoint=tcp://127.0.0.1:23708"));
-        assert!(output.contains("MAINNET_show_in_ui=true"));
     }
 
     // ── envy parsing roundtrip ──────────────────────────────────────
@@ -595,7 +586,6 @@ mod tests {
             "TEST_RT_core_zmq_endpoint".into(),
             "tcp://127.0.0.1:29999".into(),
         );
-        env_map.insert("TEST_RT_show_in_ui".into(), "true".into());
 
         // Use envy's from_iter to parse from our map (same as from_env but testable)
         let result: Result<NetworkConfig, _> = envy::prefixed("TEST_RT_")
@@ -611,7 +601,6 @@ mod tests {
             config.core_zmq_endpoint,
             Some("tcp://127.0.0.1:29999".to_string())
         );
-        assert!(config.show_in_ui);
         assert!(config.devnet_name.is_none());
         assert!(config.wallet_private_key.is_none());
     }
@@ -626,7 +615,6 @@ mod tests {
         env_map.insert("OPT_core_rpc_port".into(), "29998".into());
         env_map.insert("OPT_core_rpc_user".into(), "user".into());
         env_map.insert("OPT_core_rpc_password".into(), "pass".into());
-        env_map.insert("OPT_show_in_ui".into(), "false".into());
         env_map.insert("OPT_devnet_name".into(), "devnet-evo".into());
         env_map.insert("OPT_wallet_private_key".into(), "cVBZ1234abcd".into());
 
@@ -636,7 +624,6 @@ mod tests {
         let config = result.unwrap();
         assert_eq!(config.devnet_name, Some("devnet-evo".to_string()));
         assert_eq!(config.wallet_private_key, Some("cVBZ1234abcd".to_string()));
-        assert!(!config.show_in_ui);
         assert!(config.core_zmq_endpoint.is_none());
     }
 
@@ -651,7 +638,6 @@ mod tests {
         // core_rpc_port intentionally missing
         env_map.insert("MISS_core_rpc_user".into(), "user".into());
         env_map.insert("MISS_core_rpc_password".into(), "pass".into());
-        env_map.insert("MISS_show_in_ui".into(), "true".into());
 
         let result: Result<NetworkConfig, _> =
             envy::prefixed("MISS_").from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -668,7 +654,6 @@ mod tests {
         env_map.insert("BAD_core_rpc_port".into(), "not_a_number".into());
         env_map.insert("BAD_core_rpc_user".into(), "user".into());
         env_map.insert("BAD_core_rpc_password".into(), "pass".into());
-        env_map.insert("BAD_show_in_ui".into(), "true".into());
 
         let result: Result<NetworkConfig, _> =
             envy::prefixed("BAD_").from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())));

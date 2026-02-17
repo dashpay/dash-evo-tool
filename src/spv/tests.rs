@@ -23,7 +23,6 @@ fn test_network_config() -> NetworkConfig {
         core_zmq_endpoint: Some("tcp://127.0.0.1:23709".to_string()),
         devnet_name: None,
         wallet_private_key: None,
-        show_in_ui: true,
     }
 }
 

@@ -37,6 +37,27 @@ enum DatabaseClearMessage {
     Error(String),
 }
 
+/// Renders DAPI endpoint status with appropriate color coding.
+fn add_dapi_status_label(
+    ui: &mut Ui,
+    dapi_total: u16,
+    dapi_available: bool,
+    dapi_label: &str,
+    dark_mode: bool,
+) {
+    ui.label("DAPI:");
+    if dapi_total == 0 {
+        ui.colored_label(DashColors::text_secondary(dark_mode), dapi_label);
+    } else {
+        let color = if dapi_available {
+            DashColors::SUCCESS
+        } else {
+            DashColors::ERROR
+        };
+        ui.colored_label(color, dapi_label);
+    }
+}
+
 pub struct NetworkChooserScreen {
     pub mainnet_app_context: Arc<AppContext>,
     pub testnet_app_context: Option<Arc<AppContext>>,
@@ -469,6 +490,9 @@ impl NetworkChooserScreen {
                 None
             };
             let overall_connected = status.overall_connected();
+            let dapi_total = status.dapi_total_endpoints();
+            let dapi_available = status.dapi_available();
+            let dapi_label = status.dapi_status_label();
 
             // Button on the left with status
             ui.horizontal(|ui| {
@@ -621,6 +645,9 @@ impl NetworkChooserScreen {
                             let zmq_label = if zmq_connected { "Connected" } else { "Disconnected" };
                             ui.colored_label(zmq_color, zmq_label);
                         }
+
+                        ui.label(",");
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
                     });
                 }
 
@@ -653,6 +680,10 @@ impl NetworkChooserScreen {
                             ui.colored_label(color, label);
                         }
                     });
+
+                    ui.horizontal(|ui| {
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
+                    });
                 }
 
                 if current_backend_mode == CoreBackendMode::Spv {
@@ -664,6 +695,10 @@ impl NetworkChooserScreen {
                             DashColors::ERROR
                         };
                         ui.colored_label(color, spv_status.to_string());
+                    });
+
+                    ui.horizontal(|ui| {
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
                     });
                 }
             });

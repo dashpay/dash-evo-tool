@@ -885,7 +885,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             if let Some((message, message_type, _)) = &self.message {
                 let message = message.clone();
                 let message_color = match message_type {
-                    MessageType::Error => Color32::from_rgb(255, 100, 100),
+                    MessageType::Error => DashColors::ERROR,
                     MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => Color32::DARK_GREEN,
                 };

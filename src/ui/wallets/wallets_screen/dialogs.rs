@@ -16,7 +16,7 @@ use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use eframe::egui::{self, ComboBox, Context};
 use eframe::epaint::TextureHandle;
 use egui::load::SizedTexture;
-use egui::{Color32, Frame, Margin, RichText, TextureOptions};
+use egui::{Frame, Margin, RichText, TextureOptions};
 use std::sync::{Arc, RwLock};
 
 use super::WalletsBalancesScreen;
@@ -103,11 +103,7 @@ impl WalletsBalancesScreen {
             egui::Order::Background,
             egui::Id::new(id),
         ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-        );
+        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
     }
 
     pub(super) fn modal_frame(ctx: &Context) -> Frame {
@@ -119,13 +115,10 @@ impl WalletsBalancesScreen {
                 offset: [0, 8],
                 blur: 16,
                 spread: 0,
-                color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                color: DashColors::popup_shadow(),
             },
             fill: ctx.style().visuals.window_fill,
-            stroke: egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-            ),
+            stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
         }
     }
 
@@ -200,7 +193,7 @@ impl WalletsBalancesScreen {
                 ui.add(egui::TextEdit::singleline(&mut self.send_dialog.memo));
 
                 if let Some(error) = self.send_dialog.error.clone() {
-                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let error_color = DashColors::ERROR;
                     Frame::new()
                         .fill(error_color.gamma_multiply(0.1))
                         .inner_margin(Margin::symmetric(10, 8))
@@ -742,7 +735,7 @@ impl WalletsBalancesScreen {
                     // Status message
                     if let Some(status) = &self.fund_platform_dialog.status {
                         let status_color = if self.fund_platform_dialog.status_is_error {
-                            egui::Color32::from_rgb(220, 50, 50)
+                            DashColors::DANGER_RED
                         } else {
                             DashColors::text_secondary(dark_mode)
                         };

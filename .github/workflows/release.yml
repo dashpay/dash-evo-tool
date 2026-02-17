@@ -96,9 +96,11 @@ jobs:
         with:
           name: dash-evo-tool-${{ matrix.platform }}.zip
           path: dash-evo-tool-${{ matrix.platform }}.zip
+          retention-days: 14
 
-  release:
-    name: Create GitHub Release
+  attach-to-release:
+    name: Attach Artifacts to Release
+    if: github.event_name == 'release'
     needs: [build-and-release]
     runs-on: ubuntu-latest
     steps:
@@ -111,15 +113,11 @@ jobs:
         with:
           name: dash-evo-tool-linux-arm64.zip
 
-      - name: Publish release
+      - name: Attach to release
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: ${{ github.event.inputs.tag != '' }}
         with:
-          tag_name: ${{ github.event.inputs.tag }}
           files: |
             ./dash-evo-tool-linux-x86_64.zip
             ./dash-evo-tool-linux-arm64.zip
-          draft: false
-          prerelease: true

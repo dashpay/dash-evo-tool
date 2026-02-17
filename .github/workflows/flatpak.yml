@@ -3,7 +3,7 @@ name: Build Flatpak
 on:
   push:
     branches:
-      - "*flatpak*"
+      - "**flatpak**"
   release:
     types:
       - published

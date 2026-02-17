@@ -134,6 +134,8 @@ To connect to a local network or devnet, you need to configure the `.env` file w
 
 See [`.env.example`](.env.example) for available configuration options.
 
+For detailed instructions on connecting to a dashmate-managed local network (including how to obtain ports and passwords), see the [Local Network Guide](docs/local-network.md).
+
 ### Connect to a Network
 
 1. **Open Network Chooser**: In the app, navigate to the **Network Chooser** screen.

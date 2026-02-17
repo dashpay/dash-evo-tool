@@ -278,11 +278,14 @@ impl MintTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
-        if self.selected_key.is_none() {
-            self.error_message = Some("No signing key selected".into());
-            self.status = MintTokensStatus::ErrorMessage("No key selected".into());
-            return AppAction::None;
-        }
+        let signing_key = match self.selected_key.clone() {
+            Some(key) => key,
+            None => {
+                self.error_message = Some("No signing key selected".into());
+                self.status = MintTokensStatus::ErrorMessage("No key selected".into());
+                return AppAction::None;
+            }
+        };
 
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
             self.status = MintTokensStatus::ErrorMessage("Invalid amount".into());
@@ -290,21 +293,21 @@ impl MintTokensScreen {
             return AppAction::None;
         }
 
-        let parsed_receiver_id = Identifier::from_string_try_encodings(
+        let receiver_id = match Identifier::from_string_try_encodings(
             &self.recipient_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        );
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                self.status = MintTokensStatus::ErrorMessage("Invalid receiver".into());
+                self.error_message = Some("Invalid receiver".into());
+                return AppAction::None;
+            }
+        };
 
-        if parsed_receiver_id.is_err() {
-            self.status = MintTokensStatus::ErrorMessage("Invalid receiver".into());
-            self.error_message = Some("Invalid receiver".into());
-            return AppAction::None;
-        }
-
-        let receiver_id = parsed_receiver_id.unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("Time went backwards")
@@ -313,12 +316,12 @@ impl MintTokensScreen {
 
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
-        let group_info = if self.group_action_id.is_some() {
+        let group_info = if let Some(action_id) = self.group_action_id {
             self.group.as_ref().map(|(pos, _)| {
                 GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                     GroupStateTransitionInfo {
                         group_contract_position: *pos,
-                        action_id: self.group_action_id.unwrap(),
+                        action_id,
                         action_is_proposer: false,
                     },
                 )
@@ -333,7 +336,7 @@ impl MintTokensScreen {
             sending_identity: self.identity_token_info.identity.clone(),
             data_contract,
             token_position: self.identity_token_info.token_position,
-            signing_key: self.selected_key.clone().unwrap(),
+            signing_key,
             public_note: if self.group_action_id.is_some() {
                 None
             } else {

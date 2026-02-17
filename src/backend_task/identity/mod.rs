@@ -188,6 +188,39 @@ impl IdentityKeys {
             keys_input.iter().enumerate()
         {
             let id = (i + 1) as KeyID;
+
+            // Validate security level matches key purpose (defense-in-depth)
+            match purpose {
+                Purpose::TRANSFER => {
+                    if *security_level != SecurityLevel::CRITICAL {
+                        return Err(format!(
+                            "Key {}: TRANSFER purpose requires CRITICAL security level, got {:?}",
+                            id, security_level
+                        ));
+                    }
+                }
+                Purpose::ENCRYPTION | Purpose::DECRYPTION => {
+                    if *security_level != SecurityLevel::MEDIUM {
+                        return Err(format!(
+                            "Key {}: {:?} purpose requires MEDIUM security level, got {:?}",
+                            id, purpose, security_level
+                        ));
+                    }
+                }
+                Purpose::AUTHENTICATION => {
+                    if *security_level != SecurityLevel::CRITICAL
+                        && *security_level != SecurityLevel::HIGH
+                        && *security_level != SecurityLevel::MEDIUM
+                    {
+                        return Err(format!(
+                            "Key {}: AUTHENTICATION purpose requires CRITICAL, HIGH, or MEDIUM security level, got {:?}",
+                            id, security_level
+                        ));
+                    }
+                }
+                _ => {}
+            }
+
             let data = match key_type {
                 KeyType::ECDSA_SECP256K1 => private_key.public_key(&secp).to_bytes().into(),
                 KeyType::ECDSA_HASH160 => private_key

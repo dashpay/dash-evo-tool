@@ -931,15 +931,27 @@ impl IdentitiesScreen {
 
                         if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
-                            let mut lock = self.identities.lock().unwrap();
-                            lock.shift_remove(&identity_id);
 
-                            if let Err(e) = self
+                            match self
                                 .app_context
                                 .db
                                 .delete_local_qualified_identity(&identity_id, &self.app_context)
                             {
-                                tracing::warn!("Failed to delete identity from database: {}", e);
+                                Ok(_) => {
+                                    let mut lock = self.identities.lock().unwrap();
+                                    lock.shift_remove(&identity_id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to delete identity from database: {}",
+                                        e
+                                    );
+                                    self.backend_message = Some((
+                                        format!("Failed to remove identity: {}", e),
+                                        MessageType::Error,
+                                        Utc::now(),
+                                    ));
+                                }
                             }
 
                             if let Some((voter_identity, _)) =

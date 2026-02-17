@@ -19,7 +19,7 @@ use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -146,19 +146,36 @@ impl WithdrawalScreen {
             ui.horizontal(|ui| {
                 ui.label("Address:");
 
-                let response = ui.text_edit_singleline(&mut self.withdrawal_address);
+                let hint = if self.app_context.network == Network::Dash {
+                    "Enter Core address (X.../7...)"
+                } else {
+                    "Enter Core address (y.../8...)"
+                };
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.withdrawal_address)
+                        .hint_text(hint),
+                );
 
                 // Validate address when it changes
                 if response.changed() {
                     if self.withdrawal_address.is_empty() {
                         self.withdrawal_address_error = None;
                     } else {
-                        match Address::from_str(&self.withdrawal_address) {
-                            Ok(_) => {
-                                self.withdrawal_address_error = None;
-                            }
-                            Err(_) => {
-                                self.withdrawal_address_error = Some("Invalid address".to_string());
+                        let trimmed = self.withdrawal_address.trim();
+                        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
+                            self.withdrawal_address_error = Some(
+                                "Platform addresses not supported for withdrawal. Use a Core address."
+                                    .to_string(),
+                            );
+                        } else {
+                            match Address::from_str(&self.withdrawal_address) {
+                                Ok(_) => {
+                                    self.withdrawal_address_error = None;
+                                }
+                                Err(_) => {
+                                    self.withdrawal_address_error =
+                                        Some("Invalid Core address".to_string());
+                                }
                             }
                         }
                     }

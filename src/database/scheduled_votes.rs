@@ -159,7 +159,13 @@ impl Database {
             let executed_successfully: bool = match row.get(4)? {
                 0 => false,
                 1 => true,
-                _ => unreachable!(),
+                other => {
+                    tracing::warn!(
+                        "Unexpected value {} for executed column in scheduled_votes, defaulting to false",
+                        other
+                    );
+                    false
+                }
             };
 
             let vote_choice = match vote_choice_string.as_str() {

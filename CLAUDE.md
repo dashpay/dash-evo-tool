@@ -35,9 +35,25 @@ Test locations:
 
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 
+## CI: Safe Cargo Wrapper
+
+In GitHub Actions (Claude Code workflow), use `scripts/safe-cargo.sh` instead of `cargo` directly. This wrapper strips CI secrets from the environment before running cargo, preventing build scripts from accessing credentials.
+
+```bash
+scripts/safe-cargo.sh build --all-features
+scripts/safe-cargo.sh test --all-features --workspace
+scripts/safe-cargo.sh clippy --all-features --all-targets -- -D warnings
+scripts/safe-cargo.sh +nightly fmt --all
+```
+
 ## Architecture Overview
 
 **Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.
+
+## Documentation
+
+- **docs/ai-design** should contain architecture and technical design files, grouped in subdirectories prefixed with ISO-formatted date
+- end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
 ### Core Module Structure
 

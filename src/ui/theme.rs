@@ -21,9 +21,7 @@ pub fn detect_system_theme() -> Result<ThemeMode, String> {
 /// Resolve the actual theme to use based on preference
 pub fn resolve_theme_mode(preference: ThemeMode) -> ThemeMode {
     match preference {
-        ThemeMode::System => detect_system_theme()
-            .inspect_err(|e| tracing::warn!("Failed to detect system theme: {}", e))
-            .unwrap_or(ThemeMode::Light),
+        ThemeMode::System => detect_system_theme().unwrap_or(ThemeMode::Light),
         other => other,
     }
 }

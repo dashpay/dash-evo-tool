@@ -21,6 +21,8 @@ use egui::{Frame, Margin, RichText, ScrollArea, Ui};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+use super::format_relative_time;
+
 #[derive(Debug, Clone)]
 pub struct ContactRequest {
     pub request_id: Identifier,
@@ -593,8 +595,11 @@ impl ContactRequests {
                                         }
 
                                         // Timestamp
+                                        let time_text = format_relative_time(request.timestamp)
+                                            .map(|t| format!("Received: {}", t))
+                                            .unwrap_or_else(|| "Received: unknown".to_string());
                                         ui.label(
-                                            RichText::new("Received: 1 day ago").small().color(DashColors::text_secondary(dark_mode)),
+                                            RichText::new(time_text).small().color(DashColors::text_secondary(dark_mode)),
                                         );
                                     });
 
@@ -772,7 +777,10 @@ impl ContactRequests {
 
                                         // Status
                                         ui.label(RichText::new("Status: Pending").small().color(DashColors::text_secondary(dark_mode)));
-                                        ui.label(RichText::new("Sent: 2 days ago").small().color(DashColors::text_secondary(dark_mode)));
+                                        let sent_time_text = format_relative_time(request.timestamp)
+                                            .map(|t| format!("Sent: {}", t))
+                                            .unwrap_or_else(|| "Sent: unknown".to_string());
+                                        ui.label(RichText::new(sent_time_text).small().color(DashColors::text_secondary(dark_mode)));
                                     });
 
                                     ui.with_layout(

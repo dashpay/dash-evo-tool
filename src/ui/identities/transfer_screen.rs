@@ -247,7 +247,7 @@ impl TransferScreen {
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::singleline(&mut self.platform_address_input)
-                    .hint_text("Enter Platform address (y...)")
+                    .hint_text("Enter Platform address (evo1.../tevo1...)")
                     .desired_width(400.0),
             );
         });

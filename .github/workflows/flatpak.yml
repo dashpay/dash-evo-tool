@@ -19,6 +19,8 @@ permissions:
 jobs:
   build-flatpak:
     name: Build Flatpak (${{ matrix.arch }})
+    permissions:
+      contents: write
     strategy:
       matrix:
         include:
@@ -86,8 +88,6 @@ jobs:
 
       - name: Attach bundle to release
         if: github.event_name == 'release'
-        permissions:
-          contents: write
         uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631  # v2.2.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

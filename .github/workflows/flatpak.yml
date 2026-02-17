@@ -15,31 +15,10 @@ permissions:
 jobs:
   build-flatpak:
     name: Build Flatpak Bundle
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu
     timeout-minutes: 120
 
     steps:
-      - name: Free disk space
-        run: |
-          echo "=== Disk space before cleanup ==="
-          df -h
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /opt/hostedtoolcache/go
-          sudo rm -rf /opt/hostedtoolcache/node
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf /usr/share/swift
-          sudo rm -rf /usr/local/graalvm
-          sudo rm -rf /usr/local/.ghcup
-          sudo docker image prune --all --force || true
-          sudo docker system prune --all --force || true
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-          echo "=== Disk space after cleanup ==="
-          df -h
-
       - name: Check out code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 

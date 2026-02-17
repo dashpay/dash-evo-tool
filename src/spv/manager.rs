@@ -137,9 +137,9 @@ pub(crate) enum AssetLockFinalityEvent {
 }
 
 /// Manages SPV client lifecycle and exposes status updates.
-/// Uses dash-spv's built-in state management while maintaining a dedicated runtime for performance.
+/// Uses dash-spv's built-in state management, running as a spawned task on the main tokio runtime.
 ///
-/// The client itself is owned by the background runtime thread and accessed through
+/// The client itself is owned by the background task and accessed through
 /// its internally-shared components (wallet, storage, etc.) rather than through additional locking.
 pub struct SpvManager {
     network: Network,
@@ -394,7 +394,10 @@ impl SpvManager {
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
 
-        let stop_token = CancellationToken::new();
+        // Derive stop_token as a child of the global cancellation token so that
+        // global shutdown automatically cancels SPV without requiring an explicit
+        // SpvManager::stop() call.  SpvManager::stop() can still cancel it early.
+        let stop_token = self.subtasks.cancellation_token.child_token();
         {
             let mut guard = self
                 .stop_token
@@ -404,50 +407,42 @@ impl SpvManager {
         }
 
         let manager = Arc::clone(self);
-        let global_cancel = self.subtasks.cancellation_token.clone();
 
-        // Spawn a dedicated OS thread with a multi-thread Tokio runtime for SPV operations
-        // This ensures SPV sync doesn't compete with UI thread resources
-        std::thread::Builder::new()
-            .name("spv".to_string())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(4)
-                    .enable_all()
-                    .thread_name("spv-rt")
-                    .build()
-                    .expect("Failed to create SPV runtime");
+        // Spawn SPV loop as a task on the main tokio runtime
+        self.subtasks.spawn_sync("spv_main_loop", async move {
+            let manager_for_loop = Arc::clone(&manager);
+            if let Err(err) = manager_for_loop
+                .run_spv_loop(stop_token, expected_wallet_count)
+                .await
+            {
+                tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
+                if let Err(e) = manager.write_last_error(Some(err.clone())) {
+                    tracing::error!("Failed to write SPV error: {}", e);
+                }
+                if let Err(e) = manager.write_status(SpvStatus::Error) {
+                    tracing::error!("Failed to write SPV status: {}", e);
+                }
+            }
 
-                rt.block_on(async move {
-                    let manager_for_loop = Arc::clone(&manager);
-                    if let Err(err) = manager_for_loop.run_spv_loop(stop_token, global_cancel, expected_wallet_count).await {
-                        tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
-                        if let Err(e) = manager.write_last_error(Some(err.clone())) {
-                            tracing::error!("Failed to write SPV error: {}", e);
-                        }
-                        if let Err(e) = manager.write_status(SpvStatus::Error) {
-                            tracing::error!("Failed to write SPV status: {}", e);
-                        }
-                    }
-
-                    // Clean up on exit
-                    if let Ok(mut guard) = manager.stop_token.lock() {
-                        *guard = None;
-                    }
-                });
-            })
-            .map_err(|e| format!("Failed to spawn SPV thread: {e}"))?;
+            // Clean up on exit
+            if let Ok(mut guard) = manager.stop_token.lock() {
+                *guard = None;
+            }
+        });
 
         Ok(())
     }
 
     pub fn stop(&self) {
+        tracing::info!("SpvManager::stop() called");
         let maybe_token = self.stop_token.lock().ok().and_then(|g| g.clone());
 
         if let Some(token) = maybe_token {
+            tracing::info!("SpvManager::stop(): cancelling stop_token, setting Stopping");
             let _ = self.write_status(SpvStatus::Stopping);
             token.cancel();
         } else {
+            tracing::debug!("SpvManager::stop(): no stop_token, setting Stopped immediately");
             let _ = self.write_status(SpvStatus::Stopped);
         }
     }
@@ -706,14 +701,21 @@ impl SpvManager {
             format!("ExtendedPrivKey::new_master failed: {e}")
         })?;
         seed_bytes.zeroize();
-        let xprv_str = xprv.to_string();
+        let mut xprv_str = xprv.to_string();
 
         let account_options = Self::default_account_creation_options();
 
         let wallet_id = match wm.import_wallet_from_extended_priv_key(&xprv_str, account_options) {
-            Ok(id) => id,
-            Err(WalletError::WalletExists(id)) => id,
+            Ok(id) => {
+                xprv_str.zeroize();
+                id
+            }
+            Err(WalletError::WalletExists(id)) => {
+                xprv_str.zeroize();
+                id
+            }
             Err(err) => {
+                xprv_str.zeroize();
                 return Err(format!(
                     "import_wallet_from_extended_priv_key failed: {err}"
                 ));
@@ -783,7 +785,6 @@ impl SpvManager {
     async fn run_spv_loop(
         self: Arc<Self>,
         stop_token: CancellationToken,
-        global_cancel: CancellationToken,
         expected_wallet_count: usize,
     ) -> Result<(), String> {
         // Wait for all expected wallets to be fully loaded into the WalletManager
@@ -817,7 +818,7 @@ impl SpvManager {
                     );
                     break;
                 }
-                if stop_token.is_cancelled() || global_cancel.is_cancelled() {
+                if stop_token.is_cancelled() {
                     return Ok(());
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -890,7 +891,7 @@ impl SpvManager {
         // Run sync and monitor with the client owned in this scope
         let result = self
             .clone()
-            .run_sync_and_monitor(client, command_receiver, stop_token, global_cancel)
+            .run_sync_and_monitor(client, command_receiver, stop_token)
             .await;
 
         // Clear the interface and network manager since the client is done
@@ -924,14 +925,12 @@ impl SpvManager {
         mut client: SpvClient,
         command_receiver: mpsc::UnboundedReceiver<DashSpvClientCommand>,
         stop_token: CancellationToken,
-        global_cancel: CancellationToken,
     ) -> Result<(), String> {
         // Monitor network continuously - this handles initial sync and ongoing monitoring
         // Requests are handled through the DashSpvClientInterface command channel
         enum Outcome {
             MonitorCompleted(Result<(), dash_sdk::dash_spv::SpvError>),
-            StopRequested,
-            GlobalCancelled,
+            Cancelled,
         }
 
         let outcome = {
@@ -939,21 +938,34 @@ impl SpvManager {
             let monitor_future = client.monitor_network(command_receiver, monitor_cancel.clone());
             tokio::pin!(monitor_future);
 
+            // stop_token is a child of global_cancel, so it fires on either
+            // explicit SpvManager::stop() or application-wide shutdown.
             tokio::select! {
                 result = &mut monitor_future => Outcome::MonitorCompleted(result),
                 _ = stop_token.cancelled() => {
                     monitor_cancel.cancel();
-                    Outcome::StopRequested
-                },
-                _ = global_cancel.cancelled() => {
-                    monitor_cancel.cancel();
-                    Outcome::GlobalCancelled
+                    Outcome::Cancelled
                 },
             }
         }; // monitor_future is dropped here, releasing the mutable borrow
 
+        tracing::info!(
+            "run_sync_and_monitor: outcome = {}",
+            match &outcome {
+                Outcome::MonitorCompleted(Ok(())) => "MonitorCompleted(Ok)",
+                Outcome::MonitorCompleted(Err(_)) => "MonitorCompleted(Err)",
+                Outcome::Cancelled => "Cancelled",
+            }
+        );
+
         // Stop the client after monitoring completes or is cancelled
+        tracing::info!("run_sync_and_monitor: calling client.stop()...");
+        let stop_start = std::time::Instant::now();
         let _ = client.stop().await;
+        tracing::info!(
+            "run_sync_and_monitor: client.stop() took {:?}",
+            stop_start.elapsed()
+        );
 
         match outcome {
             Outcome::MonitorCompleted(Ok(())) => {
@@ -966,7 +978,7 @@ impl SpvManager {
                 let _ = self.write_status(SpvStatus::Error);
                 Err(message)
             }
-            Outcome::StopRequested | Outcome::GlobalCancelled => {
+            Outcome::Cancelled => {
                 let _ = self.write_status(SpvStatus::Stopped);
                 Ok(())
             }
@@ -980,7 +992,7 @@ impl SpvManager {
     ) {
         tracing::info!("SPV request handler started");
         let network_manager = Arc::clone(&self.network_manager);
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_request_handler", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => {
@@ -1041,7 +1053,7 @@ impl SpvManager {
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_progress_watcher", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1081,7 +1093,7 @@ impl SpvManager {
         let status = Arc::clone(&self.status);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_sync_event_handler", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1152,32 +1164,33 @@ impl SpvManager {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    result = wallet_rx.recv() => {
-                        match result {
-                            Ok(_event) => {
-                                // All wallet events trigger reconcile
-                                if let Some(ref tx) = reconcile_tx {
-                                    let _ = tx.try_send(());
+        self.subtasks
+            .spawn_sync("spv_wallet_event_handler", async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        result = wallet_rx.recv() => {
+                            match result {
+                                Ok(_event) => {
+                                    // All wallet events trigger reconcile
+                                    if let Some(ref tx) = reconcile_tx {
+                                        let _ = tx.try_send(());
+                                    }
                                 }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("Wallet event handler lagged by {} events", n);
-                                // Still trigger reconcile to catch up
-                                if let Some(ref tx) = reconcile_tx {
-                                    let _ = tx.try_send(());
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!("Wallet event handler lagged by {} events", n);
+                                    // Still trigger reconcile to catch up
+                                    if let Some(ref tx) = reconcile_tx {
+                                        let _ = tx.try_send(());
+                                    }
                                 }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
-            }
-            tracing::info!("SPV wallet event handler exiting");
-        });
+                tracing::info!("SPV wallet event handler exiting");
+            });
     }
 
     fn spawn_network_event_handler(
@@ -1187,30 +1200,31 @@ impl SpvManager {
         let connected_peers = Arc::clone(&self.connected_peers);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    result = net_rx.recv() => {
-                        match result {
-                            Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
-                                if let Ok(mut guard) = connected_peers.write() {
-                                    *guard = connected_count;
+        self.subtasks
+            .spawn_sync("spv_network_event_handler", async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        result = net_rx.recv() => {
+                            match result {
+                                Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
+                                    if let Ok(mut guard) = connected_peers.write() {
+                                        *guard = connected_count;
+                                    }
                                 }
+                                Ok(_) => {
+                                    // PeerConnected / PeerDisconnected — PeersUpdated follows
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!("Network event handler lagged by {} events", n);
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
-                            Ok(_) => {
-                                // PeerConnected / PeerDisconnected — PeersUpdated follows
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("Network event handler lagged by {} events", n);
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
-            }
-            tracing::info!("SPV network event handler exiting");
-        });
+                tracing::info!("SPV network event handler exiting");
+            });
     }
 
     async fn build_client(
@@ -1300,10 +1314,28 @@ fn build_spv_data_dir(network: Network, config: &NetworkConfig) -> Result<PathBu
     let network_dir = match network {
         Network::Dash => "mainnet".to_string(),
         Network::Testnet => "testnet".to_string(),
-        Network::Devnet => config
-            .devnet_name
-            .clone()
-            .unwrap_or_else(|| "devnet".to_string()),
+        Network::Devnet => {
+            let name = config
+                .devnet_name
+                .clone()
+                .unwrap_or_else(|| "devnet".to_string());
+            // Sanitize to prevent path traversal (e.g. "../../etc")
+            let sanitized: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            if sanitized.is_empty() {
+                "devnet".to_string()
+            } else {
+                sanitized
+            }
+        }
         Network::Regtest => "regtest".to_string(),
         other => format!("{other:?}"),
     };

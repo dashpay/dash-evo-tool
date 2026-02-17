@@ -1102,7 +1102,8 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             ui.colored_label(Color32::DARK_GREEN, &msg);
                         }
                         MessageType::Error => {
-                            let error_color = DashColors::ERROR;
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let error_color = DashColors::error_color(dark_mode);
                             Frame::new()
                                 .fill(error_color.gamma_multiply(0.1))
                                 .inner_margin(Margin::symmetric(10, 8))

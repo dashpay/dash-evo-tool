@@ -147,7 +147,8 @@ impl WalletsBalancesScreen {
                 } else {
                     "Enter Core address (y.../8...)"
                 };
-                let response = ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text(hint));
+                let response = ui
+                    .add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text(hint));
 
                 // Validate address when it changes
                 if response.changed() {
@@ -157,8 +158,7 @@ impl WalletsBalancesScreen {
                         let trimmed = self.send_dialog.address.trim();
                         if crate::ui::helpers::is_platform_address_string(trimmed) {
                             self.send_dialog.address_error = Some(
-                                "Platform addresses not supported. Use a Core address."
-                                    .to_string(),
+                                "Platform addresses not supported. Use a Core address.".to_string(),
                             );
                         } else {
                             match trimmed.parse::<Address<NetworkUnchecked>>() {

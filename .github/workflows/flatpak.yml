@@ -9,6 +9,10 @@ on:
       - published
   workflow_dispatch:
 
+concurrency:
+  group: flatpak-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 

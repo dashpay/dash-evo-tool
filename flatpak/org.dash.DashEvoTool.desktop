@@ -7,4 +7,4 @@ Type=Application
 Terminal=false
 Categories=Finance;Network;Utility;
 Keywords=Dash;Blockchain;Crypto;Wallet;DPNS;Evolution;
-StartupWMClass=dash-evo-tool
+StartupWMClass=org.dash.DashEvoTool

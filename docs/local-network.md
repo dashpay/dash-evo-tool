@@ -34,7 +34,6 @@ LOCAL_core_rpc_port=20302
 LOCAL_core_rpc_user=dashmate
 LOCAL_core_rpc_password=<password>
 LOCAL_core_zmq_endpoint=tcp://127.0.0.1:50298
-LOCAL_show_in_ui=true
 ```
 
 ### Obtaining the RPC password
@@ -74,12 +73,11 @@ dashmate config get core.zmq.port --config=local_seed
 | `LOCAL_core_rpc_user`      | Dash Core RPC username                               | `dashmate`                                                            |
 | `LOCAL_core_rpc_password`  | Dash Core RPC password (from dashmate)               | *(generated)*                                                         |
 | `LOCAL_core_zmq_endpoint`  | ZMQ endpoint for real-time Core events               | `tcp://127.0.0.1:50298`                                               |
-| `LOCAL_show_in_ui`         | Whether the "Local" option appears in the network selector | `true`                                                           |
 | `LOCAL_wallet_private_key` | *(optional)* Pre-load a wallet private key           | WIF-encoded private key                                               |
 
 ## Connecting in the UI
 
-1. Start Dash Evo Tool. If the `LOCAL_` configuration is valid and `LOCAL_show_in_ui=true`, the **"Local"** option appears in the network dropdown on the **Network Chooser** screen.
+1. Start Dash Evo Tool. If the `LOCAL_` configuration is valid, the **"Local"** option appears in the network dropdown on the **Network Chooser** screen.
 
 2. Select **Local** from the network dropdown.
 
@@ -108,7 +106,7 @@ dashmate config get core.zmq.port --config=local_seed
 
 ## Troubleshooting
 
-- **"Local" not in network dropdown**: Verify that all required `LOCAL_` variables are present in `.env` and that `LOCAL_show_in_ui=true`. Check application logs for `Failed to load local configuration`.
+- **"Local" not in network dropdown**: Verify that all required `LOCAL_` variables are present in `.env`. Check application logs for `Failed to load local configuration`.
 - **RPC connection fails**: Confirm dashmate is running (`dashmate group status`) and that the password matches (`dashmate config get core.rpc.users.dashmate.password --config=local_seed`).
 - **DAPI unreachable**: Ensure Platform services are started (`dashmate group status`) and the ports in `LOCAL_dapi_addresses` match your dashmate configuration.
 - **ZMQ not connecting**: Verify `LOCAL_core_zmq_endpoint` matches the ZMQ port in your dashmate config.

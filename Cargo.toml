@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d6f4eb9ac9feafaa914f06e1b78eb66beceef3b7", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", branch = "feat/zk", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -26,7 +26,9 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d6f4eb9ac9feafa
     "core_verification",
     "core_rpc_client",
     "core_spv",
+    "shielded",
 ] }
+zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
 thiserror = "2.0.18"
@@ -100,6 +102,9 @@ dashcore-rpc-json = { git = "https://www.github.com/dashpay/rust-dashcore", bran
 dashcore_hashes = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
 key-wallet = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
 key-wallet-manager = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+
+[patch."https://github.com/dashpay/platform"]
+dash-sdk = { path = "../platform/packages/rs-sdk" }
 
 [lints.clippy]
 uninlined_format_args = "allow"

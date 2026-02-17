@@ -31,10 +31,19 @@ use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
 
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::ui::wallets::shielded_tab::ShieldedTabView;
 use address_table::{SortColumn, SortOrder};
 use dialogs::{
     FundPlatformAddressDialogState, PrivateKeyDialogState, ReceiveDialogState, SendDialogState,
 };
+
+/// Tab selector for the wallet detail panel.
+#[derive(Default, Clone, Copy, PartialEq)]
+enum WalletViewTab {
+    #[default]
+    Balances,
+    Shielded,
+}
 
 /// Refresh mode for dev mode dropdown - controls what gets refreshed
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -113,6 +122,10 @@ pub struct WalletsBalancesScreen {
     utxo_page: usize,
     /// Selected refresh mode (only shown in dev mode)
     refresh_mode: RefreshMode,
+    /// Currently selected tab in the wallet detail panel
+    selected_tab: WalletViewTab,
+    /// Shielded tab view component (lazily initialized per wallet)
+    shielded_tab_view: Option<ShieldedTabView>,
 }
 
 impl WalletsBalancesScreen {
@@ -199,6 +212,8 @@ impl WalletsBalancesScreen {
             pending_asset_lock_search_after_unlock: false,
             utxo_page: 0,
             refresh_mode: RefreshMode::default(),
+            selected_tab: WalletViewTab::default(),
+            shielded_tab_view: None,
         }
     }
 
@@ -226,6 +241,8 @@ impl WalletsBalancesScreen {
         self.selected_wallet = Some(wallet.clone());
         self.selected_single_key_wallet = None;
         self.selected_account = None;
+        self.selected_tab = WalletViewTab::default();
+        self.shielded_tab_view = None;
 
         if let Ok(hash) = wallet.read().map(|g| g.seed_hash()) {
             self.persist_selected_wallet_hash(Some(hash));
@@ -1130,46 +1147,102 @@ impl WalletsBalancesScreen {
                             );
                         });
 
-                        let summaries = {
-                            let wallet = wallet_arc.read().unwrap();
-                            self.render_wallet_overview(ui, &wallet);
-                            collect_account_summaries(&wallet)
-                        };
+                        // Tab bar: Balances | Shielded
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let balances_text = if self.selected_tab == WalletViewTab::Balances {
+                                RichText::new("Balances")
+                                    .strong()
+                                    .color(DashColors::DASH_BLUE)
+                            } else {
+                                RichText::new("Balances")
+                                    .color(DashColors::text_secondary(dark_mode))
+                            };
+                            if ui
+                                .selectable_label(
+                                    self.selected_tab == WalletViewTab::Balances,
+                                    balances_text,
+                                )
+                                .clicked()
+                            {
+                                self.selected_tab = WalletViewTab::Balances;
+                            }
 
-                        self.ensure_account_selection(&summaries);
-                        action |= self.render_action_buttons(ui, ctx);
-                        ui.add_space(10.0);
+                            let shielded_text = if self.selected_tab == WalletViewTab::Shielded {
+                                RichText::new("Shielded")
+                                    .strong()
+                                    .color(DashColors::DASH_BLUE)
+                            } else {
+                                RichText::new("Shielded")
+                                    .color(DashColors::text_secondary(dark_mode))
+                            };
+                            if ui
+                                .selectable_label(
+                                    self.selected_tab == WalletViewTab::Shielded,
+                                    shielded_text,
+                                )
+                                .clicked()
+                            {
+                                self.selected_tab = WalletViewTab::Shielded;
+                            }
+                        });
                         ui.separator();
-                        self.render_accounts_section(ui, &summaries);
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
-                        let addresses_heading = self
-                            .selected_account
-                            .as_ref()
-                            .map(|(category, index)| {
-                                format!("Addresses ({})", category.label(*index))
-                            })
-                            .unwrap_or_else(|| "Addresses".to_string());
-                        ui.heading(
-                            RichText::new(addresses_heading)
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(8.0);
-                        action |= self.render_address_table(ui);
+                        ui.add_space(4.0);
 
-                        // Transactions section - requires SPV which is dev mode only
-                        if self.app_context.is_developer_mode() {
-                            ui.add_space(10.0);
-                            ui.separator();
-                            self.render_transactions_section(ui);
+                        match self.selected_tab {
+                            WalletViewTab::Balances => {
+                                let summaries = {
+                                    let wallet = wallet_arc.read().unwrap();
+                                    self.render_wallet_overview(ui, &wallet);
+                                    collect_account_summaries(&wallet)
+                                };
+
+                                self.ensure_account_selection(&summaries);
+                                action |= self.render_action_buttons(ui, ctx);
+                                ui.add_space(10.0);
+                                ui.separator();
+                                self.render_accounts_section(ui, &summaries);
+                                ui.add_space(10.0);
+                                ui.separator();
+                                ui.add_space(10.0);
+                                let addresses_heading = self
+                                    .selected_account
+                                    .as_ref()
+                                    .map(|(category, index)| {
+                                        format!("Addresses ({})", category.label(*index))
+                                    })
+                                    .unwrap_or_else(|| "Addresses".to_string());
+                                ui.heading(
+                                    RichText::new(addresses_heading)
+                                        .color(DashColors::text_primary(dark_mode)),
+                                );
+                                ui.add_space(8.0);
+                                action |= self.render_address_table(ui);
+
+                                // Transactions section - requires SPV which is dev mode only
+                                if self.app_context.is_developer_mode() {
+                                    ui.add_space(10.0);
+                                    ui.separator();
+                                    self.render_transactions_section(ui);
+                                }
+
+                                ui.add_space(14.0);
+                                self.render_bottom_options(ui);
+
+                                ui.add_space(16.0);
+                                action |= self.render_wallet_asset_locks(ui);
+                            }
+                            WalletViewTab::Shielded => {
+                                let seed_hash = wallet_arc.read().unwrap().seed_hash();
+                                let shielded_view =
+                                    self.shielded_tab_view.get_or_insert_with(|| {
+                                        ShieldedTabView::new(&self.app_context, seed_hash)
+                                    });
+                                shielded_view.update_seed_hash(seed_hash);
+                                shielded_view.update_app_context(&self.app_context);
+                                action |= shielded_view.ui(ui);
+                            }
                         }
-
-                        ui.add_space(14.0);
-                        self.render_bottom_options(ui);
-
-                        ui.add_space(16.0);
-                        action |= self.render_wallet_asset_locks(ui);
                     });
             });
         });
@@ -1775,6 +1848,11 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.fund_platform_dialog.status_is_error = true;
                 return;
             }
+
+            // Forward errors to the shielded tab view so it can reset spinner states
+            if let Some(shielded_view) = &mut self.shielded_tab_view {
+                shielded_view.handle_error(message);
+            }
         }
         self.set_message(message.to_string(), message_type);
     }
@@ -1899,6 +1977,17 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::Message(msg) => {
                 self.refreshing = false;
                 self.display_message(&msg, MessageType::Success);
+            }
+            // Shielded pool results
+            result @ (crate::ui::BackendTaskSuccessResult::ShieldedInitialized { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedNotesSynced { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedCreditsShielded { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedTransferComplete { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedCreditsUnshielded { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedNullifiersChecked { .. }) => {
+                if let Some(shielded_view) = &mut self.shielded_tab_view {
+                    shielded_view.handle_result(&result);
+                }
             }
             _ => {}
         }

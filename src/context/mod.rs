@@ -2,6 +2,7 @@ pub mod connection_status;
 mod contract_token_db;
 mod identity_db;
 mod settings_db;
+pub mod shielded;
 mod transaction_processing;
 mod wallet_lifecycle;
 
@@ -97,6 +98,13 @@ pub struct AppContext {
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
+    /// Per-wallet shielded state (initialized lazily, keyed by wallet seed hash)
+    pub(crate) shielded_states: Mutex<
+        std::collections::HashMap<
+            WalletSeedHash,
+            crate::model::wallet::shielded::ShieldedWalletState,
+        >,
+    >,
 }
 
 impl AppContext {
@@ -270,6 +278,7 @@ impl AppContext {
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
+            shielded_states: Mutex::new(std::collections::HashMap::new()),
         };
 
         let app_context = Arc::new(app_context);

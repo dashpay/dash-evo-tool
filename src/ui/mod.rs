@@ -6,6 +6,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::wallet::Wallet;
+use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
@@ -76,6 +77,9 @@ use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
+use wallets::shield_credits_screen::ShieldCreditsScreen;
+use wallets::shielded_send_screen::ShieldedSendScreen;
+use wallets::unshield_credits_screen::UnshieldCreditsScreen;
 
 pub mod components;
 pub mod contracts_documents;
@@ -301,6 +305,11 @@ pub enum ScreenType {
     AssetLockDetail([u8; 32], usize),
     CreateAssetLock(Arc<RwLock<Wallet>>),
 
+    // Shielded screens
+    ShieldCreditsScreen(WalletSeedHash),
+    ShieldedSendScreen(WalletSeedHash),
+    UnshieldCreditsScreen(WalletSeedHash),
+
     // DashPay Screens
     DashPayContacts,
     DashPayProfile,
@@ -416,6 +425,10 @@ impl PartialEq for ScreenType {
             ) => a1 == b1 && a2 == b2,
             (ScreenType::DashPayQRGenerator, ScreenType::DashPayQRGenerator) => true,
             (ScreenType::DashPayProfileSearch, ScreenType::DashPayProfileSearch) => true,
+            // Shielded screens
+            (ScreenType::ShieldCreditsScreen(_), ScreenType::ShieldCreditsScreen(_)) => true,
+            (ScreenType::ShieldedSendScreen(_), ScreenType::ShieldedSendScreen(_)) => true,
+            (ScreenType::UnshieldCreditsScreen(_), ScreenType::UnshieldCreditsScreen(_)) => true,
             _ => false,
         }
     }
@@ -671,6 +684,16 @@ impl ScreenType {
             ScreenType::DashPayProfileSearch => {
                 Screen::DashPayProfileSearchScreen(ProfileSearchScreen::new(app_context.clone()))
             }
+            // Shielded screens
+            ScreenType::ShieldCreditsScreen(seed_hash) => {
+                Screen::ShieldCreditsScreen(ShieldCreditsScreen::new(*seed_hash, app_context))
+            }
+            ScreenType::ShieldedSendScreen(seed_hash) => {
+                Screen::ShieldedSendScreen(ShieldedSendScreen::new(*seed_hash, app_context))
+            }
+            ScreenType::UnshieldCreditsScreen(seed_hash) => {
+                Screen::UnshieldCreditsScreen(UnshieldCreditsScreen::new(*seed_hash, app_context))
+            }
         }
     }
 }
@@ -728,6 +751,11 @@ pub enum Screen {
     SetTokenPriceScreen(SetTokenPriceScreen),
     AssetLockDetailScreen(AssetLockDetailScreen),
     CreateAssetLockScreen(CreateAssetLockScreen),
+
+    // Shielded Screens
+    ShieldCreditsScreen(ShieldCreditsScreen),
+    ShieldedSendScreen(ShieldedSendScreen),
+    UnshieldCreditsScreen(UnshieldCreditsScreen),
 
     // DashPay Screens
     DashPayScreen(DashPayScreen),
@@ -822,6 +850,10 @@ impl Screen {
             Screen::DashPayContactInfoEditorScreen(screen) => screen.app_context = app_context,
             Screen::DashPayQRGeneratorScreen(screen) => screen.app_context = app_context,
             Screen::DashPayProfileSearchScreen(screen) => screen.app_context = app_context,
+            // Shielded screens
+            Screen::ShieldCreditsScreen(screen) => screen.app_context = app_context.clone(),
+            Screen::ShieldedSendScreen(screen) => screen.app_context = app_context.clone(),
+            Screen::UnshieldCreditsScreen(screen) => screen.app_context = app_context.clone(),
         }
     }
 }
@@ -1020,6 +1052,10 @@ impl Screen {
             }
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
             Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
+            // Shielded screens
+            Screen::ShieldCreditsScreen(s) => ScreenType::ShieldCreditsScreen(s.seed_hash),
+            Screen::ShieldedSendScreen(s) => ScreenType::ShieldedSendScreen(s.seed_hash),
+            Screen::UnshieldCreditsScreen(s) => ScreenType::UnshieldCreditsScreen(s.seed_hash),
         }
     }
 }
@@ -1088,6 +1124,10 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh(),
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh(),
+            // Shielded screens
+            Screen::ShieldCreditsScreen(_) => {}
+            Screen::ShieldedSendScreen(_) => {}
+            Screen::UnshieldCreditsScreen(_) => {}
         }
     }
 
@@ -1154,6 +1194,10 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh_on_arrival(),
+            // Shielded screens
+            Screen::ShieldCreditsScreen(_) => {}
+            Screen::ShieldedSendScreen(_) => {}
+            Screen::UnshieldCreditsScreen(_) => {}
         }
     }
 
@@ -1220,6 +1264,10 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(screen) => screen.ui(ctx),
             Screen::DashPayQRGeneratorScreen(screen) => screen.ui(ctx),
             Screen::DashPayProfileSearchScreen(screen) => screen.ui(ctx),
+            // Shielded screens
+            Screen::ShieldCreditsScreen(screen) => screen.ui(ctx),
+            Screen::ShieldedSendScreen(screen) => screen.ui(ctx),
+            Screen::UnshieldCreditsScreen(screen) => screen.ui(ctx),
         }
     }
 
@@ -1320,6 +1368,10 @@ impl ScreenLike for Screen {
             Screen::DashPayProfileSearchScreen(screen) => {
                 screen.display_message(message, message_type)
             }
+            // Shielded screens
+            Screen::ShieldCreditsScreen(screen) => screen.display_message(message, message_type),
+            Screen::ShieldedSendScreen(screen) => screen.display_message(message, message_type),
+            Screen::UnshieldCreditsScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -1490,6 +1542,16 @@ impl ScreenLike for Screen {
             Screen::DashPayProfileSearchScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            // Shielded screens
+            Screen::ShieldCreditsScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::ShieldedSendScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
+            Screen::UnshieldCreditsScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
         }
     }
 
@@ -1556,6 +1618,10 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(_) => {}
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(_) => {}
+            // Shielded screens
+            Screen::ShieldCreditsScreen(_) => {}
+            Screen::ShieldedSendScreen(_) => {}
+            Screen::UnshieldCreditsScreen(_) => {}
         }
     }
 }

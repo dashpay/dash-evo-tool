@@ -8,6 +8,7 @@ mod initialization;
 mod proof_log;
 mod scheduled_votes;
 mod settings;
+pub mod shielded;
 mod single_key_wallet;
 #[cfg(test)]
 pub mod test_helpers;
@@ -136,6 +137,16 @@ impl Database {
 
         tx.execute(
             "DELETE FROM single_key_wallet WHERE network = ?1",
+            rusqlite::params![&network_str],
+        )?;
+
+        tx.execute(
+            "DELETE FROM shielded_notes WHERE network = ?1",
+            rusqlite::params![&network_str],
+        )?;
+
+        tx.execute(
+            "DELETE FROM shielded_tree_state WHERE network = ?1",
             rusqlite::params![&network_str],
         )?;
 

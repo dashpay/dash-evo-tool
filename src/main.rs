@@ -52,7 +52,9 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
         persist_window: true, // Persist window size and position
         centered: true,       // Center window on startup if not maximized
         persistence_path: Some(app_data_dir.join("app.ron")),
-        viewport: egui::ViewportBuilder::default().with_icon(icon_data),
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(icon_data)
+            .with_app_id("org.dash.DashEvoTool"),
         ..Default::default()
     };
 

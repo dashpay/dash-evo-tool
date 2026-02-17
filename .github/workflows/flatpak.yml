@@ -43,11 +43,11 @@ jobs:
 
       - name: Build Flatpak
         run: |
-          flatpak-builder --force-clean --repo=repo build-dir flatpak/org.dash.DashEvoTool.yml
+          flatpak-builder --force-clean --repo=flatpak-repo build-dir flatpak/org.dash.DashEvoTool.yml
 
       - name: Create Flatpak bundle
         run: |
-          flatpak build-bundle repo dash-evo-tool-linux-x86_64.flatpak org.dash.DashEvoTool
+          flatpak build-bundle flatpak-repo dash-evo-tool-linux-x86_64.flatpak org.dash.DashEvoTool
 
       - name: Upload Flatpak bundle as artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

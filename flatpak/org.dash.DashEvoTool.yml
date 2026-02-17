@@ -1,7 +1,7 @@
 # Flatpak manifest for Dash Evo Tool
-# Build with: flatpak-builder --user --force-clean --repo=repo build-dir flatpak/org.dash.DashEvoTool.yml
+# Build with: flatpak-builder --user --force-clean --repo=flatpak-repo build-dir flatpak/org.dash.DashEvoTool.yml
 # Install locally: flatpak-builder --user --install --force-clean build-dir flatpak/org.dash.DashEvoTool.yml
-# Create bundle: flatpak build-bundle repo dash-evo-tool.flatpak org.dash.DashEvoTool
+# Create bundle: flatpak build-bundle flatpak-repo dash-evo-tool.flatpak org.dash.DashEvoTool
 
 app-id: org.dash.DashEvoTool
 runtime: org.freedesktop.Platform
@@ -37,6 +37,7 @@ build-options:
 
 modules:
   # Module 1: Install protobuf compiler (required for building dash-sdk)
+  # NOTE: Uses x86_64 binary. For aarch64, replace with protoc-25.2-linux-aarch_64.zip and update sha256.
   - name: protoc
     buildsystem: simple
     sources:
@@ -68,7 +69,7 @@ modules:
           - flatpak-repo
           - target
     build-commands:
-      - cargo build --release
+      - cargo build --release --locked
       - install -Dm755 target/release/dash-evo-tool /app/bin/dash-evo-tool
       - install -Dm644 flatpak/org.dash.DashEvoTool.desktop /app/share/applications/org.dash.DashEvoTool.desktop
       - install -Dm644 flatpak/org.dash.DashEvoTool.metainfo.xml /app/share/metainfo/org.dash.DashEvoTool.metainfo.xml

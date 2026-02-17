@@ -1,4 +1,4 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -243,52 +243,83 @@ impl ContactRequests {
     /// Resolve usernames and display names for contact requests using local DB cache.
     /// Returns a list of identity IDs that were not found locally and need Platform fetching.
     fn resolve_names_from_local_cache(&mut self) -> Vec<Identifier> {
+        use std::collections::HashMap;
+
         let network_str = self.app_context.network.to_string();
         let mut unresolved_ids = Vec::new();
+
+        // Pre-load contacts once to avoid N+1 queries inside the loop
+        let contacts_by_id: HashMap<Identifier, (Option<String>, Option<String>)> =
+            if let Some(selected_identity) = &self.selected_identity {
+                let owner_id = selected_identity.identity.id();
+                self.app_context
+                    .db
+                    .load_dashpay_contacts(&owner_id, &network_str)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|c| {
+                        Identifier::from_bytes(&c.contact_identity_id)
+                            .ok()
+                            .map(|id| (id, (c.username, c.display_name)))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+
+        // Collect all identity IDs we need to look up profiles for
+        let incoming_ids: Vec<Identifier> = self
+            .incoming_requests
+            .values()
+            .filter(|r| r.from_username.is_none() && r.from_display_name.is_none())
+            .map(|r| r.from_identity)
+            .collect();
+        let outgoing_ids: Vec<Identifier> = self
+            .outgoing_requests
+            .values()
+            .filter(|r| r.to_username.is_none() && r.to_display_name.is_none())
+            .map(|r| r.to_identity)
+            .collect();
+
+        // Pre-load profiles for all needed IDs (one DB query each, but only for unresolved)
+        let mut profiles_cache: HashMap<Identifier, Option<String>> = HashMap::new();
+        for id in incoming_ids.iter().chain(outgoing_ids.iter()) {
+            if !profiles_cache.contains_key(id) {
+                let display_name = self
+                    .app_context
+                    .db
+                    .load_dashpay_profile(id, &network_str)
+                    .ok()
+                    .flatten()
+                    .and_then(|p| p.display_name);
+                profiles_cache.insert(*id, display_name);
+            }
+        }
 
         // Resolve names for incoming requests (need from_identity info)
         for request in self.incoming_requests.values_mut() {
             if request.from_username.is_some() || request.from_display_name.is_some() {
-                continue; // Already resolved
+                continue;
             }
 
             let identity_id = request.from_identity;
             let mut found = false;
 
             // Try profile cache first (has display_name)
-            if let Ok(Some(profile)) = self
-                .app_context
-                .db
-                .load_dashpay_profile(&identity_id, &network_str)
-                && profile.display_name.is_some()
-            {
-                request.from_display_name = profile.display_name;
+            if let Some(Some(display_name)) = profiles_cache.get(&identity_id) {
+                request.from_display_name = Some(display_name.clone());
                 found = true;
             }
 
             // Try contacts cache (has username and display_name)
-            if let Some(selected_identity) = &self.selected_identity {
-                let owner_id = selected_identity.identity.id();
-                if let Ok(contacts) = self
-                    .app_context
-                    .db
-                    .load_dashpay_contacts(&owner_id, &network_str)
-                {
-                    for contact in contacts {
-                        if let Ok(contact_id) = Identifier::from_bytes(&contact.contact_identity_id)
-                            && contact_id == identity_id
-                        {
-                            if request.from_username.is_none() {
-                                request.from_username = contact.username;
-                            }
-                            if request.from_display_name.is_none() {
-                                request.from_display_name = contact.display_name;
-                            }
-                            found = true;
-                            break;
-                        }
-                    }
+            if let Some((username, display_name)) = contacts_by_id.get(&identity_id) {
+                if request.from_username.is_none() {
+                    request.from_username = username.clone();
                 }
+                if request.from_display_name.is_none() {
+                    request.from_display_name = display_name.clone();
+                }
+                found = true;
             }
 
             if !found {
@@ -299,46 +330,27 @@ impl ContactRequests {
         // Resolve names for outgoing requests (need to_identity info)
         for request in self.outgoing_requests.values_mut() {
             if request.to_username.is_some() || request.to_display_name.is_some() {
-                continue; // Already resolved
+                continue;
             }
 
             let identity_id = request.to_identity;
             let mut found = false;
 
             // Try profile cache first
-            if let Ok(Some(profile)) = self
-                .app_context
-                .db
-                .load_dashpay_profile(&identity_id, &network_str)
-                && profile.display_name.is_some()
-            {
-                request.to_display_name = profile.display_name;
+            if let Some(Some(display_name)) = profiles_cache.get(&identity_id) {
+                request.to_display_name = Some(display_name.clone());
                 found = true;
             }
 
             // Try contacts cache
-            if let Some(selected_identity) = &self.selected_identity {
-                let owner_id = selected_identity.identity.id();
-                if let Ok(contacts) = self
-                    .app_context
-                    .db
-                    .load_dashpay_contacts(&owner_id, &network_str)
-                {
-                    for contact in contacts {
-                        if let Ok(contact_id) = Identifier::from_bytes(&contact.contact_identity_id)
-                            && contact_id == identity_id
-                        {
-                            if request.to_username.is_none() {
-                                request.to_username = contact.username;
-                            }
-                            if request.to_display_name.is_none() {
-                                request.to_display_name = contact.display_name;
-                            }
-                            found = true;
-                            break;
-                        }
-                    }
+            if let Some((username, display_name)) = contacts_by_id.get(&identity_id) {
+                if request.to_username.is_none() {
+                    request.to_username = username.clone();
                 }
+                if request.to_display_name.is_none() {
+                    request.to_display_name = display_name.clone();
+                }
+                found = true;
             }
 
             if !found {
@@ -354,22 +366,25 @@ impl ContactRequests {
 
     /// Trigger backend fetches for identity profiles that aren't cached locally.
     fn fetch_unresolved_profiles(&self, unresolved_ids: Vec<Identifier>) -> AppAction {
-        if unresolved_ids.is_empty() || self.selected_identity.is_none() {
+        let Some(identity) = self.selected_identity.as_ref() else {
+            return AppAction::None;
+        };
+        if unresolved_ids.is_empty() {
             return AppAction::None;
         }
 
-        let identity = self.selected_identity.as_ref().unwrap().clone();
-        let mut action = AppAction::None;
+        let identity = identity.clone();
+        let tasks: Vec<BackendTask> = unresolved_ids
+            .into_iter()
+            .map(|contact_id| {
+                BackendTask::DashPayTask(Box::new(DashPayTask::FetchContactProfile {
+                    identity: identity.clone(),
+                    contact_id,
+                }))
+            })
+            .collect();
 
-        for contact_id in unresolved_ids {
-            let task = BackendTask::DashPayTask(Box::new(DashPayTask::FetchContactProfile {
-                identity: identity.clone(),
-                contact_id,
-            }));
-            action |= AppAction::BackendTask(task);
-        }
-
-        action
+        AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent)
     }
 
     /// Update contact request names from a fetched profile document.

@@ -33,7 +33,6 @@ LOCAL_core_host=127.0.0.1
 LOCAL_core_rpc_port=20302
 LOCAL_core_rpc_user=dashmate
 LOCAL_core_rpc_password=<password>
-LOCAL_insight_api_url=http://localhost:3001/insight-api
 LOCAL_core_zmq_endpoint=tcp://127.0.0.1:50298
 LOCAL_show_in_ui=true
 ```
@@ -63,9 +62,6 @@ dashmate config get platform.dapi.envoy.http.port --config=local_3
 
 # ZMQ endpoint port
 dashmate config get core.zmq.port --config=local_seed
-
-# Insight API port
-dashmate config get platform.drive.abci.tokioConsole.port --config=local_seed
 ```
 
 ### Variable reference
@@ -77,7 +73,6 @@ dashmate config get platform.drive.abci.tokioConsole.port --config=local_seed
 | `LOCAL_core_rpc_port`      | Dash Core RPC port                                   | `20302`                                                               |
 | `LOCAL_core_rpc_user`      | Dash Core RPC username                               | `dashmate`                                                            |
 | `LOCAL_core_rpc_password`  | Dash Core RPC password (from dashmate)               | *(generated)*                                                         |
-| `LOCAL_insight_api_url`    | Insight API URL for balance lookups                   | `http://localhost:3001/insight-api`                                    |
 | `LOCAL_core_zmq_endpoint`  | ZMQ endpoint for real-time Core events               | `tcp://127.0.0.1:50298`                                               |
 | `LOCAL_show_in_ui`         | Whether the "Local" option appears in the network selector | `true`                                                           |
 | `LOCAL_wallet_private_key` | *(optional)* Pre-load a wallet private key           | WIF-encoded private key                                               |

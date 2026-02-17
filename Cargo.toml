@@ -91,15 +91,15 @@ egui_kittest = { version = "0.33.3", features = ["eframe"] }
 winres = "0.1"
 
 [patch."https://github.com/dashpay/rust-dashcore"]
-dash-network = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
-dash-spv = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
-dashcore = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
-dashcore-private = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
-dashcore-rpc = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
-dashcore-rpc-json = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
-dashcore_hashes = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
-key-wallet = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
-key-wallet-manager = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "0a6dff11d198fdd47ebbcc7a9f99142d0c2d8bd7" }
+dash-network = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+dash-spv = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+dashcore = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+dashcore-private = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+dashcore-rpc = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+dashcore-rpc-json = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+dashcore_hashes = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+key-wallet = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
+key-wallet-manager = { git = "https://www.github.com/dashpay/rust-dashcore", branch = "v0.42-dev" }
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

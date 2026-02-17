@@ -4,7 +4,6 @@ use std::str::FromStr;
 use crate::app_dir::app_user_data_file_path;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::sdk::Uri;
 use serde::Deserialize;
 use tempfile::NamedTempFile;
 
@@ -38,8 +37,6 @@ pub struct NetworkConfig {
     pub core_rpc_user: String,
     /// Password for Dash Core RPC interface
     pub core_rpc_password: String,
-    /// URL of the Insight API
-    pub insight_api_url: String,
     /// ZMQ endpoint for Core blockchain events (e.g., tcp://127.0.0.1:23708)
     pub core_zmq_endpoint: Option<String>,
     /// Devnet network name if one exists
@@ -108,13 +105,6 @@ impl Config {
                 prefix, config.core_rpc_password
             )
             .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-            writeln!(
-                env_file,
-                "{}insight_api_url={}",
-                prefix, config.insight_api_url
-            )
-            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
-
             if let Some(core_zmq_endpoint) = &config.core_zmq_endpoint {
                 writeln!(
                     env_file,
@@ -315,18 +305,11 @@ impl NetworkConfig {
             && !self.core_rpc_password.is_empty()
             && self.core_rpc_port != 0
             && !self.dapi_addresses.is_empty()
-            && Uri::from_str(&self.insight_api_url).is_ok()
     }
 
     /// List of DAPI addresses
     pub fn dapi_address_list(&self) -> AddressList {
         AddressList::from_str(&self.dapi_addresses).expect("Could not parse DAPI addresses")
-    }
-
-    /// Insight API URI
-    #[allow(dead_code)] // May be used for insight API access
-    pub fn insight_api_uri(&self) -> Uri {
-        Uri::from_str(&self.insight_api_url).expect("invalid insight API URL")
     }
 
     /// Update just the `core_rpc_password` in a builder-like manner.
@@ -342,18 +325,13 @@ mod tests {
     use super::*;
 
     /// Helper to create a minimal valid NetworkConfig for testing
-    fn make_network_config(
-        dapi_addresses: &str,
-        insight_api_url: &str,
-        port: u16,
-    ) -> NetworkConfig {
+    fn make_network_config(dapi_addresses: &str, port: u16) -> NetworkConfig {
         NetworkConfig {
             dapi_addresses: dapi_addresses.to_string(),
             core_host: "127.0.0.1".to_string(),
             core_rpc_port: port,
             core_rpc_user: "dashrpc".to_string(),
             core_rpc_password: "password".to_string(),
-            insight_api_url: insight_api_url.to_string(),
             core_zmq_endpoint: Some("tcp://127.0.0.1:23708".to_string()),
             devnet_name: None,
             wallet_private_key: None,
@@ -365,55 +343,33 @@ mod tests {
 
     #[test]
     fn test_is_valid_with_all_fields() {
-        let config = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
+        let config = make_network_config("https://127.0.0.1:443", 9998);
         assert!(config.is_valid());
     }
 
     #[test]
     fn test_is_valid_empty_user() {
-        let mut config = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
+        let mut config = make_network_config("https://127.0.0.1:443", 9998);
         config.core_rpc_user = String::new();
         assert!(!config.is_valid());
     }
 
     #[test]
     fn test_is_valid_empty_password() {
-        let mut config = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
+        let mut config = make_network_config("https://127.0.0.1:443", 9998);
         config.core_rpc_password = String::new();
         assert!(!config.is_valid());
     }
 
     #[test]
     fn test_is_valid_zero_port() {
-        let config = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            0,
-        );
+        let config = make_network_config("https://127.0.0.1:443", 0);
         assert!(!config.is_valid());
     }
 
     #[test]
     fn test_is_valid_empty_dapi_addresses() {
-        let config = make_network_config("", "https://insight.dash.org/insight-api", 9998);
-        assert!(!config.is_valid());
-    }
-
-    #[test]
-    fn test_is_valid_invalid_insight_url() {
-        let config = make_network_config("https://127.0.0.1:443", "not a valid url \x00", 9998);
+        let config = make_network_config("", 9998);
         assert!(!config.is_valid());
     }
 
@@ -421,11 +377,7 @@ mod tests {
 
     #[test]
     fn test_dapi_address_list_single_address() {
-        let config = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
+        let config = make_network_config("https://127.0.0.1:443", 9998);
         let list = config.dapi_address_list();
         assert_eq!(list.len(), 1);
     }
@@ -434,7 +386,6 @@ mod tests {
     fn test_dapi_address_list_multiple_addresses() {
         let config = make_network_config(
             "https://127.0.0.1:443,https://192.168.1.1:443,https://10.0.0.1:443",
-            "https://insight.dash.org/insight-api",
             9998,
         );
         let list = config.dapi_address_list();
@@ -444,46 +395,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "Could not parse DAPI addresses")]
     fn test_dapi_address_list_empty_panics() {
-        let config = make_network_config("", "https://insight.dash.org/insight-api", 9998);
+        let config = make_network_config("", 9998);
         let _list = config.dapi_address_list();
-    }
-
-    // ── NetworkConfig::insight_api_uri ───────────────────────────────
-
-    #[test]
-    fn test_insight_api_uri_valid() {
-        let config = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
-        let uri = config.insight_api_uri();
-        assert_eq!(uri.to_string(), "https://insight.dash.org/insight-api");
-    }
-
-    #[test]
-    #[should_panic(expected = "invalid insight API URL")]
-    fn test_insight_api_uri_invalid_panics() {
-        let config = make_network_config("https://127.0.0.1:443", "not a valid url \x00", 9998);
-        let _uri = config.insight_api_uri();
-    }
-
-    #[test]
-    #[should_panic(expected = "invalid insight API URL")]
-    fn test_insight_api_uri_empty_panics() {
-        let config = make_network_config("https://127.0.0.1:443", "", 9998);
-        let _uri = config.insight_api_uri();
     }
 
     // ── NetworkConfig::update_core_rpc_password ─────────────────────
 
     #[test]
     fn test_update_core_rpc_password() {
-        let config = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
+        let config = make_network_config("https://127.0.0.1:443", 9998);
         assert_eq!(config.core_rpc_password, "password");
         let updated = config.update_core_rpc_password("new_secret".to_string());
         assert_eq!(updated.core_rpc_password, "new_secret");
@@ -496,11 +416,7 @@ mod tests {
 
     #[test]
     fn test_config_for_network_mainnet() {
-        let mainnet_cfg = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
+        let mainnet_cfg = make_network_config("https://127.0.0.1:443", 9998);
         let config = Config {
             mainnet_config: Some(mainnet_cfg),
             testnet_config: None,
@@ -517,26 +433,10 @@ mod tests {
     #[test]
     fn test_config_for_network_all_networks() {
         let config = Config {
-            mainnet_config: Some(make_network_config(
-                "https://1.1.1.1:443",
-                "https://main.example.com",
-                9998,
-            )),
-            testnet_config: Some(make_network_config(
-                "https://2.2.2.2:1443",
-                "https://test.example.com",
-                19998,
-            )),
-            devnet_config: Some(make_network_config(
-                "http://3.3.3.3:1443",
-                "http://dev.example.com",
-                29998,
-            )),
-            local_config: Some(make_network_config(
-                "http://127.0.0.1:2443",
-                "http://localhost:3001",
-                20302,
-            )),
+            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
+            testnet_config: Some(make_network_config("https://2.2.2.2:1443", 19998)),
+            devnet_config: Some(make_network_config("http://3.3.3.3:1443", 29998)),
+            local_config: Some(make_network_config("http://127.0.0.1:2443", 20302)),
             developer_mode: Some(true),
         };
         let main = config.config_for_network(Network::Dash).as_ref().unwrap();
@@ -567,11 +467,7 @@ mod tests {
             developer_mode: None,
         };
         assert!(config.mainnet_config.is_none());
-        let new_cfg = make_network_config(
-            "https://1.1.1.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
+        let new_cfg = make_network_config("https://1.1.1.1:443", 9998);
         config.update_config_for_network(Network::Dash, new_cfg);
         assert!(config.mainnet_config.is_some());
         assert_eq!(config.mainnet_config.as_ref().unwrap().core_rpc_port, 9998);
@@ -580,21 +476,13 @@ mod tests {
     #[test]
     fn test_update_config_replaces_existing() {
         let mut config = Config {
-            mainnet_config: Some(make_network_config(
-                "https://old.example.com:443",
-                "https://old.example.com",
-                1111,
-            )),
+            mainnet_config: Some(make_network_config("https://old.example.com:443", 1111)),
             testnet_config: None,
             devnet_config: None,
             local_config: None,
             developer_mode: None,
         };
-        let new_cfg = make_network_config(
-            "https://new.example.com:443",
-            "https://new.example.com",
-            2222,
-        );
+        let new_cfg = make_network_config("https://new.example.com:443", 2222);
         config.update_config_for_network(Network::Dash, new_cfg);
         let main = config.mainnet_config.as_ref().unwrap();
         assert_eq!(main.core_rpc_port, 2222);
@@ -612,15 +500,15 @@ mod tests {
         };
         config.update_config_for_network(
             Network::Testnet,
-            make_network_config("https://t.example.com:1443", "https://t.example.com", 19998),
+            make_network_config("https://t.example.com:1443", 19998),
         );
         config.update_config_for_network(
             Network::Devnet,
-            make_network_config("http://d.example.com:1443", "http://d.example.com", 29998),
+            make_network_config("http://d.example.com:1443", 29998),
         );
         config.update_config_for_network(
             Network::Regtest,
-            make_network_config("http://127.0.0.1:2443", "http://localhost:3001", 20302),
+            make_network_config("http://127.0.0.1:2443", 20302),
         );
         assert!(config.testnet_config.is_some());
         assert!(config.devnet_config.is_some());
@@ -631,11 +519,7 @@ mod tests {
 
     #[test]
     fn test_network_config_optional_fields() {
-        let mut config = make_network_config(
-            "https://127.0.0.1:443",
-            "https://insight.dash.org/insight-api",
-            9998,
-        );
+        let mut config = make_network_config("https://127.0.0.1:443", 9998);
         // Defaults
         assert!(config.devnet_name.is_none());
         assert!(config.wallet_private_key.is_none());
@@ -658,16 +542,8 @@ mod tests {
         // We can't easily test save() directly since it depends on app_user_data_file_path,
         // but we can verify the save format by manually constructing what save() would write.
         let config = Config {
-            mainnet_config: Some(make_network_config(
-                "https://1.1.1.1:443",
-                "https://insight.dash.org/insight-api",
-                9998,
-            )),
-            testnet_config: Some(make_network_config(
-                "https://2.2.2.2:1443",
-                "https://testnet-insight.dash.org/insight-api",
-                19998,
-            )),
+            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
+            testnet_config: Some(make_network_config("https://2.2.2.2:1443", 19998)),
             devnet_config: None,
             local_config: None,
             developer_mode: Some(true),
@@ -684,10 +560,6 @@ mod tests {
                 "MAINNET_core_rpc_password={}\n",
                 cfg.core_rpc_password
             ));
-            output.push_str(&format!(
-                "MAINNET_insight_api_url={}\n",
-                cfg.insight_api_url
-            ));
             if let Some(ref zmq) = cfg.core_zmq_endpoint {
                 output.push_str(&format!("MAINNET_core_zmq_endpoint={}\n", zmq));
             }
@@ -698,7 +570,6 @@ mod tests {
         assert!(output.contains("MAINNET_core_rpc_port=9998"));
         assert!(output.contains("MAINNET_core_rpc_user=dashrpc"));
         assert!(output.contains("MAINNET_core_rpc_password=password"));
-        assert!(output.contains("MAINNET_insight_api_url=https://insight.dash.org/insight-api"));
         assert!(output.contains("MAINNET_core_zmq_endpoint=tcp://127.0.0.1:23708"));
         assert!(output.contains("MAINNET_show_in_ui=true"));
     }
@@ -721,10 +592,6 @@ mod tests {
         env_map.insert("TEST_RT_core_rpc_user".into(), "testuser".into());
         env_map.insert("TEST_RT_core_rpc_password".into(), "testpass".into());
         env_map.insert(
-            "TEST_RT_insight_api_url".into(),
-            "https://insight.example.com/api".into(),
-        );
-        env_map.insert(
             "TEST_RT_core_zmq_endpoint".into(),
             "tcp://127.0.0.1:29999".into(),
         );
@@ -740,7 +607,6 @@ mod tests {
         assert_eq!(config.core_rpc_port, 9998);
         assert_eq!(config.core_rpc_user, "testuser");
         assert_eq!(config.core_rpc_password, "testpass");
-        assert_eq!(config.insight_api_url, "https://insight.example.com/api");
         assert_eq!(
             config.core_zmq_endpoint,
             Some("tcp://127.0.0.1:29999".to_string())
@@ -760,7 +626,6 @@ mod tests {
         env_map.insert("OPT_core_rpc_port".into(), "29998".into());
         env_map.insert("OPT_core_rpc_user".into(), "user".into());
         env_map.insert("OPT_core_rpc_password".into(), "pass".into());
-        env_map.insert("OPT_insight_api_url".into(), "http://localhost:3001".into());
         env_map.insert("OPT_show_in_ui".into(), "false".into());
         env_map.insert("OPT_devnet_name".into(), "devnet-evo".into());
         env_map.insert("OPT_wallet_private_key".into(), "cVBZ1234abcd".into());
@@ -786,7 +651,6 @@ mod tests {
         // core_rpc_port intentionally missing
         env_map.insert("MISS_core_rpc_user".into(), "user".into());
         env_map.insert("MISS_core_rpc_password".into(), "pass".into());
-        env_map.insert("MISS_insight_api_url".into(), "http://localhost".into());
         env_map.insert("MISS_show_in_ui".into(), "true".into());
 
         let result: Result<NetworkConfig, _> =
@@ -804,7 +668,6 @@ mod tests {
         env_map.insert("BAD_core_rpc_port".into(), "not_a_number".into());
         env_map.insert("BAD_core_rpc_user".into(), "user".into());
         env_map.insert("BAD_core_rpc_password".into(), "pass".into());
-        env_map.insert("BAD_insight_api_url".into(), "http://localhost".into());
         env_map.insert("BAD_show_in_ui".into(), "true".into());
 
         let result: Result<NetworkConfig, _> =
@@ -817,11 +680,7 @@ mod tests {
     #[test]
     fn test_config_developer_mode() {
         let config = Config {
-            mainnet_config: Some(make_network_config(
-                "https://1.1.1.1:443",
-                "https://insight.dash.org",
-                9998,
-            )),
+            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
             testnet_config: None,
             devnet_config: None,
             local_config: None,
@@ -830,11 +689,7 @@ mod tests {
         assert_eq!(config.developer_mode, Some(true));
 
         let config_off = Config {
-            mainnet_config: Some(make_network_config(
-                "https://1.1.1.1:443",
-                "https://insight.dash.org",
-                9998,
-            )),
+            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
             testnet_config: None,
             devnet_config: None,
             local_config: None,
@@ -843,11 +698,7 @@ mod tests {
         assert_eq!(config_off.developer_mode, Some(false));
 
         let config_none = Config {
-            mainnet_config: Some(make_network_config(
-                "https://1.1.1.1:443",
-                "https://insight.dash.org",
-                9998,
-            )),
+            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
             testnet_config: None,
             devnet_config: None,
             local_config: None,
@@ -861,11 +712,7 @@ mod tests {
     #[test]
     fn test_config_clone() {
         let config = Config {
-            mainnet_config: Some(make_network_config(
-                "https://1.1.1.1:443",
-                "https://insight.dash.org",
-                9998,
-            )),
+            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
             testnet_config: None,
             devnet_config: None,
             local_config: None,

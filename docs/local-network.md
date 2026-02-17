@@ -1,6 +1,6 @@
-# Connecting to a Local Network (Developers)
+# Connecting to a Local Network (Development Only)
 
-This document describes how to connect Dash Evo Tool to a local Dash Platform network. This is a developer-only feature intended for use with [dashmate](https://github.com/dashpay/platform/tree/master/packages/dashmate)-managed local networks.
+This document describes how to connect Dash Evo Tool to a local Dash Platform network for development and testing. Local networks are not intended for production use. They run in regtest mode on a single machine using [dashmate](https://github.com/dashpay/platform/tree/master/packages/dashmate) and are useful for rapid iteration without needing testnet or mainnet funds.
 
 ## Prerequisites
 

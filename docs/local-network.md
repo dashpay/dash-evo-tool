@@ -64,8 +64,8 @@ dashmate config get platform.dapi.envoy.http.port --config=local_3
 # ZMQ endpoint port
 dashmate config get core.zmq.port --config=local_seed
 
-# Insight API port
-dashmate config get platform.drive.abci.tokioConsole.port --config=local_seed
+# Insight API port (default 3001; not managed by dashmate — check the
+# Insight API service configuration or INSIGHT_PORT environment variable)
 ```
 
 ### Variable reference

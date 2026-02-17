@@ -12,6 +12,8 @@ use dash_sdk::{
     Sdk,
     dpp::{
         ProtocolError,
+        consensus::ConsensusError,
+        consensus::state::state_error::StateError,
         data_contract::{
             TokenConfiguration, TokenContractPosition,
             associated_token::{
@@ -499,17 +501,31 @@ impl AppContext {
                     .await
                     .map_err(|e| format!("Failed to claim all tokens: {e}"))
                 } else {
-                    self.claim_token(
-                        data_contract.clone(),
-                        *token_position,
-                        actor_identity,
-                        *distribution_type,
-                        signing_key.clone(),
-                        public_note.clone(),
-                        sdk,
-                    )
-                    .await
-                    .map_err(|e| format!("Failed to claim tokens: {e}"))
+                    match self
+                        .claim_token(
+                            data_contract.clone(),
+                            *token_position,
+                            actor_identity,
+                            *distribution_type,
+                            signing_key.clone(),
+                            public_note.clone(),
+                            sdk,
+                        )
+                        .await
+                    {
+                        Err(dash_sdk::Error::Protocol(ProtocolError::ConsensusError(ce)))
+                            if matches!(
+                                *ce,
+                                ConsensusError::StateError(
+                                    StateError::InvalidTokenClaimNoCurrentRewards(_)
+                                ),
+                            ) =>
+                        {
+                            Ok(BackendTaskSuccessResult::TokensClaimed(0))
+                        }
+                        Ok(result) => Ok(result),
+                        Err(e) => Err(format!("Failed to claim tokens: {e}")),
+                    }
                 }
             }
             TokenTask::EstimatePerpetualTokenRewardsWithExplanation {

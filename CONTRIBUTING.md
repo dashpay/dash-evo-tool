@@ -2,7 +2,7 @@
 
 Contributions are welcome! This guide covers how to set up a development environment, build the project, run tests, and submit changes.
 
-> **Note:** The instructions below are written for x86_64 Linux. If you are building on another platform (e.g. Linux aarch64 or macOS) the same steps apply, but you may need to adjust package manager commands and download the appropriate `protoc` binary for your architecture.
+> **Note:** The instructions below are written for Ubuntu x86_64. If you are building on another platform (e.g. Linux aarch64 or macOS) the same steps apply, but you may need to adjust package manager commands and download the appropriate `protoc` binary for your architecture.
 
 ## Prerequisites
 

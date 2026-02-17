@@ -114,6 +114,11 @@ impl Database {
         Ok(())
     }
 
+    /// Returns all local identities for the current network.
+    ///
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
     pub fn get_local_qualified_identities(
         &self,
         app_context: &AppContext,
@@ -148,7 +153,8 @@ impl Database {
                 let wallet_index: Option<u32> = row.get(2)?;
                 let status: Option<u8> = row.get(3)?;
 
-                let mut identity = QualifiedIdentity::from_bytes(&data);
+                let mut identity =
+                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 identity.alias = alias;
                 identity.wallet_index = wallet_index;
                 identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
@@ -173,6 +179,9 @@ impl Database {
         Ok(identities)
     }
 
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
     #[allow(dead_code)] // May be used for filtering identities that belong to specific wallets
     pub fn get_local_qualified_identities_in_wallets(
         &self,
@@ -207,7 +216,8 @@ impl Database {
                 let wallet_index: Option<u32> = row.get(2)?;
                 let status: Option<u8> = row.get(3)?;
 
-                let mut identity = QualifiedIdentity::from_bytes(&data);
+                let mut identity =
+                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 identity.alias = alias;
                 identity.wallet_index = wallet_index;
                 identity.status = IdentityStatus::from_u8(status.unwrap_or(2));
@@ -232,6 +242,9 @@ impl Database {
         Ok(identities)
     }
 
+    /// Returns an error if the stored identity blob is corrupted.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so ignoring corruption could cause loss of funds.
     pub fn get_identity_by_id(
         &self,
         identifier: &Identifier,
@@ -261,7 +274,8 @@ impl Database {
                 let wallet_index: Option<u32> = row.get(2)?;
                 let status: Option<u8> = row.get(3)?;
 
-                let mut qi = QualifiedIdentity::from_bytes(&data);
+                let mut qi =
+                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 qi.alias = alias;
                 qi.wallet_index = wallet_index;
                 qi.status = IdentityStatus::from_u8(status.unwrap_or(2));
@@ -285,6 +299,9 @@ impl Database {
         Ok(identity)
     }
 
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
     pub fn get_local_voting_identities(
         &self,
         app_context: &AppContext,
@@ -297,7 +314,8 @@ impl Database {
         )?;
         let identity_iter = stmt.query_map(params![network], |row| {
             let data: Vec<u8> = row.get(0)?;
-            let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+            let mut identity =
+                QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
             identity.network = app_context.network;
 
             Ok(identity)
@@ -308,6 +326,10 @@ impl Database {
     }
 
     /// Retrieves all local user identities along with their associated wallet IDs.
+    ///
+    /// Stops on the first corrupted identity blob and returns an error.
+    /// This is intentional — identities hold private keys and balance data,
+    /// so skipping a corrupted entry could cause loss of funds.
     ///
     /// Caller should insert wallet references into associated_wallets before using the identities.
     #[allow(clippy::let_and_return)]
@@ -325,7 +347,8 @@ impl Database {
             stmt.query_map(params![network], |row| {
                 let data: Vec<u8> = row.get(0)?;
                 let wallet_id: Option<WalletSeedHash> = row.get(1)?;
-                let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&data);
+                let mut identity =
+                    QualifiedIdentity::from_bytes(&data).map_err(super::CorruptedBlobError)?;
                 identity.network = app_context.network;
 
                 Ok((identity, wallet_id))

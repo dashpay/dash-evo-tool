@@ -115,6 +115,7 @@ impl ConnectionStatus {
     pub fn reset_timer(&self) {
         if let Ok(mut last) = self.last_update.lock() {
             *last = Instant::now() - REFRESH_CONNECTED;
+        }
     }
 
     pub fn dapi_total_endpoints(&self) -> u16 {

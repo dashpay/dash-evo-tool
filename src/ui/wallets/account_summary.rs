@@ -17,7 +17,7 @@ pub enum AccountCategory {
     ProviderOwner,
     ProviderOperator,
     ProviderPlatform,
-    /// DIP-17: Platform Payment Addresses (evo/tevo Bech32m prefix per DIP-18)
+    /// DIP-17: Platform Payment Addresses (dash/tdash Bech32m HRP per DIP-18)
     PlatformPayment,
     Other(DerivationPathReference),
 }
@@ -127,7 +127,7 @@ impl AccountCategory {
                 Some("Platform service key branch used by masternode platform nodes.")
             }
             AccountCategory::PlatformPayment => Some(
-                "DIP-17 Platform payment addresses (evo/tevo prefix). Hold Dash Credits on Platform, independent of identities.",
+                "DIP-17 Platform payment addresses (dash/tdash HRP per DIP-18). Hold Dash Credits on Platform, independent of identities.",
             ),
             AccountCategory::Other(_) => None,
         }

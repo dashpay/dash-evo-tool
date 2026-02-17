@@ -9,8 +9,8 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::DashColors;
-use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use eframe::egui::{self, ComboBox, Context};
@@ -25,6 +25,7 @@ use super::WalletsBalancesScreen;
 pub(super) struct SendDialogState {
     pub is_open: bool,
     pub address: String,
+    pub address_error: Option<String>,
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
     pub subtract_fee: bool,
@@ -141,7 +142,41 @@ impl WalletsBalancesScreen {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Recipient Address");
-                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text("y..."));
+                let hint = if self.app_context.network == Network::Dash {
+                    "Enter Core address (X.../7...)"
+                } else {
+                    "Enter Core address (y.../8...)"
+                };
+                let response = ui
+                    .add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text(hint));
+
+                // Validate address when it changes
+                if response.changed() {
+                    if self.send_dialog.address.trim().is_empty() {
+                        self.send_dialog.address_error = None;
+                    } else {
+                        let trimmed = self.send_dialog.address.trim();
+                        if crate::ui::helpers::is_platform_address_string(trimmed) {
+                            self.send_dialog.address_error = Some(
+                                "Platform addresses not supported. Use a Core address.".to_string(),
+                            );
+                        } else {
+                            match trimmed.parse::<Address<NetworkUnchecked>>() {
+                                Ok(_) => {
+                                    self.send_dialog.address_error = None;
+                                }
+                                Err(_) => {
+                                    self.send_dialog.address_error =
+                                        Some("Invalid Core address".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(error) = &self.send_dialog.address_error {
+                    ui.colored_label(Color32::from_rgb(255, 100, 100), error);
+                }
 
                 ui.add_space(8.0);
 
@@ -186,7 +221,11 @@ impl WalletsBalancesScreen {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Send").clicked() {
+                    let has_address_error = self.send_dialog.address_error.is_some();
+                    if ui
+                        .add_enabled(!has_address_error, egui::Button::new("Send"))
+                        .clicked()
+                    {
                         match self.prepare_send_action() {
                             Ok(app_action) => {
                                 action = app_action;
@@ -580,7 +619,7 @@ impl WalletsBalancesScreen {
     }
 
     /// Generate a new Platform address for the wallet.
-    /// Returns the address in Bech32m format (e.g., tevo1... for testnet)
+    /// Returns the address in Bech32m format (e.g., tdash1k... for testnet per DIP-18)
     pub(super) fn generate_platform_address(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
@@ -945,10 +984,8 @@ impl WalletsBalancesScreen {
                 return AppAction::None;
             };
 
-            // Parse the Platform address (Bech32m format: evo1.../tevo1...)
-            let platform_addr = if selected_addr.starts_with("evo1")
-                || selected_addr.starts_with("tevo1")
-            {
+            // Parse the Platform address (Bech32m format: dash1.../tdash1... per DIP-18)
+            let platform_addr = if crate::ui::helpers::is_platform_address_string(selected_addr) {
                 match PlatformAddress::from_bech32m_string(selected_addr) {
                     Ok((addr, network)) => {
                         // Validate that address network matches app network

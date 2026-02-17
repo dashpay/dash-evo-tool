@@ -247,7 +247,15 @@ impl TransferScreen {
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::singleline(&mut self.platform_address_input)
-                    .hint_text("Enter Platform address (y...)")
+                    .hint_text(
+                        if self.app_context.network
+                            == dash_sdk::dashcore_rpc::dashcore::Network::Dash
+                        {
+                            "Enter Platform address (dash1...)"
+                        } else {
+                            "Enter Platform address (tdash1...)"
+                        },
+                    )
                     .desired_width(400.0),
             );
         });
@@ -261,8 +269,8 @@ impl TransferScreen {
 
         let input = self.platform_address_input.trim();
 
-        // Try to parse as Bech32m Platform address first (evo1.../tevo1...)
-        if input.starts_with("evo1") || input.starts_with("tevo1") {
+        // Try to parse as Bech32m Platform address first (dash1.../tdash1... per DIP-18)
+        if crate::ui::helpers::is_platform_address_string(input) {
             let (addr, _network) = PlatformAddress::from_bech32m_string(input)
                 .map_err(|e| format!("Invalid Bech32m address: {}", e))?;
             return Ok(addr);

@@ -9,8 +9,8 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::DashColors;
-use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use eframe::egui::{self, ComboBox, Context};
@@ -141,7 +141,12 @@ impl WalletsBalancesScreen {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Recipient Address");
-                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text("y..."));
+                let hint = if self.app_context.network == Network::Dash {
+                    "Enter Core address (X.../7...)"
+                } else {
+                    "Enter Core address (y.../8...)"
+                };
+                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text(hint));
 
                 ui.add_space(8.0);
 

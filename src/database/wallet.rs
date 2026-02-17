@@ -1,4 +1,4 @@
-use crate::database::Database;
+use crate::database::{CorruptedBlobError, Database};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
@@ -409,6 +409,11 @@ impl Database {
     }
 
     /// Retrieve all wallets for a specific network, including their addresses, balances, and known addresses.
+    ///
+    /// Stops on the first corrupted identity blob and returns an error for
+    /// the entire call. This is intentional — identities hold private keys
+    /// and balance data, so skipping a corrupted entry could cause loss of
+    /// funds.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();
         let conn = self.conn.lock().unwrap();
@@ -527,7 +532,7 @@ impl Database {
                     )
                 })?;
 
-            // Parse address - Platform addresses (DIP-17/18) use Bech32m encoding with evo/tevo prefix
+            // Parse address - Platform addresses (DIP-17/18) use Bech32m encoding with dash/tdash HRP per DIP-18
             // and need special handling when stored (we store as Core address format internally)
             let address = if path_reference == DerivationPathReference::PlatformPayment {
                 // Platform addresses are stored as Core P2PKH format for efficient internal lookup.
@@ -814,7 +819,18 @@ impl Database {
             let (identity_data, wallet_seed_hash_array, wallet_index) = row?;
 
             if let Some(wallet) = wallets_map.get_mut(&wallet_seed_hash_array) {
-                let mut identity: QualifiedIdentity = QualifiedIdentity::from_bytes(&identity_data);
+                let mut identity = QualifiedIdentity::from_bytes(&identity_data).map_err(|e| {
+                    tracing::warn!(wallet_index, error = %e, "found corrupted identity blob");
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Blob,
+                        CorruptedBlobError(format!(
+                            "Failed to deserialize identity for wallet_index {}: {}",
+                            wallet_index, e
+                        ))
+                        .into(),
+                    )
+                })?;
                 identity.wallet_index = Some(wallet_index);
                 identity.network = *network;
 

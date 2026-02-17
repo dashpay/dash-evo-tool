@@ -1564,8 +1564,8 @@ impl MasternodeListDiffScreen {
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let message_color = match msg_type {
-            MessageType::Error => Color32::from_rgb(255, 100, 100),
-            MessageType::Info => crate::ui::theme::DashColors::text_primary(dark_mode),
+            MessageType::Error => DashColors::ERROR,
+            MessageType::Info => DashColors::text_primary(dark_mode),
             // Dark green for success text
             MessageType::Success => Color32::DARK_GREEN,
         };
@@ -1593,7 +1593,7 @@ impl MasternodeListDiffScreen {
             return;
         };
 
-        let message_color = Color32::from_rgb(255, 100, 100);
+        let message_color = DashColors::ERROR;
         ui.horizontal(|ui| {
             Frame::new()
                 .fill(message_color.gamma_multiply(0.1))
@@ -1623,12 +1623,9 @@ impl MasternodeListDiffScreen {
             ui.scope(|ui| {
                 let style = ui.style_mut();
                 // Force spinner (fg stroke) to Dash Blue
-                style.visuals.widgets.inactive.fg_stroke.color =
-                    crate::ui::theme::DashColors::DASH_BLUE;
-                style.visuals.widgets.active.fg_stroke.color =
-                    crate::ui::theme::DashColors::DASH_BLUE;
-                style.visuals.widgets.hovered.fg_stroke.color =
-                    crate::ui::theme::DashColors::DASH_BLUE;
+                style.visuals.widgets.inactive.fg_stroke.color = DashColors::DASH_BLUE;
+                style.visuals.widgets.active.fg_stroke.color = DashColors::DASH_BLUE;
+                style.visuals.widgets.hovered.fg_stroke.color = DashColors::DASH_BLUE;
                 ui.add(egui::Spinner::new());
             });
             let label = match pending {

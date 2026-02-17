@@ -6,11 +6,11 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::version::PlatformVersion;
 use eframe::egui::{self, Context, Frame, Margin, RichText, ScrollArea, Ui};
-use egui::Color32;
 use std::sync::Arc;
 
 pub struct PlatformInfoScreen {
@@ -115,10 +115,7 @@ impl PlatformInfoScreen {
                 ui.add_space(50.0);
 
                 // Show spinner with Dash blue color
-                ui.add(
-                    egui::widgets::Spinner::default()
-                        .color(crate::ui::theme::DashColors::DASH_BLUE),
-                );
+                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
 
                 ui.add_space(10.0);
                 ui.heading("Loading...");
@@ -129,7 +126,7 @@ impl PlatformInfoScreen {
 
         // Check for errors and display them in the results area
         if let Some(error) = &self.error_message {
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             let error = error.clone();
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))

@@ -8,9 +8,8 @@ use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::sync::SyncEvent;
-use dash_sdk::dash_spv::sync::SyncProgress as WatchSyncProgress;
-use dash_sdk::dash_spv::sync::SyncState;
-use dash_sdk::dash_spv::types::{DetailedSyncProgress, SyncProgress, SyncStage, ValidationMode};
+use dash_sdk::dash_spv::sync::SyncProgress as SpvSyncProgress;
+use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
@@ -115,8 +114,7 @@ impl From<u8> for SpvStatus {
 #[derive(Debug, Clone, Default)]
 pub struct SpvStatusSnapshot {
     pub status: SpvStatus,
-    pub sync_progress: Option<SyncProgress>,
-    pub detailed_progress: Option<DetailedSyncProgress>,
+    pub sync_progress: Option<SpvSyncProgress>,
     pub last_error: Option<String>,
     pub started_at: Option<SystemTime>,
     pub last_updated: Option<SystemTime>,
@@ -139,9 +137,9 @@ pub(crate) enum AssetLockFinalityEvent {
 }
 
 /// Manages SPV client lifecycle and exposes status updates.
-/// Uses dash-spv's built-in state management while maintaining a dedicated runtime for performance.
+/// Uses dash-spv's built-in state management, running as a spawned task on the main tokio runtime.
 ///
-/// The client itself is owned by the background runtime thread and accessed through
+/// The client itself is owned by the background task and accessed through
 /// its internally-shared components (wallet, storage, etc.) rather than through additional locking.
 pub struct SpvManager {
     network: Network,
@@ -156,8 +154,7 @@ pub struct SpvManager {
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,
     started_at: Arc<RwLock<Option<SystemTime>>>,
-    sync_progress_state: Arc<RwLock<Option<SyncProgress>>>,
-    detailed_progress_state: Arc<RwLock<Option<DetailedSyncProgress>>>,
+    sync_progress_state: Arc<RwLock<Option<SpvSyncProgress>>>,
     progress_updated_at: Arc<RwLock<Option<SystemTime>>>,
     // mapping DET wallet seed_hash -> SPV wallet identifier (if created)
     det_wallets: Arc<RwLock<std::collections::BTreeMap<[u8; 32], WalletId>>>,
@@ -247,34 +244,18 @@ impl SpvManager {
         Ok(())
     }
 
-    fn read_sync_progress(&self) -> SpvResult<Option<SyncProgress>> {
+    fn read_sync_progress(&self) -> SpvResult<Option<SpvSyncProgress>> {
         self.sync_progress_state
             .read()
             .map(|g| g.clone())
             .map_err(|_| SpvError::LockPoisoned("sync_progress".into()))
     }
 
-    fn write_sync_progress(&self, value: Option<SyncProgress>) -> SpvResult<()> {
+    fn write_sync_progress(&self, value: Option<SpvSyncProgress>) -> SpvResult<()> {
         let mut guard = self
             .sync_progress_state
             .write()
             .map_err(|_| SpvError::LockPoisoned("sync_progress".into()))?;
-        *guard = value;
-        Ok(())
-    }
-
-    fn read_detailed_progress(&self) -> SpvResult<Option<DetailedSyncProgress>> {
-        self.detailed_progress_state
-            .read()
-            .map(|g| g.clone())
-            .map_err(|_| SpvError::LockPoisoned("detailed_progress".into()))
-    }
-
-    fn write_detailed_progress(&self, value: Option<DetailedSyncProgress>) -> SpvResult<()> {
-        let mut guard = self
-            .detailed_progress_state
-            .write()
-            .map_err(|_| SpvError::LockPoisoned("detailed_progress".into()))?;
         *guard = value;
         Ok(())
     }
@@ -321,7 +302,6 @@ impl SpvManager {
             last_error: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
             sync_progress_state: Arc::new(RwLock::new(None)),
-            detailed_progress_state: Arc::new(RwLock::new(None)),
             progress_updated_at: Arc::new(RwLock::new(None)),
             det_wallets: Arc::new(RwLock::new(std::collections::BTreeMap::new())),
             reconcile_tx: Mutex::new(None),
@@ -354,7 +334,6 @@ impl SpvManager {
         let last_error = self.read_last_error().unwrap_or(None);
         let started_at = self.read_started_at().unwrap_or(None);
         let sync_progress = self.read_sync_progress().unwrap_or(None);
-        let detailed_progress = self.read_detailed_progress().unwrap_or(None);
         let last_updated = self
             .read_progress_updated_at()
             .unwrap_or(None)
@@ -364,7 +343,6 @@ impl SpvManager {
         SpvStatusSnapshot {
             status,
             sync_progress,
-            detailed_progress,
             last_error,
             started_at,
             last_updated,
@@ -379,7 +357,6 @@ impl SpvManager {
         let last_error = self.read_last_error().unwrap_or(None);
         let started_at = self.read_started_at().unwrap_or(None);
         let sync_progress = self.read_sync_progress().unwrap_or(None);
-        let detailed_progress = self.read_detailed_progress().unwrap_or(None);
         let last_updated = self
             .read_progress_updated_at()
             .unwrap_or(None)
@@ -389,7 +366,6 @@ impl SpvManager {
         SpvStatusSnapshot {
             status,
             sync_progress,
-            detailed_progress,
             last_error,
             started_at,
             last_updated,
@@ -415,12 +391,13 @@ impl SpvManager {
         self.write_started_at(Some(SystemTime::now()))
             .map_err(|e| e.to_string())?;
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
-        self.write_detailed_progress(None)
-            .map_err(|e| e.to_string())?;
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
 
-        let stop_token = CancellationToken::new();
+        // Derive stop_token as a child of the global cancellation token so that
+        // global shutdown automatically cancels SPV without requiring an explicit
+        // SpvManager::stop() call.  SpvManager::stop() can still cancel it early.
+        let stop_token = self.subtasks.cancellation_token.child_token();
         {
             let mut guard = self
                 .stop_token
@@ -430,50 +407,42 @@ impl SpvManager {
         }
 
         let manager = Arc::clone(self);
-        let global_cancel = self.subtasks.cancellation_token.clone();
 
-        // Spawn a dedicated OS thread with a multi-thread Tokio runtime for SPV operations
-        // This ensures SPV sync doesn't compete with UI thread resources
-        std::thread::Builder::new()
-            .name("spv".to_string())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(4)
-                    .enable_all()
-                    .thread_name("spv-rt")
-                    .build()
-                    .expect("Failed to create SPV runtime");
+        // Spawn SPV loop as a task on the main tokio runtime
+        self.subtasks.spawn_sync("spv_main_loop", async move {
+            let manager_for_loop = Arc::clone(&manager);
+            if let Err(err) = manager_for_loop
+                .run_spv_loop(stop_token, expected_wallet_count)
+                .await
+            {
+                tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
+                if let Err(e) = manager.write_last_error(Some(err.clone())) {
+                    tracing::error!("Failed to write SPV error: {}", e);
+                }
+                if let Err(e) = manager.write_status(SpvStatus::Error) {
+                    tracing::error!("Failed to write SPV status: {}", e);
+                }
+            }
 
-                rt.block_on(async move {
-                    let manager_for_loop = Arc::clone(&manager);
-                    if let Err(err) = manager_for_loop.run_spv_loop(stop_token, global_cancel, expected_wallet_count).await {
-                        tracing::error!(error = %err, network = ?manager.network, "SPV runtime failed");
-                        if let Err(e) = manager.write_last_error(Some(err.clone())) {
-                            tracing::error!("Failed to write SPV error: {}", e);
-                        }
-                        if let Err(e) = manager.write_status(SpvStatus::Error) {
-                            tracing::error!("Failed to write SPV status: {}", e);
-                        }
-                    }
-
-                    // Clean up on exit
-                    if let Ok(mut guard) = manager.stop_token.lock() {
-                        *guard = None;
-                    }
-                });
-            })
-            .map_err(|e| format!("Failed to spawn SPV thread: {e}"))?;
+            // Clean up on exit
+            if let Ok(mut guard) = manager.stop_token.lock() {
+                *guard = None;
+            }
+        });
 
         Ok(())
     }
 
     pub fn stop(&self) {
+        tracing::info!("SpvManager::stop() called");
         let maybe_token = self.stop_token.lock().ok().and_then(|g| g.clone());
 
         if let Some(token) = maybe_token {
+            tracing::info!("SpvManager::stop(): cancelling stop_token, setting Stopping");
             let _ = self.write_status(SpvStatus::Stopping);
             token.cancel();
         } else {
+            tracing::debug!("SpvManager::stop(): no stop_token, setting Stopped immediately");
             let _ = self.write_status(SpvStatus::Stopped);
         }
     }
@@ -606,8 +575,6 @@ impl SpvManager {
         }
 
         self.write_sync_progress(None).map_err(|e| e.to_string())?;
-        self.write_detailed_progress(None)
-            .map_err(|e| e.to_string())?;
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
         self.write_started_at(None).map_err(|e| e.to_string())?;
@@ -734,14 +701,21 @@ impl SpvManager {
             format!("ExtendedPrivKey::new_master failed: {e}")
         })?;
         seed_bytes.zeroize();
-        let xprv_str = xprv.to_string();
+        let mut xprv_str = xprv.to_string();
 
         let account_options = Self::default_account_creation_options();
 
         let wallet_id = match wm.import_wallet_from_extended_priv_key(&xprv_str, account_options) {
-            Ok(id) => id,
-            Err(WalletError::WalletExists(id)) => id,
+            Ok(id) => {
+                xprv_str.zeroize();
+                id
+            }
+            Err(WalletError::WalletExists(id)) => {
+                xprv_str.zeroize();
+                id
+            }
             Err(err) => {
+                xprv_str.zeroize();
                 return Err(format!(
                     "import_wallet_from_extended_priv_key failed: {err}"
                 ));
@@ -811,7 +785,6 @@ impl SpvManager {
     async fn run_spv_loop(
         self: Arc<Self>,
         stop_token: CancellationToken,
-        global_cancel: CancellationToken,
         expected_wallet_count: usize,
     ) -> Result<(), String> {
         // Wait for all expected wallets to be fully loaded into the WalletManager
@@ -845,7 +818,7 @@ impl SpvManager {
                     );
                     break;
                 }
-                if stop_token.is_cancelled() || global_cancel.is_cancelled() {
+                if stop_token.is_cancelled() {
                     return Ok(());
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -918,7 +891,7 @@ impl SpvManager {
         // Run sync and monitor with the client owned in this scope
         let result = self
             .clone()
-            .run_sync_and_monitor(client, command_receiver, stop_token, global_cancel)
+            .run_sync_and_monitor(client, command_receiver, stop_token)
             .await;
 
         // Clear the interface and network manager since the client is done
@@ -952,14 +925,12 @@ impl SpvManager {
         mut client: SpvClient,
         command_receiver: mpsc::UnboundedReceiver<DashSpvClientCommand>,
         stop_token: CancellationToken,
-        global_cancel: CancellationToken,
     ) -> Result<(), String> {
         // Monitor network continuously - this handles initial sync and ongoing monitoring
         // Requests are handled through the DashSpvClientInterface command channel
         enum Outcome {
             MonitorCompleted(Result<(), dash_sdk::dash_spv::SpvError>),
-            StopRequested,
-            GlobalCancelled,
+            Cancelled,
         }
 
         let outcome = {
@@ -967,21 +938,34 @@ impl SpvManager {
             let monitor_future = client.monitor_network(command_receiver, monitor_cancel.clone());
             tokio::pin!(monitor_future);
 
+            // stop_token is a child of global_cancel, so it fires on either
+            // explicit SpvManager::stop() or application-wide shutdown.
             tokio::select! {
                 result = &mut monitor_future => Outcome::MonitorCompleted(result),
                 _ = stop_token.cancelled() => {
                     monitor_cancel.cancel();
-                    Outcome::StopRequested
-                },
-                _ = global_cancel.cancelled() => {
-                    monitor_cancel.cancel();
-                    Outcome::GlobalCancelled
+                    Outcome::Cancelled
                 },
             }
         }; // monitor_future is dropped here, releasing the mutable borrow
 
+        tracing::info!(
+            "run_sync_and_monitor: outcome = {}",
+            match &outcome {
+                Outcome::MonitorCompleted(Ok(())) => "MonitorCompleted(Ok)",
+                Outcome::MonitorCompleted(Err(_)) => "MonitorCompleted(Err)",
+                Outcome::Cancelled => "Cancelled",
+            }
+        );
+
         // Stop the client after monitoring completes or is cancelled
+        tracing::info!("run_sync_and_monitor: calling client.stop()...");
+        let stop_start = std::time::Instant::now();
         let _ = client.stop().await;
+        tracing::info!(
+            "run_sync_and_monitor: client.stop() took {:?}",
+            stop_start.elapsed()
+        );
 
         match outcome {
             Outcome::MonitorCompleted(Ok(())) => {
@@ -994,7 +978,7 @@ impl SpvManager {
                 let _ = self.write_status(SpvStatus::Error);
                 Err(message)
             }
-            Outcome::StopRequested | Outcome::GlobalCancelled => {
+            Outcome::Cancelled => {
                 let _ = self.write_status(SpvStatus::Stopped);
                 Ok(())
             }
@@ -1008,7 +992,7 @@ impl SpvManager {
     ) {
         tracing::info!("SPV request handler started");
         let network_manager = Arc::clone(&self.network_manager);
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_request_handler", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => {
@@ -1062,15 +1046,14 @@ impl SpvManager {
 
     fn spawn_progress_watcher(
         &self,
-        mut progress_rx: tokio::sync::watch::Receiver<WatchSyncProgress>,
+        mut progress_rx: tokio::sync::watch::Receiver<SpvSyncProgress>,
     ) {
         let status = Arc::clone(&self.status);
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
-        let detailed_progress_state = Arc::clone(&self.detailed_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_progress_watcher", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1078,59 +1061,12 @@ impl SpvManager {
                         if result.is_err() {
                             break; // Channel closed
                         }
-                        let watch_progress = progress_rx.borrow();
-
-                        // Extract all available heights from WatchSyncProgress
-                        let header_height = watch_progress
-                            .headers()
-                            .map(|h| h.current_height())
-                            .unwrap_or(0);
-                        let masternode_height = watch_progress
-                            .masternodes()
-                            .map(|m| m.current_height())
-                            .unwrap_or(0);
-                        let filter_header_height = watch_progress
-                            .filter_headers()
-                            .map(|fh| fh.current_height())
-                            .unwrap_or(0);
-
-                        let sync_progress = SyncProgress {
-                            header_height,
-                            masternode_height,
-                            filter_header_height,
-                            ..Default::default()
-                        };
-
-                        // Build detailed progress with sync stage information
-                        let peer_best_height = watch_progress
-                            .headers()
-                            .map(|h| h.target_height())
-                            .unwrap_or(0);
-                        let sync_stage = Self::determine_sync_stage(&watch_progress);
-                        let detailed = DetailedSyncProgress {
-                            sync_progress: sync_progress.clone(),
-                            peer_best_height,
-                            percentage: if peer_best_height > 0 {
-                                (header_height as f64 / peer_best_height as f64 * 100.0).min(100.0)
-                            } else {
-                                0.0
-                            },
-                            headers_per_second: 0.0,
-                            bytes_per_second: 0,
-                            estimated_time_remaining: None,
-                            sync_stage,
-                            total_headers_processed: 0,
-                            total_bytes_downloaded: 0,
-                            sync_start_time: SystemTime::now(),
-                            last_update_time: SystemTime::now(),
-                        };
+                        let watch_progress = progress_rx.borrow().clone();
+                        let is_synced = watch_progress.is_synced();
 
                         // Update sync progress state
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
-                            *stored_sync = Some(sync_progress);
-                        }
-                        if let Ok(mut stored_detailed) = detailed_progress_state.write() {
-                            *stored_detailed = Some(detailed);
+                            *stored_sync = Some(watch_progress);
                         }
                         if let Ok(mut updated_at) = progress_updated_at.write() {
                             *updated_at = Some(SystemTime::now());
@@ -1138,7 +1074,7 @@ impl SpvManager {
 
                         // Update status based on progress
                         if let Ok(mut status_guard) = status.write() {
-                            if watch_progress.is_synced() {
+                            if is_synced {
                                 *status_guard = SpvStatus::Running;
                             } else if !matches!(*status_guard, SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error) {
                                 *status_guard = SpvStatus::Syncing;
@@ -1151,68 +1087,13 @@ impl SpvManager {
         });
     }
 
-    /// Map the parallel WatchSyncProgress managers into a single UI-facing SyncStage.
-    ///
-    /// The parallel sync system has independent managers for headers, masternodes,
-    /// filter-headers, filters, and blocks. We map to a single stage by checking
-    /// which manager is actively syncing, preferring later pipeline stages.
-    fn determine_sync_stage(watch: &WatchSyncProgress) -> SyncStage {
-        // Check stages from latest to earliest in the pipeline
-        if let Ok(blocks) = watch.blocks()
-            && blocks.state() == SyncState::Syncing
-        {
-            return SyncStage::DownloadingBlocks {
-                pending: blocks.requested().saturating_sub(blocks.processed()) as usize,
-            };
-        }
-        if let Ok(filters) = watch.filters()
-            && filters.state() == SyncState::Syncing
-        {
-            return SyncStage::DownloadingFilters {
-                completed: filters.downloaded(),
-                total: filters
-                    .target_height()
-                    .saturating_sub(filters.current_height()),
-            };
-        }
-        if let Ok(fh) = watch.filter_headers()
-            && fh.state() == SyncState::Syncing
-        {
-            return SyncStage::DownloadingFilterHeaders {
-                current: fh.current_height(),
-                target: fh.target_height(),
-            };
-        }
-        if let Ok(mn) = watch.masternodes()
-            && mn.state() == SyncState::Syncing
-        {
-            return SyncStage::ValidatingHeaders {
-                batch_size: mn.diffs_processed() as usize,
-            };
-        }
-        if let Ok(headers) = watch.headers()
-            && headers.state() == SyncState::Syncing
-        {
-            return SyncStage::DownloadingHeaders {
-                start: 0,
-                end: headers.target_height(),
-            };
-        }
-
-        if watch.is_synced() {
-            SyncStage::Complete
-        } else {
-            SyncStage::Connecting
-        }
-    }
-
     fn spawn_sync_event_handler(&self, mut sync_rx: tokio::sync::broadcast::Receiver<SyncEvent>) {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
         let status = Arc::clone(&self.status);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
+        self.subtasks.spawn_sync("spv_sync_event_handler", async move {
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -1283,32 +1164,33 @@ impl SpvManager {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    result = wallet_rx.recv() => {
-                        match result {
-                            Ok(_event) => {
-                                // All wallet events trigger reconcile
-                                if let Some(ref tx) = reconcile_tx {
-                                    let _ = tx.try_send(());
+        self.subtasks
+            .spawn_sync("spv_wallet_event_handler", async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        result = wallet_rx.recv() => {
+                            match result {
+                                Ok(_event) => {
+                                    // All wallet events trigger reconcile
+                                    if let Some(ref tx) = reconcile_tx {
+                                        let _ = tx.try_send(());
+                                    }
                                 }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("Wallet event handler lagged by {} events", n);
-                                // Still trigger reconcile to catch up
-                                if let Some(ref tx) = reconcile_tx {
-                                    let _ = tx.try_send(());
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!("Wallet event handler lagged by {} events", n);
+                                    // Still trigger reconcile to catch up
+                                    if let Some(ref tx) = reconcile_tx {
+                                        let _ = tx.try_send(());
+                                    }
                                 }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
-            }
-            tracing::info!("SPV wallet event handler exiting");
-        });
+                tracing::info!("SPV wallet event handler exiting");
+            });
     }
 
     fn spawn_network_event_handler(
@@ -1318,30 +1200,31 @@ impl SpvManager {
         let connected_peers = Arc::clone(&self.connected_peers);
         let cancel = self.subtasks.cancellation_token.clone();
 
-        self.subtasks.spawn_sync(async move {
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => break,
-                    result = net_rx.recv() => {
-                        match result {
-                            Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
-                                if let Ok(mut guard) = connected_peers.write() {
-                                    *guard = connected_count;
+        self.subtasks
+            .spawn_sync("spv_network_event_handler", async move {
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        result = net_rx.recv() => {
+                            match result {
+                                Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
+                                    if let Ok(mut guard) = connected_peers.write() {
+                                        *guard = connected_count;
+                                    }
                                 }
+                                Ok(_) => {
+                                    // PeerConnected / PeerDisconnected — PeersUpdated follows
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!("Network event handler lagged by {} events", n);
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             }
-                            Ok(_) => {
-                                // PeerConnected / PeerDisconnected — PeersUpdated follows
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                tracing::warn!("Network event handler lagged by {} events", n);
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
-            }
-            tracing::info!("SPV network event handler exiting");
-        });
+                tracing::info!("SPV network event handler exiting");
+            });
     }
 
     async fn build_client(
@@ -1431,10 +1314,28 @@ fn build_spv_data_dir(network: Network, config: &NetworkConfig) -> Result<PathBu
     let network_dir = match network {
         Network::Dash => "mainnet".to_string(),
         Network::Testnet => "testnet".to_string(),
-        Network::Devnet => config
-            .devnet_name
-            .clone()
-            .unwrap_or_else(|| "devnet".to_string()),
+        Network::Devnet => {
+            let name = config
+                .devnet_name
+                .clone()
+                .unwrap_or_else(|| "devnet".to_string());
+            // Sanitize to prevent path traversal (e.g. "../../etc")
+            let sanitized: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            if sanitized.is_empty() {
+                "devnet".to_string()
+            } else {
+                sanitized
+            }
+        }
         Network::Regtest => "regtest".to_string(),
         other => format!("{other:?}"),
     };

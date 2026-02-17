@@ -1551,7 +1551,7 @@ impl DPNSScreen {
 
         // "Apply Votes" button
         let button = egui::Button::new(RichText::new("Apply Votes").color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::ACTION_BUTTON_BLUE)
             .corner_radius(3.0);
         if ui.add(button).clicked() {
             action = self.bulk_apply_votes();

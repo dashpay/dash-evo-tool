@@ -11,6 +11,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
@@ -443,9 +444,9 @@ impl AddExistingIdentityScreen {
 
         let button = egui::Button::new(RichText::new("Load Identity").color(Color32::WHITE))
             .fill(if is_valid_id {
-                Color32::from_rgb(0, 128, 255)
+                DashColors::DASH_BLUE
             } else {
-                Color32::from_rgb(100, 100, 100)
+                DashColors::BUTTON_DISABLED
             })
             .frame(true)
             .corner_radius(3.0);
@@ -469,7 +470,7 @@ impl AddExistingIdentityScreen {
                 RichText::new(
                     "Invalid Identity ID format. Must be valid Base58 or Hex (64 characters).",
                 )
-                .color(Color32::from_rgb(255, 150, 100)),
+                .color(DashColors::VALIDATION_WARNING),
             );
         }
 
@@ -648,7 +649,7 @@ impl AddExistingIdentityScreen {
         ui.set_style(new_style);
 
         let button = egui::Button::new(RichText::new(button_label).color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::DASH_BLUE)
             .frame(true)
             .corner_radius(3.0);
 
@@ -802,9 +803,9 @@ impl AddExistingIdentityScreen {
 
         let button = egui::Button::new(RichText::new("Search by Username").color(Color32::WHITE))
             .fill(if is_valid {
-                Color32::from_rgb(0, 128, 255)
+                DashColors::DASH_BLUE
             } else {
-                Color32::from_rgb(100, 100, 100)
+                DashColors::BUTTON_DISABLED
             })
             .frame(true)
             .corner_radius(3.0);
@@ -1019,7 +1020,7 @@ impl ScreenLike for AddExistingIdentityScreen {
 
             // Display error message at the top, outside of scroll area
             if let Some(error_message) = self.error_message.clone() {
-                let error_color = Color32::from_rgb(255, 100, 100);
+                let error_color = DashColors::ERROR;
                 Frame::new()
                     .fill(error_color.gamma_multiply(0.1))
                     .inner_margin(Margin::symmetric(10, 8))
@@ -1144,7 +1145,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                             }
                         }
                         AddIdentityStatus::ErrorMessage(msg) => {
-                            let error_color = Color32::from_rgb(255, 100, 100);
+                            let error_color = DashColors::ERROR;
                             let msg = msg.clone();
                             Frame::new()
                                 .fill(error_color.gamma_multiply(0.1))

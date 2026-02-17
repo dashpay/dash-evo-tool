@@ -100,6 +100,8 @@ const ERROR_PATTERNS: &[(ErrorCategory, &[&str])] = &[
             "temporarily",
             "try again",
             "rate limit",
+            "internal error",
+            "transport error",
         ],
     ),
 ];
@@ -231,9 +233,11 @@ pub fn verify_sidebar_label_and_navigate(
     harness.state_mut().screen_stack.clear();
     harness.run_steps(5);
 
-    // Verify the sidebar label is rendered (proves the left panel works)
+    // Verify the sidebar label is rendered (proves the left panel works).
+    // Use query_all because both a sidebar Label and a breadcrumb Button
+    // can contain the same text (e.g. "Wallets").
     assert!(
-        harness.query_by_label_contains(label).is_some(),
+        harness.query_all_by_label_contains(label).next().is_some(),
         "Sidebar label '{}' must be visible (left panel rendering broken?)",
         label
     );

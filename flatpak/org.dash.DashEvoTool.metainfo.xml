@@ -16,6 +16,21 @@
     </p>
   </description>
 
+  <categories>
+    <category>Finance</category>
+    <category>Network</category>
+    <category>BlockchainTools</category>
+  </categories>
+
+  <keywords>
+    <keyword>Dash</keyword>
+    <keyword>cryptocurrency</keyword>
+    <keyword>blockchain</keyword>
+    <keyword>wallet</keyword>
+    <keyword>DPNS</keyword>
+    <keyword>Evolution</keyword>
+  </keywords>
+
   <url type="homepage">https://github.com/dashpay/dash-evo-tool</url>
   <url type="bugtracker">https://github.com/dashpay/dash-evo-tool/issues</url>
 

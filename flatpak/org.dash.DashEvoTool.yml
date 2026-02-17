@@ -23,8 +23,6 @@ finish-args:
   - --socket=fallback-x11
   # GPU acceleration for egui rendering
   - --device=dri
-  # Application config directory
-  - --filesystem=xdg-config/dash-evo-tool:create
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin
@@ -37,7 +35,7 @@ build-options:
 
 modules:
   # Module 1: Install protobuf compiler (required for building dash-sdk)
-  # NOTE: Uses x86_64 binary. For aarch64, replace with protoc-25.2-linux-aarch_64.zip and update sha256.
+  # NOTE: CI patches this module for aarch64 via sed (see .github/workflows/flatpak.yml).
   - name: protoc
     buildsystem: simple
     sources:

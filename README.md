@@ -34,10 +34,14 @@ The tool supports both Mainnet and Testnet networks. Check out the [documentatio
 
 ## Install via Flatpak (Linux)
 
-The easiest way to run Dash Evo Tool on Linux is via Flatpak. Download the `.flatpak` bundle from the [latest release](https://github.com/dashpay/dash-evo-tool/releases) and install it:
+The easiest way to run Dash Evo Tool on Linux is via Flatpak. Download the `.flatpak` bundle for your architecture from the [latest release](https://github.com/dashpay/dash-evo-tool/releases) and install it:
 
 ``` shell
+# x86_64
 flatpak install dash-evo-tool-linux-x86_64.flatpak
+
+# aarch64 (ARM)
+flatpak install dash-evo-tool-linux-aarch64.flatpak
 ```
 
 To run:
@@ -46,7 +50,15 @@ To run:
 flatpak run org.dash.DashEvoTool
 ```
 
+To uninstall:
+
+``` shell
+flatpak uninstall org.dash.DashEvoTool
+```
+
 The Flatpak version runs in SPV (light client) mode — no full Dash Core node is required. Application data is stored in `~/.var/app/org.dash.DashEvoTool/config/dash-evo-tool/`.
+
+> **Note:** The Flatpak data path differs from native Linux builds, which use `~/.config/dash-evo-tool/`.
 
 ## Prerequisites
 

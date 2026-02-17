@@ -247,7 +247,15 @@ impl TransferScreen {
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::singleline(&mut self.platform_address_input)
-                    .hint_text("Enter Platform address (dash1.../tdash1...)")
+                    .hint_text(
+                        if self.app_context.network
+                            == dash_sdk::dashcore_rpc::dashcore::Network::Dash
+                        {
+                            "Enter Platform address (dash1...)"
+                        } else {
+                            "Enter Platform address (tdash1...)"
+                        },
+                    )
                     .desired_width(400.0),
             );
         });

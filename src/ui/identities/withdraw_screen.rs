@@ -168,7 +168,7 @@ impl WithdrawalScreen {
                                     .to_string(),
                             );
                         } else {
-                            match Address::from_str(&self.withdrawal_address) {
+                            match Address::from_str(trimmed) {
                                 Ok(_) => {
                                     self.withdrawal_address_error = None;
                                 }

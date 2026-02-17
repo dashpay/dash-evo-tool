@@ -221,7 +221,11 @@ impl WalletsBalancesScreen {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Send").clicked() {
+                    let has_address_error = self.send_dialog.address_error.is_some();
+                    if ui
+                        .add_enabled(!has_address_error, egui::Button::new("Send"))
+                        .clicked()
+                    {
                         match self.prepare_send_action() {
                             Ok(app_action) => {
                                 action = app_action;

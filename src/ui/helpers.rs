@@ -1,4 +1,20 @@
+use dash_sdk::dpp::address_funds::{PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET};
 use std::sync::Arc;
+
+/// Checks if a string looks like a Platform address (bech32m with dash/tdash HRP per DIP-18).
+///
+/// This checks whether the string starts with a known Platform HRP followed by the
+/// bech32 separator '1'. It does NOT fully validate the address — use
+/// `PlatformAddress::from_bech32m_string()` for that.
+pub fn is_platform_address_string(s: &str) -> bool {
+    let s = s.to_lowercase();
+    for hrp in [PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET] {
+        if s.starts_with(hrp) && s.get(hrp.len()..hrp.len() + 1) == Some("1") {
+            return true;
+        }
+    }
+    false
+}
 
 use crate::{
     app::AppAction,

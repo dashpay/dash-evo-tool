@@ -162,7 +162,7 @@ impl WithdrawalScreen {
                         self.withdrawal_address_error = None;
                     } else {
                         let trimmed = self.withdrawal_address.trim();
-                        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
+                        if crate::ui::helpers::is_platform_address_string(trimmed) {
                             self.withdrawal_address_error = Some(
                                 "Platform addresses not supported for withdrawal. Use a Core address."
                                     .to_string(),

@@ -155,7 +155,7 @@ impl WalletsBalancesScreen {
                         self.send_dialog.address_error = None;
                     } else {
                         let trimmed = self.send_dialog.address.trim();
-                        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
+                        if crate::ui::helpers::is_platform_address_string(trimmed) {
                             self.send_dialog.address_error = Some(
                                 "Platform addresses not supported. Use a Core address."
                                     .to_string(),
@@ -615,7 +615,7 @@ impl WalletsBalancesScreen {
     }
 
     /// Generate a new Platform address for the wallet.
-    /// Returns the address in Bech32m format (e.g., tevo1... for testnet)
+    /// Returns the address in Bech32m format (e.g., tdash1k... for testnet per DIP-18)
     pub(super) fn generate_platform_address(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
@@ -980,10 +980,8 @@ impl WalletsBalancesScreen {
                 return AppAction::None;
             };
 
-            // Parse the Platform address (Bech32m format: evo1.../tevo1...)
-            let platform_addr = if selected_addr.starts_with("evo1")
-                || selected_addr.starts_with("tevo1")
-            {
+            // Parse the Platform address (Bech32m format: dash1.../tdash1... per DIP-18)
+            let platform_addr = if crate::ui::helpers::is_platform_address_string(selected_addr) {
                 match PlatformAddress::from_bech32m_string(selected_addr) {
                     Ok((addr, network)) => {
                         // Validate that address network matches app network

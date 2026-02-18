@@ -348,16 +348,7 @@ impl AppContext {
         // Switch SDK context provider to match the selected backend
         match mode {
             CoreBackendMode::Spv => {
-                // Make sure SPV provider knows about the app context
-                if let Err(e) = self
-                    .spv_context_provider
-                    .read()
-                    .map_err(|_| "SPV provider lock poisoned".to_string())
-                    .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
-                {
-                    tracing::error!("Failed to bind SPV provider: {}", e);
-                    return;
-                }
+                // Clone the SPV provider and bind app context on the clone
                 let provider = match self.spv_context_provider.read() {
                     Ok(p) => p.clone(),
                     Err(_) => {
@@ -365,6 +356,10 @@ impl AppContext {
                         return;
                     }
                 };
+                if let Err(e) = provider.bind_app_context(Arc::clone(self)) {
+                    tracing::error!("Failed to bind SPV provider: {}", e);
+                    return;
+                }
                 self.sdk.load().set_context_provider(provider);
             }
             CoreBackendMode::Rpc => {

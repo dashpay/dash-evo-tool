@@ -40,11 +40,12 @@ fn e2e_full_testnet_journey() {
         println!("\n=== Phase 4: Token Search ===");
         phases::phase_04_tokens::run(&mut harness, &mut ctx);
 
-        println!("\n=== Phase 5: Identity Creation ===");
+        println!("\n=== Phase 5: Identity Validation ===");
         phases::phase_05_identity::run(&mut harness, &mut ctx);
 
-        println!("\n=== Phase 6: DPNS Name Registration ===");
-        phases::phase_06_dpns::run(&mut harness, &mut ctx);
+        // Phase 6 (DPNS) skipped — depends on identity from Phase 5
+        // which is disabled until SPV mempool support lands.
+        println!("\n=== Phase 6: DPNS Name Registration — SKIPPED ===");
 
         println!("\n=== Phase 7: Teardown ===");
         phases::phase_07_teardown::run(&mut harness, &ctx);

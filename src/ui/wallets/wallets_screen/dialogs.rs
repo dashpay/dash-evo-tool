@@ -1094,7 +1094,7 @@ impl WalletsBalancesScreen {
         )))
     }
 
-    pub fn open_receive_dialog(&mut self, _ctx: &Context) -> AppAction {
+    pub(super) fn open_receive_dialog(&mut self, _ctx: &Context) -> AppAction {
         let Some(wallet) = self.selected_wallet.clone() else {
             self.receive_dialog.status = Some("Select a wallet first".to_string());
             self.receive_dialog.core_addresses.clear();
@@ -1119,7 +1119,8 @@ impl WalletsBalancesScreen {
     }
 
     /// Close the receive dialog and reset its state.
-    pub fn close_receive_dialog(&mut self) {
+    #[allow(dead_code)]
+    pub(super) fn close_receive_dialog(&mut self) {
         self.receive_dialog = ReceiveDialogState::default();
     }
 

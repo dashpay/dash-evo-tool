@@ -101,9 +101,13 @@ dashcore_hashes = { git = "https://www.github.com/dashpay/rust-dashcore", rev = 
 key-wallet = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
 key-wallet-manager = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
 
+[features]
+e2e = []
+
 [[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
+required-features = ["e2e"]
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

@@ -72,16 +72,28 @@ impl fmt::Display for FundingMethod {
 
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
+    #[cfg(feature = "e2e")]
     pub step: Arc<RwLock<WalletFundedScreenStep>>,
+    #[cfg(not(feature = "e2e"))]
+    step: Arc<RwLock<WalletFundedScreenStep>>,
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
+    #[cfg(feature = "e2e")]
     pub funding_method: Arc<RwLock<FundingMethod>>,
+    #[cfg(not(feature = "e2e"))]
+    funding_method: Arc<RwLock<FundingMethod>>,
+    #[cfg(feature = "e2e")]
     pub funding_amount: Option<Amount>,
+    #[cfg(not(feature = "e2e"))]
+    funding_amount: Option<Amount>,
     funding_amount_input: Option<AmountInput>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
+    #[cfg(feature = "e2e")]
     pub alias_input: String,
+    #[cfg(not(feature = "e2e"))]
+    alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
     error_message: Option<String>,
@@ -89,7 +101,7 @@ pub struct AddNewIdentityScreen {
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
-    pub successful_qualified_identity_id: Option<Identifier>,
+    pub(crate) successful_qualified_identity_id: Option<Identifier>,
     /// Selected Platform address for funding  with the amount in credits
     selected_platform_address_for_funding: Option<(
         dash_sdk::dpp::address_funds::PlatformAddress,

@@ -724,6 +724,9 @@ impl IdentitiesScreen {
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
                                                         .show(|ui| {
+                                                            // Wrap in a scroll area so popups with many keys are accessible
+                                                            let max_popup_height = ui.ctx().content_rect().height() * 0.6;
+                                                            egui::ScrollArea::vertical().max_height(max_popup_height).show(ui, |ui| {
                                                             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                                                             // Main Identity Keys
@@ -792,6 +795,7 @@ impl IdentitiesScreen {
                                                                     )));
                                                                    ui.close_kind(egui::UiKind::Menu);
                                                                 }
+                                                            }); // end ScrollArea
                                                         },
                                                     );
                                                 }

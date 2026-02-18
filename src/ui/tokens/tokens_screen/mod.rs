@@ -2942,6 +2942,7 @@ impl ScreenLike for TokensScreen {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
                         let color = match msg_type {
                             MessageType::Error => Color32::DARK_RED,
+                            MessageType::Warning => DashColors::warning_color(dark_mode),
                             MessageType::Info => DashColors::text_primary(dark_mode),
                             MessageType::Success => Color32::DARK_GREEN,
                         };

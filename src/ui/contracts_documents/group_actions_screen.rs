@@ -453,16 +453,11 @@ impl ScreenLike for GroupActionsScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Success => {
-                // Not used
-            }
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.fetch_group_actions_status =
                     FetchGroupActionsStatus::ErrorMessage(message.to_string());
             }
-            MessageType::Info => {
-                // Not used
-            }
+            MessageType::Success | MessageType::Info => {}
         }
     }
 

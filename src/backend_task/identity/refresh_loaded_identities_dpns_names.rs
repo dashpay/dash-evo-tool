@@ -17,6 +17,8 @@ impl AppContext {
             .load_local_qualified_identities()
             .map_err(|e| format!("Error refreshing owned DPNS names: Database error: {}", e))?;
 
+        let sdk = self.sdk.load().as_ref().clone();
+
         for mut qualified_identity in qualified_identities {
             let identity_id = qualified_identity.identity.id();
 
@@ -33,8 +35,6 @@ impl AppContext {
                 limit: 100,
                 start: None,
             };
-
-            let sdk = self.sdk.load().as_ref().clone();
 
             let owned_dpns_names = Document::fetch_many(&sdk, dpns_names_document_query)
                 .await

@@ -12,6 +12,7 @@ use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
+use dash_sdk::dash_spv::sync::ProgressPercentage;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
@@ -489,7 +490,14 @@ impl AppContext {
             .spv_manager()
             .status()
             .sync_progress
-            .map(|p| p.header_height)
+            .and_then(|p| {
+                p.headers()
+                    .inspect_err(|e| {
+                        tracing::debug!("SPV headers progress unavailable: {e}");
+                    })
+                    .ok()
+                    .map(|h| h.current_height())
+            })
             .ok_or("Cannot build transaction: SPV sync height is not yet known")?;
         let total_amount: u64 = recipients.iter().map(|(_, amt)| *amt).sum();
         let mut scale_factor = 1.0f64;

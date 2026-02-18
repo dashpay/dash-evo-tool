@@ -75,7 +75,7 @@ impl StyledButton {
             ButtonVariant::Danger => (
                 DashColors::WHITE,
                 DashColors::ERROR,
-                Color32::from_rgb(200, 0, 0),
+                DashColors::DANGER_HOVER,
                 None,
             ),
             ButtonVariant::Ghost => (

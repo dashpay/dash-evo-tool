@@ -26,6 +26,8 @@ use dash_sdk::platform::Identifier;
 use egui::{Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
 
+use super::format_relative_time;
+
 const PAYMENT_GUIDELINES_INFO_TEXT: &str = "Payment Guidelines:\n\n\
     Payments to contacts use encrypted payment channels.\n\n\
     Only you and the recipient can see payment details.\n\n\
@@ -782,11 +784,16 @@ impl PaymentHistory {
                                     );
 
                                     // Timestamp
-                                    ui.label(
-                                        RichText::new("• 2 days ago")
-                                            .small()
-                                            .color(DashColors::text_secondary(dark_mode)),
-                                    );
+                                    let payment_time_text = format_relative_time(payment.timestamp)
+                                        .map(|t| format!("• {}", t))
+                                        .unwrap_or_default();
+                                    if !payment_time_text.is_empty() {
+                                        ui.label(
+                                            RichText::new(payment_time_text)
+                                                .small()
+                                                .color(DashColors::text_secondary(dark_mode)),
+                                        );
+                                    }
                                 });
                             });
                         });

@@ -20,9 +20,9 @@ use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::{CoreBackendMode, SpvManager};
 use crate::utils::tasks::TaskManager;
+use arc_swap::ArcSwap;
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
-use arc_swap::ArcSwap;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::{Network, Txid};
@@ -517,7 +517,7 @@ impl AppContext {
 
 /// Returns the default platform version for the given network.
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
-    // TODO: Use self.sdk.read().unwrap().version() instead of hardcoding
+    // TODO: Use self.sdk.load().version() instead of hardcoding
     match network {
         Network::Dash => &PLATFORM_V11,
         Network::Testnet => &PLATFORM_V11,

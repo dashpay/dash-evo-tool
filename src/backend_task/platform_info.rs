@@ -1,5 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::block::extended_epoch_info::{v0::ExtendedEpochInfoV0Getters, ExtendedEpochInfo};
 use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
@@ -332,9 +333,8 @@ impl AppContext {
     pub async fn run_platform_info_task(
         &self,
         request: PlatformInfoTaskRequestType,
+        sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let sdk = self.sdk.load().as_ref().clone();
-
         match request {
             PlatformInfoTaskRequestType::BasicPlatformInfo => {
                 // Get platform version from SDK
@@ -362,7 +362,7 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                match ExtendedEpochInfo::fetch_current(&sdk).await {
+                match ExtendedEpochInfo::fetch_current(sdk).await {
                     Ok(epoch_info) => {
                         // Cache the fee multiplier for UI fee estimation
                         let fee_multiplier = epoch_info.fee_multiplier_permille();
@@ -382,7 +382,7 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::TotalCreditsOnPlatform => {
-                match TotalCreditsInPlatform::fetch_current(&sdk).await {
+                match TotalCreditsInPlatform::fetch_current(sdk).await {
                     Ok(total_credits) => {
                         let dash_amount = total_credits.0 as f64 * 10f64.powf(-11.0);
                         let formatted = format!(
@@ -399,7 +399,7 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::CurrentVersionVotingState => {
-                match ProtocolVersionVoteCount::fetch_many(&sdk, ()).await {
+                match ProtocolVersionVoteCount::fetch_many(sdk, ()).await {
                     Ok(votes) => {
                         let votes: ProtocolVersionUpgrades = votes;
                         let votes_info = votes
@@ -425,7 +425,7 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::CurrentValidatorSetInfo => {
-                match CurrentQuorumsInfo::fetch_unproved(&sdk, NoParamQuery {}).await {
+                match CurrentQuorumsInfo::fetch_unproved(sdk, NoParamQuery {}).await {
                     Ok(Some(current_quorums_info)) => {
                         let formatted = format_current_quorums_info(&current_quorums_info);
                         Ok(BackendTaskSuccessResult::PlatformInfo(
@@ -458,13 +458,13 @@ impl AppContext {
                     start: None,
                 };
 
-                match Document::fetch_many(&sdk, queued_document_query.clone()).await {
+                match Document::fetch_many(sdk, queued_document_query.clone()).await {
                     Ok(documents) => {
                         let withdrawal_docs: Vec<Document> =
                             documents.values().filter_map(|a| a.clone()).collect();
 
                         // Try to get total credits for daily limit calculation
-                        match TotalCreditsInPlatform::fetch_current(&sdk).await {
+                        match TotalCreditsInPlatform::fetch_current(sdk).await {
                             Ok(total_credits) => {
                                 let formatted = format_withdrawal_documents_with_daily_limit(
                                     &withdrawal_docs,
@@ -523,7 +523,7 @@ impl AppContext {
                     start: None,
                 };
 
-                match Document::fetch_many(&sdk, completed_document_query).await {
+                match Document::fetch_many(sdk, completed_document_query).await {
                     Ok(documents) => {
                         let mut withdrawal_docs: Vec<Document> =
                             documents.values().filter_map(|a| a.clone()).collect();
@@ -630,7 +630,7 @@ impl AppContext {
                 // Fetch the address info using FetchMany with BTreeSet
                 let mut addresses = std::collections::BTreeSet::new();
                 addresses.insert(platform_address);
-                match AddressInfo::fetch_many(&sdk, addresses).await {
+                match AddressInfo::fetch_many(sdk, addresses).await {
                     Ok(address_infos) => {
                         // The result is a map of PlatformAddress -> Option<AddressInfo>
                         let result: Option<&Option<AddressInfo>> =

@@ -285,9 +285,7 @@ impl AppContext {
             start: None,
         };
 
-        let sdk_guard = self.sdk.load().as_ref().clone();
-
-        let maybe_owned_dpns_names = Document::fetch_many(&sdk_guard, dpns_names_document_query)
+        let maybe_owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
             .await
             .map(|document_map| {
                 document_map

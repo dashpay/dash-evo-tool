@@ -34,9 +34,9 @@ impl AppContext {
                 start: None,
             };
 
-            let sdk_guard = self.sdk.load().as_ref().clone();
+            let sdk = self.sdk.load().as_ref().clone();
 
-            let owned_dpns_names = Document::fetch_many(&sdk_guard, dpns_names_document_query)
+            let owned_dpns_names = Document::fetch_many(&sdk, dpns_names_document_query)
                 .await
                 .map(|document_map| {
                     document_map

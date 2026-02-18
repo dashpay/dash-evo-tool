@@ -342,7 +342,7 @@ impl AppContext {
                 mnlist::run_mnlist_task(self, mnlist_task).await
             }
             BackendTask::PlatformInfo(platform_info_task) => {
-                self.run_platform_info_task(platform_info_task).await
+                self.run_platform_info_task(platform_info_task, &sdk).await
             }
             BackendTask::GroveSTARKTask(grovestark_task) => {
                 grovestark::run_grovestark_task(grovestark_task, &sdk).await

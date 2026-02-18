@@ -178,9 +178,7 @@ impl AppContext {
             start: None,
         };
 
-        let sdk_guard = self.sdk.load().as_ref().clone();
-
-        let owned_dpns_names = Document::fetch_many(&sdk_guard, dpns_names_document_query)
+        let owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
             .await
             .map(|document_map| {
                 document_map
@@ -219,7 +217,7 @@ impl AppContext {
         // Calculate actual fee paid
         // Note: We need to re-fetch the identity to get the updated balance
         let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(
-            &sdk_guard,
+            sdk,
             qualified_identity.identity.id(),
         )
         .await

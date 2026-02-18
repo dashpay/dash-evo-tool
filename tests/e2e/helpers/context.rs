@@ -51,8 +51,5 @@ impl Default for TestContext {
 
 /// Format first 4 bytes of a seed hash as a hex prefix string.
 pub fn seed_hash_prefix(hash: &WalletSeedHash) -> String {
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}",
-        hash[0], hash[1], hash[2], hash[3]
-    )
+    hash[..4].iter().map(|b| format!("{:02x}", b)).collect()
 }

@@ -2,14 +2,14 @@
 <component type="desktop-application">
   <id>org.dash.DashEvoTool</id>
   <name>Dash Evo Tool</name>
-  <summary>Graphical user interface for interacting with Dash Evolution</summary>
+  <summary>Graphical user interface for interacting with Dash Platform</summary>
 
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
 
   <description>
     <p>
-      A cross-platform desktop application for interacting with Dash Evolution
+      A cross-platform desktop application for interacting with Dash Platform
       (Layer 2). Features include DPNS username registration, contest voting,
       state transition viewing, wallet management, and identity operations.
       Works in SPV (light client) mode - no full Dash Core node required.
@@ -28,7 +28,6 @@
     <keyword>blockchain</keyword>
     <keyword>wallet</keyword>
     <keyword>DPNS</keyword>
-    <keyword>Evolution</keyword>
   </keywords>
 
   <url type="homepage">https://github.com/dashpay/dash-evo-tool</url>

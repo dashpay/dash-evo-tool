@@ -36,10 +36,7 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
             .await
@@ -646,10 +643,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::platform::transition::put_identity::PutIdentity;
 
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         let public_keys = keys.to_public_keys_map();
 

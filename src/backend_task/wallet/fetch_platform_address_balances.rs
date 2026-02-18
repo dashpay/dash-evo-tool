@@ -76,10 +76,7 @@ impl AppContext {
         };
 
         // Sync using SDK's privacy-preserving method
-        let sdk = {
-            let guard = self.sdk.read().map_err(|e| e.to_string())?;
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         let (_checkpoint_height, highest_block_processed) = if needs_full_sync {
             tracing::info!(

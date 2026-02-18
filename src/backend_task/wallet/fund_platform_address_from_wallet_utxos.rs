@@ -203,7 +203,7 @@ impl AppContext {
             };
 
             let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
-            let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+            let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk, change_platform_address)
         };
 

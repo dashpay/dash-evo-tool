@@ -2502,6 +2502,9 @@ impl TokensScreen {
         // Set adding status
         self.adding_token_start_time = Some(Utc::now());
         self.adding_token_name = Some(token_info.token_name.clone());
+        if let Some(h) = self.operation_banner.take() {
+            h.clear();
+        }
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
             "Adding token...",
@@ -2529,6 +2532,9 @@ impl TokensScreen {
         if let Some(next_cursor) = self.next_cursors.last().cloned() {
             // set status
             self.contract_search_status = ContractSearchStatus::WaitingForResult;
+            if let Some(h) = self.operation_banner.take() {
+                h.clear();
+            }
             let handle = MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Searching contracts...",
@@ -2537,7 +2543,7 @@ impl TokensScreen {
             handle.with_elapsed();
             self.operation_banner = Some(handle);
 
-            // push the current one onto “previous” so we can go back
+            // push the current one onto "previous" so we can go back
             // if the user is on page N, and we have a nextCursor in next_cursors[N - 1] or so
             self.previous_cursors.push(next_cursor.clone());
 
@@ -2558,6 +2564,9 @@ impl TokensScreen {
             // Move to (page - 1)
             self.search_current_page -= 1;
             self.contract_search_status = ContractSearchStatus::WaitingForResult;
+            if let Some(h) = self.operation_banner.take() {
+                h.clear();
+            }
             let handle = MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Searching contracts...",
@@ -2566,7 +2575,7 @@ impl TokensScreen {
             handle.with_elapsed();
             self.operation_banner = Some(handle);
 
-            // The “last” previous_cursors item is the new page’s state
+            // The "last" previous_cursors item is the new page's state
             if let Some(prev_cursor) = self.previous_cursors.pop() {
                 // Possibly pop from next_cursors if we want to re-insert it later
                 // self.next_cursors.truncate(self.search_current_page - 1);
@@ -2966,6 +2975,9 @@ impl ScreenLike for TokensScreen {
                 if matches!(token_task.as_ref(), TokenTask::QueryMyTokenBalances) =>
             {
                 self.refreshing_status = RefreshingStatus::Refreshing;
+                if let Some(h) = self.operation_banner.take() {
+                    h.clear();
+                }
                 let handle =
                     MessageBanner::set_global(ctx, "Refreshing tokens...", MessageType::Info);
                 handle.with_elapsed();

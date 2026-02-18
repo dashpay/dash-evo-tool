@@ -4,6 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
@@ -910,6 +911,11 @@ impl ContactsList {
                                                     tracing::error!(
                                                         "Failed to update contact: {}",
                                                         e
+                                                    );
+                                                    MessageBanner::set_global(
+                                                        ui.ctx(),
+                                                        &format!("Failed to update contact: {}", e),
+                                                        MessageType::Error,
                                                     );
                                                 } else {
                                                     // Update the contact in memory

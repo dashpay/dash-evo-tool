@@ -748,7 +748,7 @@ impl ContactRequests {
                                         |ui| {
                                             if ui.button("Cancel").clicked() {
                                                 // TODO: Cancel outgoing request
-                                                crate::ui::components::MessageBanner::set_global(ui.ctx(), "Request cancelled", MessageType::Info);
+                                                crate::ui::components::MessageBanner::set_global(ui.ctx(), "Cancel request not implemented yet", MessageType::Warning);
                                             }
                                         },
                                     );

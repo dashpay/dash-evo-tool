@@ -210,6 +210,9 @@ impl DocumentQueryScreen {
                         )));
                     }
                     Err(e) => {
+                        if let Some(h) = self.query_banner.take() {
+                            h.clear();
+                        }
                         self.document_query_status = DocumentQueryStatus::Error;
                         MessageBanner::set_global(
                             ui.ctx(),

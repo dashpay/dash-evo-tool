@@ -71,6 +71,10 @@ impl RegisterDataContractScreen {
             None
         };
 
+        if let Some(err) = error_message {
+            MessageBanner::set_global(app_context.egui_ctx(), &err, MessageType::Error);
+        }
+
         // Auto-select a suitable key for contract registration
         use dash_sdk::dpp::identity::KeyType;
         let selected_key = selected_qualified_identity.as_ref().and_then(|identity| {

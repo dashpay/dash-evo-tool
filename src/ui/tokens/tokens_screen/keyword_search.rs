@@ -61,6 +61,9 @@ impl TokensScreen {
                         // Clear old results, set status
                         self.search_results.lock().unwrap().clear();
                         self.contract_search_status = ContractSearchStatus::WaitingForResult;
+                        if let Some(h) = self.operation_banner.take() {
+                            h.clear();
+                        }
                         let handle = MessageBanner::set_global(
                             ui.ctx(),
                             "Searching contracts...",

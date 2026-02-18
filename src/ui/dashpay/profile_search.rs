@@ -51,9 +51,14 @@ impl ProfileSearchScreen {
         }
     }
 
-    fn search_profiles(&mut self) -> AppAction {
+    fn search_profiles(&mut self, ctx: &egui::Context) -> AppAction {
         if self.search_query.trim().is_empty() {
-            self.display_message("Please enter a search term", MessageType::Error);
+            self.loading = false;
+            crate::ui::components::MessageBanner::set_global(
+                ctx,
+                "Please enter a search term",
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
@@ -68,14 +73,15 @@ impl ProfileSearchScreen {
         AppAction::BackendTask(task)
     }
 
-    fn view_profile(&mut self, identity_id: Identifier) -> AppAction {
+    fn view_profile(&mut self, ctx: &egui::Context, identity_id: Identifier) -> AppAction {
         // Use any available identity for viewing (just needed for context)
         let identities = self
             .app_context
             .load_local_qualified_identities()
             .unwrap_or_default();
         if identities.is_empty() {
-            self.display_message(
+            crate::ui::components::MessageBanner::set_global(
+                ctx,
                 "No identities available. Please load an identity first.",
                 MessageType::Error,
             );
@@ -128,12 +134,12 @@ impl ProfileSearchScreen {
 
                     // Trigger search on Enter key
                     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        action = self.search_profiles();
+                        action = self.search_profiles(ui.ctx());
                     }
                 });
 
                 if ui.button("Search").clicked() {
-                    action = self.search_profiles();
+                    action = self.search_profiles(ui.ctx());
                 }
             });
 
@@ -219,7 +225,7 @@ impl ProfileSearchScreen {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if ui.button("View Profile").clicked() {
-                                            action = self.view_profile(result.identity_id);
+                                            action = self.view_profile(ui.ctx(), result.identity_id);
                                         }
                                         if ui.button("Add Contact").clicked() {
                                             action = self.add_contact(result.identity_id);

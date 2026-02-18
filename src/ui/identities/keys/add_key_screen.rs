@@ -407,11 +407,6 @@ impl ScreenLike for AddKeyScreen {
             ui.heading("Add New Key");
             ui.add_space(10.0);
 
-            if self.add_key_status == AddKeyStatus::Complete {
-                inner_action |= self.show_success(ui);
-                return inner_action;
-            }
-
             if self.selected_wallet.is_some()
                 && let Some(wallet) = &self.selected_wallet
             {
@@ -676,12 +671,15 @@ impl ScreenLike for AddKeyScreen {
                 .frame(true)
                 .corner_radius(3.0);
             if ui.add(button).clicked() {
-                self.add_key_status = AddKeyStatus::WaitingForResult;
-                let handle =
-                    MessageBanner::set_global(ui.ctx(), "Adding key...", MessageType::Info);
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
-                inner_action |= self.validate_and_add_key();
+                let validation_action = self.validate_and_add_key();
+                if matches!(&validation_action, AppAction::BackendTask(_)) {
+                    self.add_key_status = AddKeyStatus::WaitingForResult;
+                    let handle =
+                        MessageBanner::set_global(ui.ctx(), "Adding key...", MessageType::Info);
+                    handle.with_elapsed();
+                    self.refresh_banner = Some(handle);
+                }
+                inner_action |= validation_action;
             }
             // Status display is handled by the global MessageBanner
 

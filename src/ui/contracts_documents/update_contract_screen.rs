@@ -40,7 +40,6 @@ enum BroadcastStatus {
     FetchingNonce(u64),
     Broadcasting(u64),
     ProofError(u64),
-    BroadcastError,
     Done,
 }
 
@@ -217,8 +216,8 @@ impl UpdateDataContractScreen {
 
         match &self.broadcast_status {
             BroadcastStatus::Idle => {}
-            BroadcastStatus::ParsingError(_) | BroadcastStatus::BroadcastError => {
-                // Parsing errors shown via render_error_bubble; broadcast errors via global banner
+            BroadcastStatus::ParsingError(_) => {
+                // Parsing errors shown via render_error_bubble
             }
             BroadcastStatus::ValidContract(contract) => {
                 // Fee estimation display - contract updates charge registration fees for the new contract
@@ -366,7 +365,9 @@ impl ScreenLike for UpdateDataContractScreen {
             if message.contains("proof error logged, contract inserted into the database") {
                 self.broadcast_status = BroadcastStatus::Done;
             } else {
-                self.broadcast_status = BroadcastStatus::BroadcastError;
+                // Re-parse the contract so ValidContract state is restored
+                // and the user can retry broadcasting.
+                self.parse_contract();
             }
         }
     }

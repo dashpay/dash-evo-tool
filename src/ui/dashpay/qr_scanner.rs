@@ -49,6 +49,7 @@ impl QRScannerScreen {
 
     fn parse_qr_code(&mut self) {
         if self.qr_data_input.is_empty() {
+            self.parsed_qr_data = None;
             crate::ui::components::MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Please enter QR code data",

@@ -13,6 +13,7 @@ use eframe::egui::{self, Color32, Context, RichText, Ui};
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::contract::ContractTask;
 use crate::database::contracts::InsertTokensToo;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -370,8 +371,8 @@ impl ScreenLike for AddTokenByIdScreen {
             ui.add_space(10.0);
             self.render_search_results(ui);
 
-            if let AddTokenStatus::Error(_) = &self.status {
-                // Error display is handled by the global MessageBanner
+            if let AddTokenStatus::Error(msg) = &self.status {
+                MessageBanner::set_global(ui.ctx(), msg, MessageType::Error);
             }
 
             ui.add_space(10.0);

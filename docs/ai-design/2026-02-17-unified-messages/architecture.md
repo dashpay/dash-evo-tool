@@ -124,7 +124,7 @@ The `Component` trait implementation:
 
 Both global and per-instance paths call `render_banner()`:
 
-```
+```rust
 render_banner(ui, text, message_type, annotation: Option<&str>) -> bool (dismissed?)
 ```
 
@@ -132,7 +132,7 @@ The `annotation` parameter is generic — it receives either a countdown string 
 
 ### Visual Structure
 
-```
+```text
 +-----------------------------------------------------------------------+
 | [Icon]  Message text here                              [5s] [x]       |
 +-----------------------------------------------------------------------+
@@ -153,7 +153,7 @@ All colors are resolved via `DashColors` methods — zero hardcoded `Color32` va
 
 `AppState::update()` in `src/app.rs` sets global banners automatically for all task results:
 
-```
+```text
 TaskResult::Error(message)
   → MessageBanner::set_global(ctx, &message, MessageType::Error)
   → screen.display_message(&message, MessageType::Error)  // for side-effects

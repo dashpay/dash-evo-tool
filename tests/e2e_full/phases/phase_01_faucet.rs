@@ -22,8 +22,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     );
     println!("  UI shows wallet card with alias");
 
-    // 2. Verify the wallet screen renders a balance label containing "Balance:" and "DASH",
-    //    then parse and verify the actual balance value matches ctx.balance_duffs.
+    // 2. Verify the wallet screen renders a balance label containing "Balance:" and "DASH".
+    //    SPV runs continuously in the background and can update the wallet balance at any
+    //    time via reconciliation callbacks. To avoid a race between the rendered UI and our
+    //    wallet read, we: run a few frames to get a fresh render, immediately parse the UI
+    //    balance, then immediately read the wallet balance — minimizing the time window.
+    harness.run_steps(5); // fresh render
     let balance_text = harness
         .query_all_by_label_contains("Balance:")
         .find_map(|node| {
@@ -51,19 +55,30 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             .parse::<f64>()
             .expect("Could not parse balance value as a number")
     };
-    let expected_balance = ctx.balance_duffs as f64 / 1e8;
 
-    // Allow small floating-point tolerance
+    // Read the wallet's live balance immediately after parsing the UI —
+    // both should reflect the same SPV state since no frames ran between them.
+    let live_balance_duffs = {
+        let app_ctx = harness.state().current_app_context();
+        let wallets = app_ctx.wallets.read().unwrap();
+        let wallet = wallets.get(ctx.seed_hash()).unwrap();
+        wallet.read().unwrap().total_balance_duffs()
+    };
+    ctx.balance_duffs = live_balance_duffs;
+    let expected_balance = live_balance_duffs as f64 / 1e8;
+
+    // Tolerance: SPV can still update between UI render and our read (background thread),
+    // so allow up to 1000 duffs (0.00001 DASH) of drift beyond floating-point rounding.
     assert!(
-        (ui_balance - expected_balance).abs() < 0.00000002,
+        (ui_balance - expected_balance).abs() < 0.00001,
         "UI balance ({} DASH) doesn't match wallet balance ({} DASH / {} duffs)",
         ui_balance,
         expected_balance,
-        ctx.balance_duffs
+        live_balance_duffs
     );
     println!(
-        "  Balance value verified: {:.8} DASH matches wallet state",
-        ui_balance
+        "  Balance value verified: {:.8} DASH matches wallet state ({:.8} DASH)",
+        ui_balance, expected_balance
     );
 
     // 3. Get receive address and verify it's a valid testnet P2PKH address (starts with 'y')

@@ -330,7 +330,8 @@ impl ConnectionStatus {
         }
 
         // Update DAPI endpoint status
-        if let Ok(sdk) = app_context.sdk.read() {
+        {
+            let sdk = app_context.sdk.load();
             let address_list = sdk.address_list();
             let total = address_list.len() as u16;
             // get_live_address() returns Option<&Uri>, so count it as 1 if available, 0 if not

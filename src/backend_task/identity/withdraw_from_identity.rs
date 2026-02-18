@@ -21,10 +21,7 @@ impl AppContext {
         credits: Credits,
         id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let sdk_guard = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         // First, refresh the identity from Platform to get the latest revision and balance
         tracing::info!(
@@ -34,7 +31,7 @@ impl AppContext {
         );
 
         let refreshed_identity =
-            Identity::fetch_by_identifier(&sdk_guard, qualified_identity.identity.id())
+            Identity::fetch_by_identifier(&sdk, qualified_identity.identity.id())
                 .await
                 .map_err(|e| format!("Failed to fetch identity from Platform: {}", e))?
                 .ok_or_else(|| "Identity not found on Platform".to_string())?;
@@ -89,7 +86,7 @@ impl AppContext {
             .identity
             .clone()
             .withdraw(
-                &sdk_guard,
+                &sdk,
                 to_address,
                 credits,
                 Some(1),

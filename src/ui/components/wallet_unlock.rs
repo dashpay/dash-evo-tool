@@ -1,7 +1,7 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::styled::StyledCheckbox;
-use eframe::epaint::Color32;
+use crate::ui::theme::DashColors;
 use egui::{Frame, Margin, RichText, Ui};
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
@@ -78,10 +78,8 @@ pub trait ScreenWithWalletUnlock {
                         egui::TextEdit::singleline(wallet_password_mut)
                             .password(!local_show_password)
                             .hint_text("Enter password")
-                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                            .background_color(crate::ui::theme::DashColors::input_background(
-                                dark_mode,
-                            )),
+                            .text_color(DashColors::text_primary(dark_mode))
+                            .background_color(DashColors::input_background(dark_mode)),
                     );
 
                     if password_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
@@ -134,7 +132,7 @@ pub trait ScreenWithWalletUnlock {
                 // Display error message if the password was incorrect
                 if let Some(error_message) = self.error_message().cloned() {
                     ui.add_space(5.0);
-                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let error_color = DashColors::error_color(ui.ctx().style().visuals.dark_mode);
                     Frame::new()
                         .fill(error_color.gamma_multiply(0.1))
                         .inner_margin(Margin::symmetric(10, 8))

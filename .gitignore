@@ -6,6 +6,10 @@ build-test/
 
 # Build artifacts
 *.snap
+*.flatpak
+.flatpak-builder/
+flatpak-repo/
+build-dir/
 
 # Dot env file
 .env

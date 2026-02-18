@@ -5,6 +5,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
 use dash_sdk::platform::DataContract;
@@ -125,8 +126,8 @@ impl ContractVisualizerScreen {
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)
                 .desired_width(ui.available_width())
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .code_editor(),
         );
         if resp.changed() {
@@ -144,7 +145,7 @@ impl ContractVisualizerScreen {
                 ui.monospace(self.parsed_json.as_ref().unwrap());
             }
             ContractParseStatus::Error(msg) => {
-                let error_color = Color32::from_rgb(255, 100, 100);
+                let error_color = DashColors::ERROR;
                 let msg = msg.clone();
                 Frame::new()
                     .fill(error_color.gamma_multiply(0.1))

@@ -17,6 +17,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_t
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -715,18 +716,18 @@ impl UpdateTokenConfigScreen {
         ui.add_space(10.0);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()
-            .fill(crate::ui::theme::DashColors::surface(dark_mode))
+            .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))
             .corner_radius(5.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Estimated Fee:")
-                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.label(
                         RichText::new(format_credits_as_dash(estimated_fee))
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .color(DashColors::text_primary(dark_mode))
                             .strong(),
                     );
                 });
@@ -741,7 +742,7 @@ impl UpdateTokenConfigScreen {
         );
 
         let button = egui::Button::new(RichText::new(&button_text).color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::ACTION_BUTTON_BLUE)
             .frame(true)
             .corner_radius(3.0);
 
@@ -858,10 +859,8 @@ impl UpdateTokenConfigScreen {
                             [300.0, 22.0],
                             egui::TextEdit::singleline(id_str)
                                 .hint_text("Enter base58 identity")
-                                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                                .background_color(crate::ui::theme::DashColors::input_background(
-                                    dark_mode,
-                                )),
+                                .text_color(DashColors::text_primary(dark_mode))
+                                .background_color(DashColors::input_background(dark_mode)),
                         );
 
                         if !id_str.is_empty() {
@@ -1103,7 +1102,8 @@ impl ScreenLike for UpdateTokenConfigScreen {
                             ui.colored_label(Color32::DARK_GREEN, &msg);
                         }
                         MessageType::Error => {
-                            let error_color = Color32::from_rgb(255, 100, 100);
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let error_color = DashColors::error_color(dark_mode);
                             Frame::new()
                                 .fill(error_color.gamma_multiply(0.1))
                                 .inner_margin(Margin::symmetric(10, 8))

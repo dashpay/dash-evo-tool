@@ -250,7 +250,7 @@ impl ProofLogScreen {
                     0.0,
                     TextFormat {
                         font_id: font_id.clone(),
-                        color: Color32::from_rgb(0x9b, 0x87, 0x0c), // Highlight color
+                        color: DashColors::HIGHLIGHT_GOLD, // Highlight color
                         ..Default::default()
                     },
                 );

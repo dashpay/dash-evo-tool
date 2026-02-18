@@ -572,7 +572,7 @@ impl ScreenLike for ClaimTokensScreen {
                         ui.label(format!("Claiming... elapsed: {}s", elapsed));
                     }
                     ClaimTokensStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))

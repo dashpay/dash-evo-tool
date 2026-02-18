@@ -43,7 +43,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                 screen.qualified_identities = screen
                     .app_context
                     .load_local_user_identities()
-                    .unwrap_or_default();
+                    .expect("Failed to load local user identities from database");
 
                 // Hard assert: identity list must not be empty
                 assert!(

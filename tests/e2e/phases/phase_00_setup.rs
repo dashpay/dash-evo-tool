@@ -198,6 +198,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     let mut spv_synced = false;
     let mut balance_ready = false;
     let mut last_log = Instant::now();
+    let mut last_spv_status = SpvStatus::Idle;
 
     while start.elapsed() < timeout {
         harness.run_steps(60); // ~1s at 60fps
@@ -242,6 +243,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
             .unwrap_or(0);
 
         // Check SPV status
+        last_spv_status = status.status;
         match status.status {
             SpvStatus::Running => {
                 spv_synced = true;
@@ -337,7 +339,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         ctx.balance_duffs as f64 / 1e8,
         MIN_BALANCE_DUFFS,
         timeout_secs,
-        if spv_synced { "Running" } else { "Syncing" },
+        last_spv_status,
     );
 
     println!(

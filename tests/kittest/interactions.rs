@@ -349,7 +349,14 @@ fn test_left_panel_navigation_labels_visible() {
 
     // These labels appear in the left panel navigation.
     // We use query_all_by_label to allow multiple matches (e.g., label + screen content).
-    let nav_labels = ["Identities", "Contracts", "Tokens", "Tools", "Settings"];
+    let nav_labels = [
+        "Wallets",
+        "Identities",
+        "Contracts",
+        "Tokens",
+        "Tools",
+        "Settings",
+    ];
 
     for label in nav_labels {
         let mut nodes = harness.query_all_by_label(label);
@@ -374,8 +381,8 @@ fn test_wallets_screen_has_action_buttons() {
     let mut create_nodes = harness.query_all_by_label_contains("Create Wallet");
 
     assert!(
-        import_nodes.next().is_some() || create_nodes.next().is_some(),
-        "Wallets screen should show Import Wallet and/or Create Wallet buttons"
+        import_nodes.next().is_some() && create_nodes.next().is_some(),
+        "Wallets screen should show both Import Wallet and Create Wallet buttons"
     );
 }
 

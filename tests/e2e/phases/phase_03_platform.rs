@@ -56,11 +56,23 @@ fn run_dpns_lookup(harness: &mut Harness<'_, AppState>) {
             PLATFORM_READ_TIMEOUT,
             POLL_STEPS,
         );
-        assert!(
-            completed,
-            "DPNS lookup must complete within {}s (timed out)",
-            PLATFORM_READ_TIMEOUT.as_secs()
-        );
+        if !completed {
+            println!(
+                "  DPNS lookup timed out after {}s (attempt {}/{})",
+                PLATFORM_READ_TIMEOUT.as_secs(),
+                attempt,
+                PLATFORM_MAX_RETRIES
+            );
+            pop_screen(harness);
+            if attempt == PLATFORM_MAX_RETRIES {
+                panic!(
+                    "DPNS lookup timed out after {} attempts ({}s each)",
+                    PLATFORM_MAX_RETRIES,
+                    PLATFORM_READ_TIMEOUT.as_secs()
+                );
+            }
+            continue;
+        }
 
         let is_success = harness
             .query_by_label_contains("Successfully loaded")
@@ -123,11 +135,23 @@ fn run_contract_fetch(harness: &mut Harness<'_, AppState>) {
             CONTRACT_FETCH_TIMEOUT,
             POLL_STEPS,
         );
-        assert!(
-            completed,
-            "Contract fetch must complete within {}s (timed out)",
-            CONTRACT_FETCH_TIMEOUT.as_secs()
-        );
+        if !completed {
+            println!(
+                "  Contract fetch timed out after {}s (attempt {}/{})",
+                CONTRACT_FETCH_TIMEOUT.as_secs(),
+                attempt,
+                PLATFORM_MAX_RETRIES
+            );
+            pop_screen(harness);
+            if attempt == PLATFORM_MAX_RETRIES {
+                panic!(
+                    "Contract fetch timed out after {} attempts ({}s each)",
+                    PLATFORM_MAX_RETRIES,
+                    CONTRACT_FETCH_TIMEOUT.as_secs()
+                );
+            }
+            continue;
+        }
 
         if harness
             .query_by_label_contains("Successfully queried")

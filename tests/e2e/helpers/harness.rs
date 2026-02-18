@@ -68,6 +68,10 @@ impl ErrorCategory {
     }
 }
 
+/// Error classification patterns, checked in priority order (first match wins).
+/// Network patterns are checked before Validation/TransientPlatform so that
+/// ambiguous tokens like "invalid connection" classify as Network (retryable)
+/// rather than Validation (fatal). This biases toward retry for E2E resilience.
 const ERROR_PATTERNS: &[(ErrorCategory, &[&str])] = &[
     (
         ErrorCategory::Network,
@@ -281,7 +285,12 @@ pub fn type_into_text_input(harness: &mut Harness<'_, AppState>, nth: usize, tex
     harness
         .query_all_by_role(egui::accesskit::Role::TextInput)
         .nth(nth)
-        .unwrap()
+        .unwrap_or_else(|| {
+            panic!(
+                "TextInput #{} vanished between click and type in type_into_text_input",
+                nth
+            )
+        })
         .type_text(text);
     harness.run_steps(SETTLE_STEPS);
 }

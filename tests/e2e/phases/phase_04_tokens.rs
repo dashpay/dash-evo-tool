@@ -45,11 +45,22 @@ pub fn run(harness: &mut Harness<'_, AppState>, _ctx: &mut TestContext) {
             POLL_STEPS,
         );
 
-        assert!(
-            completed,
-            "Token search must complete within {}s (timed out)",
-            TOKEN_SEARCH_TIMEOUT.as_secs()
-        );
+        if !completed {
+            println!(
+                "  Token search timed out after {}s (attempt {}/{})",
+                TOKEN_SEARCH_TIMEOUT.as_secs(),
+                attempt,
+                PLATFORM_MAX_RETRIES
+            );
+            if attempt == PLATFORM_MAX_RETRIES {
+                panic!(
+                    "Token search timed out after {} attempts ({}s each)",
+                    PLATFORM_MAX_RETRIES,
+                    TOKEN_SEARCH_TIMEOUT.as_secs()
+                );
+            }
+            continue;
+        }
 
         let has_results = harness.query_by_label_contains("Contract ID").is_some();
         let no_results = harness.query_by_label_contains("No tokens match").is_some();

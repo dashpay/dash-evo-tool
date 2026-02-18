@@ -4,7 +4,7 @@ use dash_evo_tool::app::AppState;
 use dash_evo_tool::ui::RootScreenType;
 use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::time::Duration;
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
@@ -28,7 +28,6 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     //    wallet read, we: run a few frames to get a fresh render, immediately parse the UI
     //    balance, then immediately read the wallet balance — minimizing the time window.
     harness.run_steps(5); // fresh render
-    use egui_kittest::kittest::NodeT;
     let balance_label = harness
         .query_all_by_label_contains("Balance:")
         .find_map(|node| {

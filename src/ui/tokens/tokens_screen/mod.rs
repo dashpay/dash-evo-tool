@@ -254,7 +254,7 @@ impl ChangeControlRulesUI {
                 egui::Button::new(
                     RichText::new(button_text)
                         .size(20.0)
-                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                        .color(DashColors::DASH_BLUE),
                 )
                 .fill(Color32::TRANSPARENT)
                 .stroke(egui::Stroke::NONE),
@@ -334,8 +334,8 @@ impl ChangeControlRulesUI {
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
                                             .hint_text("Enter base58 id")
-                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                                            .text_color(DashColors::text_primary(dark_mode))
+                                            .background_color(DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
@@ -417,8 +417,8 @@ impl ChangeControlRulesUI {
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
                                             .hint_text("Enter base58 id")
-                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                                            .text_color(DashColors::text_primary(dark_mode))
+                                            .background_color(DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
@@ -503,7 +503,7 @@ impl ChangeControlRulesUI {
                 egui::Button::new(
                     RichText::new(button_text)
                         .size(20.0)
-                        .color(crate::ui::theme::DashColors::DASH_BLUE),
+                        .color(DashColors::DASH_BLUE),
                 )
                 .fill(Color32::TRANSPARENT)
                 .stroke(egui::Stroke::NONE),
@@ -583,8 +583,8 @@ impl ChangeControlRulesUI {
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
                                             .hint_text("Enter base58 id")
-                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                                            .text_color(DashColors::text_primary(dark_mode))
+                                            .background_color(DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {
@@ -666,8 +666,8 @@ impl ChangeControlRulesUI {
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
                                             .hint_text("Enter base58 id")
-                                            .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                                            .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                                            .text_color(DashColors::text_primary(dark_mode))
+                                            .background_color(DashColors::input_background(dark_mode)),
                                     );
 
                                     if !id_str.is_empty() {

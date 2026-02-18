@@ -380,16 +380,16 @@ impl AddNewWalletScreen {
                         RichText::new("Recommended Next Steps:")
                             .size(16.0)
                             .strong()
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(12.0);
 
                     // Step 1: Fund wallet
                     ui.horizontal(|ui| {
                         let step_color = if self.funds_received {
-                            crate::ui::theme::DashColors::success_color(dark_mode)
+                            DashColors::success_color(dark_mode)
                         } else {
-                            crate::ui::theme::DashColors::text_secondary(dark_mode)
+                            DashColors::text_secondary(dark_mode)
                         };
                         ui.label(
                             RichText::new("1.")
@@ -416,12 +416,12 @@ impl AddNewWalletScreen {
                             RichText::new("2.")
                                 .size(14.0)
                                 .strong()
-                                .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                                .color(DashColors::text_secondary(dark_mode)),
                         );
                         ui.label(
                             RichText::new("Create a Platform Identity to register a username and interact with apps")
                                 .size(14.0)
-                                .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                                .color(DashColors::text_secondary(dark_mode)),
                         );
                     });
                 },
@@ -473,11 +473,7 @@ impl AddNewWalletScreen {
             egui::Order::Background,
             egui::Id::new("receive_funds_overlay"),
         ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-        );
+        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
         // Generate QR code if needed
         let mut qr_error: Option<String> = None;
@@ -638,7 +634,7 @@ impl AddNewWalletScreen {
                         .color(Color32::WHITE),
                 )
                 .min_size(Vec2::new(100.0, 20.0))
-                .fill(Color32::from_rgb(0, 128, 255)) // Blue background
+                .fill(DashColors::ACTION_BUTTON_BLUE) // Blue background
                 .corner_radius(5.0);
 
                 if ui.add(generate_button).clicked() {
@@ -832,10 +828,10 @@ impl ScreenLike for AddNewWalletScreen {
                         // Since score ranges from 0 to 4, adjust percentage accordingly
                         let strength_percentage = (self.password_strength / 100.0).min(1.0);
                         let fill_color = match self.password_strength as i32 {
-                            0..=25 => Color32::from_rgb(255, 182, 193),    // Light pink
-                            26..=50 => Color32::from_rgb(255, 224, 130),   // Light yellow
-                            51..=75 => Color32::from_rgb(144, 238, 144),   // Light green
-                            _ => Color32::from_rgb(90, 200, 90),           // Medium green
+                            0..=25 => DashColors::STRENGTH_WEAK,
+                            26..=50 => DashColors::STRENGTH_FAIR,
+                            51..=75 => DashColors::STRENGTH_GOOD,
+                            _ => DashColors::STRENGTH_STRONG,
                         };
                         ui.add(
                             egui::ProgressBar::new(strength_percentage as f32)
@@ -872,7 +868,7 @@ impl ScreenLike for AddNewWalletScreen {
                     let save_button = egui::Button::new(
                         RichText::new("Save Wallet").color(Color32::WHITE),
                     )
-                        .fill(Color32::from_rgb(0, 128, 255))
+                        .fill(DashColors::ACTION_BUTTON_BLUE)
                         .frame(true)
                         .corner_radius(3.0);
 

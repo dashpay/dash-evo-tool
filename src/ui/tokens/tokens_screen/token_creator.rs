@@ -971,7 +971,7 @@ impl TokensScreen {
         // Show an error if we have one
         if let Some(err_msg) = self.token_creator_error_message.clone() {
             ui.add_space(10.0);
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))
@@ -1574,7 +1574,7 @@ impl TokensScreen {
                     ui.add(egui::Hyperlink::from_label_and_url(
                         RichText::new("dashpay.io")
                             .underline()
-                            .color(Color32::from_rgb(0, 128, 255)),
+                            .color(DashColors::ACTION_BUTTON_BLUE),
                         "https://dashpay.io",
                     ));
                 });
@@ -1585,8 +1585,8 @@ impl TokensScreen {
             let schemas_response = ui.add_sized(
                 [ui.available_width(), 120.0],
                 TextEdit::multiline(&mut self.document_schemas_input)
-                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                    .text_color(DashColors::text_primary(dark_mode))
+                    .background_color(DashColors::input_background(dark_mode)),
             );
 
             if schemas_response.changed() {

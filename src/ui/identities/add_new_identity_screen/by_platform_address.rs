@@ -6,6 +6,7 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
+use crate::ui::theme::DashColors;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use egui::{Color32, ComboBox, RichText, Ui};
 
@@ -213,18 +214,18 @@ impl AddNewIdentityScreen {
         // Display estimated fee before action button (reuse already calculated value)
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()
-            .fill(crate::ui::theme::DashColors::surface(dark_mode))
+            .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))
             .corner_radius(5.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Estimated Fee:")
-                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.label(
                         RichText::new(format_credits_as_dash(estimated_fee))
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .color(DashColors::text_primary(dark_mode))
                             .strong(),
                     );
                 });
@@ -241,9 +242,9 @@ impl AddNewIdentityScreen {
 
         let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
             .fill(if can_create {
-                Color32::from_rgb(0, 128, 255)
+                DashColors::DASH_BLUE
             } else {
-                Color32::from_rgb(100, 100, 100)
+                DashColors::BUTTON_DISABLED
             })
             .frame(true)
             .corner_radius(3.0);

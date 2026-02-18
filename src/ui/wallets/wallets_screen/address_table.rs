@@ -43,7 +43,7 @@ pub(super) struct AddressData {
 
 impl AddressData {
     /// Returns the address formatted for display.
-    /// Platform Payment addresses are shown in DIP-18 Bech32m format (e.g., tevo1...).
+    /// Platform Payment addresses are shown in DIP-18 Bech32m format (e.g., tdash1k...).
     fn display_address(&self, network: Network) -> String {
         if self.account_category == AccountCategory::PlatformPayment {
             use dash_sdk::dpp::address_funds::PlatformAddress;

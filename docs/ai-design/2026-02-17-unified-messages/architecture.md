@@ -744,3 +744,91 @@ Add an accessor method to the trait so `AppState` could call `screen.banner().se
 8 screens already use `DateTime<Utc>` for timed messages.
 
 **Rejected because:** `Instant` is monotonic (immune to system clock changes), simpler (no chrono dependency needed), and purpose-built for duration measurement. `DateTime<Utc>` is correct for display timestamps but wrong for timeout logic.
+
+---
+
+## 9. Implementation Notes
+
+This section documents how the implementation diverged from the original design and the patterns that emerged during development.
+
+### 9.1 Architecture Deviation: Global Banner Instead of Per-Screen
+
+The original design (Sections 2-7 above) specified **per-screen ownership** where each screen holds a `MessageBanner` instance. The implementation instead uses a **global banner** stored in egui context data and rendered centrally by `island_central_panel()`.
+
+**Why the change:** The user requested centralized error handling where backend task errors display automatically without requiring every screen to wire up `display_message()` overrides. With a global banner, `AppState::update()` sets the message once and it appears on whatever screen is currently visible. No per-screen rendering code is needed for basic error/success display.
+
+**Why the original concern was resolved:** Section 8, Alternative A rejected the global approach because "screens render inside panels with different layouts" and "a global banner can't know the correct placement." In practice, all 58 screens render through `island_central_panel()` (in `src/ui/components/styled.rs`), which provides a single consistent insertion point at the top of the content area, before screen content. This makes the placement concern moot.
+
+### 9.2 Global API
+
+The `MessageBanner` component (`src/ui/components/message_banner.rs`) exposes four static methods for global state management. State is stored in egui's temporary context data using `egui::Id::new("__global_message_banner")`.
+
+| Method | Signature | Purpose |
+|--------|-----------|---------|
+| `set_global` | `(ctx: &egui::Context, text: &str, message_type: MessageType)` | Sets or replaces the global banner message. Empty text clears. |
+| `clear_global` | `(ctx: &egui::Context)` | Removes the global banner state from context data. |
+| `show_global` | `(ui: &mut egui::Ui)` | Renders the banner, handles auto-dismiss and countdown. Called by `island_central_panel`. |
+| `has_global` | `(ctx: &egui::Context) -> bool` | Checks whether a global message exists (useful for tests). |
+
+The underlying `BannerState` struct is `#[derive(Clone)]` because egui context data requires `Clone`. It stores `text: String`, `message_type: MessageType`, and `created_at: Instant`.
+
+### 9.3 AppState Integration
+
+`AppState::update()` in `src/app.rs` sets the global banner automatically for all task results:
+
+```
+TaskResult::Error(message)
+  -> MessageBanner::set_global(ctx, &message, MessageType::Error)
+  -> screen.display_message(&message, MessageType::Error)  // for side-effects
+
+TaskResult::Success (default branch)
+  -> MessageBanner::set_global(ctx, "Success", MessageType::Success)
+  -> screen.display_task_result(result)
+
+TaskResult::Success (specific: UpdatedThemePreference)
+  -> MessageBanner::set_global(ctx, "Theme preference updated successfully", MessageType::Success)
+
+TaskResult::Success (specific: CastScheduledVote)
+  -> MessageBanner::set_global(ctx, "Successfully cast scheduled vote", MessageType::Success)
+```
+
+The call to `screen.display_message()` is retained alongside `set_global` so that screens can still perform side-effects (e.g., resetting step state on error) without being responsible for rendering.
+
+### 9.4 Screen Migration Pattern
+
+Migrated screens follow this pattern:
+
+1. **Remove error display fields** (`error_message: Option<String>`, `backend_message: Option<(String, MessageType, DateTime<Utc>)>`, etc.)
+2. **Remove rendering code** (the `Frame`/`colored_label` blocks in `ui()`)
+3. **Simplify `display_message()`** to only retain side-effect logic (e.g., resetting step state). The method no longer needs to store the error text since the global banner handles display.
+4. **Add `pending_banner_message` field** for messages that originate in `display_task_result()`, which does not receive the egui `Context`. These are flushed at the top of `ui()`:
+
+```rust
+// In display_task_result():
+self.pending_banner_message = Some(("Successfully refreshed identity".to_string(), MessageType::Success));
+
+// At the top of ui():
+if let Some((text, msg_type)) = self.pending_banner_message.take() {
+    MessageBanner::set_global(ctx, &text, msg_type);
+}
+```
+
+For validation errors set during `ui()`, screens call `MessageBanner::set_global(ctx, ...)` directly since they have the egui `Context`.
+
+### 9.5 Per-Instance API
+
+The `MessageBanner` struct with per-instance methods (`new()`, `set_message()`, `clear()`, `show()`, `has_message()`) still exists alongside the global API. It shares rendering logic with the global path via a private `render_banner()` function.
+
+This per-instance API is available for potential future use cases such as screen-local banners displayed alongside the global one (e.g., a screen that needs a secondary notification area). Currently no screens use the per-instance API; its methods carry `#[allow(dead_code)]`.
+
+### 9.6 Migration Status
+
+3 of ~50 screens have been migrated as a proof-of-concept, each demonstrating a different migration path:
+
+| Screen | Pattern | Migration Notes |
+|--------|---------|-----------------|
+| `TopUpIdentityScreen` | A (Framed Banner + Dismiss) | Removed `error_message` field and 20-line Frame rendering block. `display_message()` retains step-reset side-effect. |
+| `IdentitiesScreen` | B (Timed Badge with DateTime) | Removed `backend_message` field, `check_message_expiration()`, and `dismiss_message()` helpers. Uses `pending_banner_message` for messages from `display_task_result()`. |
+| `MintTokensScreen` | D (Bare colored_label + status enum) | Changed `MintTokensStatus::ErrorMessage(String)` to `MintTokensStatus::Error` (no payload). Uses `pending_banner_message` for validation errors set during construction and in `confirmation_ok()`. |
+
+The remaining ~47 screens continue to use their existing per-screen error rendering. Old and new patterns coexist without conflict because the global banner renders above screen content via `island_central_panel`.

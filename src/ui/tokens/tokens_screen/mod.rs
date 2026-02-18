@@ -3248,6 +3248,7 @@ mod tests {
             None,
             Default::default(),
             Default::default(),
+            egui::Context::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3560,6 +3561,7 @@ mod tests {
             None,
             Default::default(),
             Default::default(),
+            egui::Context::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3686,6 +3688,7 @@ mod tests {
             None,
             Default::default(),
             Default::default(),
+            egui::Context::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);

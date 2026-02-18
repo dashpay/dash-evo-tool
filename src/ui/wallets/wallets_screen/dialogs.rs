@@ -15,6 +15,7 @@ use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use eframe::egui::{self, ComboBox, Context};
 use eframe::epaint::TextureHandle;
+use egui::Color32;
 use egui::load::SizedTexture;
 use egui::{Frame, Margin, RichText, TextureOptions};
 use std::sync::{Arc, RwLock};

@@ -31,8 +31,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     let balance_label = harness
         .query_all_by_label_contains("Balance:")
         .find_map(|node| {
-            let label = node.accesskit_node().label()?;
-            if label.contains("DASH") { Some(label) } else { None }
+            let text = node_text(&node.accesskit_node())?;
+            if text.contains("DASH") { Some(text) } else { None }
         })
         .expect(
             "Wallet screen must render a 'Balance:' label containing 'DASH'. \

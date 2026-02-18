@@ -255,6 +255,19 @@ pub fn type_into_text_input(harness: &mut Harness<'_, AppState>, nth: usize, tex
     harness.run_steps(SETTLE_STEPS);
 }
 
+// ─── AccessKit text extraction ───────────────────────────────────────────────
+
+/// Extract the display text from an AccessKit node, matching kittest's own
+/// label-resolution logic: `Role::Label` nodes store text in `value()`,
+/// all other roles use `label()`.
+pub fn node_text(node: &egui_kittest::kittest::AccessKitNode<'_>) -> Option<String> {
+    if node.role() == egui::accesskit::Role::Label {
+        node.value()
+    } else {
+        node.label()
+    }
+}
+
 // ─── Error / dismiss helpers ─────────────────────────────────────────────────
 
 /// Dismiss an error/info dialog if the "Dismiss" button is present.
@@ -266,18 +279,17 @@ pub fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
 }
 
 /// Capture the text of a visible error label.
-/// Searches multiple common error patterns and extracts the label text
-/// via the stable AccessKit `label()` API.
+/// Searches multiple common error patterns and extracts the node text.
 /// Returns None if no error label is visible.
 pub fn capture_error_text(harness: &Harness<'_, AppState>) -> Option<String> {
     const PATTERNS: &[&str] = &["Error:", "Error registering", "Error "];
 
     for pattern in PATTERNS {
         if let Some(node) = harness.query_all_by_label_contains(pattern).next() {
-            if let Some(label) = node.accesskit_node().label() {
-                return Some(label);
+            if let Some(text) = node_text(&node.accesskit_node()) {
+                return Some(text);
             }
-            // Fallback: truncated Debug output if label() unavailable
+            // Fallback: truncated Debug output if text unavailable
             return Some(format!("{:?}", node).chars().take(200).collect());
         }
     }

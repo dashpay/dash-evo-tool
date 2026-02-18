@@ -28,7 +28,7 @@ All four types display a dismiss button (`x`). Success and Info also show a coun
 
 ### 3.1 Layout Structure
 
-```
+```text
 +-----------------------------------------------------------------------+
 | [Icon]  Message text here                              [5s] [x]       |
 +-----------------------------------------------------------------------+
@@ -78,7 +78,7 @@ Background uses low alpha (8% light, 12% dark) for subtle tinting. Border uses `
 
 Global banners render at the top of the content area inside `island_central_panel()`, before any screen content:
 
-```
+```text
 +--------------------------------------------------+
 | Top Panel (header / navigation)                   |
 +--------------------------------------------------+

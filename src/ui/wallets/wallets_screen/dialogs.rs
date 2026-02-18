@@ -17,7 +17,7 @@ use eframe::egui::{self, ComboBox, Context};
 use eframe::epaint::TextureHandle;
 use egui::Color32;
 use egui::load::SizedTexture;
-use egui::{Frame, Margin, RichText, TextureOptions};
+use egui::{Color32, Frame, Margin, RichText, TextureOptions};
 use std::sync::{Arc, RwLock};
 
 use super::WalletsBalancesScreen;

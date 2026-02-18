@@ -478,10 +478,7 @@ impl AppContext {
                     return Ok(());
                 }
 
-                let sdk = {
-                    let guard = self.sdk.read().map_err(|_| "SDK lock poisoned")?;
-                    guard.clone()
-                };
+                let sdk = self.sdk.load().as_ref().clone();
 
                 for txid in pending_txids {
                     match get_transaction_info(&sdk, &txid).await {

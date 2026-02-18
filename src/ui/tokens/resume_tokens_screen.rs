@@ -496,7 +496,7 @@ impl ScreenLike for ResumeTokensScreen {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))
+                            .fill(DashColors::ACTION_BUTTON_BLUE)
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() && self.confirmation_dialog.is_none() {
@@ -524,7 +524,7 @@ impl ScreenLike for ResumeTokensScreen {
                         ui.label(format!("Resuming... elapsed: {}s", elapsed));
                     }
                     ResumeTokensStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))

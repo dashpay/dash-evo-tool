@@ -24,6 +24,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -530,7 +531,7 @@ impl ScreenLike for TopUpIdentityScreen {
 
             // Display error message at the top, outside of scroll area
             if let Some(error_message) = self.error_message.clone() {
-                let message_color = egui::Color32::from_rgb(255, 100, 100);
+                let message_color = DashColors::ERROR;
 
                 ui.horizontal(|ui| {
                     egui::Frame::new()

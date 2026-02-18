@@ -34,7 +34,7 @@ impl AppContext {
                     .ok_or_else(|| "Wallet not found".to_string())?
             };
             let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
-            let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+            let sdk = self.sdk.load().as_ref().clone();
 
             // Get the private key for the asset lock address
             let private_key = wallet

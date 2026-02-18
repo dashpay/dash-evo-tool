@@ -15,6 +15,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
@@ -159,8 +160,8 @@ impl RegisterDataContractScreen {
             TextEdit::multiline(&mut self.contract_json_input)
                 .desired_rows(12)
                 .desired_width(ui.available_width())
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .code_editor(),
         );
         if response.changed() {
@@ -177,7 +178,8 @@ impl RegisterDataContractScreen {
         };
 
         if let Some(msg) = error_msg {
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let error_color = DashColors::error_color(dark_mode);
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))
@@ -223,18 +225,18 @@ impl RegisterDataContractScreen {
                 ui.add_space(10.0);
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 Frame::new()
-                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))
                     .corner_radius(5.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Estimated Fee:")
-                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                                    .color(DashColors::text_secondary(dark_mode)),
                             );
                             ui.label(
                                 RichText::new(format_credits_as_dash(estimated_fee))
-                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .color(DashColors::text_primary(dark_mode))
                                     .strong(),
                             );
                         });
@@ -247,7 +249,7 @@ impl RegisterDataContractScreen {
                 ui.set_style(new_style);
                 let button =
                     egui::Button::new(RichText::new("Register Contract").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0, 128, 255))
+                        .fill(DashColors::ACTION_BUTTON_BLUE)
                         .frame(true)
                         .corner_radius(3.0);
                 if ui.add(button).clicked() {
@@ -557,7 +559,7 @@ impl ScreenLike for RegisterDataContractScreen {
                     ui.add(egui::Hyperlink::from_label_and_url(
                         RichText::new("dashpay.io")
                             .underline()
-                            .color(Color32::from_rgb(0, 128, 255)),
+                            .color(DashColors::ACTION_BUTTON_BLUE),
                         "https://dashpay.io",
                     ));
                 });

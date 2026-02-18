@@ -428,7 +428,7 @@ impl TopUpIdentityScreen {
 impl ScreenLike for TopUpIdentityScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if message_type == MessageType::Error {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             // Reset step so UI is not stuck on waiting messages
             let mut step = self.step.write().unwrap();
             if *step == WalletFundedScreenStep::WaitingForPlatformAcceptance

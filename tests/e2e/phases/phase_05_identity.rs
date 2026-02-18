@@ -9,11 +9,12 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
+    // Run validation sub-tests first — these are pure client-side (no network
+    // calls) and should run regardless of SPV sync state.
+    run_validation_tests(harness);
+
     // SPV readiness gate — identity creation builds an asset lock transaction
     ensure_spv_tx_ready(harness, ctx);
-
-    // Run validation sub-tests (client-side only, no network calls)
-    run_validation_tests(harness);
 
     // ─── Actual identity creation disabled ──────────────────────────────
     // Identity creation requires an asset lock transaction to be confirmed
@@ -55,16 +56,19 @@ fn run_validation_tests(harness: &mut Harness<'_, AppState>) {
         // Deliberately skip ensure_correct_identity_keys()
     });
     harness.run_steps(POLL_STEPS);
-    // Skip the breadcrumb (nth 0) and click the action button (nth 1) if present
+    // Skip the breadcrumb (nth 0) and click the action button (nth 1).
+    // With funding_amount set, the action button should be rendered.
     let has_action_button = harness.query_all_by_label("Create Identity").count() >= 2;
-    if has_action_button {
-        harness
-            .query_all_by_label("Create Identity")
-            .nth(1)
-            .unwrap()
-            .click();
-        harness.run_steps(POLL_STEPS);
-    }
+    assert!(
+        has_action_button,
+        "Action button must be present when funding_amount is set (found only breadcrumb)"
+    );
+    harness
+        .query_all_by_label("Create Identity")
+        .nth(1)
+        .unwrap()
+        .click();
+    harness.run_steps(POLL_STEPS);
     assert_identity_step(harness, WalletFundedScreenStep::ReadyToCreate);
     println!("  Validation: no-key click correctly rejected (stayed on ReadyToCreate)");
     pop_screen(harness);

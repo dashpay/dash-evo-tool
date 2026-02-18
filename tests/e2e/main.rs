@@ -27,7 +27,7 @@ fn e2e_testnet_journey() {
         phases::phase_00_setup::run(&mut harness, &mut ctx);
 
         println!("\n=== Phase 1: Wallet UI + Balance Display ===");
-        phases::phase_01_faucet::run(&mut harness, &mut ctx);
+        phases::phase_01_wallet_ui::run(&mut harness, &mut ctx);
 
         println!("\n=== Phase 2: Wallet UI Operations ===");
         phases::phase_02_wallet::run(&mut harness, &mut ctx);

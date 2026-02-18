@@ -43,8 +43,9 @@ fn e2e_full_testnet_journey() {
         println!("\n=== Phase 5: Identity Validation ===");
         phases::phase_05_identity::run(&mut harness, &mut ctx);
 
-        // Phase 6 (DPNS) skipped — depends on identity from Phase 5
-        // which is disabled until SPV mempool support lands.
+        // Phase 6 (DPNS) skipped — Phase 5 runs validation tests but actual
+        // identity creation is disabled until SPV mempool support lands,
+        // so no identity_id is produced for DPNS registration.
         println!("\n=== Phase 6: DPNS Name Registration — SKIPPED ===");
 
         println!("\n=== Phase 7: Teardown ===");

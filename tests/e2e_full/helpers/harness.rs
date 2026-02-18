@@ -1,14 +1,14 @@
 use crate::helpers::context::TestContext;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::spv::SpvStatus;
-use dash_sdk::dash_spv::sync::ProgressPercentage;
 use dash_evo_tool::ui::{RootScreenType, ScreenLike, ScreenType};
+use dash_sdk::dash_spv::sync::ProgressPercentage;
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
 
 // ─── Centralized constants ───────────────────────────────────────────────────
 
-/// SPV sync: max wait for headers + balance. Configurable via E2E_SPV_TIMEOUT_SECS.
+/// Default SPV sync timeout (seconds); overridden by E2E_SPV_TIMEOUT_SECS env var in phase_00.
 pub const SPV_SYNC_TIMEOUT_SECS: u64 = 600;
 /// Minimum wallet balance (duffs) for SPV sync to be considered successful.
 pub const MIN_BALANCE_DUFFS: u64 = 100_000;
@@ -299,25 +299,21 @@ pub fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
 }
 
 /// Capture the text of a visible error label.
-/// Searches multiple common error patterns and extracts the label name
-/// from the AccessKit node debug output.
+/// Searches multiple common error patterns and extracts the label text
+/// via the stable AccessKit `label()` API.
 /// Returns None if no error label is visible.
 pub fn capture_error_text(harness: &Harness<'_, AppState>) -> Option<String> {
+    use egui_kittest::kittest::NodeT;
     use egui_kittest::kittest::Queryable;
     const PATTERNS: &[&str] = &["Error:", "Error registering", "Error "];
-    const NAME_PREFIX: &str = "name: \"";
 
     for pattern in PATTERNS {
         if let Some(node) = harness.query_all_by_label_contains(pattern).next() {
-            let debug = format!("{:?}", node);
-            // Extract the name field from the AccessKit Debug output
-            if let Some(name_start) = debug.find(NAME_PREFIX) {
-                let value_start = name_start + NAME_PREFIX.len();
-                if let Some(end) = debug[value_start..].find('"') {
-                    return Some(debug[value_start..value_start + end].to_string());
-                }
+            if let Some(label) = node.accesskit_node().label() {
+                return Some(label);
             }
-            return Some(debug.chars().take(200).collect());
+            // Fallback: truncated Debug output if label() unavailable
+            return Some(format!("{:?}", node).chars().take(200).collect());
         }
     }
     None

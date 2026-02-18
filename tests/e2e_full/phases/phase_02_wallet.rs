@@ -35,7 +35,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // TODO: Re-enable when SPV mempool support lands.
     println!("  Send-to-self: SKIPPED (needs SPV mempool support)");
 
-    // Navigate back to wallets screen for next phase
+    // Defensive reset: ensure clean screen state for next phase
     navigate_to_screen(harness, RootScreenType::RootScreenWalletsBalances);
     println!("  Phase 02 complete: wallet UI buttons verified");
 }

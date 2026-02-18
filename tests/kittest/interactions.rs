@@ -139,20 +139,21 @@ fn test_welcome_screen_just_explore_click() {
     enable_welcome_screen(&mut harness);
     harness.run_steps(10);
 
-    if let Some(explore_label) = harness.query_by_label_contains("Explore without setting up") {
-        explore_label.click();
-        harness.run_steps(5);
+    let explore_label = harness
+        .query_by_label_contains("Explore without setting up")
+        .expect("'Explore without setting up' label must be visible on welcome screen");
+    explore_label.click();
+    harness.run_steps(5);
 
-        assert!(
-            !harness.state().show_welcome_screen,
-            "Welcome screen should be dismissed after clicking Just Explore"
-        );
-        assert_eq!(
-            harness.state().selected_main_screen,
-            RootScreenType::RootScreenDashPayProfile,
-            "Should navigate to DashPay profile after Just Explore"
-        );
-    }
+    assert!(
+        !harness.state().show_welcome_screen,
+        "Welcome screen should be dismissed after clicking Just Explore"
+    );
+    assert_eq!(
+        harness.state().selected_main_screen,
+        RootScreenType::RootScreenDashPayProfile,
+        "Should navigate to DashPay profile after Just Explore"
+    );
 }
 
 /// Test that clicking "Create Wallet" navigates to wallets with add screen
@@ -168,24 +169,25 @@ fn test_welcome_screen_create_wallet_click() {
     enable_welcome_screen(&mut harness);
     harness.run_steps(10);
 
-    if let Some(label) = harness.query_by_label_contains("Start fresh with a new HD wallet") {
-        label.click();
-        harness.run_steps(5);
+    let label = harness
+        .query_by_label_contains("Start fresh with a new HD wallet")
+        .expect("'Start fresh with a new HD wallet' label must be visible on welcome screen");
+    label.click();
+    harness.run_steps(5);
 
-        assert!(
-            !harness.state().show_welcome_screen,
-            "Welcome screen should be dismissed after clicking Create Wallet"
-        );
-        assert_eq!(
-            harness.state().selected_main_screen,
-            RootScreenType::RootScreenWalletsBalances,
-            "Should navigate to Wallets screen after Create Wallet"
-        );
-        assert!(
-            !harness.state().screen_stack.is_empty(),
-            "Screen stack should have the AddNewWallet screen pushed"
-        );
-    }
+    assert!(
+        !harness.state().show_welcome_screen,
+        "Welcome screen should be dismissed after clicking Create Wallet"
+    );
+    assert_eq!(
+        harness.state().selected_main_screen,
+        RootScreenType::RootScreenWalletsBalances,
+        "Should navigate to Wallets screen after Create Wallet"
+    );
+    assert!(
+        !harness.state().screen_stack.is_empty(),
+        "Screen stack should have the AddNewWallet screen pushed"
+    );
 }
 
 /// Test that clicking "Import Wallet" navigates to wallets with import screen
@@ -201,24 +203,25 @@ fn test_welcome_screen_import_wallet_click() {
     enable_welcome_screen(&mut harness);
     harness.run_steps(10);
 
-    if let Some(label) = harness.query_by_label_contains("Load a wallet you already have") {
-        label.click();
-        harness.run_steps(5);
+    let label = harness
+        .query_by_label_contains("Load a wallet you already have")
+        .expect("'Load a wallet you already have' label must be visible on welcome screen");
+    label.click();
+    harness.run_steps(5);
 
-        assert!(
-            !harness.state().show_welcome_screen,
-            "Welcome screen should be dismissed after clicking Import Wallet"
-        );
-        assert_eq!(
-            harness.state().selected_main_screen,
-            RootScreenType::RootScreenWalletsBalances,
-            "Should navigate to Wallets screen after Import Wallet"
-        );
-        assert!(
-            !harness.state().screen_stack.is_empty(),
-            "Screen stack should have the ImportMnemonic screen pushed"
-        );
-    }
+    assert!(
+        !harness.state().show_welcome_screen,
+        "Welcome screen should be dismissed after clicking Import Wallet"
+    );
+    assert_eq!(
+        harness.state().selected_main_screen,
+        RootScreenType::RootScreenWalletsBalances,
+        "Should navigate to Wallets screen after Import Wallet"
+    );
+    assert!(
+        !harness.state().screen_stack.is_empty(),
+        "Screen stack should have the ImportMnemonic screen pushed"
+    );
 }
 
 // =============================================================================

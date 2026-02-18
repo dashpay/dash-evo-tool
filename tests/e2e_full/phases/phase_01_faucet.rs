@@ -28,11 +28,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     //    wallet read, we: run a few frames to get a fresh render, immediately parse the UI
     //    balance, then immediately read the wallet balance — minimizing the time window.
     harness.run_steps(5); // fresh render
-    let balance_text = harness
+    use egui_kittest::kittest::NodeT;
+    let balance_label = harness
         .query_all_by_label_contains("Balance:")
         .find_map(|node| {
-            let s = format!("{:?}", node);
-            if s.contains("DASH") { Some(s) } else { None }
+            let label = node.accesskit_node().label()?;
+            if label.contains("DASH") { Some(label) } else { None }
         })
         .expect(
             "Wallet screen must render a 'Balance:' label containing 'DASH'. \
@@ -43,10 +44,10 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // The label format is: " Balance: X.XXXXXXXX DASH"
     // We extract the substring between "Balance:" and "DASH".
     let ui_balance: f64 = {
-        let start = balance_text
+        let start = balance_label
             .find("Balance:")
             .expect("Balance: prefix not found in label");
-        let after_prefix = &balance_text[start + "Balance:".len()..];
+        let after_prefix = &balance_label[start + "Balance:".len()..];
         let end = after_prefix
             .find("DASH")
             .expect("DASH suffix not found in label");
@@ -61,7 +62,9 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     let live_balance_duffs = {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
-        let wallet = wallets.get(ctx.seed_hash()).unwrap();
+        let wallet = wallets
+            .get(ctx.seed_hash())
+            .expect("wallet not found by seed hash (phase 01 - did phase 00 import succeed?)");
         wallet.read().unwrap().total_balance_duffs()
     };
     ctx.balance_duffs = live_balance_duffs;
@@ -85,7 +88,9 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     {
         let app_ctx = harness.state().current_app_context();
         let wallets = app_ctx.wallets.read().unwrap();
-        let wallet = wallets.get(ctx.seed_hash()).unwrap();
+        let wallet = wallets
+            .get(ctx.seed_hash())
+            .expect("wallet not found by seed hash (phase 01 - receive address)");
         let addr = wallet
             .write()
             .unwrap()

@@ -10,19 +10,22 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
     harness.state().current_app_context().spv_manager.stop();
     println!("  SPV sync stopped");
 
-    // ─── 2. Wait for SPV to finish stopping ────────────────────────────
+    // ─── 2. Wait for SPV to reach a terminal state (Stopped/Idle/Error) ─
     let spv_stopped = wait_until(
         harness,
         |h| {
             let app_ctx = h.state().current_app_context();
-            app_ctx.spv_manager.status().status != SpvStatus::Running
+            matches!(
+                app_ctx.spv_manager.status().status,
+                SpvStatus::Stopped | SpvStatus::Idle | SpvStatus::Error
+            )
         },
         SPV_STOP_TIMEOUT,
         60,
     );
     assert!(
         spv_stopped,
-        "SPV should not be running after stop (still Running after {}s)",
+        "SPV must reach a terminal state after stop (still active after {}s)",
         SPV_STOP_TIMEOUT.as_secs()
     );
     let final_status = harness.state().current_app_context().spv_manager.status();

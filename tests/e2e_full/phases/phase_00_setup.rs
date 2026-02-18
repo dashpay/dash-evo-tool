@@ -76,8 +76,9 @@ fn import_wallet_via_ui(
         );
         let current_keys: BTreeSet<WalletSeedHash> = wallets.keys().copied().collect();
         let new_keys: Vec<_> = current_keys.difference(&initial_wallet_keys).collect();
-        assert!(
-            new_keys.len() == 1,
+        assert_eq!(
+            new_keys.len(),
+            1,
             "Expected exactly 1 new wallet after import, found {}",
             new_keys.len()
         );
@@ -261,6 +262,11 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                     app_ctx
                         .start_spv()
                         .unwrap_or_else(|e| panic!("SPV restart failed: {}", e));
+                } else {
+                    panic!(
+                        "SPV sync failed after {} retries. Last error: {}",
+                        PLATFORM_MAX_RETRIES, err_msg
+                    );
                 }
             }
             _ => {}

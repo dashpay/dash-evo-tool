@@ -97,9 +97,15 @@ impl ImportMnemonicScreen {
     pub fn set_seed_phrase_words(&mut self, words: &[&str]) {
         self.selected_seed_phrase_length = words.len();
         self.seed_phrase_words = words.iter().map(|w| w.to_string()).collect();
-        if let Ok(mnemonic) = Mnemonic::parse_normalized(words.join(" ").as_str()) {
-            self.seed_phrase = Some(mnemonic);
-            self.error = None;
+        match Mnemonic::parse_normalized(words.join(" ").as_str()) {
+            Ok(mnemonic) => {
+                self.seed_phrase = Some(mnemonic);
+                self.error = None;
+            }
+            Err(e) => {
+                self.seed_phrase = None;
+                self.error = Some(e.to_string());
+            }
         }
     }
 

@@ -3,7 +3,8 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
-use egui::{Color32, RichText, Ui};
+use crate::ui::theme::DashColors;
+use egui::{RichText, Ui};
 
 impl AddNewIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
@@ -48,10 +49,7 @@ impl AddNewIdentityScreen {
 
                             // Display asset lock information with "Selected" if this one is selected
                             if Some(index) == selected_index {
-                                ui.colored_label(
-                                    Color32::from_rgb(0, 130, 90),
-                                    "Selected asset lock",
-                                );
+                                ui.colored_label(DashColors::SUCCESS, "Selected asset lock");
                             }
 
                             ui.label(format!("TxID: {}", tx_id));
@@ -111,18 +109,18 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         egui::Frame::new()
-            .fill(crate::ui::theme::DashColors::surface(dark_mode))
+            .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))
             .corner_radius(5.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Estimated Fee:")
-                            .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                            .color(DashColors::text_secondary(dark_mode)),
                     );
                     ui.label(
                         RichText::new(format_credits_as_dash(estimated_fee))
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                            .color(DashColors::text_primary(dark_mode))
                             .strong(),
                     );
                 });

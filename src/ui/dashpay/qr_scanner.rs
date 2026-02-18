@@ -15,6 +15,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -125,9 +126,9 @@ impl QRScannerScreen {
         // Show message if any
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
-                MessageType::Success => crate::ui::theme::DashColors::success_color(dark_mode),
-                MessageType::Error => crate::ui::theme::DashColors::error_color(dark_mode),
-                MessageType::Info => crate::ui::theme::DashColors::DASH_BLUE,
+                MessageType::Success => DashColors::success_color(dark_mode),
+                MessageType::Error => DashColors::error_color(dark_mode),
+                MessageType::Info => DashColors::DASH_BLUE,
             };
             ui.colored_label(color, message);
             ui.add_space(10.0);

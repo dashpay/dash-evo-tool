@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
@@ -253,7 +254,7 @@ impl AddContractsScreen {
             ui.add_space(20.0);
             let button =
                 egui::Button::new(RichText::new("Back to Contracts").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .frame(true)
                     .corner_radius(3.0);
             if ui.add(button).clicked() {
@@ -330,7 +331,7 @@ impl ScreenLike for AddContractsScreen {
             match &self.add_contracts_status {
                 AddContractsStatus::NotStarted | AddContractsStatus::ErrorMessage(_) => {
                     if let AddContractsStatus::ErrorMessage(msg) = &self.add_contracts_status {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))
@@ -358,7 +359,7 @@ impl ScreenLike for AddContractsScreen {
                     // Add Contracts Button
                     let button =
                         egui::Button::new(RichText::new("Add Contracts").color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))
+                            .fill(DashColors::ACTION_BUTTON_BLUE)
                             .frame(true)
                             .corner_radius(3.0);
                     if ui.add(button).clicked() {

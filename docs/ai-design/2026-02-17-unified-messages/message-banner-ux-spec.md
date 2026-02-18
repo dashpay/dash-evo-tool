@@ -2,20 +2,25 @@
 
 ## 1. Overview
 
-The `MessageBanner` is a self-contained egui component that replaces all ad-hoc `error_message: Option<String>` fields across screens. Each screen owns one `MessageBanner` instance (not global). It displays a single message at a time with consistent styling based on severity.
+The `MessageBanner` renders user-facing messages with consistent styling based on severity. It operates in two modes:
+
+- **Global mode**: Multiple banners stored in egui context data, rendered centrally by `island_central_panel()` before screen content. This is the primary mode — `AppState::update()` sets banners automatically for all backend task results.
+- **Per-instance mode**: A screen owns a `MessageBanner` struct for screen-local messages. Shares rendering logic with global mode.
+
+Multiple messages can be displayed simultaneously (capped at 5). Each banner is independently dismissible and independently timed.
 
 ---
 
 ## 2. Severity Levels
 
-| Severity | Persistence        | Dismiss            | Use Case                                      |
-|----------|---------------------|--------------------|-----------------------------------------------|
-| Error    | Persistent          | Manual only        | Task failures, validation errors               |
-| Warning  | Persistent          | Manual only        | Risky actions, degraded state                  |
-| Success  | Auto-dismiss ~5s    | Manual or auto     | Completed operations                           |
-| Info     | Auto-dismiss ~5s    | Manual or auto     | Informational feedback, neutral status updates |
+| Severity | Default Persistence | Dismiss | Use Case |
+|----------|-------------------|---------|----------|
+| Error | Persistent | Manual only | Task failures, validation errors |
+| Warning | Persistent | Manual only | Risky actions, degraded state |
+| Success | Auto-dismiss 5s | Manual or auto | Completed operations |
+| Info | Auto-dismiss 5s | Manual or auto | Informational feedback, status updates |
 
-All four types display a dismiss button. Success and Info also count down and auto-clear.
+All four types display a dismiss button (`x`). Success and Info also show a countdown label. Any banner can be switched to elapsed-time mode via `handle.with_elapsed()`, which disables auto-dismiss and shows time since creation.
 
 ---
 
@@ -25,106 +30,67 @@ All four types display a dismiss button. Success and Info also count down and au
 
 ```
 +-----------------------------------------------------------------------+
-| [Icon]  Message text here                              [5s] [Dismiss] |
+| [Icon]  Message text here                              [5s] [x]       |
 +-----------------------------------------------------------------------+
 ```
 
-The banner is a single horizontal row inside an `egui::Frame` with:
-- **Corner radius**: 6px (`Shape::RADIUS_SM`)
-- **Inner margin**: 10px horizontal, 8px vertical (matching existing pattern in `top_up_identity_screen`)
-- **Outer spacing**: 10px below the banner (`ui.add_space(10.0)`)
-- **Full available width**: The frame should expand to `ui.available_width()`
+The banner is a horizontal row inside an `egui::Frame` with:
+- **Corner radius**: `Shape::RADIUS_SM` (6px)
+- **Inner margin**: 10px horizontal, 8px vertical
+- **Outer spacing**: `Spacing::SM` below each banner
+- **Full available width**: Frame expands to `ui.available_width()`
 
 ### 3.2 Content Arrangement (left to right)
 
-1. **Icon character** (Unicode text, not image): Provides at-a-glance severity recognition.
-   - Error: `!` (exclamation in circle, or literal `!` if unicode unavailable)
-   - Warning: `!` (triangle-style -- visually distinct from error via color)
-   - Success: Checkmark character
-   - Info: `i` (info style)
-   - Font size: `Typography::SCALE_BASE` (16px), bold
-   - Color: Same as the text color for that severity
+1. **Icon** (Unicode): `⚠` (Error/Warning), `✓` (Success), `ℹ` (Info)
+   - Color: Same as text color for severity
+   - Style: `RichText::strong()`
 
 2. **4px gap** (`Spacing::XS`)
 
-3. **Message text**: Left-aligned, wrapping permitted for long messages.
-   - Font: `Typography::body()` (16px proportional)
-   - Color: Severity-specific foreground color (see Section 3.3)
+3. **Message text**: Left-aligned. Long text may be clipped within the horizontal layout.
+   - Font: Default egui label font (matches app-wide body text size)
+   - Color: Severity-specific foreground
 
-4. **Flexible space** (push remaining elements to the right)
+4. **Flexible space** (right-to-left layout for remaining elements)
 
-5. **Countdown label** (Success and Info only): Shows remaining seconds, e.g., `(3s)`.
+5. **Annotation** (optional): Shows remaining seconds `(3s)` or elapsed seconds `(5s)`
    - Font: `Typography::body_small()` (14px)
-   - Color: Same as message text, at reduced opacity or using `text_secondary`
+   - Color: `DashColors::text_secondary(dark_mode)`
 
-6. **Dismiss button**: Small text button labeled with an `x` character.
-   - Uses `ui.small_button("x")`
-   - Clicking sets the banner state to None
+6. **Dismiss button**: `ui.small_button("x")`
 
 ### 3.3 Color Palette
 
-All colors are resolved through `DashColors` methods — the banner contains zero hardcoded color values. The banner uses a **tinted background + colored border + colored text** approach.
+All colors resolved through `DashColors` — zero hardcoded values.
 
-#### Color Resolution via DashColors
+| Purpose | Method |
+|---------|--------|
+| Text & border | `DashColors::message_color(type, dark_mode)` |
+| Background tint | `DashColors::message_background_color(type, dark_mode)` |
+| Annotation text | `DashColors::text_secondary(dark_mode)` |
 
-| Purpose | DashColors Method | Description |
-|---|---|---|
-| Text & border | `DashColors::message_color(type, dark_mode)` | Delegates to `error_color()` / `success_color()` / `warning_color()` / `info_color()` |
-| Background tint | `DashColors::message_background_color(type, dark_mode)` | Severity color at 8% alpha (light) or 12% alpha (dark) |
-| Countdown text | `DashColors::text_secondary(dark_mode)` | Standard secondary text color |
-
-#### Resolved Values (for visual reference)
-
-**Light Mode:**
-
-| Severity | Background | Text & Border |
-|----------|-----------|---------------|
-| Error    | `ERROR` at 8% alpha | `DashColors::error_color(false)` → `DARK_RED` |
-| Warning  | `WARNING` at 8% alpha | `DashColors::warning_color(false)` → dark amber |
-| Success  | `SUCCESS` at 8% alpha | `DashColors::success_color(false)` → `DARK_GREEN` |
-| Info     | `INFO` at 8% alpha | `DashColors::info_color(false)` → `DEEP_BLUE` |
-
-**Dark Mode:**
-
-| Severity | Background | Text & Border |
-|----------|-----------|---------------|
-| Error    | lighter red at 12% alpha | `DashColors::error_color(true)` → `rgb(255, 100, 100)` |
-| Warning  | lighter amber at 12% alpha | `DashColors::warning_color(true)` → `rgb(255, 200, 100)` |
-| Success  | muted green at 12% alpha | `DashColors::success_color(true)` → `rgb(80, 160, 80)` |
-| Info     | light blue at 12% alpha | `DashColors::info_color(true)` → `rgb(100, 180, 255)` |
-
-Dark mode uses higher alpha backgrounds (12% vs 8%) to maintain visibility against dark surfaces.
-
-#### Border Stroke
-- Width: `Shape::BORDER_WIDTH` (1px)
-- Color: `DashColors::message_color(type, dark_mode)` — same as text color
-
-### 3.4 Typography
-
-- Icon: `Typography::SCALE_BASE` (16px), bold (`RichText::strong()`)
-- Message body: `Typography::body()` (16px), normal weight
-- Countdown: `Typography::body_small()` (14px), normal weight, secondary text color
-- Dismiss button: egui default `small_button` styling
+Background uses low alpha (8% light, 12% dark) for subtle tinting. Border uses `Shape::BORDER_WIDTH` (1px) in the foreground color.
 
 ---
 
 ## 4. Placement
 
-The banner renders at the **top of the screen's content area**, before the `ScrollArea`. This matches the existing convention in `top_up_identity_screen/mod.rs:531-552` and `add_new_identity_screen/mod.rs:1071-1092`.
+Global banners render at the top of the content area inside `island_central_panel()`, before any screen content:
 
 ```
 +--------------------------------------------------+
 | Top Panel (header / navigation)                   |
 +--------------------------------------------------+
-| Left Panel |  [ MessageBanner ]                   |  <-- here
-|            |  +----- ScrollArea -----+            |
-|            |  | Screen content       |            |
-|            |  | ...                  |            |
-|            |  +----------------------+            |
+| Left Panel |  [ Banner 1 ]                        |
+|            |  [ Banner 2 ]                        |
+|            |  +----- Screen Content -----+        |
+|            |  | ...                      |        |
+|            |  +--------------------------+        |
 +--------------------------------------------------+
 ```
 
-The banner must be rendered **outside** the `ScrollArea` so it remains visible regardless of scroll position. This is consistent with current best practice in the codebase.
+Banners remain visible regardless of scroll position because they render outside `ScrollArea`.
 
 ---
 
@@ -132,140 +98,66 @@ The banner must be rendered **outside** the `ScrollArea` so it remains visible r
 
 ### 5.1 Showing a Message
 
-Calling `banner.set_message("text", MessageType::Error)` replaces any currently displayed message. There is no queue. The new message immediately takes effect.
-
-For auto-dismissing types (Success, Info), the component records the timestamp when the message was set (using `Instant::now()` or egui frame time).
+`MessageBanner::set_global(ctx, text, type)` adds a banner. If a banner with the same text already exists, the call is deduplicated (returns a handle to the existing banner).
 
 ### 5.2 Auto-Dismiss (Success, Info)
 
-- Duration: 5 seconds
-- The countdown label shows remaining whole seconds: `(5s)`, `(4s)`, ..., `(1s)`
-- When the timer expires, the message clears automatically on the next frame
-- The screen must call `banner.show(ui)` each frame (standard egui immediate mode)
-- The component internally checks elapsed time and clears itself
+- Default duration: 5 seconds
+- Countdown label: `(5s)`, `(4s)`, ..., `(1s)`
+- Banner clears automatically when timer expires
+- Component requests repaint every 1s for countdown updates
 
-### 5.3 Manual Dismiss
+### 5.3 Elapsed-Time Mode
 
-- All severity types display a dismiss button
-- Clicking the dismiss button immediately clears the message
-- No confirmation needed
+Calling `handle.with_elapsed()` switches a banner to elapsed-time display:
+- Shows `(0s)`, `(1s)`, `(2s)`, ... counting up
+- Auto-dismiss is disabled (banner persists until manually cleared)
+- Used for long-running operations (e.g., identity refresh)
 
-### 5.4 Message Replacement
+### 5.4 Manual Dismiss
 
-- Setting a new message while one is showing replaces it immediately
-- If the old message was Error (persistent) and the new one is Success (auto-dismiss), the Success behavior applies
-- Timer resets on replacement
+- All severity types display a dismiss (`x`) button
+- Clicking clears that specific banner immediately
+- Other banners are unaffected
 
-### 5.5 Screen Navigation
+### 5.5 Message Replacement
 
-- When the user navigates away from a screen and returns, persistent messages (Error, Warning) should still be visible if the screen struct was retained (root screens in `main_screens` BTreeMap)
-- Auto-dismiss messages that expired while the screen was not visible should be gone on return
-- Modal/detail screens pushed onto `screen_stack` are destroyed when popped, so their messages naturally disappear
+`MessageBanner::replace_global(ctx, old_text, new_text, type)` finds a banner by old text and replaces it. If old text is not found, the new text is added as a new banner. If new text is empty, the old banner is removed.
 
----
+### 5.6 BannerHandle Lifecycle
 
-## 6. Component API (Behavioral Spec)
-
-This describes the public interface the component should expose. Not a full Rust implementation, but a behavioral contract for the architect and implementer.
-
-```
-MessageBanner
-  State:
-    - message: Option<(String, MessageType, Instant)>
-
-  Methods:
-    - new() -> Self                                     // empty, no message
-    - set_message(text: &str, msg_type: MessageType)    // set/replace message
-    - clear()                                           // manually clear
-    - show(ui: &mut Ui)                                 // render; auto-dismiss check happens here
-
-  MessageType (unified, replaces both existing enums):
-    - Error
-    - Warning
-    - Success
-    - Info
-```
-
-The component does NOT implement the `Component` trait from `component_trait.rs` because it has no domain data to bind via `update()`. It is a simpler display-only widget. Screens call `show(ui)` and `set_message(...)` directly.
+Handles returned by `set_global`/`replace_global` can outlive their banners. All handle methods return `Option` — `None` means the banner has been dismissed, expired, or cleared.
 
 ---
 
-## 7. Integration Points
-
-### 7.1 ScreenLike Trait
-
-The existing `display_message(&mut self, message: &str, message_type: MessageType)` method on `ScreenLike` is the integration point. Screens that adopt `MessageBanner` implement it as:
-
-```
-fn display_message(&mut self, message: &str, message_type: MessageType) {
-    self.banner.set_message(message, message_type);
-}
-```
-
-### 7.2 Replacing Existing Fields
-
-Each screen replaces its ad-hoc fields:
-- `error_message: Option<String>` -> removed
-- `info_message: Option<String>` -> removed
-- `message: Option<(String, MessageType)>` -> removed
-- `backend_message: Option<(String, MessageType, DateTime<Utc>)>` -> removed
-
-All replaced by a single:
-- `banner: MessageBanner`
-
-### 7.3 Sync Error Display (Validation)
-
-For validation errors set during `ui()`:
-
-```
-if some_validation_fails {
-    self.banner.set_message("Invalid input: ...", MessageType::Error);
-}
-```
-
----
-
-## 8. Edge Cases
+## 6. Edge Cases
 
 | Scenario | Behavior |
 |----------|----------|
-| Very long message (300+ chars) | Text wraps within the frame. Frame grows vertically. No truncation. |
-| Empty string message | Treated as no message; banner not shown. |
-| Rapid message replacement | Each call to `set_message` replaces immediately. No debounce. |
-| Multiple error fields on one screen | All consolidated into a single banner. If multiple errors need display, concatenate them with newlines before calling `set_message`. |
-| Screen with multiple independent sections | Each section could own its own `MessageBanner` if needed, but the default is one per screen. |
-| Theme change while message is showing | Colors re-evaluate each frame via `ui.ctx().style().visuals.dark_mode`. No stale colors. |
+| Very long message (300+ chars) | Text may be clipped within the horizontal layout. No explicit truncation or wrapping. |
+| Empty string message | `set_global("")` is a no-op. Per-instance `set_message("")` clears. |
+| Duplicate text | `set_global` returns handle to existing banner (idempotent). |
+| More than 5 messages | Oldest message is evicted. |
+| Rapid message replacement | Each call replaces/adds immediately. No debounce. |
+| Theme change while showing | Colors re-evaluated each frame via `DashColors`. No stale colors. |
+| Handle used after banner cleared | All methods return `None`. No panic. |
+| Banner expired while screen not visible | Expired on next `show_global()` call when screen becomes visible. |
 
 ---
 
-## 9. Accessibility
+## 7. Accessibility
 
-- **Color contrast**: All text/background combinations meet WCAG 2.1 AA contrast ratio (4.5:1 minimum). The colored text on tinted backgrounds achieves this because the backgrounds are near-transparent (8-12% alpha) over the page background.
-- **Not color-only**: The icon character provides a non-color severity indicator (distinct shapes for error vs warning vs success vs info).
-- **Text is selectable**: egui labels allow text selection by default.
-- **Keyboard**: The dismiss button is focusable and activatable via keyboard in egui's default tab-order. No special focus management needed.
-- **Screen readers**: Not directly applicable (egui does not have native screen reader support), but the text content is programmatically accessible via egui's accessibility layer if enabled.
+- **Color contrast**: Text on near-transparent backgrounds (8-12% alpha) meets WCAG 2.1 AA (4.5:1 minimum).
+- **Not color-only**: Icon character provides non-color severity indicator.
+- **Text selectable**: egui labels allow text selection.
+- **Keyboard**: Dismiss button is focusable via egui's default tab-order.
 
 ---
 
-## 10. What This Spec Does NOT Cover
+## 8. What This Spec Does NOT Cover
 
-- Toast/notification stacking (out of scope -- one message per screen)
-- Animation or transitions (egui does not support CSS-style transitions; show/hide is instant)
+- Toast/notification stacking beyond the 5-banner cap
+- Animation or transitions (egui show/hide is instant)
 - Sound or haptic feedback
 - Message persistence across app restarts
-- Global overlay banners
-- Changes to BackendTask/TaskResult/AppState architecture
-
----
-
-## 11. Migration Strategy (UX Perspective)
-
-The visual result after migration should be:
-1. Every screen shows messages in exactly the same visual style
-2. Error messages appear in the same position (top of content, before scroll area)
-3. Success messages auto-clear after 5 seconds with a visible countdown
-4. No more inline `colored_label` errors scattered at arbitrary positions in screen layouts
-5. The Warning severity becomes available for the first time (currently missing from `MessageType` in `mod.rs`)
-
-Screens that currently use `colored_label` for inline validation hints (e.g., "Field is required") are a separate concern and should remain inline. The `MessageBanner` replaces only the screen-level status/result messages.
+- Changes to BackendTask/TaskResult/AppState routing architecture

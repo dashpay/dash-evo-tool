@@ -3200,16 +3200,12 @@ mod tests {
                 std::env::set_var("MAINNET_core_rpc_port", "9998");
                 std::env::set_var("MAINNET_core_rpc_user", "dashrpc");
                 std::env::set_var("MAINNET_core_rpc_password", "password");
-                std::env::set_var("MAINNET_insight_api_url", "http://127.0.0.1:3001");
-                std::env::set_var("MAINNET_show_in_ui", "true");
 
                 std::env::set_var("LOCAL_dapi_addresses", "http://127.0.0.1:2443");
                 std::env::set_var("LOCAL_core_host", "127.0.0.1");
                 std::env::set_var("LOCAL_core_rpc_port", "20302");
                 std::env::set_var("LOCAL_core_rpc_user", "dashmate");
                 std::env::set_var("LOCAL_core_rpc_password", "password");
-                std::env::set_var("LOCAL_insight_api_url", "http://127.0.0.1:3001");
-                std::env::set_var("LOCAL_show_in_ui", "true");
             }
         });
     }

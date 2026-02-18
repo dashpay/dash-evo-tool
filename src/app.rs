@@ -859,7 +859,8 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         _ => {
-                            MessageBanner::set_global(ctx, "Success", MessageType::Success);
+                            // For all other success results, let the screen decide how to display
+                            // the outcome without showing a generic global success banner.
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }

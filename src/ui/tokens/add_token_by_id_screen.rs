@@ -21,7 +21,7 @@ use crate::{
     app::AppAction,
     backend_task::{BackendTask, tokens::TokenTask},
     context::AppContext,
-    ui::{MessageType, ScreenLike, components::top_panel::add_top_panel, theme::DashColors},
+    ui::{MessageType, ScreenLike, components::top_panel::add_top_panel},
 };
 
 /// UI state during the add-token flow.
@@ -44,7 +44,6 @@ pub struct AddTokenByIdScreen {
     status: AddTokenStatus,
     selected_token: Option<TokenInfo>,
 
-    error_message: Option<String>,
     try_token_id_next: bool,
 }
 
@@ -56,7 +55,6 @@ impl AddTokenByIdScreen {
             fetched_contract: None,
             status: AddTokenStatus::Idle,
             selected_token: None,
-            error_message: None,
             try_token_id_next: false,
         }
     }
@@ -79,7 +77,6 @@ impl AddTokenByIdScreen {
         {
             let now = Utc::now().timestamp() as u32;
             self.status = AddTokenStatus::Searching(now);
-            self.error_message = None;
 
             if !self.contract_or_token_id_input.is_empty() {
                 // Try to parse as identifier
@@ -250,6 +247,7 @@ impl AddTokenByIdScreen {
 
 impl ScreenLike for AddTokenByIdScreen {
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match msg_type {
             MessageType::Success => {
                 if msg.contains("DataContract successfully saved") {
@@ -277,7 +275,6 @@ impl ScreenLike for AddTokenByIdScreen {
                 } else {
                     self.status = AddTokenStatus::Error(msg.to_owned());
                 }
-                self.error_message = Some(msg.to_owned());
             }
             MessageType::Info => {}
         }
@@ -324,8 +321,6 @@ impl ScreenLike for AddTokenByIdScreen {
         action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
 
         action |= island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
-
             // If we are in the "Complete" status, just show success screen
             if self.status == AddTokenStatus::Complete {
                 return self.show_success_screen(ui);
@@ -375,25 +370,12 @@ impl ScreenLike for AddTokenByIdScreen {
             ui.add_space(10.0);
             self.render_search_results(ui);
 
-            if let AddTokenStatus::Error(err) = &self.status {
-                ui.add_space(10.0);
-                ui.colored_label(
-                    DashColors::error_color(dark_mode),
-                    format!("Error: {}", err),
-                );
+            if let AddTokenStatus::Error(_) = &self.status {
+                // Error display is handled by the global MessageBanner
             }
 
             ui.add_space(10.0);
             inner_action |= self.render_add_button(ui);
-
-            // Show any additional error messages
-            if let Some(error_msg) = &self.error_message {
-                ui.add_space(5.0);
-                ui.colored_label(
-                    DashColors::error_color(dark_mode),
-                    format!("Details: {}", error_msg),
-                );
-            }
 
             inner_action
         });

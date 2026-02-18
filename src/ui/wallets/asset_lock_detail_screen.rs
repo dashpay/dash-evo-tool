@@ -1,13 +1,13 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::{Address, InstantLock, Transaction};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::prelude::AssetLockProof;
@@ -19,11 +19,9 @@ pub struct AssetLockDetailScreen {
     pub wallet_seed_hash: [u8; 32],
     pub asset_lock_index: usize,
     pub app_context: Arc<AppContext>,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
     wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_password: String,
     show_password: bool,
-    error_message: Option<String>,
     show_private_key_popup: bool,
     private_key_wif: Option<String>,
 }
@@ -47,11 +45,9 @@ impl AssetLockDetailScreen {
             wallet_seed_hash,
             asset_lock_index,
             app_context: app_context.clone(),
-            message: None,
             wallet,
             wallet_password: String::new(),
             show_password: false,
-            error_message: None,
             show_private_key_popup: false,
             private_key_wif: None,
         }
@@ -189,7 +185,7 @@ impl AssetLockDetailScreen {
                             ui.label("Asset Lock Proof (hex):");
                             if ui.small_button("Copy").clicked() {
                                 ui.ctx().copy_text(proof_hex.clone());
-                                self.display_message("Asset lock proof copied to clipboard", MessageType::Success);
+                                MessageBanner::set_global(ui.ctx(), "Asset lock proof copied to clipboard", MessageType::Success);
                             }
                         });
                         ui.add_space(5.0);
@@ -235,7 +231,7 @@ impl AssetLockDetailScreen {
                                                 self.show_private_key_popup = true;
                                             }
                                             Err(e) => {
-                                                self.display_message(&format!("Error retrieving private key: {}", e), MessageType::Error);
+                                                MessageBanner::set_global(ui.ctx(), &format!("Error retrieving private key: {}", e), MessageType::Error);
                                             }
                                         }
                                     }
@@ -262,17 +258,6 @@ impl AssetLockDetailScreen {
             });
         }
     }
-
-    fn check_message_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            if elapsed.num_seconds() >= 10 {
-                self.message = None;
-            }
-        }
-    }
 }
 
 impl ScreenWithWalletUnlock for AssetLockDetailScreen {
@@ -296,14 +281,6 @@ impl ScreenWithWalletUnlock for AssetLockDetailScreen {
         &mut self.show_password
     }
 
-    fn set_error_message(&mut self, error_message: Option<String>) {
-        self.error_message = error_message;
-    }
-
-    fn error_message(&self) -> Option<&String> {
-        self.error_message.as_ref()
-    }
-
     fn app_context(&self) -> Arc<AppContext> {
         self.app_context.clone()
     }
@@ -311,8 +288,6 @@ impl ScreenWithWalletUnlock for AssetLockDetailScreen {
 
 impl ScreenLike for AssetLockDetailScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_message_expiration();
-
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -360,28 +335,7 @@ impl ScreenLike for AssetLockDetailScreen {
                     self.render_asset_lock_info(ui);
                 });
 
-            // Display messages
-            if let Some((message, message_type, timestamp)) = &self.message {
-                let message_color = match message_type {
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Warning => DashColors::warning_color(dark_mode),
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                };
-
-                ui.add_space(25.0);
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(*timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    let full_msg = format!("{} ({}s)", message, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(message_color));
-                });
-                ui.add_space(2.0);
-            }
+            // Message display is handled by the global MessageBanner
 
             inner_action
         });
@@ -420,7 +374,7 @@ impl ScreenLike for AssetLockDetailScreen {
                         ui.horizontal(|ui| {
                             if ui.button("Copy").clicked() {
                                 ui.ctx().copy_text(wif.clone());
-                                self.display_message("Private key copied to clipboard", MessageType::Success);
+                                MessageBanner::set_global(ctx, "Private key copied to clipboard", MessageType::Success);
                             }
                             if ui.button("Close").clicked() {
                                 self.show_private_key_popup = false;
@@ -435,8 +389,8 @@ impl ScreenLike for AssetLockDetailScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type, Utc::now()));
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Error/success display is handled by the global MessageBanner.
     }
 
     fn refresh_on_arrival(&mut self) {}

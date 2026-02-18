@@ -6,12 +6,12 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use chrono::{DateTime, Utc};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
@@ -60,12 +60,10 @@ pub struct SingleKeyWalletSendScreen {
 
     // State
     sending: bool,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
 
     // Wallet unlock
     wallet_password: String,
     show_password: bool,
-    error_message: Option<String>,
 
     // Fee confirmation dialog
     fee_dialog: FeeConfirmationDialog,
@@ -84,10 +82,8 @@ impl SingleKeyWalletSendScreen {
             subtract_fee: false,
             memo: String::new(),
             sending: false,
-            message: None,
             wallet_password: String::new(),
             show_password: false,
-            error_message: None,
             fee_dialog: FeeConfirmationDialog::default(),
             show_advanced_options: false,
         }
@@ -783,27 +779,27 @@ impl SingleKeyWalletSendScreen {
                             Ok(mut wallet_guard) => {
                                 match wallet_guard.open(&self.wallet_password) {
                                     Ok(_) => {
-                                        self.error_message = None;
                                         self.wallet_password.clear();
                                     }
                                     Err(e) => {
-                                        self.error_message =
-                                            Some(format!("Failed to unlock: {}", e));
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
+                                            &format!("Failed to unlock: {}", e),
+                                            MessageType::Error,
+                                        );
                                     }
                                 }
                             }
                             Err(_) => {
-                                self.error_message =
-                                    Some("Wallet lock error, please try again".to_string());
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Wallet lock error, please try again",
+                                    MessageType::Error,
+                                );
                             }
                         }
                     }
                 });
-
-                if let Some(error) = &self.error_message {
-                    ui.add_space(5.0);
-                    ui.label(RichText::new(error).color(DashColors::ERROR).size(12.0));
-                }
             });
 
         AppAction::None
@@ -847,17 +843,13 @@ impl SingleKeyWalletSendScreen {
                         action = send_action;
                     }
                     Err(e) => {
-                        self.display_message(&e, MessageType::Error);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                 }
             }
         });
 
         action
-    }
-
-    fn dismiss_message(&mut self) {
-        self.message = None;
     }
 }
 
@@ -880,38 +872,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            // Display messages at the top
-            let mut should_dismiss = false;
-            if let Some((message, message_type, _)) = &self.message {
-                let message = message.clone();
-                let message_color = match message_type {
-                    MessageType::Error => DashColors::ERROR,
-                    MessageType::Warning => DashColors::WARNING,
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => Color32::DARK_GREEN,
-                };
-
-                ui.horizontal(|ui| {
-                    Frame::new()
-                        .fill(message_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, message_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&message).color(message_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    should_dismiss = true;
-                                }
-                            });
-                        });
-                });
-                ui.add_space(10.0);
-            }
-            if should_dismiss {
-                self.dismiss_message();
-            }
+            // Message display is handled by the global MessageBanner.
 
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
@@ -969,6 +930,9 @@ impl ScreenLike for SingleKeyWalletSendScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        // Error/success display is handled by the global MessageBanner.
+        // Only side-effects are preserved here.
+
         // Check for success messages to reset sending state
         if message.contains("Sent") || message.contains("TxID") {
             self.sending = false;
@@ -983,10 +947,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             self.fee_dialog.required_fee = required_fee;
             self.fee_dialog.is_open = true;
             // Keep sending state true until user confirms or cancels
-            return;
         }
-
-        self.message = Some((message.to_string(), message_type, Utc::now()));
     }
 
     fn display_task_result(
@@ -1023,7 +984,8 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                         txid
                     )
                 };
-                self.display_message(&msg, MessageType::Success);
+                MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
+                self.fee_dialog.pending_request = None;
 
                 // Clear the form after successful send
                 self.recipients = vec![SendRecipient::new(0)];

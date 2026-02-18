@@ -403,10 +403,10 @@ impl TransitionVisualizerScreen {
 }
 
 impl ScreenLike for TransitionVisualizerScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Success => {
-                // Only update broadcast status if we're actually broadcasting
                 if matches!(
                     self.broadcast_status,
                     TransitionBroadcastStatus::Submitting(_)
@@ -415,12 +415,9 @@ impl ScreenLike for TransitionVisualizerScreen {
                 }
             }
             MessageType::Error | MessageType::Warning => {
-                self.broadcast_status =
-                    TransitionBroadcastStatus::Error(message.to_string(), Instant::now());
+                self.broadcast_status = TransitionBroadcastStatus::NotStarted;
             }
-            MessageType::Info => {
-                // Could do nothing or handle info
-            }
+            MessageType::Info => {}
         }
     }
 

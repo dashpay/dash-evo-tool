@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -36,7 +37,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Ui};
-use egui::{Frame, Margin, RichText};
+use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -44,11 +45,11 @@ use std::sync::{Arc, RwLock};
 pub enum UpdateTokenConfigStatus {
     NotUpdating,
     Updating(DateTime<Utc>),
+    Complete,
 }
 
 pub struct UpdateTokenConfigScreen {
     pub identity_token_info: IdentityTokenInfo,
-    backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
     pub change_item: TokenConfigurationChangeItem,
@@ -68,7 +69,6 @@ pub struct UpdateTokenConfigScreen {
 
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>, // unused
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
 }
@@ -86,7 +86,7 @@ impl UpdateTokenConfigScreen {
             )
             .cloned();
 
-        let mut error_message = None;
+        let mut wallet_error = None;
 
         // Initialize with no group - will be set when user selects a change item
         let group = None;
@@ -99,12 +99,14 @@ impl UpdateTokenConfigScreen {
             &identity_token_info.identity,
             None,
             possible_key.as_ref(),
-            &mut error_message,
+            &mut wallet_error,
         );
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
 
         Self {
             identity_token_info: identity_token_info.clone(),
-            backend_message: None,
             update_status: UpdateTokenConfigStatus::NotUpdating,
             app_context: app_context.clone(),
             change_item: TokenConfigurationChangeItem::TokenConfigurationNoChange,
@@ -119,7 +121,6 @@ impl UpdateTokenConfigScreen {
 
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message,
 
             identity: identity_token_info.identity,
             group,
@@ -201,9 +202,7 @@ impl UpdateTokenConfigScreen {
 
         self.group = group;
         if let Some(error) = error_message {
-            self.error_message = Some(error);
-        } else {
-            self.error_message = None;
+            MessageBanner::set_global(self.app_context.egui_ctx(), &error, MessageType::Error);
         }
 
         // Update is_unilateral_group_member based on new group
@@ -917,38 +916,19 @@ impl UpdateTokenConfigScreen {
 }
 
 impl ScreenLike for UpdateTokenConfigScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        match message_type {
-            MessageType::Error => {
-                self.backend_message = Some((message.to_string(), MessageType::Error, Utc::now()));
-                self.update_status = UpdateTokenConfigStatus::NotUpdating;
-            }
-            MessageType::Info => {
-                self.backend_message = Some((message.to_string(), MessageType::Info, Utc::now()));
-            }
-            _ => {}
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if message_type == MessageType::Error {
+            self.update_status = UpdateTokenConfigStatus::NotUpdating;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::UpdatedTokenConfig(change_item, fee_result) =
+        if let BackendTaskSuccessResult::UpdatedTokenConfig(_change_item, fee_result) =
             backend_task_success_result
         {
-            self.completed_fee_result = Some(fee_result.clone());
-            let fee_info = format!(
-                " (Fee: Estimated {} • Actual {})",
-                format_credits_as_dash(fee_result.estimated_fee),
-                format_credits_as_dash(fee_result.actual_fee)
-            );
-            self.backend_message = Some((
-                format!(
-                    "Successfully updated token config item: {}{}",
-                    change_item, fee_info
-                ),
-                MessageType::Success,
-                Utc::now(),
-            ));
-            self.update_status = UpdateTokenConfigStatus::NotUpdating;
+            self.completed_fee_result = Some(fee_result);
+            self.update_status = UpdateTokenConfigStatus::Complete;
         }
     }
 
@@ -993,11 +973,10 @@ impl ScreenLike for UpdateTokenConfigScreen {
         // Central panel
         island_central_panel(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                if let Some(msg) = &self.backend_message
-                    && msg.1 == MessageType::Success {
-                        action |= self.show_success_screen(ui);
-                        return;
-                    }
+                if self.update_status == UpdateTokenConfigStatus::Complete {
+                    action |= self.show_success_screen(ui);
+                    return;
+                }
 
                 ui.heading("Update Token Configuration");
                 ui.add_space(10.0);
@@ -1052,7 +1031,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -1095,35 +1074,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
                 action |= self.render_token_config_updater(ui);
 
-                if let Some((msg, msg_type, _)) = self.backend_message.clone() {
-                    ui.add_space(10.0);
-                    match msg_type {
-                        MessageType::Success => {
-                            ui.colored_label(Color32::DARK_GREEN, &msg);
-                        }
-                        MessageType::Error | MessageType::Warning => {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
-                            let error_color = DashColors::error_color(dark_mode);
-                            Frame::new()
-                                .fill(error_color.gamma_multiply(0.1))
-                                .inner_margin(Margin::symmetric(10, 8))
-                                .corner_radius(5.0)
-                                .stroke(egui::Stroke::new(1.0, error_color))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
-                                        ui.add_space(10.0);
-                                        if ui.small_button("Dismiss").clicked() {
-                                            self.backend_message = None;
-                                        }
-                                    });
-                                });
-                        }
-                        MessageType::Info => {
-                            ui.label(&msg);
-                        }
-                    };
-                }
+                // Message display is handled by the global MessageBanner
 
                 if self.update_status != UpdateTokenConfigStatus::NotUpdating {
                     ui.add_space(10.0);

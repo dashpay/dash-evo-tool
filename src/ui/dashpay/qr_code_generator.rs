@@ -42,7 +42,6 @@ pub struct QRCodeGeneratorScreen {
     account_index: String,
     validity_hours: String,
     generated_qr_data: Option<String>,
-    message: Option<(String, MessageType)>,
     show_info_popup: bool,
     show_advanced_options: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -58,7 +57,6 @@ impl QRCodeGeneratorScreen {
             account_index: "0".to_string(),
             validity_hours: "24".to_string(),
             generated_qr_data: None,
-            message: None,
             show_info_popup: false,
             show_advanced_options: false,
             selected_wallet: None,
@@ -90,7 +88,11 @@ impl QRCodeGeneratorScreen {
             let account_idx = match self.account_index.parse::<u32>() {
                 Ok(v) => v,
                 Err(_) => {
-                    self.display_message("Invalid account index number", MessageType::Error);
+                    crate::ui::components::MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Invalid account index number",
+                        MessageType::Error,
+                    );
                     return;
                 }
             };
@@ -98,7 +100,8 @@ impl QRCodeGeneratorScreen {
             let validity = match self.validity_hours.parse::<u32>() {
                 Ok(v) if v > 0 && v <= 720 => v, // Max 30 days
                 _ => {
-                    self.display_message(
+                    crate::ui::components::MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
                         "Validity hours must be between 1 and 720",
                         MessageType::Error,
                     );
@@ -110,17 +113,26 @@ impl QRCodeGeneratorScreen {
                 Ok(proof_data) => {
                     let qr_string = proof_data.to_qr_string();
                     self.generated_qr_data = Some(qr_string);
-                    self.display_message("QR code generated successfully", MessageType::Success);
+                    crate::ui::components::MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "QR code generated successfully",
+                        MessageType::Success,
+                    );
                 }
                 Err(e) => {
-                    self.display_message(
+                    crate::ui::components::MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
                         &format!("Failed to generate QR code: {}", e),
                         MessageType::Error,
                     );
                 }
             }
         } else {
-            self.display_message("Please select an identity first", MessageType::Error);
+            crate::ui::components::MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Please select an identity first",
+                MessageType::Error,
+            );
         }
     }
 
@@ -144,18 +156,6 @@ impl QRCodeGeneratorScreen {
         });
 
         ui.separator();
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => DashColors::success_color(dark_mode),
-                MessageType::Error => DashColors::error_color(dark_mode),
-                MessageType::Warning => DashColors::warning_color(dark_mode),
-                MessageType::Info => DashColors::DASH_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
-        }
 
         // Identity selector
         let identities = self
@@ -213,7 +213,6 @@ impl QRCodeGeneratorScreen {
                                 }
                                 // Clear generated QR code when identity changes
                                 self.generated_qr_data = None;
-                                self.message = None;
                             }
                         });
                         ui.end_row();
@@ -265,7 +264,7 @@ impl QRCodeGeneratorScreen {
                 // Check wallet lock status before showing generate button
                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.message = Some((e, MessageType::Error));
+                        crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     wallet_needs_unlock(wallet)
                 } else {
@@ -293,7 +292,6 @@ impl QRCodeGeneratorScreen {
                         if self.generated_qr_data.is_some()
                             && ui.button("Clear").clicked() {
                                 self.generated_qr_data = None;
-                                self.message = None;
                             }
                     });
                 }
@@ -368,7 +366,7 @@ impl QRCodeGeneratorScreen {
             }
 
             if show_copied_message {
-                self.display_message("Copied to clipboard", MessageType::Success);
+                crate::ui::components::MessageBanner::set_global(ui.ctx(), "Copied to clipboard", MessageType::Success);
             }
         });
 
@@ -387,8 +385,8 @@ impl QRCodeGeneratorScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
     }
 }
 
@@ -435,7 +433,7 @@ impl ScreenLike for QRCodeGeneratorScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.display_message(message, message_type);
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; no side-effects needed.
     }
 }

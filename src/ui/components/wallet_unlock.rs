@@ -1,8 +1,10 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::styled::StyledCheckbox;
 use crate::ui::theme::DashColors;
-use egui::{Frame, Margin, RichText, Ui};
+use egui::Ui;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
 
@@ -15,9 +17,6 @@ pub trait ScreenWithWalletUnlock {
     fn wallet_password_mut(&mut self) -> &mut String;
     fn show_password(&self) -> bool;
     fn show_password_mut(&mut self) -> &mut bool;
-    fn set_error_message(&mut self, error_message: Option<String>);
-
-    fn error_message(&self) -> Option<&String>;
 
     fn app_context(&self) -> Arc<AppContext>;
 
@@ -26,7 +25,11 @@ pub trait ScreenWithWalletUnlock {
             let mut wallet = wallet_guard.write().unwrap();
             if !wallet.uses_password {
                 if let Err(e) = wallet.wallet_seed.open_no_password() {
-                    self.set_error_message(Some(e));
+                    MessageBanner::set_global(
+                        self.app_context().egui_ctx(),
+                        &e,
+                        MessageType::Error,
+                    );
                 }
                 false
             } else {
@@ -66,9 +69,8 @@ pub trait ScreenWithWalletUnlock {
 
                 // Capture necessary values before the closure
                 let show_password = self.show_password();
-                let mut local_show_password = show_password; // Local copy of show_password
-                let mut local_error_message = self.error_message().cloned(); // Local variable for error message
-                let wallet_password_mut = self.wallet_password_mut(); // Mutable reference to the password
+                let mut local_show_password = show_password;
+                let wallet_password_mut = self.wallet_password_mut();
 
                 let mut attempt_unlock = false;
 
@@ -107,16 +109,15 @@ pub trait ScreenWithWalletUnlock {
 
                     match unlock_result {
                         Ok(_) => {
-                            local_error_message = None;
                             unlocked_wallet = Some(wallet_guard.clone());
                         }
                         Err(_) => {
-                            if let Some(hint) = wallet.password_hint() {
-                                local_error_message =
-                                    Some(format!("Incorrect Password, password hint is {}", hint));
+                            let error_msg = if let Some(hint) = wallet.password_hint() {
+                                format!("Incorrect Password, password hint is {}", hint)
                             } else {
-                                local_error_message = Some("Incorrect Password".to_string());
-                            }
+                                "Incorrect Password".to_string()
+                            };
+                            MessageBanner::set_global(ui.ctx(), &error_msg, MessageType::Error);
                         }
                     }
                     // Clear the password field after submission
@@ -125,32 +126,7 @@ pub trait ScreenWithWalletUnlock {
 
                 // Update `show_password` after the closure
                 *self.show_password_mut() = local_show_password;
-
-                // Update the error message
-                self.set_error_message(local_error_message);
-
-                // Display error message if the password was incorrect
-                if let Some(error_message) = self.error_message().cloned() {
-                    ui.add_space(5.0);
-                    let error_color = DashColors::error_color(ui.ctx().style().visuals.dark_mode);
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!("Error: {}", error_message))
-                                        .color(error_color),
-                                );
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.set_error_message(None);
-                                }
-                            });
-                        });
-                }
+                // Error display is handled by the global MessageBanner
             }
         }
 

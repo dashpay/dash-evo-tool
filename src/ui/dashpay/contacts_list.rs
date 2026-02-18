@@ -60,7 +60,6 @@ pub struct ContactsList {
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     search_query: String,
-    message: Option<(String, MessageType)>,
     loading: bool,
     has_loaded: bool, // Track if we've ever loaded contacts
     show_hidden: bool,
@@ -82,7 +81,6 @@ impl ContactsList {
             selected_identity: None,
             selected_identity_string: String::new(),
             search_query: String::new(),
-            message: None,
             loading: false,
             has_loaded: false,
             show_hidden: false,
@@ -176,7 +174,6 @@ impl ContactsList {
         // Only fetch if we have a selected identity
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
-            self.message = None; // Clear any existing message
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
                 identity: identity.clone(),
@@ -204,7 +201,6 @@ impl ContactsList {
     pub fn refresh(&mut self) -> AppAction {
         // Don't clear contacts - preserve loaded state
         // Only clear temporary states
-        self.message = None;
         self.loading = false;
 
         // Auto-select first identity if none selected
@@ -320,7 +316,6 @@ impl ContactsList {
                         self.contacts.clear();
                         self.avatar_textures.clear();
                         self.avatars_loading.clear();
-                        self.message = None;
                         self.loading = false;
 
                         // Load contacts from database for the newly selected identity
@@ -528,18 +523,6 @@ impl ContactsList {
 
                 ui.separator();
             }
-        }
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Warning => DashColors::WARNING,
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
         }
 
         // Loading indicator
@@ -924,10 +907,10 @@ impl ContactsList {
                                                         new_hidden,
                                                     )
                                                 {
-                                                    self.message = Some((
-                                                        format!("Failed to update contact: {}", e),
-                                                        MessageType::Error,
-                                                    ));
+                                                    tracing::error!(
+                                                        "Failed to update contact: {}",
+                                                        e
+                                                    );
                                                 } else {
                                                     // Update the contact in memory
                                                     if let Some(c) =
@@ -978,8 +961,8 @@ impl ContactsList {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
     }
 }
 
@@ -999,9 +982,9 @@ impl ScreenLike for ContactsList {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.loading = false;
-        self.message = Some((message.to_string(), message_type));
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -1030,9 +1013,8 @@ impl ScreenLike for ContactsList {
                     self.contacts.insert(contact_id, contact);
                 }
 
-                // Mark as loaded and clear message
+                // Mark as loaded
                 self.has_loaded = true;
-                self.message = None;
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
                 // Clear existing contacts
@@ -1118,9 +1100,8 @@ impl ScreenLike for ContactsList {
                     }
                 }
 
-                // Mark as loaded and clear message
+                // Mark as loaded
                 self.has_loaded = true;
-                self.message = None;
             }
             BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Extract profile information from the document

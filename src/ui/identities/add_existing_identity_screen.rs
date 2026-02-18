@@ -4,6 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -18,7 +19,7 @@ use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{Context, Frame, Margin};
+use eframe::egui::Context;
 use egui::{Color32, ComboBox, RichText, Ui};
 use serde::Deserialize;
 use std::fs;
@@ -77,7 +78,7 @@ enum WalletIdentitySearchMode {
 pub enum AddIdentityStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -94,7 +95,6 @@ pub struct AddExistingIdentityScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     identity_associated_with_wallet: bool,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
     pub identity_index_input: String,
     pub app_context: Arc<AppContext>,
     show_pop_up_info: Option<String>,
@@ -128,7 +128,6 @@ impl AddExistingIdentityScreen {
             selected_wallet,
             identity_associated_with_wallet: true,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message: None,
             identity_index_input: String::new(),
             app_context: app_context.clone(),
             show_pop_up_info: None,
@@ -258,7 +257,7 @@ impl AddExistingIdentityScreen {
                             if wallet_still_loaded {
                                 // Try to open wallet without password if it doesn't use one
                                 if let Err(e) = try_open_wallet_no_password(selected_wallet) {
-                                    self.error_message = Some(e);
+                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                                 }
 
                                 if wallet_needs_unlock(selected_wallet) {
@@ -564,7 +563,7 @@ impl AddExistingIdentityScreen {
 
         // Try to open wallet without password if it doesn't use one
         if let Err(e) = try_open_wallet_no_password(wallet) {
-            self.error_message = Some(e);
+            MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
         }
 
         if wallet_needs_unlock(wallet) {
@@ -602,7 +601,6 @@ impl AddExistingIdentityScreen {
             });
             if wallet_mode_changed {
                 self.add_identity_status = AddIdentityStatus::NotStarted;
-                self.error_message = None;
                 self.backend_message = None;
                 self.success_message = None;
             }
@@ -677,8 +675,12 @@ impl AddExistingIdentityScreen {
                 ));
             } else {
                 // Handle invalid index input
-                self.add_identity_status =
-                    AddIdentityStatus::ErrorMessage("Invalid identity index".to_string());
+                self.add_identity_status = AddIdentityStatus::Error;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Invalid identity index",
+                    MessageType::Error,
+                );
             }
         }
         action
@@ -937,7 +939,6 @@ impl AddExistingIdentityScreen {
             self.keys_input = vec![String::new(), String::new(), String::new()];
             self.identity_index_input.clear();
             self.dpns_name_input.clear();
-            self.error_message = None;
             self.show_pop_up_info = None;
             self.add_identity_status = AddIdentityStatus::NotStarted;
             self.backend_message = None;
@@ -951,9 +952,11 @@ impl AddExistingIdentityScreen {
 
 impl ScreenLike for AddExistingIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        // Error/success display is handled by the global MessageBanner.
+        // Side-effects only: update status and progress tracking.
         match message_type {
             MessageType::Error => {
-                self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
+                self.add_identity_status = AddIdentityStatus::Error;
             }
             MessageType::Success => {
                 // Check if this is a final success message or a progress update
@@ -1018,28 +1021,7 @@ impl ScreenLike for AddExistingIdentityScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
-            // Display error message at the top, outside of scroll area
-            if let Some(error_message) = self.error_message.clone() {
-                let error_color = DashColors::ERROR;
-                Frame::new()
-                    .fill(error_color.gamma_multiply(0.1))
-                    .inner_margin(Margin::symmetric(10, 8))
-                    .corner_radius(5.0)
-                    .stroke(egui::Stroke::new(1.0, error_color))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!("Error: {}", error_message))
-                                    .color(error_color),
-                            );
-                            ui.add_space(10.0);
-                            if ui.small_button("Dismiss").clicked() {
-                                self.error_message = None;
-                            }
-                        });
-                    });
-                ui.add_space(10.0);
-            }
+            // Error display is handled by the global MessageBanner
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
@@ -1085,7 +1067,6 @@ impl ScreenLike for AddExistingIdentityScreen {
 
                     if mode_changed {
                         self.add_identity_status = AddIdentityStatus::NotStarted;
-                        self.error_message = None;
                         self.backend_message = None;
                         self.success_message = None;
                     }
@@ -1144,27 +1125,8 @@ impl ScreenLike for AddExistingIdentityScreen {
                                 ui.label(format!("Loading... ({})", display_time));
                             }
                         }
-                        AddIdentityStatus::ErrorMessage(msg) => {
-                            let error_color = DashColors::ERROR;
-                            let msg = msg.clone();
-                            Frame::new()
-                                .fill(error_color.gamma_multiply(0.1))
-                                .inner_margin(Margin::symmetric(10, 8))
-                                .corner_radius(5.0)
-                                .stroke(egui::Stroke::new(1.0, error_color))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(format!("Error: {}", msg))
-                                                .color(error_color),
-                                        );
-                                        ui.add_space(10.0);
-                                        if ui.small_button("Dismiss").clicked() {
-                                            self.add_identity_status =
-                                                AddIdentityStatus::NotStarted;
-                                        }
-                                    });
-                                });
+                        AddIdentityStatus::Error => {
+                            // Error display is handled by the global MessageBanner
                         }
                         AddIdentityStatus::Complete => {
                             // handled above

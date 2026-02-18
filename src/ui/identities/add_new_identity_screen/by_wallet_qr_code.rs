@@ -3,6 +3,8 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::identity::{
     IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, WalletFundedScreenStep,
 };
@@ -165,7 +167,7 @@ impl AddNewIdentityScreen {
             egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
             |ui| {
                 if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                    self.error_message = Some(e);
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                 }
 
                 ui.add_space(20.0);
@@ -199,8 +201,7 @@ impl AddNewIdentityScreen {
                     }
                 }
 
-                // Only show status messages if there's no error
-                if self.error_message.is_none() {
+                {
                     match step {
                         WalletFundedScreenStep::WaitingOnFunds => {
                             ui.heading("=> Waiting for funds. <=");

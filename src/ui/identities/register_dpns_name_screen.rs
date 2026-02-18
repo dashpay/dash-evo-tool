@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -40,7 +41,7 @@ pub enum RegisterDpnsNameSource {
 pub enum RegisterDpnsNameStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -55,7 +56,6 @@ pub struct RegisterDpnsNameScreen {
     pub app_context: Arc<AppContext>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
@@ -69,12 +69,15 @@ impl RegisterDpnsNameScreen {
             app_context.load_local_user_identities().unwrap_or_default();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
-        let mut error_message: Option<String> = None;
+        let mut wallet_error: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None, &mut wallet_error)
         } else {
             None
         };
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
 
         // Auto-select a suitable key for DPNS registration
         // Note: MASTER keys cannot be used for document operations,
@@ -118,7 +121,6 @@ impl RegisterDpnsNameScreen {
             app_context: app_context.clone(),
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message,
             show_advanced_options: false,
             completed_fee_result: None,
             source,
@@ -159,8 +161,12 @@ impl RegisterDpnsNameScreen {
                 .cloned();
 
             // Update the selected wallet
+            let mut wallet_error = None;
             self.selected_wallet =
-                get_selected_wallet(qi, Some(&self.app_context), None, &mut self.error_message);
+                get_selected_wallet(qi, Some(&self.app_context), None, &mut wallet_error);
+            if let Some(e) = wallet_error {
+                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+            }
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
@@ -211,12 +217,12 @@ impl RegisterDpnsNameScreen {
                     .cloned();
 
                 // Update wallet
-                self.selected_wallet = get_selected_wallet(
-                    identity,
-                    Some(&self.app_context),
-                    None,
-                    &mut self.error_message,
-                );
+                let mut wallet_error = None;
+                self.selected_wallet =
+                    get_selected_wallet(identity, Some(&self.app_context), None, &mut wallet_error);
+                if let Some(e) = wallet_error {
+                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+                }
             } else {
                 self.selected_key = None;
                 self.selected_wallet = None;
@@ -294,10 +300,10 @@ impl RegisterDpnsNameScreen {
 }
 
 impl ScreenLike for RegisterDpnsNameScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            self.register_dpns_name_status =
-                RegisterDpnsNameStatus::ErrorMessage(message.to_string());
+            self.register_dpns_name_status = RegisterDpnsNameStatus::Error;
         }
     }
 
@@ -403,7 +409,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
             if self.selected_wallet.is_some()
                 && let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -588,23 +594,8 @@ impl ScreenLike for RegisterDpnsNameScreen {
                         display_time
                     ));
                 }
-                RegisterDpnsNameStatus::ErrorMessage(msg) => {
-                    let error_color = DashColors::ERROR;
-                    let msg = msg.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
-                                }
-                            });
-                        });
+                RegisterDpnsNameStatus::Error => {
+                    // Error display is handled by the global MessageBanner
                 }
                 RegisterDpnsNameStatus::Complete => {}
             }

@@ -6,6 +6,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -51,7 +52,7 @@ pub enum TransferDestinationType {
 pub enum TransferCreditsStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -63,7 +64,6 @@ pub struct TransferScreen {
     amount: Option<Amount>,
     amount_input: Option<AmountInput>,
     transfer_credits_status: TransferCreditsStatus,
-    error_message: Option<String>,
     max_amount: u64,
     pub app_context: Arc<AppContext>,
     confirmation_popup: bool,
@@ -92,9 +92,11 @@ impl TransferScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+        let mut wallet_error = None;
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key, &mut wallet_error);
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
         Self {
             identity,
             selected_key: selected_key.cloned(),
@@ -103,7 +105,6 @@ impl TransferScreen {
             amount: Some(Amount::new_dash(0.0)),
             amount_input: None,
             transfer_credits_status: TransferCreditsStatus::NotStarted,
-            error_message: None,
             max_amount,
             app_context: app_context.clone(),
             confirmation_popup: false,
@@ -147,7 +148,7 @@ impl TransferScreen {
         // Check if input should be disabled when operation is in progress
         let enabled = match self.transfer_credits_status {
             TransferCreditsStatus::WaitingForResult(_) | TransferCreditsStatus::Complete => false,
-            TransferCreditsStatus::NotStarted | TransferCreditsStatus::ErrorMessage(_) => {
+            TransferCreditsStatus::NotStarted | TransferCreditsStatus::Error => {
                 amount_input.set_max_amount(Some(max_amount_credits));
                 true
             }
@@ -311,9 +312,12 @@ impl TransferScreen {
         // Get the amount
         let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
         if credits == 0 {
-            self.error_message = Some("Amount must be greater than 0".to_string());
-            self.transfer_credits_status =
-                TransferCreditsStatus::ErrorMessage("Amount must be greater than 0".to_string());
+            self.transfer_credits_status = TransferCreditsStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Amount must be greater than 0",
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
@@ -363,9 +367,12 @@ impl TransferScreen {
         // Use the amount directly since it's already an Amount struct
         let credits = self.amount.as_ref().map(|v| v.value()).unwrap_or_default() as u128;
         if credits == 0 {
-            self.error_message = Some("Amount must be greater than 0".to_string());
-            self.transfer_credits_status =
-                TransferCreditsStatus::ErrorMessage("Amount must be greater than 0".to_string());
+            self.transfer_credits_status = TransferCreditsStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Amount must be greater than 0",
+                MessageType::Error,
+            );
             self.confirmation_popup = false;
             return AppAction::None;
         }
@@ -407,8 +414,8 @@ impl TransferScreen {
 
     /// Set error state with the given message
     fn set_error_state(&mut self, error: String) {
-        self.error_message = Some(error.clone());
-        self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(error);
+        self.transfer_credits_status = TransferCreditsStatus::Error;
+        MessageBanner::set_global(self.app_context.egui_ctx(), &error, MessageType::Error);
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
@@ -487,10 +494,10 @@ impl TransferScreen {
 }
 
 impl ScreenLike for TransferScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            self.transfer_credits_status = TransferCreditsStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+            self.transfer_credits_status = TransferCreditsStatus::Error;
         }
     }
 
@@ -589,7 +596,7 @@ impl ScreenLike for TransferScreen {
                     && let Some(wallet) = &self.selected_wallet
                 {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -791,26 +798,8 @@ impl ScreenLike for TransferScreen {
                             display_time
                         ));
                     }
-                    TransferCreditsStatus::ErrorMessage(msg) => {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.transfer_credits_status =
-                                            TransferCreditsStatus::NotStarted;
-                                    }
-                                });
-                            });
+                    TransferCreditsStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     TransferCreditsStatus::Complete => {
                         // Handled above

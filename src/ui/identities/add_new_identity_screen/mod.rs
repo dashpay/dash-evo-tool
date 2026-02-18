@@ -12,6 +12,7 @@ use crate::backend_task::identity::{
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -84,7 +85,6 @@ pub struct AddNewIdentityScreen {
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
-    error_message: Option<String>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
@@ -150,7 +150,6 @@ impl AddNewIdentityScreen {
                 master_private_key_type: KeyType::ECDSA_HASH160,
                 keys_input: vec![],
             },
-            error_message: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
@@ -825,12 +824,20 @@ impl AddNewIdentityScreen {
                 // Get selected Platform address and amount from the input fields
                 let Some((platform_addr, amount)) = self.selected_platform_address_for_funding
                 else {
-                    self.error_message = Some("Please select a Platform address".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Please select a Platform address",
+                        MessageType::Error,
+                    );
                     return AppAction::None;
                 };
 
                 if amount == 0 {
-                    self.error_message = Some("Amount must be greater than 0".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Amount must be greater than 0",
+                        MessageType::Error,
+                    );
                     return AppAction::None;
                 }
 
@@ -977,14 +984,12 @@ impl AddNewIdentityScreen {
 }
 
 impl ScreenLike for AddNewIdentityScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Error/success display is handled by the global MessageBanner.
+        // Side-effect only: reset step on error so we stop showing "Waiting for Platform acknowledgement".
         if message_type == MessageType::Error {
-            self.error_message = Some(format!("Error registering identity: {}", message));
-            // Reset step so we stop showing "Waiting for Platform acknowledgement"
             let mut step = self.step.write().unwrap();
             *step = WalletFundedScreenStep::ReadyToCreate;
-        } else {
-            self.error_message = Some(message.to_string());
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -1065,28 +1070,7 @@ impl ScreenLike for AddNewIdentityScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
-            // Display error message at the top, outside of scroll area
-            if let Some(error_message) = self.error_message.clone() {
-                let message_color = DashColors::ERROR;
-
-                ui.horizontal(|ui| {
-                    egui::Frame::new()
-                        .fill(message_color.gamma_multiply(0.1))
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, message_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&error_message).color(message_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.error_message = None;
-                                }
-                            });
-                        });
-                });
-                ui.add_space(10.0);
-            }
+            // Error display is handled by the global MessageBanner
 
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {*self.step.read().unwrap()};
@@ -1121,7 +1105,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
                 // Try to open wallet without password if it doesn't use one
                 if let Err(e) = try_open_wallet_no_password(wallet) {
-                    self.error_message = Some(e);
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                 }
 
                 // If wallet needs password unlock

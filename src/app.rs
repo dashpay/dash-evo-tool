@@ -824,9 +824,8 @@ impl App for AppState {
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();
                         }
-                        BackendTaskSuccessResult::Message(ref _msg) => {
-                            // Let the screen handle Message via display_task_result
-                            // so it can do custom handling (like clearing spinners)
+                        BackendTaskSuccessResult::Message(ref msg) => {
+                            MessageBanner::set_global(ctx, msg, MessageType::Success);
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }

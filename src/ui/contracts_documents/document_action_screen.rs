@@ -1629,8 +1629,8 @@ impl ScreenLike for DocumentActionScreen {
         // Backend messages are handled via display_message
     }
 
-    fn display_message(&mut self, message: &str, _message_type: crate::ui::MessageType) {
-        self.backend_message = Some(message.to_string());
+    fn display_message(&mut self, _message: &str, _message_type: crate::ui::MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
     }
 

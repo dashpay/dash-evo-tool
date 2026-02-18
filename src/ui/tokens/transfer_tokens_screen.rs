@@ -6,6 +6,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -41,7 +42,7 @@ use super::tokens_screen::IdentityTokenBalance;
 pub enum TransferTokensStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -87,9 +88,11 @@ impl TransferTokensScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+        let mut wallet_error = None;
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key, &mut wallet_error);
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
 
         let amount = Some(Amount::from(&identity_token_balance).with_value(0));
 
@@ -140,7 +143,7 @@ impl TransferTokensScreen {
         // Check if input should be disabled when operation is in progress
         let enabled = match self.transfer_tokens_status {
             TransferTokensStatus::WaitingForResult(_) | TransferTokensStatus::Complete => false,
-            TransferTokensStatus::NotStarted | TransferTokensStatus::ErrorMessage(_) => {
+            TransferTokensStatus::NotStarted | TransferTokensStatus::Error => {
                 amount_input.set_max_amount(Some(self.max_amount.value()));
                 true
             }
@@ -194,8 +197,12 @@ impl TransferTokensScreen {
 
     fn confirmation_ok(&mut self) -> AppAction {
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
-            self.transfer_tokens_status =
-                TransferTokensStatus::ErrorMessage("Invalid amount".into());
+            self.transfer_tokens_status = TransferTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Invalid amount",
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
@@ -208,8 +215,12 @@ impl TransferTokensScreen {
         );
 
         if parsed_receiver_id.is_err() {
-            self.transfer_tokens_status =
-                TransferTokensStatus::ErrorMessage("Invalid receiver".into());
+            self.transfer_tokens_status = TransferTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Invalid receiver",
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
@@ -250,9 +261,10 @@ impl TransferTokensScreen {
 }
 
 impl ScreenLike for TransferTokensScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(message.to_string());
+            self.transfer_tokens_status = TransferTokensStatus::Error;
         }
     }
 
@@ -372,7 +384,7 @@ impl ScreenLike for TransferTokensScreen {
             } else {
                 if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -509,12 +521,18 @@ impl ScreenLike for TransferTokensScreen {
                 {
                     // Use the amount value directly since it's already parsed
                     if self.amount.as_ref().is_some_and(|v| v > &self.max_amount) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                            "Amount exceeds available balance".to_string(),
+                        self.transfer_tokens_status = TransferTokensStatus::Error;
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Amount exceeds available balance",
+                            MessageType::Error,
                         );
                     } else if self.amount.as_ref().is_none_or(|a| a.value() == 0) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                            "Amount must be greater than zero".to_string(),
+                        self.transfer_tokens_status = TransferTokensStatus::Error;
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Amount must be greater than zero",
+                            MessageType::Error,
                         );
                     } else {
                         let msg = format!(
@@ -570,11 +588,8 @@ impl ScreenLike for TransferTokensScreen {
                             display_time
                         ));
                     }
-                    TransferTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
+                    TransferTokensStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     TransferTokensStatus::Complete => {
                         // Handled above

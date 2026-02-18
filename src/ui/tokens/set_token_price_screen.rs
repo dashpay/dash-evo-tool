@@ -7,6 +7,7 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ComponentResponse;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -76,7 +77,7 @@ impl From<Option<TokenPricingSchedule>> for PricingType {
 pub enum SetTokenPriceStatus {
     NotStarted,
     WaitingForResult(u64), // Use seconds or millis
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -101,7 +102,6 @@ pub struct SetTokenPriceScreen {
     // Tiered pricing with AmountInput components
     pub tiered_prices: Vec<(Option<AmountInput>, Option<AmountInput>)>, // (amount_input, price_input)
     status: SetTokenPriceStatus,
-    error_message: Option<String>,
 
     /// Basic references
     pub app_context: Arc<AppContext>,
@@ -170,7 +170,9 @@ impl SetTokenPriceScreen {
                 false,
             );
 
-        let mut error_message = None;
+        let set_error_banner = |msg: &str| {
+            MessageBanner::set_global(app_context.egui_ctx(), msg, MessageType::Error);
+        };
 
         let group = match identity_token_info
             .token_config
@@ -179,34 +181,30 @@ impl SetTokenPriceScreen {
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                error_message =
-                    Some("Setting token price is not allowed on this token".to_string());
+                set_error_banner("Setting token price is not allowed on this token");
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
                     != identity_token_info.identity.identity.id()
                 {
-                    error_message = Some(
-                        "You are not allowed to set token price on this token. Only the contract owner is."
-                            .to_string(),
+                    set_error_banner(
+                        "You are not allowed to set token price on this token. Only the contract owner is.",
                     );
                 }
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message =
-                        Some("You are not allowed to set token price on this token".to_string());
+                    set_error_banner("You are not allowed to set token price on this token");
                 }
                 None
             }
             AuthorizedActionTakers::MainGroup => {
                 match identity_token_info.token_config.main_control_group() {
                     None => {
-                        error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
-                                .to_string(),
+                        set_error_banner(
+                            "Invalid contract: No main control group, though one should exist",
                         );
                         None
                     }
@@ -218,7 +216,7 @@ impl SetTokenPriceScreen {
                         {
                             Ok(group) => Some((group_pos, group.clone())),
                             Err(e) => {
-                                error_message = Some(format!("Invalid contract: {}", e));
+                                set_error_banner(&format!("Invalid contract: {}", e));
                                 None
                             }
                         }
@@ -233,7 +231,7 @@ impl SetTokenPriceScreen {
                 {
                     Ok(group) => Some((*group_pos, group.clone())),
                     Err(e) => {
-                        error_message = Some(format!("Invalid contract: {}", e));
+                        set_error_banner(&format!("Invalid contract: {}", e));
                         None
                     }
                 }
@@ -256,12 +254,16 @@ impl SetTokenPriceScreen {
         };
 
         // Attempt to get an unlocked wallet reference
+        let mut wallet_error = None;
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
             None,
             possible_key,
-            &mut error_message,
+            &mut wallet_error,
         );
+        if let Some(e) = wallet_error {
+            set_error_banner(&e);
+        }
 
         Self {
             identity_token_info: identity_token_info.clone(),
@@ -277,7 +279,6 @@ impl SetTokenPriceScreen {
             single_price_input: None,
             tiered_prices: vec![(None, None)],
             status: SetTokenPriceStatus::NotStarted,
-            error_message: None,
             app_context: app_context.clone(),
             show_confirmation_popup: false,
             confirmation_dialog: None,
@@ -776,8 +777,8 @@ impl SetTokenPriceScreen {
 
     /// Set error state with the given message
     fn set_error_state(&mut self, error: String) {
-        self.error_message = Some(error.clone());
-        self.status = SetTokenPriceStatus::ErrorMessage(error);
+        self.status = SetTokenPriceStatus::Error;
+        MessageBanner::set_global(self.app_context.egui_ctx(), &error, MessageType::Error);
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
@@ -818,10 +819,10 @@ impl SetTokenPriceScreen {
 }
 
 impl ScreenLike for SetTokenPriceScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+            self.status = SetTokenPriceStatus::Error;
         }
     }
 
@@ -952,7 +953,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -1046,8 +1047,11 @@ impl ScreenLike for SetTokenPriceScreen {
                         .members()
                         .get(&self.identity_token_info.identity.identity.id());
                     if your_power.is_none() {
-                        self.error_message =
-                            Some("Only group members can set price on this token".to_string());
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Only group members can set price on this token",
+                            MessageType::Error,
+                        );
                     }
                     ui.heading("This is a group action, it is not immediate.");
                     ui.label(format!(
@@ -1148,23 +1152,8 @@ impl ScreenLike for SetTokenPriceScreen {
                         let elapsed = now - start_time;
                         ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
                     }
-                    SetTokenPriceStatus::ErrorMessage(msg) => {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = SetTokenPriceStatus::NotStarted;
-                                    }
-                                });
-                            });
+                    SetTokenPriceStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     SetTokenPriceStatus::Complete => {
                         // handled above

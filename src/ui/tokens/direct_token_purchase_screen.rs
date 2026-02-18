@@ -18,6 +18,7 @@ use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -43,7 +44,7 @@ use dash_sdk::platform::IdentityPublicKey;
 pub enum PurchaseTokensStatus {
     NotStarted,
     WaitingForResult(u64), // Use seconds or millis
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -65,7 +66,6 @@ pub struct PurchaseTokenScreen {
     /// Screen stuff
     confirmation_dialog: Option<ConfirmationDialog>,
     status: PurchaseTokensStatus,
-    error_message: Option<String>,
 
     // Wallet fields
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -87,15 +87,18 @@ impl PurchaseTokenScreen {
             )
             .cloned();
 
-        let mut error_message = None;
+        let mut wallet_error = None;
 
         // Attempt to get an unlocked wallet reference
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
             None,
             possible_key.as_ref(),
-            &mut error_message,
+            &mut wallet_error,
         );
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
 
         Self {
             identity_token_info,
@@ -107,7 +110,6 @@ impl PurchaseTokenScreen {
             calculated_price_credits: None,
             pricing_fetch_attempted: false,
             status: PurchaseTokensStatus::NotStarted,
-            error_message: None,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -160,9 +162,11 @@ impl PurchaseTokenScreen {
                         TokenTask::QueryTokenPricing(token_id),
                     )));
                 } else {
-                    self.error_message = Some("Failed to get token ID from contract".to_string());
-                    self.status = PurchaseTokensStatus::ErrorMessage(
-                        "Failed to get token ID from contract".to_string(),
+                    self.status = PurchaseTokensStatus::Error;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Failed to get token ID from contract",
+                        MessageType::Error,
                     );
                 }
             }
@@ -264,16 +268,23 @@ impl PurchaseTokenScreen {
     /// Renders a confirm popup with the final "Are you sure?" step
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
         let Some(amount) = self.amount_to_purchase_value.as_ref() else {
-            self.error_message = Some("Please enter a valid amount.".into());
-            self.status = PurchaseTokensStatus::ErrorMessage("Invalid amount".into());
+            self.status = PurchaseTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Please enter a valid amount.",
+                MessageType::Error,
+            );
             self.confirmation_dialog = None;
             return AppAction::None;
         };
 
         let Some(total_price_credits) = self.calculated_price_credits else {
-            self.error_message =
-                Some("Cannot calculate total price. Please fetch token pricing first.".into());
-            self.status = PurchaseTokensStatus::ErrorMessage("No pricing fetched".into());
+            self.status = PurchaseTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Cannot calculate total price. Please fetch token pricing first.",
+                MessageType::Error,
+            );
             self.confirmation_dialog = None;
             return AppAction::None;
         };
@@ -341,13 +352,11 @@ impl ScreenLike for PurchaseTokenScreen {
                     self.status = PurchaseTokensStatus::NotStarted;
                 } else {
                     // No pricing schedule found - token is not for sale
-                    self.status = PurchaseTokensStatus::ErrorMessage(
-                        "This token is not available for direct purchase. No pricing has been set."
-                            .to_string(),
-                    );
-                    self.error_message = Some(
-                        "This token is not available for direct purchase. No pricing has been set."
-                            .to_string(),
+                    self.status = PurchaseTokensStatus::Error;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "This token is not available for direct purchase. No pricing has been set.",
+                        MessageType::Error,
                     );
                 }
             }
@@ -359,10 +368,10 @@ impl ScreenLike for PurchaseTokenScreen {
         }
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            self.status = PurchaseTokensStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+            self.status = PurchaseTokensStatus::Error;
         }
     }
 
@@ -471,7 +480,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -601,12 +610,12 @@ impl ScreenLike for PurchaseTokenScreen {
                                 ),
                             ));
                         } else {
-                            self.error_message = Some(
-                                "Cannot calculate total price. Please fetch token pricing first."
-                                    .into(),
+                            self.status = PurchaseTokensStatus::Error;
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Cannot calculate total price. Please fetch token pricing first.",
+                                MessageType::Error,
                             );
-                            self.status =
-                                PurchaseTokensStatus::ErrorMessage("No pricing fetched".into());
                         }
                     }
                 } else {
@@ -644,11 +653,8 @@ impl ScreenLike for PurchaseTokenScreen {
                         let elapsed = now - start_time;
                         ui.label(format!("Purchasing... elapsed: {} seconds", elapsed));
                     }
-                    PurchaseTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
+                    PurchaseTokensStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     PurchaseTokensStatus::Complete => {
                         // handled above

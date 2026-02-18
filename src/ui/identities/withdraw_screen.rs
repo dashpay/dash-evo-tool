@@ -7,6 +7,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -41,7 +42,7 @@ use super::keys::key_info_screen::KeyInfoScreen;
 pub enum WithdrawFromIdentityStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -58,7 +59,6 @@ pub struct WithdrawalScreen {
     withdraw_from_identity_status: WithdrawFromIdentityStatus,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
@@ -74,9 +74,11 @@ impl WithdrawalScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+        let mut wallet_error = None;
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key, &mut wallet_error);
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
         Self {
             identity,
             selected_key: selected_key.cloned(),
@@ -90,7 +92,6 @@ impl WithdrawalScreen {
             withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message,
             show_advanced_options: false,
             completed_fee_result: None,
         }
@@ -121,8 +122,7 @@ impl WithdrawalScreen {
         let enabled = match self.withdraw_from_identity_status {
             WithdrawFromIdentityStatus::WaitingForResult(_)
             | WithdrawFromIdentityStatus::Complete => false,
-            WithdrawFromIdentityStatus::NotStarted
-            | WithdrawFromIdentityStatus::ErrorMessage(_) => {
+            WithdrawFromIdentityStatus::NotStarted | WithdrawFromIdentityStatus::Error => {
                 amount_input.set_max_amount(Some(max_amount_credits));
                 true
             }
@@ -240,8 +240,11 @@ impl WithdrawalScreen {
         {
             format!("masternode payout address {}", payout_address)
         } else if !self.app_context.is_developer_mode() {
-            self.withdraw_from_identity_status = WithdrawFromIdentityStatus::ErrorMessage(
-                "No masternode payout address".to_string(),
+            self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No masternode payout address",
+                MessageType::Error,
             );
             self.confirmation_dialog = None;
             return AppAction::None;
@@ -250,8 +253,12 @@ impl WithdrawalScreen {
         };
 
         let Some(selected_key) = self.selected_key.as_ref() else {
-            self.withdraw_from_identity_status =
-                WithdrawFromIdentityStatus::ErrorMessage("No selected key".to_string());
+            self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No selected key",
+                MessageType::Error,
+            );
             self.confirmation_dialog = None;
             return AppAction::None;
         };
@@ -318,10 +325,10 @@ impl WithdrawalScreen {
 }
 
 impl ScreenLike for WithdrawalScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            self.withdraw_from_identity_status =
-                WithdrawFromIdentityStatus::ErrorMessage(message.to_string());
+            self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
         }
     }
 
@@ -472,7 +479,7 @@ impl ScreenLike for WithdrawalScreen {
 
                         if let Some(wallet) = &self.selected_wallet {
                             if let Err(e) = try_open_wallet_no_password(wallet) {
-                                self.error_message = Some(e);
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                             }
                             if wallet_needs_unlock(wallet) {
                                 ui.add_space(10.0);
@@ -639,32 +646,11 @@ impl ScreenLike for WithdrawalScreen {
                             display_time
                         ));
                     }
-                    WithdrawFromIdentityStatus::ErrorMessage(msg) => {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.withdraw_from_identity_status =
-                                            WithdrawFromIdentityStatus::NotStarted;
-                                    }
-                                });
-                            });
+                    WithdrawFromIdentityStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     WithdrawFromIdentityStatus::Complete => {
-                        ui.colored_label(
-                            egui::Color32::DARK_GREEN,
-                            "Successfully withdrew from identity".to_string(),
-                        );
+                        // Handled above
                     }
                 }
             }

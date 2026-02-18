@@ -6,6 +6,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -35,7 +36,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum AddKeyStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -49,7 +50,6 @@ pub struct AddKeyScreen {
     add_key_status: AddKeyStatus,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
     contract_id_input: String,
     document_type_input: String,
     enable_contract_bounds: bool,
@@ -66,9 +66,11 @@ impl AddKeyScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+        let mut wallet_error = None;
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key, &mut wallet_error);
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
 
         Self {
             identity,
@@ -80,7 +82,6 @@ impl AddKeyScreen {
             add_key_status: AddKeyStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message,
             contract_id_input: String::new(),
             document_type_input: String::new(),
             enable_contract_bounds: false,
@@ -101,9 +102,11 @@ impl AddKeyScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+        let mut wallet_error = None;
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key, &mut wallet_error);
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
 
         let dashpay_contract_id = app_context
             .dashpay_contract
@@ -120,7 +123,6 @@ impl AddKeyScreen {
             add_key_status: AddKeyStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message,
             contract_id_input: dashpay_contract_id,
             document_type_input: String::new(),
             enable_contract_bounds: true,
@@ -141,9 +143,11 @@ impl AddKeyScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+        let mut wallet_error = None;
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key, &mut wallet_error);
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
 
         let dashpay_contract_id = app_context
             .dashpay_contract
@@ -160,7 +164,6 @@ impl AddKeyScreen {
             add_key_status: AddKeyStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message,
             contract_id_input: dashpay_contract_id,
             document_type_input: String::new(),
             enable_contract_bounds: true,
@@ -179,8 +182,12 @@ impl AddKeyScreen {
                     self.app_context.network,
                 );
                 if let Err(err) = public_key_data_result {
-                    self.add_key_status =
-                        AddKeyStatus::ErrorMessage(format!("Issue verifying private key: {}", err));
+                    self.add_key_status = AddKeyStatus::Error;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        &format!("Issue verifying private key: {}", err),
+                        MessageType::Error,
+                    );
                 } else {
                     // Handle contract bounds if enabled
                     let contract_bounds = if self.enable_contract_bounds
@@ -198,10 +205,12 @@ impl AddKeyScreen {
                                 }
                             }
                             Err(e) => {
-                                self.add_key_status = AddKeyStatus::ErrorMessage(format!(
-                                    "Invalid contract ID: {}",
-                                    e
-                                ));
+                                self.add_key_status = AddKeyStatus::Error;
+                                MessageBanner::set_global(
+                                    self.app_context.egui_ctx(),
+                                    &format!("Invalid contract ID: {}", e),
+                                    MessageType::Error,
+                                );
                                 return app_action;
                             }
                         }
@@ -224,10 +233,12 @@ impl AddKeyScreen {
                     let validation_result = new_key
                         .validate_private_key_bytes(&private_key_bytes, self.app_context.network);
                     if let Err(err) = validation_result {
-                        self.add_key_status = AddKeyStatus::ErrorMessage(format!(
-                            "Issue verifying private key: {}",
-                            err
-                        ));
+                        self.add_key_status = AddKeyStatus::Error;
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            &format!("Issue verifying private key: {}", err),
+                            MessageType::Error,
+                        );
                     } else if validation_result.unwrap() {
                         let new_qualified_key = QualifiedIdentityPublicKey {
                             identity_public_key: new_key.into(),
@@ -241,19 +252,30 @@ impl AddKeyScreen {
                             ),
                         ));
                     } else {
-                        self.add_key_status = AddKeyStatus::ErrorMessage(
-                            "Private key does not match the public key.".to_string(),
+                        self.add_key_status = AddKeyStatus::Error;
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Private key does not match the public key.",
+                            MessageType::Error,
                         );
                     }
                 }
             }
             Ok(_) => {
-                self.add_key_status =
-                    AddKeyStatus::ErrorMessage("Private key not 32 bytes".to_string());
+                self.add_key_status = AddKeyStatus::Error;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Private key not 32 bytes",
+                    MessageType::Error,
+                );
             }
             Err(_) => {
-                self.add_key_status =
-                    AddKeyStatus::ErrorMessage("Invalid hex string for private key.".to_string());
+                self.add_key_status = AddKeyStatus::Error;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Invalid hex string for private key.",
+                    MessageType::Error,
+                );
             }
         }
         app_action
@@ -270,8 +292,12 @@ impl AddKeyScreen {
         {
             self.private_key_input = hex::encode(private_key_bytes);
         } else {
-            self.add_key_status =
-                AddKeyStatus::ErrorMessage("Failed to generate a random private key.".to_string());
+            self.add_key_status = AddKeyStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Failed to generate a random private key.",
+                MessageType::Error,
+            );
         }
     }
 
@@ -324,9 +350,10 @@ impl ScreenLike for AddKeyScreen {
         }
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Error/success display is handled by the global MessageBanner.
         if let MessageType::Error = message_type {
-            self.add_key_status = AddKeyStatus::ErrorMessage(message.to_string());
+            self.add_key_status = AddKeyStatus::Error;
         }
     }
 
@@ -381,7 +408,7 @@ impl ScreenLike for AddKeyScreen {
                 && let Some(wallet) = &self.selected_wallet
             {
                 if let Err(e) = try_open_wallet_no_password(wallet) {
-                    self.error_message = Some(e);
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                 }
                 if wallet_needs_unlock(wallet) {
                     ui.add_space(10.0);
@@ -682,25 +709,8 @@ impl ScreenLike for AddKeyScreen {
 
                     ui.label(format!("Adding key... Time taken so far: {}", display_time));
                 }
-                AddKeyStatus::ErrorMessage(msg) => {
-                    let error_color = DashColors::ERROR;
-                    let msg = msg.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!("Error: {}", msg)).color(error_color),
-                                );
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.add_key_status = AddKeyStatus::NotStarted;
-                                }
-                            });
-                        });
+                AddKeyStatus::Error => {
+                    // Error display is handled by the global MessageBanner
                 }
                 AddKeyStatus::Complete => {
                     // handled above

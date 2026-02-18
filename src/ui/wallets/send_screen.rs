@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
@@ -287,8 +288,8 @@ pub enum SendStatus {
     WaitingForResult(u64),
     /// Successfully completed with a success message
     Complete(String),
-    /// Error occurred
-    Error(String),
+    /// Error occurred (message displayed by global MessageBanner)
+    Error,
 }
 
 /// Fee strategy for platform transfers
@@ -392,7 +393,6 @@ pub struct WalletSendScreen {
 
     // Wallet unlock
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
 }
 
 impl WalletSendScreen {
@@ -418,7 +418,6 @@ impl WalletSendScreen {
             subtract_fee: false,
             send_status: SendStatus::NotStarted,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message: None,
         }
     }
 
@@ -1059,7 +1058,7 @@ impl WalletSendScreen {
         };
 
         if let Err(e) = try_open_wallet_no_password(wallet) {
-            self.error_message = Some(e);
+            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
         }
         if wallet_needs_unlock(wallet) {
             ui.add_space(10.0);
@@ -1139,25 +1138,11 @@ impl WalletSendScreen {
                 });
                 Some(AppAction::None)
             }
-            SendStatus::Error(error_msg) => {
-                let mut dismiss = false;
-                ui.horizontal(|ui| {
-                    Frame::new()
-                        .fill(DashColors::ERROR.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, DashColors::ERROR))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&error_msg).color(DashColors::ERROR));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    dismiss = true;
-                                }
-                            });
-                        });
-                });
-                if dismiss {
+            SendStatus::Error => {
+                // Error message is displayed by the global MessageBanner.
+                // Show a dismiss/retry option.
+                ui.add_space(10.0);
+                if ui.button("Dismiss").clicked() {
                     self.send_status = SendStatus::NotStarted;
                 }
                 ui.add_space(10.0);
@@ -1714,7 +1699,8 @@ impl WalletSendScreen {
                         action = send_action;
                     }
                     Err(e) => {
-                        self.display_message(&e, MessageType::Error);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        self.send_status = SendStatus::Error;
                     }
                 }
             }
@@ -2290,7 +2276,8 @@ impl WalletSendScreen {
                         action = send_action;
                     }
                     Err(e) => {
-                        self.display_message(&e, MessageType::Error);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        self.send_status = SendStatus::Error;
                     }
                 }
             }
@@ -2671,9 +2658,10 @@ impl ScreenLike for WalletSendScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
-                self.send_status = SendStatus::Error(message.to_string());
+                self.send_status = SendStatus::Error;
             }
             MessageType::Success => {
                 self.send_status = SendStatus::Complete(message.to_string());

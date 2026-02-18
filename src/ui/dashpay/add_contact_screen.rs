@@ -45,7 +45,6 @@ pub struct AddContactScreen {
     selected_key: Option<IdentityPublicKey>,
     username_or_id: String,
     account_label: String,
-    message: Option<(String, MessageType)>,
     status: ContactRequestStatus,
     show_info_popup: bool,
     show_advanced_options: bool,
@@ -62,7 +61,6 @@ impl AddContactScreen {
             selected_key: None,
             username_or_id: String::new(),
             account_label: String::new(),
-            message: None,
             status: ContactRequestStatus::NotStarted,
             show_info_popup: false,
             show_advanced_options: false,
@@ -79,7 +77,6 @@ impl AddContactScreen {
             selected_key: None,
             username_or_id: identity_id,
             account_label: String::new(),
-            message: None,
             status: ContactRequestStatus::NotStarted,
             show_info_popup: false,
             show_advanced_options: false,
@@ -97,8 +94,7 @@ impl AddContactScreen {
                 let error = DashPayError::MissingField {
                     field: "username or identity ID".to_string(),
                 };
-                self.status = ContactRequestStatus::Error(error.clone());
-                self.display_message(&error.user_message(), MessageType::Error);
+                self.status = ContactRequestStatus::Error(error);
                 return AppAction::None;
             }
 
@@ -107,8 +103,7 @@ impl AddContactScreen {
                 let error = DashPayError::InvalidUsername {
                     username: self.username_or_id.clone(),
                 };
-                self.status = ContactRequestStatus::Error(error.clone());
-                self.display_message(&error.user_message(), MessageType::Error);
+                self.status = ContactRequestStatus::Error(error);
                 return AppAction::None;
             }
 
@@ -118,8 +113,7 @@ impl AddContactScreen {
                     length: self.account_label.len(),
                     max: 100,
                 };
-                self.status = ContactRequestStatus::Error(error.clone());
-                self.display_message(&error.user_message(), MessageType::Error);
+                self.status = ContactRequestStatus::Error(error);
                 return AppAction::None;
             }
 
@@ -148,8 +142,7 @@ impl AddContactScreen {
                     field: "signing key".to_string(),
                 }
             };
-            self.status = ContactRequestStatus::Error(error.clone());
-            self.display_message(&error.user_message(), MessageType::Error);
+            self.status = ContactRequestStatus::Error(error);
             AppAction::None
         }
     }
@@ -190,7 +183,6 @@ impl ScreenLike for AddContactScreen {
         if !matches!(self.status, ContactRequestStatus::Success(_)) {
             self.status = ContactRequestStatus::NotStarted;
         }
-        self.message = None;
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
@@ -234,20 +226,6 @@ impl ScreenLike for AddContactScreen {
                 });
             });
             ui.separator();
-
-            // Show message if any (but not if we have an error status, to avoid duplication)
-            if !matches!(self.status, ContactRequestStatus::Error(_))
-                && let Some((message, message_type)) = &self.message
-            {
-                let color = match message_type {
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Warning => DashColors::WARNING,
-                    MessageType::Info => egui::Color32::LIGHT_BLUE,
-                };
-                ui.colored_label(color, message);
-                ui.separator();
-            }
 
             // Identity and Key selector
             let identities = self
@@ -520,7 +498,11 @@ impl ScreenLike for AddContactScreen {
                     // Check wallet lock status before showing send button
                     let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                         if let Err(e) = try_open_wallet_no_password(wallet) {
-                            self.message = Some((e, MessageType::Error));
+                            crate::ui::components::MessageBanner::set_global(
+                                ui.ctx(),
+                                &e,
+                                MessageType::Error,
+                            );
                         }
                         wallet_needs_unlock(wallet)
                     } else {
@@ -575,9 +557,8 @@ impl ScreenLike for AddContactScreen {
                             {
                                 ui.add_space(10.0);
                                 if ui.button("Retry").clicked() {
-                                    // Clear both status and message before retrying
+                                    // Clear status before retrying
                                     self.status = ContactRequestStatus::NotStarted;
-                                    self.message = None;
                                     inner_action |= self.send_contact_request();
                                 }
                             }
@@ -618,7 +599,7 @@ impl ScreenLike for AddContactScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if message_type == MessageType::Error {
             let error = DashPayError::Internal {
                 message: message.to_string(),
@@ -673,9 +654,7 @@ impl ScreenLike for AddContactScreen {
                         }
                     };
 
-                    self.status = ContactRequestStatus::Error(error.clone());
-                    // Don't set message field to avoid duplicate error display
-                    self.message = None;
+                    self.status = ContactRequestStatus::Error(error);
                 }
                 // Ignore other messages - they're not for this screen
             }

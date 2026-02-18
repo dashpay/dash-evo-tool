@@ -51,7 +51,6 @@ pub struct ContactRequests {
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     active_tab: RequestTab,
-    message: Option<(String, MessageType)>,
     loading: bool,
     has_fetched_requests: bool,
     accept_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
@@ -73,7 +72,6 @@ impl ContactRequests {
             selected_identity: None,
             selected_identity_string: String::new(),
             active_tab: RequestTab::Incoming,
-            message: None,
             loading: false,
             has_fetched_requests: false,
             accept_confirmation_dialog: None,
@@ -134,7 +132,6 @@ impl ContactRequests {
             // Clear the requests when identity changes
             self.incoming_requests.clear();
             self.outgoing_requests.clear();
-            self.message = None;
             self.has_fetched_requests = false;
 
             // Load requests from database for the newly selected identity
@@ -229,7 +226,6 @@ impl ContactRequests {
         // Only fetch if we have a selected identity
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
-            self.message = None;
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
                 identity: identity.clone(),
@@ -258,7 +254,6 @@ impl ContactRequests {
     pub fn refresh(&mut self) -> AppAction {
         // Don't clear requests - preserve loaded state
         // Only clear temporary states
-        self.message = None;
         self.loading = false;
 
         // Auto-select first identity if none selected
@@ -292,10 +287,6 @@ impl ContactRequests {
                 if let Some(identity) = &self.selected_identity {
                     // Don't mark as accepted yet - wait for backend confirmation
                     self.loading = true;
-                    self.message = Some((
-                        "Accepting contact request...".to_string(),
-                        MessageType::Info,
-                    ));
 
                     let task =
                         BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
@@ -317,10 +308,6 @@ impl ContactRequests {
             if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
                 if let Some(identity) = &self.selected_identity {
                     self.loading = true;
-                    self.message = Some((
-                        "Rejecting contact request...".to_string(),
-                        MessageType::Info,
-                    ));
 
                     // Don't mark as rejected yet - wait for backend confirmation
 
@@ -367,7 +354,6 @@ impl ContactRequests {
                             // Clear the requests when identity changes
                             self.incoming_requests.clear();
                             self.outgoing_requests.clear();
-                            self.message = None;
                             self.has_fetched_requests = false;
 
                             // Update wallet for the newly selected identity
@@ -428,21 +414,6 @@ impl ContactRequests {
                 });
             });
             ui.separator();
-        }
-
-        // Show regular message if any (non-error)
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Warning => DashColors::WARNING,
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
-            };
-            // Only show error messages here if there's no structured error
-            if message_type == &MessageType::Error && self.error.is_none() {
-                ui.colored_label(color, RichText::new(message).strong());
-                ui.separator();
-            }
         }
 
         if self.selected_identity.is_none() {
@@ -513,13 +484,7 @@ impl ContactRequests {
                 if self.loading {
                     ui.horizontal(|ui| {
                         ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-
-                        // Show specific loading message based on current message
-                        if let Some((msg, _)) = &self.message {
-                            ui.label(msg);
-                        } else {
-                            ui.label("Loading...");
-                        }
+                        ui.label("Loading...");
                     });
                 } else {
                     ScrollArea::vertical().id_salt("incoming_requests_scroll").show(ui, |ui| {
@@ -626,7 +591,7 @@ impl ContactRequests {
                                                 // Check wallet lock status before showing buttons
                                                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                                                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                                                        self.message = Some((e, MessageType::Error));
+                                                        crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                                                     }
                                                     wallet_needs_unlock(wallet)
                                                 } else {
@@ -698,13 +663,7 @@ impl ContactRequests {
                 if self.loading {
                     ui.horizontal(|ui| {
                         ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-
-                        // Show specific loading message based on current message
-                        if let Some((msg, _)) = &self.message {
-                            ui.label(msg);
-                        } else {
-                            ui.label("Loading...");
-                        }
+                        ui.label("Loading...");
                     });
                 } else {
                     ScrollArea::vertical().id_salt("outgoing_requests_scroll").show(ui, |ui| {
@@ -789,10 +748,7 @@ impl ContactRequests {
                                         |ui| {
                                             if ui.button("Cancel").clicked() {
                                                 // TODO: Cancel outgoing request
-                                                self.display_message(
-                                                    "Request cancelled",
-                                                    MessageType::Info,
-                                                );
+                                                crate::ui::components::MessageBanner::set_global(ui.ctx(), "Request cancelled", MessageType::Info);
                                             }
                                         },
                                     );
@@ -841,23 +797,17 @@ impl ScreenLike for ContactRequests {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Clear loading state when displaying any message (including errors)
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.loading = false;
 
         // Check if this is an error about missing keys
         if message_type == MessageType::Error {
             if message.contains("ENCRYPTION key") {
                 self.error = Some(DashPayError::MissingEncryptionKey);
-                self.message = None;
-                return;
             } else if message.contains("DECRYPTION key") {
                 self.error = Some(DashPayError::MissingDecryptionKey);
-                self.message = None;
-                return;
             }
         }
-
-        self.message = Some((message.to_string(), message_type));
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -987,30 +937,22 @@ impl ScreenLike for ContactRequests {
             BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
                 // Mark as accepted only after successful backend operation
                 self.accepted_requests.insert(request_id);
-                self.message = Some((
-                    "Contact request accepted successfully".to_string(),
-                    MessageType::Success,
-                ));
             }
             BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
                 // Mark as rejected only after successful backend operation
                 self.rejected_requests.insert(request_id);
-                self.message = Some(("Contact request rejected".to_string(), MessageType::Success));
             }
             BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
-                self.message = Some(("Contact already established".to_string(), MessageType::Info));
+                // Message display is handled globally by AppState
             }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is an error message about missing keys
                 if msg.contains("ENCRYPTION key") {
                     self.error = Some(DashPayError::MissingEncryptionKey);
-                    self.message = None;
                 } else if msg.contains("DECRYPTION key") {
                     self.error = Some(DashPayError::MissingDecryptionKey);
-                    self.message = None;
-                } else {
-                    self.message = Some((msg, MessageType::Success));
                 }
+                // Other messages are handled globally by AppState
             }
             _ => {
                 // Ignore other results

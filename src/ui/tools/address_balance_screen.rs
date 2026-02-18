@@ -3,12 +3,12 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
-use eframe::egui::{self, Context, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{self, Context, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 
 pub struct AddressBalanceScreen {
@@ -16,7 +16,6 @@ pub struct AddressBalanceScreen {
     address_input: String,
     is_loading: bool,
     result: Option<AddressBalanceResult>,
-    error_message: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -33,19 +32,21 @@ impl AddressBalanceScreen {
             address_input: String::new(),
             is_loading: false,
             result: None,
-            error_message: None,
         }
     }
 
     fn trigger_fetch(&mut self) -> AppAction {
         let address = self.address_input.trim().to_string();
         if address.is_empty() {
-            self.error_message = Some("Please enter an address".to_string());
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Please enter an address",
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
         self.is_loading = true;
-        self.error_message = None;
         self.result = None;
 
         let task =
@@ -92,26 +93,6 @@ impl AddressBalanceScreen {
     }
 
     fn render_result(&mut self, ui: &mut Ui) {
-        if let Some(ref error) = self.error_message {
-            ui.add_space(20.0);
-            let error_color = DashColors::ERROR;
-            let error = error.clone();
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
-                        ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.error_message = None;
-                        }
-                    });
-                });
-        }
-
         if let Some(ref result) = self.result {
             ui.add_space(20.0);
             ui.separator();
@@ -143,9 +124,10 @@ impl AddressBalanceScreen {
 }
 
 impl ScreenLike for AddressBalanceScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if message_type == MessageType::Error {
-            self.error_message = Some(message.to_string());
+            self.is_loading = false;
         }
     }
 

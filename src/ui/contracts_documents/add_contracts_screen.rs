@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
@@ -11,7 +12,7 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::TimestampMillis;
-use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, Ui};
+use eframe::egui::{self, Color32, Context, RichText, Ui};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,7 +23,7 @@ enum AddContractsStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
     Complete(Vec<String>),
-    ErrorMessage(String),
+    Error,
 }
 
 pub struct AddContractsScreen {
@@ -90,7 +91,8 @@ impl AddContractsScreen {
                 )))
             }
             Err(e) => {
-                self.add_contracts_status = AddContractsStatus::ErrorMessage(e);
+                self.add_contracts_status = AddContractsStatus::Error;
+                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
                 AppAction::None
             }
         }
@@ -269,10 +271,11 @@ impl AddContractsScreen {
 }
 
 impl ScreenLike for AddContractsScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
-                self.add_contracts_status = AddContractsStatus::ErrorMessage(message.to_string());
+                self.add_contracts_status = AddContractsStatus::Error;
             }
             MessageType::Success | MessageType::Info => {}
         }
@@ -324,29 +327,7 @@ impl ScreenLike for AddContractsScreen {
             ui.add_space(10.0);
 
             match &self.add_contracts_status {
-                AddContractsStatus::NotStarted | AddContractsStatus::ErrorMessage(_) => {
-                    if let AddContractsStatus::ErrorMessage(msg) = &self.add_contracts_status {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.add_contracts_status = AddContractsStatus::NotStarted;
-                                    }
-                                });
-                            });
-                        ui.add_space(10.0);
-                    }
-
+                AddContractsStatus::NotStarted | AddContractsStatus::Error => {
                     // Show input fields
                     self.show_input_fields(ui);
 

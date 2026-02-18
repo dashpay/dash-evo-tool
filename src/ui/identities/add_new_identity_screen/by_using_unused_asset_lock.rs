@@ -128,14 +128,12 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
 
         if ui.button("Create Identity").clicked() {
-            self.error_message = None;
             action |= self.register_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }
 
         ui.add_space(20.0);
 
-        // Only show status messages if there's no error
-        if self.error_message.is_none() {
+        {
             ui.vertical_centered(|ui| match step {
                 WalletFundedScreenStep::WaitingForPlatformAcceptance => {
                     ui.heading("=> Waiting for Platform acknowledgement <=");

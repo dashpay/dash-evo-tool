@@ -34,7 +34,6 @@ pub struct ProfileSearchScreen {
     pub app_context: Arc<AppContext>,
     search_query: String,
     search_results: Vec<ProfileSearchResult>,
-    message: Option<(String, MessageType)>,
     loading: bool,
     has_searched: bool, // Track if a search has been performed
     show_info_popup: bool,
@@ -46,7 +45,6 @@ impl ProfileSearchScreen {
             app_context,
             search_query: String::new(),
             search_results: Vec::new(),
-            message: None,
             loading: false,
             has_searched: false,
             show_info_popup: false,
@@ -116,18 +114,6 @@ impl ProfileSearchScreen {
         });
 
         ui.separator();
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => DashColors::success_color(dark_mode),
-                MessageType::Error => DashColors::error_color(dark_mode),
-                MessageType::Warning => DashColors::warning_color(dark_mode),
-                MessageType::Info => DashColors::DASH_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
-        }
 
         ScrollArea::vertical().show(ui, |ui| {
             // Search section
@@ -258,9 +244,9 @@ impl ProfileSearchScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.loading = false;
-        self.message = Some((message.to_string(), message_type));
     }
 }
 
@@ -302,7 +288,6 @@ impl ScreenLike for ProfileSearchScreen {
             self.search_query.clear();
             self.search_results.clear();
             self.has_searched = false;
-            self.message = None;
             action = AppAction::None; // Consume the action
         }
 
@@ -371,8 +356,8 @@ impl ScreenLike for ProfileSearchScreen {
                     self.search_results.push(search_result);
                 }
             }
-            BackendTaskSuccessResult::Message(msg) => {
-                self.message = Some((msg, MessageType::Info));
+            BackendTaskSuccessResult::Message(_msg) => {
+                // Message display is handled globally by AppState
             }
             _ => {
                 // Ignore other results

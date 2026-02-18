@@ -1535,7 +1535,8 @@ impl MasternodeListDiffScreen {
                         .clicked()
                     {
                         self.clear();
-                        self.display_message("Cleared all data", MessageType::Success);
+                        self.ui_state.message =
+                            Some(("Cleared all data".to_string(), MessageType::Success));
                     }
                     if ui
                         .button("Clear keep base")
@@ -1545,10 +1546,10 @@ impl MasternodeListDiffScreen {
                         .clicked()
                     {
                         self.clear_keep_base();
-                        self.display_message(
-                            "Cleared data and kept base diff",
+                        self.ui_state.message = Some((
+                            "Cleared data and kept base diff".to_string(),
                             MessageType::Success,
-                        );
+                        ));
                     }
                 });
                 // Add bottom padding so the horizontal scrollbar doesn't overlap buttons
@@ -4181,17 +4182,14 @@ impl MasternodeListDiffScreen {
 
 impl ScreenLike for MasternodeListDiffScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
                 self.task.pending = None;
+                // Preserve local error state so the screen's inline error rendering works
                 self.ui_state.error = Some(message.to_string());
             }
-            MessageType::Success => {
-                self.ui_state.message = Some((message.to_string(), message_type));
-            }
-            MessageType::Info => {
-                // Do not show transient info messages to avoid noisy black text banners.
-            }
+            MessageType::Success | MessageType::Info => {}
         }
     }
 
@@ -4244,10 +4242,10 @@ impl ScreenLike for MasternodeListDiffScreen {
                 if matches!(self.task.pending, Some(PendingTask::DmlDiffNoRotation)) {
                     if let Some(task) = self.build_validation_diffs_task() {
                         self.task.queued_task = Some(task);
-                        self.display_message(
-                            "Fetched DMLs (no rotation); fetching validation diffs…",
+                        self.ui_state.message = Some((
+                            "Fetched DMLs (no rotation); fetching validation diffs…".to_string(),
                             MessageType::Info,
-                        );
+                        ));
                     } else if !self.data.masternode_list_engine.masternode_lists.is_empty() {
                         // Fallback: attempt verification directly
                         if let Err(e) = self
@@ -4261,14 +4259,21 @@ impl ScreenLike for MasternodeListDiffScreen {
                             self.ui_state.error = Some(e.to_string());
                         }
                         self.task.pending = None;
-                        self.display_message("Fetched DMLs (no rotation)", MessageType::Success);
+                        self.ui_state.message = Some((
+                            "Fetched DMLs (no rotation)".to_string(),
+                            MessageType::Success,
+                        ));
                     } else {
                         self.task.pending = None;
-                        self.display_message("Fetched DMLs (no rotation)", MessageType::Success);
+                        self.ui_state.message = Some((
+                            "Fetched DMLs (no rotation)".to_string(),
+                            MessageType::Success,
+                        ));
                     }
                 } else {
                     self.task.pending = None;
-                    self.display_message("Fetched DML diff", MessageType::Success);
+                    self.ui_state.message =
+                        Some(("Fetched DML diff".to_string(), MessageType::Success));
                 }
                 self.selection.selected_dml_diff_key = None;
                 self.selection.selected_quorum_in_diff_index = None;
@@ -4326,13 +4331,14 @@ impl ScreenLike for MasternodeListDiffScreen {
                 // Queue extra diffs required for verification (previous behavior)
                 if let Some(task) = self.build_validation_diffs_task() {
                     self.task.queued_task = Some(task);
-                    self.display_message(
-                        "Fetched QR info + DMLs; fetching validation diffs…",
+                    self.ui_state.message = Some((
+                        "Fetched QR info + DMLs; fetching validation diffs…".to_string(),
                         MessageType::Info,
-                    );
+                    ));
                 } else {
                     self.task.pending = None;
-                    self.display_message("Fetched QR info + DMLs", MessageType::Success);
+                    self.ui_state.message =
+                        Some(("Fetched QR info + DMLs".to_string(), MessageType::Success));
                 }
             }
             BackendTaskSuccessResult::MnListFetchedDiffs { items } => {
@@ -4380,10 +4386,10 @@ impl ScreenLike for MasternodeListDiffScreen {
                     self.ui_state.error = Some(e.to_string());
                 }
                 self.task.pending = None;
-                self.display_message(
-                    "Fetched validation diffs and verified non-rotating quorums",
+                self.ui_state.message = Some((
+                    "Fetched validation diffs and verified non-rotating quorums".to_string(),
                     MessageType::Success,
-                );
+                ));
             }
             BackendTaskSuccessResult::MnListChainLockSigs { entries } => {
                 for ((h, bh), sig) in entries {
@@ -4397,7 +4403,10 @@ impl ScreenLike for MasternodeListDiffScreen {
                     }
                 }
                 self.task.pending = None;
-                self.display_message("Fetched chain lock signatures", MessageType::Success);
+                self.ui_state.message = Some((
+                    "Fetched chain lock signatures".to_string(),
+                    MessageType::Success,
+                ));
             }
             _ => {}
         }

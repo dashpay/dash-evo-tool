@@ -21,6 +21,8 @@ use crate::ui::components::styled::{StyledCheckbox};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::Component;
 use crate::ui::components::identity_selector::IdentitySelector;
+use crate::ui::components::MessageBanner;
+use crate::ui::MessageType;
 use crate::ui::helpers::{add_identity_key_chooser, TransactionType};
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -426,11 +428,10 @@ impl TokensScreen {
                                     match self.parse_token_build_args() {
                                         Ok(args) => {
                                             self.cached_build_args = Some(args);
-                                            self.token_creator_error_message = None;
                                             self.show_token_creator_confirmation_popup = true;
                                         }
                                         Err(err_msg) => {
-                                            self.token_creator_error_message = Some(err_msg);
+                                            MessageBanner::set_global(context, &err_msg, MessageType::Error);
                                         }
                                     }
                                 }
@@ -869,11 +870,10 @@ impl TokensScreen {
                                         // If success, show the "confirmation popup"
                                         // Or skip the popup entirely and dispatch tasks right now
                                         self.cached_build_args = Some(args);
-                                        self.token_creator_error_message = None;
                                         self.show_token_creator_confirmation_popup = true;
                                     },
                                     Err(err) => {
-                                        self.token_creator_error_message = Some(err);
+                                        MessageBanner::set_global(context, &err, MessageType::Error);
                                     }
                                 }
                             }
@@ -922,7 +922,7 @@ impl TokensScreen {
                                         ) {
                                             Ok(dc) => dc,
                                             Err(e) => {
-                                                self.token_creator_error_message = Some(format!("Error building contract V1: {e}"));
+                                                MessageBanner::set_global(context, &format!("Error building contract V1: {e}"), MessageType::Error);
                                                 return;
                                             }
                                         };
@@ -932,7 +932,7 @@ impl TokensScreen {
                                         self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
                                     },
                                     Err(err_msg) => {
-                                        self.token_creator_error_message = Some(err_msg);
+                                        MessageBanner::set_global(context, &err_msg, MessageType::Error);
                                     },
                                 }
                             }
@@ -968,26 +968,7 @@ impl TokensScreen {
             });
         }
 
-        // Show an error if we have one
-        if let Some(err_msg) = self.token_creator_error_message.clone() {
-            ui.add_space(10.0);
-            let error_color = DashColors::ERROR;
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", err_msg)).color(error_color));
-                        ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.token_creator_error_message = None;
-                        }
-                    });
-                });
-            ui.add_space(10.0);
-        }
+        // Error messages are displayed by the global MessageBanner
 
             }); // Close the ScrollArea from line 40
 
@@ -1003,12 +984,12 @@ impl TokensScreen {
 
     fn update_selected_wallet(&mut self) {
         if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            self.selected_wallet = crate::ui::identities::get_selected_wallet(
-                qid,
-                None,
-                Some(key),
-                &mut self.token_creator_error_message,
-            );
+            let mut wallet_error = None;
+            self.selected_wallet =
+                crate::ui::identities::get_selected_wallet(qid, None, Some(key), &mut wallet_error);
+            if let Some(e) = wallet_error {
+                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+            }
         }
     }
 
@@ -1019,7 +1000,7 @@ impl TokensScreen {
             };
 
             if let Err(e) = try_open_wallet_no_password(wallet) {
-                self.token_creator_error_message = Some(e);
+                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
             }
 
             if wallet_needs_unlock(wallet) {
@@ -1476,7 +1457,7 @@ impl TokensScreen {
                             match self.parse_token_build_args() {
                                 Ok(a) => a,
                                 Err(err) => {
-                                    self.token_creator_error_message = Some(err);
+                                    MessageBanner::set_global(ui.ctx(), &err, MessageType::Error);
                                     self.close_token_creator_confirmation_popup();
                                     return AppAction::None;
                                 }

@@ -7,6 +7,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -39,7 +40,7 @@ enum BroadcastStatus {
     FetchingNonce(u64),
     Broadcasting(u64),
     ProofError(u64),
-    BroadcastError(String),
+    BroadcastError,
     Done,
 }
 
@@ -58,7 +59,6 @@ pub struct UpdateDataContractScreen {
 
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
     completed_fee_result: Option<FeeResult>,
 }
 
@@ -118,7 +118,6 @@ impl UpdateDataContractScreen {
 
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message: None,
             completed_fee_result: None,
         }
     }
@@ -185,9 +184,9 @@ impl UpdateDataContractScreen {
 
     /// Renders an error message at the top of the screen with a styled bubble
     fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
+        // Only show local parsing errors; broadcast errors are handled by global MessageBanner
         let error_msg = match &self.broadcast_status {
             BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
-            BroadcastStatus::BroadcastError(msg) => Some(format!("Broadcast error: {msg}")),
             _ => None,
         };
 
@@ -218,8 +217,8 @@ impl UpdateDataContractScreen {
 
         match &self.broadcast_status {
             BroadcastStatus::Idle => {}
-            BroadcastStatus::ParsingError(_) | BroadcastStatus::BroadcastError(_) => {
-                // Errors are now shown at the top via render_error_bubble
+            BroadcastStatus::ParsingError(_) | BroadcastStatus::BroadcastError => {
+                // Parsing errors shown via render_error_bubble; broadcast errors via global banner
             }
             BroadcastStatus::ValidContract(contract) => {
                 // Fee estimation display - contract updates charge registration fees for the new contract
@@ -362,12 +361,12 @@ impl UpdateDataContractScreen {
 
 impl ScreenLike for UpdateDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if message_type == MessageType::Error {
             if message.contains("proof error logged, contract inserted into the database") {
-                self.error_message = Some(message.to_string());
                 self.broadcast_status = BroadcastStatus::Done;
             } else {
-                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
+                self.broadcast_status = BroadcastStatus::BroadcastError;
             }
         }
     }
@@ -494,12 +493,16 @@ impl ScreenLike for UpdateDataContractScreen {
                         .cloned();
 
                     // Update wallet
+                    let mut wallet_error = None;
                     self.selected_wallet = get_selected_wallet(
                         identity,
                         Some(&self.app_context),
                         None,
-                        &mut self.error_message,
+                        &mut wallet_error,
                     );
+                    if let Some(e) = wallet_error {
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    }
 
                     // Re-parse contract with new owner ID
                     self.parse_contract();
@@ -542,7 +545,7 @@ impl ScreenLike for UpdateDataContractScreen {
             // Render the wallet unlock if needed
             if let Some(wallet) = &self.selected_wallet {
                 if let Err(e) = try_open_wallet_no_password(wallet) {
-                    self.error_message = Some(e);
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                 }
                 if wallet_needs_unlock(wallet) {
                     ui.add_space(10.0);

@@ -7,6 +7,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::Component;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -43,7 +44,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum ResumeTokensStatus {
     NotStarted,
     WaitingForResult(u64),
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -58,7 +59,6 @@ pub struct ResumeTokensScreen {
     pub public_note: Option<String>,
 
     status: ResumeTokensStatus,
-    error_message: Option<String>,
 
     // Basic references
     pub app_context: Arc<AppContext>,
@@ -86,7 +86,9 @@ impl ResumeTokensScreen {
             )
             .cloned();
 
-        let mut error_message = None;
+        let set_error_banner = |msg: &str| {
+            MessageBanner::set_global(app_context.egui_ctx(), msg, MessageType::Error);
+        };
 
         let group = match identity_token_info
             .token_config
@@ -94,32 +96,30 @@ impl ResumeTokensScreen {
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                error_message = Some("Burning is not allowed on this token".to_string());
+                set_error_banner("Burning is not allowed on this token");
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
                     != identity_token_info.identity.identity.id()
                 {
-                    error_message = Some(
-                        "You are not allowed to burn this token. Only the contract owner is."
-                            .to_string(),
+                    set_error_banner(
+                        "You are not allowed to burn this token. Only the contract owner is.",
                     );
                 }
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to burn this token".to_string());
+                    set_error_banner("You are not allowed to burn this token");
                 }
                 None
             }
             AuthorizedActionTakers::MainGroup => {
                 match identity_token_info.token_config.main_control_group() {
                     None => {
-                        error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
-                                .to_string(),
+                        set_error_banner(
+                            "Invalid contract: No main control group, though one should exist",
                         );
                         None
                     }
@@ -131,7 +131,7 @@ impl ResumeTokensScreen {
                         {
                             Ok(group) => Some((group_pos, group.clone())),
                             Err(e) => {
-                                error_message = Some(format!("Invalid contract: {}", e));
+                                set_error_banner(&format!("Invalid contract: {}", e));
                                 None
                             }
                         }
@@ -146,7 +146,7 @@ impl ResumeTokensScreen {
                 {
                     Ok(group) => Some((*group_pos, group.clone())),
                     Err(e) => {
-                        error_message = Some(format!("Invalid contract: {}", e));
+                        set_error_banner(&format!("Invalid contract: {}", e));
                         None
                     }
                 }
@@ -169,12 +169,16 @@ impl ResumeTokensScreen {
         };
 
         // Attempt to get an unlocked wallet reference
+        let mut wallet_error = None;
         let selected_wallet = get_selected_wallet(
             &identity_token_info.identity,
             None,
             possible_key.as_ref(),
-            &mut error_message,
+            &mut wallet_error,
         );
+        if let Some(e) = wallet_error {
+            set_error_banner(&e);
+        }
 
         Self {
             identity: identity_token_info.identity.clone(),
@@ -186,7 +190,6 @@ impl ResumeTokensScreen {
             group_action_id: None,
             public_note: None,
             status: ResumeTokensStatus::NotStarted,
-            error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -268,10 +271,10 @@ impl ResumeTokensScreen {
 }
 
 impl ScreenLike for ResumeTokensScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            self.status = ResumeTokensStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+            self.status = ResumeTokensStatus::Error;
         }
     }
 
@@ -388,7 +391,7 @@ impl ScreenLike for ResumeTokensScreen {
                 // Possibly handle locked wallet scenario
                 if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -523,25 +526,8 @@ impl ScreenLike for ResumeTokensScreen {
                         let elapsed = now - start_time;
                         ui.label(format!("Resuming... elapsed: {}s", elapsed));
                     }
-                    ResumeTokensStatus::ErrorMessage(msg) => {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = ResumeTokensStatus::NotStarted;
-                                    }
-                                });
-                            });
+                    ResumeTokensStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     ResumeTokensStatus::Complete => {}
                 }

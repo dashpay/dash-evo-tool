@@ -1,6 +1,7 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::components::Component;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -44,7 +45,7 @@ use super::tokens_screen::IdentityTokenBasicInfo;
 pub enum ClaimTokensStatus {
     NotStarted,
     WaitingForResult(u64),
-    ErrorMessage(String),
+    Error,
     Complete,
 }
 
@@ -58,7 +59,6 @@ pub struct ClaimTokensScreen {
     token_configuration: TokenConfiguration,
     distribution_type: Option<TokenDistributionType>,
     status: ClaimTokensStatus,
-    error_message: Option<String>,
     pub app_context: Arc<AppContext>,
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -98,9 +98,11 @@ impl ClaimTokensScreen {
             );
         }
 
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, possible_key, &mut error_message);
+        let mut wallet_error = None;
+        let selected_wallet = get_selected_wallet(&identity, None, possible_key, &mut wallet_error);
+        if let Some(e) = wallet_error {
+            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+        }
 
         let distribution_type = match (
             token_configuration
@@ -128,7 +130,6 @@ impl ClaimTokensScreen {
             token_configuration,
             distribution_type,
             status: ClaimTokensStatus::NotStarted,
-            error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -243,10 +244,10 @@ impl ClaimTokensScreen {
 }
 
 impl ScreenLike for ClaimTokensScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            self.status = ClaimTokensStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+            self.status = ClaimTokensStatus::Error;
         }
     }
 
@@ -355,7 +356,7 @@ impl ScreenLike for ClaimTokensScreen {
                 // Possibly handle locked wallet scenario
                 if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -543,8 +544,11 @@ impl ScreenLike for ClaimTokensScreen {
 
                 if ui.add(button).clicked() {
                     if self.distribution_type.is_none() {
-                        self.status = ClaimTokensStatus::ErrorMessage(
-                            "Please select a distribution type.".to_string(),
+                        self.status = ClaimTokensStatus::Error;
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Please select a distribution type.",
+                            MessageType::Error,
                         );
                         return;
                     } else if self.confirmation_dialog.is_none() {
@@ -571,25 +575,8 @@ impl ScreenLike for ClaimTokensScreen {
                         let elapsed = now - start_time;
                         ui.label(format!("Claiming... elapsed: {}s", elapsed));
                     }
-                    ClaimTokensStatus::ErrorMessage(msg) => {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = ClaimTokensStatus::NotStarted;
-                                    }
-                                });
-                            });
+                    ClaimTokensStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     ClaimTokensStatus::Complete => {}
                 }

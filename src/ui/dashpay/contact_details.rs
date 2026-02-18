@@ -52,7 +52,6 @@ pub struct ContactDetailsScreen {
     edit_nickname: String,
     edit_note: String,
     edit_hidden: bool,
-    message: Option<(String, MessageType)>,
     loading: bool,
     show_info_popup: bool,
 }
@@ -73,7 +72,6 @@ impl ContactDetailsScreen {
             edit_nickname: String::new(),
             edit_note: String::new(),
             edit_hidden: false,
-            message: None,
             loading: false,
             show_info_popup: false,
         };
@@ -88,7 +86,6 @@ impl ContactDetailsScreen {
         // Clear any existing data - real data should be loaded from backend when needed
         self.contact_info = None;
         self.payment_history.clear();
-        self.message = None;
 
         // TODO: Implement real backend fetching of contact info and payment history
         // This should be triggered by user actions or specific backend tasks
@@ -120,7 +117,12 @@ impl ContactDetailsScreen {
         }
 
         self.editing_info = false;
-        self.display_message("Contact info updated", MessageType::Success);
+
+        crate::ui::components::MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Contact info updated",
+            MessageType::Success,
+        );
     }
 
     fn cancel_editing(&mut self) {
@@ -142,18 +144,6 @@ impl ContactDetailsScreen {
         });
 
         ui.separator();
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Warning => DashColors::WARNING,
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
-        }
 
         // Loading indicator
         if self.loading {
@@ -370,18 +360,12 @@ impl ContactDetailsScreen {
                     ui.horizontal(|ui| {
                         if ui.button("Remove Contact").clicked() {
                             // TODO: Implement contact removal
-                            self.display_message(
-                                "Contact removal not yet implemented",
-                                MessageType::Info,
-                            );
+                            crate::ui::components::MessageBanner::set_global(ui.ctx(), "Contact removal not yet implemented", MessageType::Info);
                         }
 
                         if ui.button("Block Contact").clicked() {
                             // TODO: Implement contact blocking
-                            self.display_message(
-                                "Contact blocking not yet implemented",
-                                MessageType::Info,
-                            );
+                            crate::ui::components::MessageBanner::set_global(ui.ctx(), "Contact blocking not yet implemented", MessageType::Info);
                         }
                     });
                 });
@@ -403,8 +387,8 @@ impl ContactDetailsScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
     }
 }
 

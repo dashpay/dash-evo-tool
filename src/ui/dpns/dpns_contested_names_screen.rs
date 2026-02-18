@@ -18,6 +18,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
+use crate::ui::components::MessageBanner;
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
@@ -117,7 +118,6 @@ pub struct DPNSScreen {
     pub scheduled_vote_cast_in_progress: bool,
     pub selected_votes: Vec<SelectedVote>,
     pub app_context: Arc<AppContext>,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
 
     /// Sorting
@@ -188,7 +188,6 @@ impl DPNSScreen {
             scheduled_votes: scheduled_votes_with_status,
             selected_votes: Vec::new(),
             app_context: app_context.clone(),
-            message: None,
             sort_column: SortColumn::ContestedName,
             sort_order: SortOrder::Ascending,
             active_filter_term: String::new(),
@@ -205,23 +204,6 @@ impl DPNSScreen {
             bulk_schedule_message: None,
             bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
             set_all_option: VoteOption::CastNow,
-        }
-    }
-
-    // ---------------------------
-    // Error handling
-    // ---------------------------
-    fn dismiss_message(&mut self) {
-        self.message = None;
-    }
-
-    fn check_error_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-            if elapsed.num_seconds() >= 10 {
-                self.dismiss_message();
-            }
         }
     }
 
@@ -313,7 +295,6 @@ impl DPNSScreen {
                     } else {
                         let now = Utc::now().timestamp() as u64;
                         self.refreshing_status = RefreshingStatus::Refreshing(now);
-                        self.message = None; // Clear any existing message
                         match self.dpns_subscreen {
                             DPNSSubscreen::Active | DPNSSubscreen::Past => {
                                 app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -977,12 +958,14 @@ impl DPNSScreen {
                                         .db
                                         .set_identity_alias(&identifier, Some(&alias_with_suffix))
                                     {
-                                        self.display_message(
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
                                             &format!("Failed to set alias: {}", e),
                                             MessageType::Error,
                                         );
                                     } else {
-                                        self.display_message(
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
                                             &format!(
                                                 "Alias set to '{}' for identity {}",
                                                 alias_with_suffix,
@@ -1839,8 +1822,8 @@ impl ScreenLike for DPNSScreen {
         self.refresh();
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Sync error states
+    fn display_message(&mut self, message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if message.contains("Error casting scheduled vote") {
             self.scheduled_vote_cast_in_progress = false;
             if let Ok(mut guard) = self.scheduled_votes.lock() {
@@ -1851,9 +1834,6 @@ impl ScreenLike for DPNSScreen {
                 }
             }
         }
-
-        // Save into general error_message for top-of-screen
-        self.message = Some((message.to_string(), message_type, Utc::now()));
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -1924,7 +1904,6 @@ impl ScreenLike for DPNSScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_error_expiration();
         let has_identity_that_can_register = !self.user_identities.is_empty();
         let has_active_contests = {
             let guard = self.contested_names.lock().unwrap();
@@ -2109,28 +2088,6 @@ impl ScreenLike for DPNSScreen {
                     ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                 });
                 ui.add_space(2.0); // Space below
-            } else if let Some((msg, msg_type, timestamp)) = self.message.clone() {
-                ui.add_space(25.0); // Same space as refreshing indicator
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let color = match msg_type {
-                    MessageType::Error => Color32::DARK_RED,
-                    MessageType::Warning => DashColors::warning_color(dark_mode),
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => Color32::DARK_GREEN,
-                };
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-
-                    // Calculate remaining seconds
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    // Add the message with auto-dismiss countdown
-                    let full_msg = format!("{} ({}s)", msg, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(color));
-                });
-                ui.add_space(2.0); // Same space below as refreshing indicator
             }
             inner_action
         });
@@ -2143,7 +2100,6 @@ impl ScreenLike for DPNSScreen {
             )) => {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-                self.message = None; // Clear any existing message
             }
             // If refreshing owned names, set self.refreshing = true
             AppAction::BackendTask(BackendTask::IdentityTask(
@@ -2151,7 +2107,6 @@ impl ScreenLike for DPNSScreen {
             )) => {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-                self.message = None; // Clear any existing message
             }
             AppAction::SetMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;

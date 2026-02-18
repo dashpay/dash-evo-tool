@@ -60,6 +60,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::info_popup::InfoPopup;
@@ -194,7 +195,7 @@ pub enum ContractSearchStatus {
     NotStarted,
     WaitingForResult(u64),
     Complete,
-    ErrorMessage(String),
+    Error,
 }
 
 #[derive(Debug, PartialEq, Default)]
@@ -203,7 +204,7 @@ pub enum TokenCreatorStatus {
     NotStarted,
     WaitingForResult(u64),
     Complete,
-    ErrorMessage(String),
+    Error,
 }
 
 /// Sorting columns
@@ -1167,7 +1168,6 @@ pub struct TokensScreen {
         Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
     >,
     pricing_loading_state: IndexMap<Identifier, bool>,
-    backend_message: Option<(String, MessageType, DateTime<Utc>)>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
     should_reset_collapsing_states: bool,
@@ -1255,7 +1255,6 @@ pub struct TokensScreen {
     show_token_creator_confirmation_popup: bool,
     token_creator_confirmation_dialog: Option<ConfirmationDialog>,
     token_creator_status: TokenCreatorStatus,
-    token_creator_error_message: Option<String>,
     show_advanced_keeps_history: bool,
     token_advanced_keeps_history: TokenKeepsHistoryRulesV0,
     groups_ui: Vec<GroupConfigUI>,
@@ -1564,7 +1563,6 @@ impl TokensScreen {
             next_cursors: vec![],
             previous_cursors: vec![],
             search_results: Arc::new(Mutex::new(Vec::new())),
-            backend_message: None,
             sort_column: SortColumn::OwnerIdentityAlias,
             sort_order: SortOrder::Ascending,
             use_custom_order: false,
@@ -1597,7 +1595,6 @@ impl TokensScreen {
             show_token_creator_confirmation_popup: false,
             token_creator_confirmation_dialog: None,
             token_creator_status: TokenCreatorStatus::NotStarted,
-            token_creator_error_message: None,
             token_names_input: vec![(
                 String::new(),
                 String::new(),
@@ -1844,19 +1841,7 @@ impl TokensScreen {
     // Message handling
     // ─────────────────────────────────────────────────────────────────
 
-    fn dismiss_message(&mut self) {
-        self.backend_message = None;
-    }
-
-    fn check_error_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.backend_message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-            if elapsed.num_seconds() >= 10 {
-                self.dismiss_message();
-            }
-        }
-    }
+    // Message display is handled by the global MessageBanner
 
     fn history_row(&mut self, ui: &mut Ui) {
         // --- 1.  pull or create the rules object --------------------------------
@@ -2249,9 +2234,10 @@ impl TokensScreen {
                         let id_res = Identifier::from_string(id, Encoding::Base58);
                         TokenDistributionRecipient::Identity(id_res.unwrap_or_default())
                     } else {
-                        self.token_creator_error_message = Some(
-                            "Invalid base58 identifier for perpetual distribution recipient"
-                                .to_string(),
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Invalid base58 identifier for perpetual distribution recipient",
+                            MessageType::Error,
                         );
                         return Err(
                             "Invalid base58 identifier for perpetual distribution recipient"
@@ -2285,7 +2271,11 @@ impl TokensScreen {
                     match self.parse_pre_programmed_distributions() {
                         Ok(distributions) => distributions,
                         Err(err) => {
-                            self.token_creator_error_message = Some(err.clone());
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                &err,
+                                MessageType::Error,
+                            );
                             return Err(err.to_string());
                         }
                     };
@@ -2484,7 +2474,6 @@ impl TokensScreen {
         self.minting_allow_choosing_destination_rules = ChangeControlRulesUI::default();
 
         self.show_token_creator_confirmation_popup = false;
-        self.token_creator_error_message = None;
 
         // Reset document schemas
         self.document_schemas_input = String::new();
@@ -2495,18 +2484,22 @@ impl TokensScreen {
     fn add_token_to_tracked_tokens(&mut self, token_info: TokenInfo) -> Result<AppAction, String> {
         // Check if token is already added
         if self.all_known_tokens.contains_key(&token_info.token_id) {
-            self.backend_message = Some((
-                "Token already in My Tokens".to_string(),
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Token already in My Tokens",
                 MessageType::Error,
-                Utc::now(),
-            ));
+            );
             return Ok(AppAction::None);
         }
 
         // Set adding status with timestamp for elapsed time display
         self.adding_token_start_time = Some(Utc::now());
         self.adding_token_name = Some(token_info.token_name.clone());
-        self.backend_message = Some(("Adding token...".to_string(), MessageType::Info, Utc::now()));
+        MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Adding token...",
+            MessageType::Info,
+        );
 
         // Always save the token locally and refresh balances
         // The contract will be fetched automatically when needed
@@ -2601,11 +2594,11 @@ impl TokensScreen {
                         .app_context
                         .remove_token_balance(token_to_remove.token_id, token_to_remove.identity_id)
                     {
-                        self.backend_message = Some((
-                            format!("Error removing token balance: {}", e),
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            &format!("Error removing token balance: {}", e),
                             MessageType::Error,
-                            Utc::now(),
-                        ));
+                        );
                     } else {
                         self.refresh();
                     }
@@ -2663,11 +2656,11 @@ impl TokensScreen {
                         .db
                         .remove_token(&token_to_remove, &self.app_context)
                     {
-                        self.backend_message = Some((
-                            format!("Error removing token balance: {}", e),
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            &format!("Error removing token balance: {}", e),
                             MessageType::Error,
-                            Utc::now(),
-                        ));
+                        );
                     } else {
                         self.refresh();
                     }
@@ -2801,8 +2794,6 @@ impl ScreenLike for TokensScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
 
-        self.check_error_expiration();
-
         // Build top-right buttons
         let right_buttons = match self.tokens_subscreen {
             TokensSubscreen::MyTokens => vec![
@@ -2926,7 +2917,7 @@ impl ScreenLike for TokensScreen {
                         }
                     }
 
-                    // Show either refreshing indicator or message, but not both
+                    // Show refreshing indicator
                     if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
                         ui.add_space(25.0); // Space above
                         let now = Utc::now().timestamp() as u64;
@@ -2937,27 +2928,8 @@ impl ScreenLike for TokensScreen {
                             ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                         });
                         ui.add_space(2.0); // Space below
-                    } else if let Some((msg, msg_type, timestamp)) = self.backend_message.clone() {
-                        ui.add_space(25.0); // Same space as refreshing indicator
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        let color = match msg_type {
-                            MessageType::Error => Color32::DARK_RED,
-                            MessageType::Warning => DashColors::warning_color(dark_mode),
-                            MessageType::Info => DashColors::text_primary(dark_mode),
-                            MessageType::Success => Color32::DARK_GREEN,
-                        };
-                        ui.horizontal(|ui| {
-                            // Calculate remaining seconds
-                            let now = Utc::now();
-                            let elapsed = now.signed_duration_since(timestamp);
-                            let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                            // Add the message with auto-dismiss countdown
-                            let full_msg = format!("{} ({}s)", msg, remaining);
-                            ui.label(egui::RichText::new(full_msg).color(color));
-                        });
-                        ui.add_space(2.0); // Same space below as refreshing indicator
                     }
+                    // Message display is handled by the global MessageBanner
 
                     if self.confirm_remove_identity_token_balance_popup {
                         self.show_remove_identity_token_balance_popup(ui);
@@ -2986,7 +2958,6 @@ impl ScreenLike for TokensScreen {
             {
                 self.refreshing_status =
                     RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-                self.backend_message = None; // Clear any existing message
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
@@ -3037,6 +3008,8 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+
         // Reset contract details loading on any error
         if msg_type == MessageType::Error && self.contract_details_loading {
             self.contract_details_loading = false;
@@ -3044,13 +3017,10 @@ impl ScreenLike for TokensScreen {
 
         match self.tokens_subscreen {
             TokensSubscreen::TokenCreator => {
-                if msg.contains("Successfully registered token contract") {
-                    self.token_creator_status = TokenCreatorStatus::Complete;
-                } else if msg.contains("Failed to register token contract")
+                if msg.contains("Failed to register token contract")
                     | msg.contains("Error building contract V1")
                 {
-                    self.token_creator_status = TokenCreatorStatus::ErrorMessage(msg.to_string());
-                    self.token_creator_error_message = Some(msg.to_string());
+                    self.token_creator_status = TokenCreatorStatus::Error;
                 }
             }
             TokensSubscreen::MyTokens => {
@@ -3064,13 +3034,10 @@ impl ScreenLike for TokensScreen {
                         self.adding_token_start_time = None;
                         self.adding_token_name = None;
                     }
-                    self.backend_message = Some((msg.to_string(), msg_type, Utc::now()));
                     self.refreshing_status = RefreshingStatus::NotRefreshing;
-                } else if msg.contains("Failed to query token pricing") {
-                    self.backend_message = Some((msg.to_string(), MessageType::Error, Utc::now()));
                 } else {
                     tracing::debug!(
-                        ?msg,
+                        msg = msg,
                         ?msg_type,
                         "unsupported message received in token screen"
                     );
@@ -3078,8 +3045,7 @@ impl ScreenLike for TokensScreen {
             }
             TokensSubscreen::SearchTokens => {
                 if msg_type == MessageType::Error {
-                    self.contract_search_status =
-                        ContractSearchStatus::ErrorMessage(msg.to_string());
+                    self.contract_search_status = ContractSearchStatus::Error;
                     // Clear adding status on error
                     self.adding_token_start_time = None;
                     self.adding_token_name = None;
@@ -3087,14 +3053,9 @@ impl ScreenLike for TokensScreen {
                     | msg.contains("Token already added")
                     | msg.contains("Saved token to db")
                 {
-                    // Clear adding status and show success message
+                    // Clear adding status (success message shown by global banner)
                     self.adding_token_start_time = None;
                     self.adding_token_name = None;
-                    self.backend_message = Some((
-                        "Token added successfully!".to_string(),
-                        MessageType::Success,
-                        Utc::now(),
-                    ));
                 }
             }
         }

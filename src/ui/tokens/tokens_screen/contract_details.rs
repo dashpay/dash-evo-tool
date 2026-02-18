@@ -1,3 +1,5 @@
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use crate::{app::AppAction, ui::theme::DashColors};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -85,7 +87,7 @@ impl TokensScreen {
                                     action |= internal_action;
                                 }
                                 Err(e) => {
-                                    self.token_creator_error_message = Some(e);
+                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                                 }
                             }
                         }
@@ -96,7 +98,11 @@ impl TokensScreen {
                                     self.json_popup_text = schema;
                                 }
                                 Err(e) => {
-                                    self.token_creator_error_message = Some(e.to_string());
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        &e.to_string(),
+                                        MessageType::Error,
+                                    );
                                 }
                             }
                         }

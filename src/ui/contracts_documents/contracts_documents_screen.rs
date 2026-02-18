@@ -10,11 +10,11 @@ use crate::ui::components::contract_chooser_panel::{
     ContractChooserState, add_contract_chooser_panel,
 };
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
-use chrono::{DateTime, Utc};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
@@ -47,7 +47,6 @@ pub const DOCUMENT_PRIVATE_FIELDS: &[&str] = &[
 
 pub struct DocumentQueryScreen {
     pub app_context: Arc<AppContext>,
-    error_message: Option<(String, MessageType, DateTime<Utc>)>,
     contract_search_term: String,
     document_search_term: String,
     document_query: String,
@@ -77,7 +76,7 @@ pub enum DocumentQueryStatus {
     NotStarted,
     WaitingForResult(TimestampMillis),
     Complete,
-    ErrorMessage(String),
+    Error,
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -112,7 +111,6 @@ impl DocumentQueryScreen {
 
         Self {
             app_context: app_context.clone(),
-            error_message: None,
             contract_search_term: String::new(),
             document_search_term: String::new(),
             document_query: format!("SELECT * FROM {}", selected_document_type.name()),
@@ -134,22 +132,6 @@ impl DocumentQueryScreen {
             has_next_page: false,
             previous_cursors: Vec::new(),
             contract_chooser_state: ContractChooserState::default(),
-        }
-    }
-
-    fn dismiss_error(&mut self) {
-        self.error_message = None;
-    }
-
-    fn check_error_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.error_message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            // Automatically dismiss the error message after 10 seconds
-            if elapsed.num_seconds() > 10 {
-                self.dismiss_error();
-            }
         }
     }
 
@@ -222,15 +204,12 @@ impl DocumentQueryScreen {
                         )));
                     }
                     Err(e) => {
-                        self.document_query_status = DocumentQueryStatus::ErrorMessage(format!(
-                            "Failed to parse query properly: {}",
-                            e
-                        ));
-                        self.error_message = Some((
-                            format!("Failed to parse query properly: {}", e),
+                        self.document_query_status = DocumentQueryStatus::Error;
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            &format!("Failed to parse query properly: {}", e),
                             MessageType::Error,
-                            Utc::now(),
-                        ));
+                        );
                     }
                 }
             }
@@ -241,7 +220,6 @@ impl DocumentQueryScreen {
 
     fn show_output(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.separator();
         ui.add_space(10.0);
 
@@ -366,10 +344,8 @@ impl DocumentQueryScreen {
                         }
                     },
 
-                    DocumentQueryStatus::ErrorMessage(ref message) => {
-                        self.error_message =
-                            Some((message.to_string(), MessageType::Error, Utc::now()));
-                        ui.colored_label(DashColors::error_color(dark_mode), message);
+                    DocumentQueryStatus::Error => {
+                        // Error message is displayed globally via MessageBanner
                     }
                     _ => {
                         // Nothing
@@ -539,7 +515,6 @@ impl ScreenLike for DocumentQueryScreen {
 
     fn refresh(&mut self) {
         // Reset the screen state
-        self.error_message = None;
         self.contract_search_term.clear();
         self.document_search_term.clear();
         self.document_query.clear();
@@ -563,10 +538,11 @@ impl ScreenLike for DocumentQueryScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Only display the error message resulting from FetchDocuments backend task
-        if message.contains("Error fetching documents") {
-            self.document_query_status = DocumentQueryStatus::ErrorMessage(message.to_string());
-            self.error_message = Some((message.to_string(), message_type, Utc::now()));
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if message.contains("Error fetching documents")
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
+            self.document_query_status = DocumentQueryStatus::Error;
         }
     }
 
@@ -597,7 +573,6 @@ impl ScreenLike for DocumentQueryScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_error_expiration();
         let load_contract_button = (
             "Load Contracts",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::AddContracts)),

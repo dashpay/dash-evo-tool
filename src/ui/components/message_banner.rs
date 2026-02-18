@@ -93,14 +93,10 @@ impl BannerHandle {
     /// Returns `None` if the banner no longer exists.
     pub fn set_message(&self, text: &str) -> Option<&Self> {
         let mut banners = get_banners(&self.ctx);
-        let found = if let Some(b) = banners.iter_mut().find(|b| b.key == self.key) {
-            b.text = text.to_string();
-            true
-        } else {
-            false
-        };
+        let b = banners.iter_mut().find(|b| b.key == self.key)?;
+        b.text = text.to_string();
         set_banners(&self.ctx, banners);
-        found.then_some(self)
+        Some(self)
     }
 
     /// Override the auto-dismiss duration for this banner.
@@ -108,15 +104,11 @@ impl BannerHandle {
     /// Returns `None` if the banner no longer exists.
     pub fn with_auto_dismiss(&self, duration: Duration) -> Option<&Self> {
         let mut banners = get_banners(&self.ctx);
-        let found = if let Some(b) = banners.iter_mut().find(|b| b.key == self.key) {
-            b.auto_dismiss_after = Some(duration);
-            b.created_at = Instant::now();
-            true
-        } else {
-            false
-        };
+        let b = banners.iter_mut().find(|b| b.key == self.key)?;
+        b.auto_dismiss_after = Some(duration);
+        b.created_at = Instant::now();
         set_banners(&self.ctx, banners);
-        found.then_some(self)
+        Some(self)
     }
 
     /// Enable elapsed-time display on this banner. Disables auto-dismiss
@@ -124,15 +116,11 @@ impl BannerHandle {
     /// Returns `None` if the banner no longer exists.
     pub fn with_elapsed(&self) -> Option<&Self> {
         let mut banners = get_banners(&self.ctx);
-        let found = if let Some(b) = banners.iter_mut().find(|b| b.key == self.key) {
-            b.show_elapsed = true;
-            b.auto_dismiss_after = None;
-            true
-        } else {
-            false
-        };
+        let b = banners.iter_mut().find(|b| b.key == self.key)?;
+        b.show_elapsed = true;
+        b.auto_dismiss_after = None;
         set_banners(&self.ctx, banners);
-        found.then_some(self)
+        Some(self)
     }
 
     /// Remove this banner immediately.
@@ -267,6 +255,7 @@ impl MessageBanner {
             b.message_type = message_type;
             b.created_at = Instant::now();
             b.auto_dismiss_after = default_auto_dismiss(message_type);
+            b.show_elapsed = false;
         } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
             key = existing.key;
         } else {

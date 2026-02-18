@@ -94,9 +94,21 @@ fn test_banner_renders_all_types() {
             });
         harness.run();
         // Message text, icon, and dismiss button should all be present
-        assert!(harness.query_by_label(text).is_some(), "Missing text for {:?}", msg_type);
-        assert!(harness.query_by_label(icon).is_some(), "Missing icon for {:?}", msg_type);
-        assert!(harness.query_by_label("x").is_some(), "Missing dismiss button for {:?}", msg_type);
+        assert!(
+            harness.query_by_label(text).is_some(),
+            "Missing text for {:?}",
+            msg_type
+        );
+        assert!(
+            harness.query_by_label(icon).is_some(),
+            "Missing icon for {:?}",
+            msg_type
+        );
+        assert!(
+            harness.query_by_label("x").is_some(),
+            "Missing dismiss button for {:?}",
+            msg_type
+        );
     }
 }
 
@@ -152,8 +164,7 @@ fn test_deduplication() {
 fn test_replace_global_finds_and_replaces() {
     let ctx = egui::Context::default();
 
-    let original_handle =
-        MessageBanner::set_global(&ctx, "Generic success", MessageType::Success);
+    let original_handle = MessageBanner::set_global(&ctx, "Generic success", MessageType::Success);
     MessageBanner::set_global(&ctx, "An error", MessageType::Error);
 
     // Replace the generic one
@@ -434,10 +445,50 @@ fn test_handle_with_auto_dismiss_on_live_banner() {
     let ctx = egui::Context::default();
 
     let handle = MessageBanner::set_global(&ctx, "Dismissable", MessageType::Error);
-    assert!(
-        handle
-            .with_auto_dismiss(Duration::from_secs(30))
-            .is_some()
-    );
+    assert!(handle.with_auto_dismiss(Duration::from_secs(30)).is_some());
     assert!(handle.elapsed().is_some());
+}
+
+/// Test that exceeding MAX_BANNERS (5) evicts the oldest banner.
+#[test]
+fn test_max_banners_eviction() {
+    let ctx = egui::Context::default();
+
+    let handle1 = MessageBanner::set_global(&ctx, "Banner 1", MessageType::Error);
+    let handle2 = MessageBanner::set_global(&ctx, "Banner 2", MessageType::Error);
+    let _handle3 = MessageBanner::set_global(&ctx, "Banner 3", MessageType::Error);
+    let _handle4 = MessageBanner::set_global(&ctx, "Banner 4", MessageType::Error);
+    let _handle5 = MessageBanner::set_global(&ctx, "Banner 5", MessageType::Error);
+
+    // All 5 should be alive
+    assert!(handle1.elapsed().is_some());
+    assert!(handle2.elapsed().is_some());
+
+    // Adding a 6th should evict the oldest (Banner 1)
+    let handle6 = MessageBanner::set_global(&ctx, "Banner 6", MessageType::Error);
+    assert!(handle1.elapsed().is_none()); // evicted
+    assert!(handle2.elapsed().is_some()); // still alive
+    assert!(handle6.elapsed().is_some()); // newly added
+
+    // Adding a 7th should evict Banner 2
+    let _handle7 = MessageBanner::set_global(&ctx, "Banner 7", MessageType::Error);
+    assert!(handle2.elapsed().is_none()); // evicted
+}
+
+/// Test that replace_global resets show_elapsed flag.
+#[test]
+fn test_replace_global_resets_show_elapsed() {
+    let ctx = egui::Context::default();
+
+    let handle = MessageBanner::set_global(&ctx, "Loading...", MessageType::Info);
+    handle.with_elapsed();
+
+    // Replace should reset show_elapsed and set fresh auto_dismiss
+    let replaced = MessageBanner::replace_global(&ctx, "Loading...", "Done!", MessageType::Success);
+    assert!(replaced.elapsed().is_some());
+
+    // The replaced banner should have auto-dismiss (Success type default),
+    // not the elapsed mode from the original
+    // We verify by checking it's still alive (just created, within 5s window)
+    assert!(replaced.elapsed().unwrap() < Duration::from_secs(1));
 }

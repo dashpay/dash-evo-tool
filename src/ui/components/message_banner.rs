@@ -375,7 +375,7 @@ fn process_banner(ui: &mut egui::Ui, state: &BannerState) -> BannerStatus {
 
     // Compute the right-side time annotation
     let annotation = if state.show_elapsed {
-        Some(format!("({}s)", elapsed.as_secs()))
+        Some(format!("({}s)", elapsed.as_secs() + 1))
     } else if let Some(duration) = state.auto_dismiss_after {
         let remaining = duration.saturating_sub(elapsed);
         Some(format!("({}s)", remaining.as_secs() + 1))

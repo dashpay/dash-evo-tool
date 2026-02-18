@@ -14,7 +14,7 @@ pub fn run(harness: &mut Harness<'_, AppState>) {
     println!("  AppContext valid: OK");
 
     // 3. SPV is idle or stopped at boot (not actively syncing)
-    let spv_status = app_ctx.spv_manager.status().status;
+    let spv_status = app_ctx.spv_manager().status().status;
     assert!(
         matches!(spv_status, SpvStatus::Idle | SpvStatus::Stopped),
         "SPV should be Idle or Stopped at boot, got: {:?}",
@@ -23,7 +23,7 @@ pub fn run(harness: &mut Harness<'_, AppState>) {
     println!("  SPV idle at boot: {:?}", spv_status);
 
     // 4. Wallets lock is accessible (no deadlock)
-    let wallet_count = app_ctx.wallets.read().unwrap().len();
+    let wallet_count = app_ctx.wallets().read().unwrap().len();
     println!("  Wallets lock accessible: {} wallet(s)", wallet_count);
 
     // 5. Network is readable

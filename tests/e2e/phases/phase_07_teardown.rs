@@ -7,7 +7,7 @@ use egui_kittest::Harness;
 
 pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
     // ─── 1. Stop SPV sync ──────────────────────────────────────────────
-    harness.state().current_app_context().spv_manager.stop();
+    harness.state().current_app_context().spv_manager().stop();
     println!("  SPV sync stopped");
 
     // ─── 2. Wait for SPV to reach a terminal state (Stopped/Idle/Error) ─
@@ -16,7 +16,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         |h| {
             let app_ctx = h.state().current_app_context();
             matches!(
-                app_ctx.spv_manager.status().status,
+                app_ctx.spv_manager().status().status,
                 SpvStatus::Stopped | SpvStatus::Idle | SpvStatus::Error
             )
         },
@@ -28,7 +28,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
         "SPV must reach a terminal state after stop (still active after {}s)",
         SPV_STOP_TIMEOUT.as_secs()
     );
-    let final_status = harness.state().current_app_context().spv_manager.status();
+    let final_status = harness.state().current_app_context().spv_manager().status();
     println!("  SPV status after stop: {:?}", final_status.status);
 
     // ─── 3. Remove test identity and wallet from database ──────────────
@@ -36,7 +36,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
 
     if let Some(identity_id) = &ctx.identity_id {
         match app_ctx
-            .db
+            .db()
             .delete_local_qualified_identity(identity_id, app_ctx)
         {
             Ok(()) => println!("  Removed E2E identity from database"),

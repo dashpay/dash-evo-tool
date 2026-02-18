@@ -50,9 +50,6 @@ pub struct RegisterDpnsNameScreen {
     pub selected_qualified_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
-    #[cfg(feature = "e2e")]
-    pub name_input: String,
-    #[cfg(not(feature = "e2e"))]
     name_input: String,
     register_dpns_name_status: RegisterDpnsNameStatus,
     pub app_context: Arc<AppContext>,
@@ -64,6 +61,13 @@ pub struct RegisterDpnsNameScreen {
     completed_fee_result: Option<FeeResult>,
     // Source of navigation to this screen
     pub source: RegisterDpnsNameSource,
+}
+
+#[cfg(feature = "e2e")]
+impl RegisterDpnsNameScreen {
+    pub fn set_name_input(&mut self, name: String) {
+        self.name_input = name;
+    }
 }
 
 impl RegisterDpnsNameScreen {

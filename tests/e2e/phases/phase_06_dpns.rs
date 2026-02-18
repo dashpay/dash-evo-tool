@@ -62,7 +62,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                 );
 
                 screen.show_identity_selector = false;
-                screen.name_input = dpns_name.clone();
+                screen.set_name_input(dpns_name.clone());
             } else {
                 panic!("Expected RegisterDpnsNameScreen on screen stack");
             }

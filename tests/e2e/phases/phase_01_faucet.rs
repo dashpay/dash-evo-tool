@@ -60,7 +60,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // both should reflect the same SPV state since no frames ran between them.
     let live_balance_duffs = {
         let app_ctx = harness.state().current_app_context();
-        let wallets = app_ctx.wallets.read().unwrap();
+        let wallets = app_ctx.wallets().read().unwrap();
         let wallet = wallets
             .get(ctx.seed_hash())
             .expect("wallet not found by seed hash (phase 01 - did phase 00 import succeed?)");
@@ -86,7 +86,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // 3. Get receive address and verify it's a valid testnet P2PKH address (starts with 'y')
     {
         let app_ctx = harness.state().current_app_context();
-        let wallets = app_ctx.wallets.read().unwrap();
+        let wallets = app_ctx.wallets().read().unwrap();
         let wallet = wallets
             .get(ctx.seed_hash())
             .expect("wallet not found by seed hash (phase 01 - receive address)");

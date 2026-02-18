@@ -382,7 +382,7 @@ pub fn handle_retry_error(
 /// the wallet still has the minimum balance from Phase 0.
 pub fn ensure_spv_tx_ready(harness: &mut Harness<'_, AppState>, ctx: &TestContext) {
     let app_ctx = harness.state().current_app_context();
-    let status = app_ctx.spv_manager.status();
+    let status = app_ctx.spv_manager().status();
     let header_height = status
         .sync_progress
         .as_ref()
@@ -401,7 +401,7 @@ pub fn ensure_spv_tx_ready(harness: &mut Harness<'_, AppState>, ctx: &TestContex
         "SPV header height must be > 0 for transaction building (got 0)"
     );
 
-    let wallets = app_ctx.wallets.read().unwrap();
+    let wallets = app_ctx.wallets().read().unwrap();
     let wallet = wallets
         .get(ctx.seed_hash())
         .expect("Test wallet must exist in AppContext during tx phases");
@@ -426,12 +426,12 @@ pub fn ensure_spv_tx_ready(harness: &mut Harness<'_, AppState>, ctx: &TestContex
 /// Identity is removed before wallet (identity references may depend on wallet state).
 pub fn emergency_cleanup(harness: &Harness<'_, AppState>, ctx: &TestContext) {
     let app_ctx = harness.state().current_app_context();
-    app_ctx.spv_manager.stop();
+    app_ctx.spv_manager().stop();
     eprintln!("  Emergency: SPV stop requested");
 
     if let Some(identity_id) = &ctx.identity_id {
         match app_ctx
-            .db
+            .db()
             .delete_local_qualified_identity(identity_id, app_ctx)
         {
             Ok(()) => eprintln!("  Emergency: identity removed"),

@@ -72,27 +72,15 @@ impl fmt::Display for FundingMethod {
 
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
-    #[cfg(feature = "e2e")]
-    pub step: Arc<RwLock<WalletFundedScreenStep>>,
-    #[cfg(not(feature = "e2e"))]
     step: Arc<RwLock<WalletFundedScreenStep>>,
     funding_asset_lock: Option<(Transaction, AssetLockProof, Address)>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     core_has_funding_address: Option<bool>,
     funding_address: Option<Address>,
-    #[cfg(feature = "e2e")]
-    pub funding_method: Arc<RwLock<FundingMethod>>,
-    #[cfg(not(feature = "e2e"))]
     funding_method: Arc<RwLock<FundingMethod>>,
-    #[cfg(feature = "e2e")]
-    pub funding_amount: Option<Amount>,
-    #[cfg(not(feature = "e2e"))]
     funding_amount: Option<Amount>,
     funding_amount_input: Option<AmountInput>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
-    #[cfg(feature = "e2e")]
-    pub alias_input: String,
-    #[cfg(not(feature = "e2e"))]
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
@@ -114,6 +102,25 @@ pub struct AddNewIdentityScreen {
     show_advanced_options: bool,
     /// Fee result from completed identity registration
     completed_fee_result: Option<FeeResult>,
+}
+
+#[cfg(feature = "e2e")]
+impl AddNewIdentityScreen {
+    pub fn step(&self) -> &Arc<RwLock<WalletFundedScreenStep>> {
+        &self.step
+    }
+
+    pub fn funding_method(&self) -> &Arc<RwLock<FundingMethod>> {
+        &self.funding_method
+    }
+
+    pub fn set_funding_amount(&mut self, amount: Option<Amount>) {
+        self.funding_amount = amount;
+    }
+
+    pub fn set_alias_input(&mut self, alias: String) {
+        self.alias_input = alias;
+    }
 }
 
 impl AddNewIdentityScreen {

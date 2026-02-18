@@ -82,10 +82,7 @@ pub mod contracts_documents;
 pub mod dashpay;
 pub mod dpns;
 pub mod helpers;
-#[cfg(feature = "e2e")]
 pub mod identities;
-#[cfg(not(feature = "e2e"))]
-pub(crate) mod identities;
 pub mod network_chooser_screen;
 pub mod theme;
 pub mod tokens;

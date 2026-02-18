@@ -17,7 +17,7 @@ const E2E_WALLET_ALIAS: &str = "E2E Test Wallet";
 /// Only matches by exact alias — never grabs unrelated wallets.
 fn find_existing_e2e_wallet(harness: &Harness<'_, AppState>) -> Option<WalletSeedHash> {
     let app_ctx = harness.state().current_app_context();
-    let wallets = app_ctx.wallets.read().unwrap();
+    let wallets = app_ctx.wallets().read().unwrap();
     for (seed_hash, wallet) in wallets.iter() {
         let w = wallet.read().unwrap();
         if w.alias.as_deref() == Some(E2E_WALLET_ALIAS) {
@@ -38,7 +38,7 @@ fn import_wallet_via_ui(
     // Capture wallet keys before import so we can diff to find the new one
     let initial_wallet_keys: BTreeSet<WalletSeedHash> = {
         let app_ctx = harness.state().current_app_context();
-        app_ctx.wallets.read().unwrap().keys().copied().collect()
+        app_ctx.wallets().read().unwrap().keys().copied().collect()
     };
 
     // Push ImportMnemonicScreen and configure it directly
@@ -68,7 +68,7 @@ fn import_wallet_via_ui(
     // Verify wallet appeared in AppContext
     {
         let app_ctx = harness.state().current_app_context();
-        let wallets = app_ctx.wallets.read().unwrap();
+        let wallets = app_ctx.wallets().read().unwrap();
         assert!(
             wallets.len() > initial_wallet_keys.len(),
             "Wallet count didn't increase after save (still {})",
@@ -131,7 +131,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         // seed bytes to build the bloom filter and discover transactions.
         let app_ctx = harness.state().current_app_context().clone();
         let wallet_arc = {
-            let wallets = app_ctx.wallets.read().unwrap();
+            let wallets = app_ctx.wallets().read().unwrap();
             wallets.get(&seed_hash).cloned()
         };
         // Drop wallets lock before calling bootstrap/unlock methods
@@ -161,7 +161,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     //     left over from a previous run).
     {
         let app_ctx = harness.state().current_app_context();
-        let wallets = app_ctx.wallets.read().unwrap();
+        let wallets = app_ctx.wallets().read().unwrap();
         if let Some(seed_hash) = &ctx.wallet_seed_hash
             && let Some(wallet) = wallets.get(seed_hash)
         {
@@ -205,7 +205,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
 
         let status = {
             let app_ctx = harness.state().current_app_context();
-            app_ctx.spv_manager.status()
+            app_ctx.spv_manager().status()
         };
 
         // Check balance using max_balance() (sum of UTXOs in memory) rather than
@@ -215,7 +215,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         // has UTXOs available for building transactions.
         if !balance_ready {
             let app_ctx = harness.state().current_app_context();
-            let wallets = app_ctx.wallets.read().unwrap();
+            let wallets = app_ctx.wallets().read().unwrap();
             if let Some(seed_hash) = &ctx.wallet_seed_hash
                 && let Some(wallet) = wallets.get(seed_hash)
             {
@@ -259,7 +259,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
                         retry_count, PLATFORM_MAX_RETRIES
                     );
                     let app_ctx = harness.state().current_app_context().clone();
-                    app_ctx.spv_manager.stop();
+                    app_ctx.spv_manager().stop();
                     harness.run_steps(120); // ~2s cooldown
                     app_ctx
                         .start_spv()
@@ -314,7 +314,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
     // Read final balance and print wallet diagnostics
     {
         let app_ctx = harness.state().current_app_context();
-        let wallets = app_ctx.wallets.read().unwrap();
+        let wallets = app_ctx.wallets().read().unwrap();
         let wallet = wallets
             .get(ctx.seed_hash())
             .expect("Wallet not found by seed hash after SPV sync");

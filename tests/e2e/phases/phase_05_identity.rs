@@ -35,7 +35,7 @@ fn run_validation_tests(harness: &mut Harness<'_, AppState>) {
     push_screen(harness, ScreenType::AddNewIdentity);
     with_identity_screen_mut(harness, |screen| {
         set_wallet_funded_ready(screen, "Zero Amount Test");
-        screen.funding_amount = None;
+        screen.set_funding_amount(None);
     });
     harness.run_steps(POLL_STEPS);
     let count = harness.query_all_by_label("Create Identity").count();
@@ -51,7 +51,7 @@ fn run_validation_tests(harness: &mut Harness<'_, AppState>) {
     push_screen(harness, ScreenType::AddNewIdentity);
     with_identity_screen_mut(harness, |screen| {
         set_wallet_funded_ready(screen, "No Keys Test");
-        screen.funding_amount = Some(Amount::new_dash(0.01));
+        screen.set_funding_amount(Some(Amount::new_dash(0.01)));
         // Deliberately skip ensure_correct_identity_keys()
     });
     harness.run_steps(POLL_STEPS);
@@ -95,8 +95,8 @@ fn run_validation_tests(harness: &mut Harness<'_, AppState>) {
     // ─── Sub-test D: Step resets to ReadyToCreate on error ──────────────
     push_screen(harness, ScreenType::AddNewIdentity);
     with_identity_screen_mut(harness, |screen| {
-        *screen.funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
-        *screen.step.write().unwrap() = WalletFundedScreenStep::WaitingForAssetLock;
+        *screen.funding_method().write().unwrap() = FundingMethod::UseWalletBalance;
+        *screen.step().write().unwrap() = WalletFundedScreenStep::WaitingForAssetLock;
         screen.display_message("Asset lock failed", MessageType::Error);
     });
     harness.run_steps(POLL_STEPS);
@@ -125,7 +125,7 @@ fn assert_identity_step(harness: &mut Harness<'_, AppState>, expected: WalletFun
     let stack = &harness.state().screen_stack;
     match stack.last() {
         Some(Screen::AddNewIdentityScreen(screen)) => {
-            let step = screen.step.read().unwrap();
+            let step = screen.step().read().unwrap();
             assert_eq!(*step, expected, "Identity screen step mismatch");
         }
         _ => panic!("Expected AddNewIdentityScreen on screen stack"),
@@ -134,7 +134,7 @@ fn assert_identity_step(harness: &mut Harness<'_, AppState>, expected: WalletFun
 
 /// Set common fields for a wallet-funded identity screen in ReadyToCreate state.
 fn set_wallet_funded_ready(screen: &mut AddNewIdentityScreen, alias: &str) {
-    *screen.funding_method.write().unwrap() = FundingMethod::UseWalletBalance;
-    *screen.step.write().unwrap() = WalletFundedScreenStep::ReadyToCreate;
-    screen.alias_input = alias.to_string();
+    *screen.funding_method().write().unwrap() = FundingMethod::UseWalletBalance;
+    *screen.step().write().unwrap() = WalletFundedScreenStep::ReadyToCreate;
+    screen.set_alias_input(alias.to_string());
 }

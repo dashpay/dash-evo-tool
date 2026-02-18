@@ -5,6 +5,7 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_evo_tool::spv::CoreBackendMode;
 use dash_evo_tool::spv::SpvStatus;
 use dash_evo_tool::ui::{Screen, ScreenType};
+use dash_sdk::dash_spv::sync::ProgressPercentage;
 use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
 use std::collections::BTreeSet;
@@ -235,7 +236,8 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         let header_height = status
             .sync_progress
             .as_ref()
-            .map(|p| p.header_height)
+            .and_then(|p| p.headers().ok())
+            .map(|h| h.current_height())
             .unwrap_or(0);
 
         // Check SPV status
@@ -284,9 +286,9 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         // Log progress every 30s so we can diagnose hangs
         if last_log.elapsed() > Duration::from_secs(30) {
             let stage_info = status
-                .detailed_progress
+                .sync_progress
                 .as_ref()
-                .map(|d| format!("{:.1}% stage={:?}", d.percentage, d.sync_stage))
+                .map(|p| format!("state={:?}, synced={}", p.state(), p.is_synced()))
                 .unwrap_or_else(|| "no progress info".to_string());
             println!(
                 "  SPV status: {:?} ({:.0}s elapsed, peers={}, {})",

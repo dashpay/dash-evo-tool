@@ -1,6 +1,7 @@
 use crate::helpers::context::TestContext;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::spv::SpvStatus;
+use dash_sdk::dash_spv::sync::ProgressPercentage;
 use dash_evo_tool::ui::{RootScreenType, ScreenLike, ScreenType};
 use egui_kittest::Harness;
 use std::time::{Duration, Instant};
@@ -380,7 +381,8 @@ pub fn ensure_spv_tx_ready(harness: &mut Harness<'_, AppState>, ctx: &TestContex
     let header_height = status
         .sync_progress
         .as_ref()
-        .map(|p| p.header_height)
+        .and_then(|p| p.headers().ok())
+        .map(|h| h.current_height())
         .unwrap_or(0);
 
     assert!(

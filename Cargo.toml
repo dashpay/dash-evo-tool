@@ -102,8 +102,8 @@ key-wallet = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6aff
 key-wallet-manager = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
 
 [[test]]
-name = "e2e_full"
-path = "tests/e2e_full/main.rs"
+name = "e2e"
+path = "tests/e2e/main.rs"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

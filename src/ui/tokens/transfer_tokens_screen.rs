@@ -6,7 +6,6 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -18,6 +17,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -25,14 +25,13 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::prelude::TimestampMillis;
+
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use eframe::egui::{Frame, Margin};
 use egui::{Color32, RichText};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::identities::get_selected_wallet;
 
@@ -41,7 +40,7 @@ use super::tokens_screen::IdentityTokenBalance;
 #[derive(PartialEq)]
 pub enum TransferTokensStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -64,6 +63,8 @@ pub struct TransferTokensScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl TransferTokensScreen {
@@ -113,6 +114,7 @@ impl TransferTokensScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -142,7 +144,7 @@ impl TransferTokensScreen {
 
         // Check if input should be disabled when operation is in progress
         let enabled = match self.transfer_tokens_status {
-            TransferTokensStatus::WaitingForResult(_) | TransferTokensStatus::Complete => false,
+            TransferTokensStatus::WaitingForResult | TransferTokensStatus::Complete => false,
             TransferTokensStatus::NotStarted | TransferTokensStatus::Error => {
                 amount_input.set_max_amount(Some(self.max_amount.value()));
                 true
@@ -225,11 +227,14 @@ impl TransferTokensScreen {
         }
 
         let receiver_id = parsed_receiver_id.unwrap();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
+        self.transfer_tokens_status = TransferTokensStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Transferring tokens...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         let data_contract = Arc::new(
             self.app_context
@@ -264,6 +269,9 @@ impl ScreenLike for TransferTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.transfer_tokens_status = TransferTokensStatus::Error;
         }
     }
@@ -271,6 +279,9 @@ impl ScreenLike for TransferTokensScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result
         {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;
         }
@@ -558,35 +569,8 @@ impl ScreenLike for TransferTokensScreen {
                     TransferTokensStatus::NotStarted => {
                         // Do nothing
                     }
-                    TransferTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed_seconds = now - start_time;
-
-                        let display_time = if elapsed_seconds < 60 {
-                            format!(
-                                "{} second{}",
-                                elapsed_seconds,
-                                if elapsed_seconds == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            let minutes = elapsed_seconds / 60;
-                            let seconds = elapsed_seconds % 60;
-                            format!(
-                                "{} minute{} and {} second{}",
-                                minutes,
-                                if minutes == 1 { "" } else { "s" },
-                                seconds,
-                                if seconds == 1 { "" } else { "s" }
-                            )
-                        };
-
-                        ui.label(format!(
-                            "Transferring... Time taken so far: {}",
-                            display_time
-                        ));
+                    TransferTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     TransferTokensStatus::Error => {
                         // Error display is handled by the global MessageBanner

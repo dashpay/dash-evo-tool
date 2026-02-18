@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -18,7 +17,6 @@ use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -28,6 +26,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
@@ -43,7 +42,7 @@ use dash_sdk::platform::IdentityPublicKey;
 #[derive(PartialEq)]
 pub enum PurchaseTokensStatus {
     NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -72,6 +71,8 @@ pub struct PurchaseTokenScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl PurchaseTokenScreen {
@@ -115,6 +116,7 @@ impl PurchaseTokenScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -296,11 +298,14 @@ impl PurchaseTokenScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.status = PurchaseTokensStatus::WaitingForResult(now);
+                self.status = PurchaseTokensStatus::WaitingForResult;
+                let handle = MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Purchasing tokens...",
+                    MessageType::Info,
+                );
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
 
                 AppAction::BackendTasks(
                     vec![
@@ -361,6 +366,9 @@ impl ScreenLike for PurchaseTokenScreen {
                 }
             }
             BackendTaskSuccessResult::PurchasedTokens(fee_result) => {
+                if let Some(h) = self.refresh_banner.take() {
+                    h.clear();
+                }
                 self.completed_fee_result = Some(fee_result);
                 self.status = PurchaseTokensStatus::Complete;
             }
@@ -371,6 +379,9 @@ impl ScreenLike for PurchaseTokenScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.status = PurchaseTokensStatus::Error;
         }
     }
@@ -645,13 +656,8 @@ impl ScreenLike for PurchaseTokenScreen {
                     PurchaseTokensStatus::NotStarted => {
                         // no-op
                     }
-                    PurchaseTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Purchasing... elapsed: {} seconds", elapsed));
+                    PurchaseTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     PurchaseTokensStatus::Error => {
                         // Error display is handled by the global MessageBanner

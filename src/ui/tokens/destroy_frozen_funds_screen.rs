@@ -6,7 +6,6 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -17,6 +16,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -38,13 +38,12 @@ use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Represents possible states in the “destroy frozen funds” flow
 #[derive(PartialEq)]
 pub enum DestroyFrozenFundsStatus {
     NotStarted,
-    WaitingForResult(u64),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -89,6 +88,8 @@ pub struct DestroyFrozenFundsScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     /// Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    /// Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl DestroyFrozenFundsScreen {
@@ -219,6 +220,7 @@ impl DestroyFrozenFundsScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -281,11 +283,14 @@ impl DestroyFrozenFundsScreen {
         }
         let frozen_id = maybe_frozen_id.unwrap();
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.status = DestroyFrozenFundsStatus::WaitingForResult(now);
+        self.status = DestroyFrozenFundsStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Destroying frozen funds...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
@@ -339,6 +344,9 @@ impl ScreenLike for DestroyFrozenFundsScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.status = DestroyFrozenFundsStatus::Error;
         }
     }
@@ -347,6 +355,9 @@ impl ScreenLike for DestroyFrozenFundsScreen {
         if let BackendTaskSuccessResult::DestroyedFrozenFunds(fee_result) =
             backend_task_success_result
         {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.status = DestroyFrozenFundsStatus::Complete;
         }
@@ -619,16 +630,8 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                     DestroyFrozenFundsStatus::NotStarted => {
                         // no-op
                     }
-                    DestroyFrozenFundsStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!(
-                            "Destroying frozen funds... elapsed: {} seconds",
-                            elapsed
-                        ));
+                    DestroyFrozenFundsStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     DestroyFrozenFundsStatus::Error => {
                         // Error display is handled by the global MessageBanner

@@ -841,9 +841,7 @@ pub trait ScreenLike {
     }
     fn ui(&mut self, ctx: &Context) -> AppAction;
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
-    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
-        self.display_message("Success", MessageType::Success)
-    }
+    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
 
     fn pop_on_success(&mut self) {}
 }

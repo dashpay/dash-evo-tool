@@ -6,13 +6,13 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
@@ -25,17 +25,15 @@ use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
-use dash_sdk::dpp::prelude::TimestampMillis;
 use eframe::egui::{self, Context, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(PartialEq)]
 pub enum AddKeyStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -55,6 +53,7 @@ pub struct AddKeyScreen {
     enable_contract_bounds: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl AddKeyScreen {
@@ -86,6 +85,7 @@ impl AddKeyScreen {
             document_type_input: String::new(),
             enable_contract_bounds: false,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -127,6 +127,7 @@ impl AddKeyScreen {
             document_type_input: String::new(),
             enable_contract_bounds: true,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -168,6 +169,7 @@ impl AddKeyScreen {
             document_type_input: String::new(),
             enable_contract_bounds: true,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -353,6 +355,9 @@ impl ScreenLike for AddKeyScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Error/success display is handled by the global MessageBanner.
         if let MessageType::Error = message_type {
+            if let Some(handle) = self.refresh_banner.take() {
+                handle.clear();
+            }
             self.add_key_status = AddKeyStatus::Error;
         }
     }
@@ -360,6 +365,9 @@ impl ScreenLike for AddKeyScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
+                if let Some(handle) = self.refresh_banner.take() {
+                    handle.clear();
+                }
                 self.completed_fee_result = Some(fee_result);
                 self.add_key_status = AddKeyStatus::Complete;
             }
@@ -668,54 +676,14 @@ impl ScreenLike for AddKeyScreen {
                 .frame(true)
                 .corner_radius(3.0);
             if ui.add(button).clicked() {
-                // Set the status to waiting and capture the current time
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.add_key_status = AddKeyStatus::WaitingForResult(now);
+                self.add_key_status = AddKeyStatus::WaitingForResult;
+                let handle =
+                    MessageBanner::set_global(ui.ctx(), "Adding key...", MessageType::Info);
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
                 inner_action |= self.validate_and_add_key();
             }
-            ui.add_space(10.0);
-
-            match &self.add_key_status {
-                AddKeyStatus::NotStarted => {
-                    // Do nothing
-                }
-                AddKeyStatus::WaitingForResult(start_time) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    let elapsed_seconds = now - start_time;
-
-                    let display_time = if elapsed_seconds < 60 {
-                        format!(
-                            "{} second{}",
-                            elapsed_seconds,
-                            if elapsed_seconds == 1 { "" } else { "s" }
-                        )
-                    } else {
-                        let minutes = elapsed_seconds / 60;
-                        let seconds = elapsed_seconds % 60;
-                        format!(
-                            "{} minute{} and {} second{}",
-                            minutes,
-                            if minutes == 1 { "" } else { "s" },
-                            seconds,
-                            if seconds == 1 { "" } else { "s" }
-                        )
-                    };
-
-                    ui.label(format!("Adding key... Time taken so far: {}", display_time));
-                }
-                AddKeyStatus::Error => {
-                    // Error display is handled by the global MessageBanner
-                }
-                AddKeyStatus::Complete => {
-                    // handled above
-                }
-            }
+            // Status display is handled by the global MessageBanner
 
             inner_action
         });

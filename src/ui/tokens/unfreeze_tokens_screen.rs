@@ -6,7 +6,6 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -17,6 +16,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -39,13 +39,12 @@ use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The states for the unfreeze flow
 #[derive(PartialEq)]
 pub enum UnfreezeTokensStatus {
     NotStarted,
-    WaitingForResult(u64),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -82,6 +81,8 @@ pub struct UnfreezeTokensScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl UnfreezeTokensScreen {
@@ -213,6 +214,7 @@ impl UnfreezeTokensScreen {
             wallet_unlock_popup: WalletUnlockPopup::new(),
             frozen_identities,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -274,11 +276,14 @@ impl UnfreezeTokensScreen {
         }
         let unfreeze_id = parsed.unwrap();
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.status = UnfreezeTokensStatus::WaitingForResult(now);
+        self.status = UnfreezeTokensStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Unfreezing tokens...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         // Grab the data contract for this token from the app context
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
@@ -334,12 +339,18 @@ impl ScreenLike for UnfreezeTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.status = UnfreezeTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::UnfrozeTokens(fee_result) = backend_task_success_result {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.status = UnfreezeTokensStatus::Complete;
         }
@@ -606,13 +617,8 @@ impl ScreenLike for UnfreezeTokensScreen {
                     UnfreezeTokensStatus::NotStarted => {
                         // no-op
                     }
-                    UnfreezeTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Unfreezing... elapsed: {}s", elapsed));
+                    UnfreezeTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     UnfreezeTokensStatus::Error => {
                         // Error display is handled by the global MessageBanner

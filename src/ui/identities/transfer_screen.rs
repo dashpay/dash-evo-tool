@@ -6,7 +6,6 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -14,6 +13,7 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -24,13 +24,11 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Frame, Margin, Ui};
 use egui::{Color32, RichText};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
@@ -51,7 +49,7 @@ pub enum TransferDestinationType {
 #[derive(PartialEq)]
 pub enum TransferCreditsStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -76,6 +74,7 @@ pub struct TransferScreen {
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl TransferScreen {
@@ -115,6 +114,7 @@ impl TransferScreen {
             platform_address_input: String::new(),
             show_advanced_options: false,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -147,7 +147,7 @@ impl TransferScreen {
 
         // Check if input should be disabled when operation is in progress
         let enabled = match self.transfer_credits_status {
-            TransferCreditsStatus::WaitingForResult(_) | TransferCreditsStatus::Complete => false,
+            TransferCreditsStatus::WaitingForResult | TransferCreditsStatus::Complete => false,
             TransferCreditsStatus::NotStarted | TransferCreditsStatus::Error => {
                 amount_input.set_max_amount(Some(max_amount_credits));
                 true
@@ -322,11 +322,14 @@ impl TransferScreen {
         }
 
         // Set waiting state
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
+        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Transferring credits...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         // Build outputs
         let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
@@ -378,11 +381,14 @@ impl TransferScreen {
         }
 
         // Set waiting state and create backend task
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
+        self.transfer_credits_status = TransferCreditsStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Transferring credits...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::Transfer(
             self.identity.clone(),
@@ -497,6 +503,9 @@ impl ScreenLike for TransferScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(handle) = self.refresh_banner.take() {
+                handle.clear();
+            }
             self.transfer_credits_status = TransferCreditsStatus::Error;
         }
     }
@@ -505,6 +514,9 @@ impl ScreenLike for TransferScreen {
         if let BackendTaskSuccessResult::TransferredCredits(fee_result) =
             backend_task_success_result
         {
+            if let Some(handle) = self.refresh_banner.take() {
+                handle.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.transfer_credits_status = TransferCreditsStatus::Complete;
         }
@@ -718,7 +730,7 @@ impl ScreenLike for TransferScreen {
                     && has_enough_balance
                     && !matches!(
                         self.transfer_credits_status,
-                        TransferCreditsStatus::WaitingForResult(_),
+                        TransferCreditsStatus::WaitingForResult,
                     )
                     && match self.destination_type {
                         TransferDestinationType::Identity => !self.receiver_identity_id.is_empty(),
@@ -762,49 +774,7 @@ impl ScreenLike for TransferScreen {
                     };
                 }
 
-                // Handle transfer status messages
-                ui.add_space(5.0);
-                match &self.transfer_credits_status {
-                    TransferCreditsStatus::NotStarted => {
-                        // Do nothing
-                    }
-                    TransferCreditsStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed_seconds = now - start_time;
-
-                        let display_time = if elapsed_seconds < 60 {
-                            format!(
-                                "{} second{}",
-                                elapsed_seconds,
-                                if elapsed_seconds == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            let minutes = elapsed_seconds / 60;
-                            let seconds = elapsed_seconds % 60;
-                            format!(
-                                "{} minute{} and {} second{}",
-                                minutes,
-                                if minutes == 1 { "" } else { "s" },
-                                seconds,
-                                if seconds == 1 { "" } else { "s" }
-                            )
-                        };
-
-                        ui.label(format!(
-                            "Transferring... Time taken so far: {}",
-                            display_time
-                        ));
-                    }
-                    TransferCreditsStatus::Error => {
-                        // Error display is handled by the global MessageBanner
-                    }
-                    TransferCreditsStatus::Complete => {
-                        // Handled above
-                    }
-                }
+                // Status display is handled by the global MessageBanner
             }
 
             inner_action

@@ -858,7 +858,6 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         _ => {
-                            MessageBanner::set_global(ctx, "Success", MessageType::Success);
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }

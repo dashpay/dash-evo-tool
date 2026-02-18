@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -12,7 +13,6 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::dpp::serialization::PlatformDeserializable;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::platform::Identifier;
@@ -20,12 +20,12 @@ use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui, Window};
 use egui::RichText;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 #[derive(PartialEq)]
 enum TransitionBroadcastStatus {
     NotStarted,
-    Submitting(TimestampMillis),
+    Submitting,
     Error(String, Instant),
     Complete(Instant),
 }
@@ -35,6 +35,7 @@ pub struct TransitionVisualizerScreen {
     input_data: String,
     parsed_json: Option<String>,
     broadcast_status: TransitionBroadcastStatus,
+    submit_banner: Option<BannerHandle>,
     show_contract_dialog: bool,
     selected_contract_id: Option<String>,
     detected_contract_ids: Vec<String>,
@@ -48,6 +49,7 @@ impl TransitionVisualizerScreen {
             input_data: String::new(),
             parsed_json: None,
             broadcast_status: TransitionBroadcastStatus::NotStarted,
+            submit_banner: None,
             show_contract_dialog: false,
             selected_contract_id: None,
             detected_contract_ids: Vec::new(),
@@ -235,11 +237,17 @@ impl TransitionVisualizerScreen {
 
                     if ui.add(button).clicked() {
                         // Mark as submitting
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        self.broadcast_status = TransitionBroadcastStatus::Submitting(now);
+                        if let Some(h) = self.submit_banner.take() {
+                            h.clear();
+                        }
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Submitting transition...",
+                            MessageType::Info,
+                        );
+                        handle.with_elapsed();
+                        self.submit_banner = Some(handle);
+                        self.broadcast_status = TransitionBroadcastStatus::Submitting;
 
                         if let Some(json) = &self.parsed_json
                             && let Ok(state_transition) = serde_json::from_str(json)
@@ -262,35 +270,8 @@ impl TransitionVisualizerScreen {
         ui.add_space(5.0);
         match &self.broadcast_status {
             TransitionBroadcastStatus::NotStarted => {}
-            TransitionBroadcastStatus::Submitting(start_time) => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                let elapsed_seconds = now - start_time;
-
-                let display_time = if elapsed_seconds < 60 {
-                    format!(
-                        "{} second{}",
-                        elapsed_seconds,
-                        if elapsed_seconds == 1 { "" } else { "s" }
-                    )
-                } else {
-                    let minutes = elapsed_seconds / 60;
-                    let seconds = elapsed_seconds % 60;
-                    format!(
-                        "{} minute{} and {} second{}",
-                        minutes,
-                        if minutes == 1 { "" } else { "s" },
-                        seconds,
-                        if seconds == 1 { "" } else { "s" }
-                    )
-                };
-
-                ui.label(format!(
-                    "Broadcasting... Time taken so far: {}",
-                    display_time
-                ));
+            TransitionBroadcastStatus::Submitting => {
+                // Elapsed time is shown in the global banner
             }
             TransitionBroadcastStatus::Error(msg, timestamp) => {
                 let elapsed = timestamp.elapsed();
@@ -407,14 +388,17 @@ impl ScreenLike for TransitionVisualizerScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Success => {
-                if matches!(
-                    self.broadcast_status,
-                    TransitionBroadcastStatus::Submitting(_)
-                ) {
+                if matches!(self.broadcast_status, TransitionBroadcastStatus::Submitting) {
+                    if let Some(h) = self.submit_banner.take() {
+                        h.clear();
+                    }
                     self.broadcast_status = TransitionBroadcastStatus::Complete(Instant::now());
                 }
             }
             MessageType::Error | MessageType::Warning => {
+                if let Some(h) = self.submit_banner.take() {
+                    h.clear();
+                }
                 self.broadcast_status = TransitionBroadcastStatus::NotStarted;
             }
             MessageType::Info => {}

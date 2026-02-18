@@ -65,6 +65,7 @@ use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::BannerHandle;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -185,15 +186,15 @@ impl TokensSubscreen {
 
 #[derive(PartialEq)]
 pub enum RefreshingStatus {
-    Refreshing(u64),
+    Refreshing,
     NotRefreshing,
 }
 
-/// Represents the status of the user’s search
+/// Represents the status of the user's search
 #[derive(PartialEq, Eq, Clone)]
 pub enum ContractSearchStatus {
     NotStarted,
-    WaitingForResult(u64),
+    WaitingForResult,
     Complete,
     Error,
 }
@@ -202,7 +203,7 @@ pub enum ContractSearchStatus {
 pub enum TokenCreatorStatus {
     #[default]
     NotStarted,
-    WaitingForResult(u64),
+    WaitingForResult,
     Complete,
     Error,
 }
@@ -1384,6 +1385,9 @@ pub struct TokensScreen {
     adding_token_start_time: Option<DateTime<Utc>>,
     adding_token_name: Option<String>,
 
+    // Banner handle for elapsed-time progress display
+    operation_banner: Option<BannerHandle>,
+
     // Document Schemas
     document_schemas_input: String,
     parsed_document_schemas: Option<BTreeMap<String, serde_json::Value>>,
@@ -1758,6 +1762,9 @@ impl TokensScreen {
             // Token adding status
             adding_token_start_time: None,
             adding_token_name: None,
+
+            // Banner handle for elapsed-time progress display
+            operation_banner: None,
 
             // Document Schemas
             document_schemas_input: String::new(),
@@ -2492,14 +2499,16 @@ impl TokensScreen {
             return Ok(AppAction::None);
         }
 
-        // Set adding status with timestamp for elapsed time display
+        // Set adding status
         self.adding_token_start_time = Some(Utc::now());
         self.adding_token_name = Some(token_info.token_name.clone());
-        MessageBanner::set_global(
+        let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
             "Adding token...",
             MessageType::Info,
         );
+        handle.with_elapsed();
+        self.operation_banner = Some(handle);
 
         // Always save the token locally and refresh balances
         // The contract will be fetched automatically when needed
@@ -2519,8 +2528,14 @@ impl TokensScreen {
         // If we have a next cursor:
         if let Some(next_cursor) = self.next_cursors.last().cloned() {
             // set status
-            let now = Utc::now().timestamp() as u64;
-            self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
+            self.contract_search_status = ContractSearchStatus::WaitingForResult;
+            let handle = MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Searching contracts...",
+                MessageType::Info,
+            );
+            handle.with_elapsed();
+            self.operation_banner = Some(handle);
 
             // push the current one onto “previous” so we can go back
             // if the user is on page N, and we have a nextCursor in next_cursors[N - 1] or so
@@ -2542,8 +2557,14 @@ impl TokensScreen {
         if self.search_current_page > 1 {
             // Move to (page - 1)
             self.search_current_page -= 1;
-            let now = Utc::now().timestamp() as u64;
-            self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
+            self.contract_search_status = ContractSearchStatus::WaitingForResult;
+            let handle = MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Searching contracts...",
+                MessageType::Info,
+            );
+            handle.with_elapsed();
+            self.operation_banner = Some(handle);
 
             // The “last” previous_cursors item is the new page’s state
             if let Some(prev_cursor) = self.previous_cursors.pop() {
@@ -2917,19 +2938,7 @@ impl ScreenLike for TokensScreen {
                         }
                     }
 
-                    // Show refreshing indicator
-                    if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                        ui.add_space(25.0); // Space above
-                        let now = Utc::now().timestamp() as u64;
-                        let elapsed = now - start_time;
-                        ui.horizontal(|ui| {
-                            ui.add_space(10.0);
-                            ui.label(format!("Refreshing... Time so far: {}", elapsed));
-                            ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-                        });
-                        ui.add_space(2.0); // Space below
-                    }
-                    // Message display is handled by the global MessageBanner
+                    // Elapsed display for refreshing is handled by the global MessageBanner
 
                     if self.confirm_remove_identity_token_balance_popup {
                         self.show_remove_identity_token_balance_popup(ui);
@@ -2956,8 +2965,11 @@ impl ScreenLike for TokensScreen {
             AppAction::BackendTask(BackendTask::TokenTask(ref token_task))
                 if matches!(token_task.as_ref(), TokenTask::QueryMyTokenBalances) =>
             {
-                self.refreshing_status =
-                    RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                self.refreshing_status = RefreshingStatus::Refreshing;
+                let handle =
+                    MessageBanner::set_global(ctx, "Refreshing tokens...", MessageType::Info);
+                handle.with_elapsed();
+                self.operation_banner = Some(handle);
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
@@ -3008,6 +3020,11 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
+        // Clear any active operation banner
+        if let Some(h) = self.operation_banner.take() {
+            h.clear();
+        }
+
         // Banner display is handled globally by AppState; this is only for side-effects.
 
         // Reset contract details loading on any error
@@ -3062,6 +3079,11 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        // Clear any active operation banner
+        if let Some(h) = self.operation_banner.take() {
+            h.clear();
+        }
+
         match backend_task_success_result {
             BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
                 let mut sr = self.search_results.lock().unwrap();

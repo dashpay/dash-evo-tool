@@ -6,7 +6,6 @@ use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
@@ -15,6 +14,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -35,7 +35,6 @@ use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Maximum number of platform address inputs allowed per state transition
 const MAX_PLATFORM_INPUTS: usize = 16;
@@ -284,8 +283,8 @@ pub enum SourceSelection {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SendStatus {
     NotStarted,
-    /// Waiting for result, stores the start time in seconds since epoch
-    WaitingForResult(u64),
+    /// Waiting for result
+    WaitingForResult,
     /// Successfully completed with a success message
     Complete(String),
     /// Error occurred (message displayed by global MessageBanner)
@@ -390,6 +389,7 @@ pub struct WalletSendScreen {
 
     // State
     send_status: SendStatus,
+    send_banner: Option<BannerHandle>,
 
     // Wallet unlock
     wallet_unlock_popup: WalletUnlockPopup,
@@ -417,6 +417,7 @@ impl WalletSendScreen {
             fee_strategy: PlatformFeeStrategy::default(),
             subtract_fee: false,
             send_status: SendStatus::NotStarted,
+            send_banner: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
         }
     }
@@ -481,15 +482,8 @@ impl WalletSendScreen {
         self.send_status = SendStatus::NotStarted;
     }
 
-    fn now_epoch_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs()
-    }
-
     fn mark_sending(&mut self) {
-        self.send_status = SendStatus::WaitingForResult(Self::now_epoch_secs());
+        self.send_status = SendStatus::WaitingForResult;
     }
 
     fn format_dash(amount_duffs: u64) -> String {
@@ -1077,28 +1071,7 @@ impl WalletSendScreen {
         true
     }
 
-    fn format_elapsed_time(start_time: u64) -> String {
-        let elapsed_seconds = Self::now_epoch_secs().saturating_sub(start_time);
-        if elapsed_seconds < 60 {
-            format!(
-                "{} second{}",
-                elapsed_seconds,
-                if elapsed_seconds == 1 { "" } else { "s" }
-            )
-        } else {
-            let minutes = elapsed_seconds / 60;
-            let seconds = elapsed_seconds % 60;
-            format!(
-                "{} minute{} {} second{}",
-                minutes,
-                if minutes == 1 { "" } else { "s" },
-                seconds,
-                if seconds == 1 { "" } else { "s" }
-            )
-        }
-    }
-
-    fn render_send_status(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+    fn render_send_status(&mut self, ui: &mut Ui) -> Option<AppAction> {
         match self.send_status.clone() {
             SendStatus::Complete(message) => {
                 let mut action = AppAction::None;
@@ -1120,20 +1093,12 @@ impl WalletSendScreen {
                 });
                 Some(action)
             }
-            SendStatus::WaitingForResult(start_time) => {
+            SendStatus::WaitingForResult => {
                 ui.vertical_centered(|ui| {
                     ui.add_space(100.0);
                     ui.add(egui::Spinner::new().size(40.0));
                     ui.add_space(20.0);
                     ui.heading("Sending...");
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(format!(
-                            "Time elapsed: {}",
-                            Self::format_elapsed_time(start_time)
-                        ))
-                        .color(DashColors::text_secondary(dark_mode)),
-                    );
                     ui.add_space(100.0);
                 });
                 Some(AppAction::None)
@@ -1668,7 +1633,7 @@ impl WalletSendScreen {
         let has_amount = self.amount.as_ref().map(|a| a.value() > 0).unwrap_or(false);
         let has_source = self.selected_source.is_some();
 
-        let is_sending = matches!(self.send_status, SendStatus::WaitingForResult(_));
+        let is_sending = matches!(self.send_status, SendStatus::WaitingForResult);
         let can_send = wallet_open && !is_sending && has_destination && has_amount && has_source;
 
         ui.horizontal(|ui| {
@@ -1696,6 +1661,16 @@ impl WalletSendScreen {
             if ui.add_enabled(can_send, send_button).clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
+                        if let Some(h) = self.send_banner.take() {
+                            h.clear();
+                        }
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Sending transaction...",
+                            MessageType::Info,
+                        );
+                        handle.with_elapsed();
+                        self.send_banner = Some(handle);
                         action = send_action;
                     }
                     Err(e) => {
@@ -2228,7 +2203,7 @@ impl WalletSendScreen {
             .as_ref()
             .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
 
-        let is_sending = matches!(self.send_status, SendStatus::WaitingForResult(_));
+        let is_sending = matches!(self.send_status, SendStatus::WaitingForResult);
 
         // Check if we have valid inputs based on source type
         let has_valid_inputs = match self.advanced_source_type {
@@ -2273,6 +2248,16 @@ impl WalletSendScreen {
             if ui.add_enabled(can_send, send_button).clicked() {
                 match self.validate_and_send_advanced() {
                     Ok(send_action) => {
+                        if let Some(h) = self.send_banner.take() {
+                            h.clear();
+                        }
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Sending transaction...",
+                            MessageType::Info,
+                        );
+                        handle.with_elapsed();
+                        self.send_banner = Some(handle);
                         action = send_action;
                     }
                     Err(e) => {
@@ -2611,7 +2596,7 @@ impl ScreenLike for WalletSendScreen {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            if let Some(status_action) = self.render_send_status(ui, dark_mode) {
+            if let Some(status_action) = self.render_send_status(ui) {
                 return status_action;
             }
 
@@ -2661,9 +2646,15 @@ impl ScreenLike for WalletSendScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
+                if let Some(h) = self.send_banner.take() {
+                    h.clear();
+                }
                 self.send_status = SendStatus::Error;
             }
             MessageType::Success => {
+                if let Some(h) = self.send_banner.take() {
+                    h.clear();
+                }
                 self.send_status = SendStatus::Complete(message.to_string());
             }
             MessageType::Info => {
@@ -2676,6 +2667,9 @@ impl ScreenLike for WalletSendScreen {
         &mut self,
         backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
     ) {
+        if let Some(h) = self.send_banner.take() {
+            h.clear();
+        }
         match backend_task_success_result {
             crate::backend_task::BackendTaskSuccessResult::WalletPayment {
                 txid: _,

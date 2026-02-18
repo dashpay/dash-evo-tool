@@ -7,7 +7,6 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ComponentResponse;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -18,6 +17,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -44,7 +44,6 @@ use egui::RichText;
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Pricing type selection
 #[derive(PartialEq, Clone)]
@@ -76,7 +75,7 @@ impl From<Option<TokenPricingSchedule>> for PricingType {
 #[derive(PartialEq)]
 pub enum SetTokenPriceStatus {
     NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -115,6 +114,8 @@ pub struct SetTokenPriceScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 /// 1 Dash = 100,000,000,000 credits
@@ -285,6 +286,7 @@ impl SetTokenPriceScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -727,11 +729,14 @@ impl SetTokenPriceScreen {
         };
 
         // Set waiting state
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.status = SetTokenPriceStatus::WaitingForResult(now);
+        self.status = SetTokenPriceStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Setting token price...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         // Prepare group info
         let group_info = if self.group_action_id.is_some() {
@@ -822,12 +827,18 @@ impl ScreenLike for SetTokenPriceScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.status = SetTokenPriceStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.status = SetTokenPriceStatus::Complete;
         }
@@ -1113,7 +1124,7 @@ impl ScreenLike for SetTokenPriceScreen {
 
                 // Set price button
                 let validation_result = self.validate_pricing_configuration();
-                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult(_));
+                let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult);
 
                 let button_color = if validation_result.is_ok() {
                     DashColors::ACTION_BUTTON_BLUE
@@ -1144,13 +1155,8 @@ impl ScreenLike for SetTokenPriceScreen {
                     SetTokenPriceStatus::NotStarted => {
                         // no-op
                     }
-                    SetTokenPriceStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
+                    SetTokenPriceStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     SetTokenPriceStatus::Error => {
                         // Error display is handled by the global MessageBanner

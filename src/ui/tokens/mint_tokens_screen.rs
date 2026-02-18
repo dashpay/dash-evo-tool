@@ -7,7 +7,6 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -19,6 +18,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -42,13 +42,11 @@ use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 /// Internal states for the mint process.
 #[derive(PartialEq)]
 pub enum MintTokensStatus {
     NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -81,6 +79,8 @@ pub struct MintTokensScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl MintTokensScreen {
@@ -212,6 +212,7 @@ impl MintTokensScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -226,7 +227,7 @@ impl MintTokensScreen {
 
         // Check if input should be disabled when operation is in progress
         let enabled = match self.status {
-            MintTokensStatus::WaitingForResult(_) | MintTokensStatus::Complete => false,
+            MintTokensStatus::WaitingForResult | MintTokensStatus::Complete => false,
             MintTokensStatus::NotStarted | MintTokensStatus::Error => true,
         };
 
@@ -310,11 +311,14 @@ impl MintTokensScreen {
         }
 
         let receiver_id = parsed_receiver_id.unwrap();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs();
-        self.status = MintTokensStatus::WaitingForResult(now);
+        self.status = MintTokensStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Minting tokens...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
@@ -367,12 +371,18 @@ impl ScreenLike for MintTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.status = MintTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::MintedTokens(fee_result) = backend_task_success_result {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.status = MintTokensStatus::Complete;
         }
@@ -704,16 +714,9 @@ impl ScreenLike for MintTokensScreen {
                 // Show in-progress or error messages
                 ui.add_space(10.0);
                 match &self.status {
-                    MintTokensStatus::NotStarted => {
-                        // no-op
-                    }
-                    MintTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Minting... elapsed: {} seconds", elapsed));
+                    MintTokensStatus::NotStarted => {}
+                    MintTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     MintTokensStatus::Error => {
                         // Error display is handled by the global MessageBanner

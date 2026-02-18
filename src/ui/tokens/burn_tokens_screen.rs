@@ -6,7 +6,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::components::{BannerHandle, Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
@@ -26,7 +26,6 @@ use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -49,7 +48,7 @@ use super::tokens_screen::IdentityTokenInfo;
 #[derive(PartialEq)]
 pub enum BurnTokensStatus {
     NotStarted,
-    WaitingForResult(u64),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -81,6 +80,8 @@ pub struct BurnTokensScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl BurnTokensScreen {
@@ -219,6 +220,7 @@ impl BurnTokensScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -269,11 +271,14 @@ impl BurnTokensScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.status = BurnTokensStatus::WaitingForResult(now);
+                self.status = BurnTokensStatus::WaitingForResult;
+                let handle = MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Burning tokens...",
+                    MessageType::Info,
+                );
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
 
                 // Grab the data contract for this token from the app context
                 let data_contract =
@@ -342,12 +347,18 @@ impl ScreenLike for BurnTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.status = BurnTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::BurnedTokens(fee_result) = backend_task_success_result {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.status = BurnTokensStatus::Complete;
         }
@@ -659,13 +670,8 @@ impl ScreenLike for BurnTokensScreen {
                     BurnTokensStatus::NotStarted => {
                         // no-op
                     }
-                    BurnTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Burning... elapsed: {} seconds", elapsed));
+                    BurnTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     BurnTokensStatus::Error => {
                         // Error display is handled by the global MessageBanner

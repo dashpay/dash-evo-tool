@@ -23,7 +23,7 @@ use crate::ui::tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use crate::ui::tokens::update_token_config::UpdateTokenConfigScreen;
 use crate::ui::tokens::view_token_claims_screen::ViewTokenClaimsScreen;
 use crate::ui::{MessageType, Screen, ScreenType};
-use chrono::{Local, Utc};
+use chrono::Local;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
@@ -277,11 +277,17 @@ impl TokensScreen {
                             .min_size(egui::vec2(150.0, 36.0));
 
                             if ui.add(button).clicked() {
-                                if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
+                                if let RefreshingStatus::Refreshing = self.refreshing_status {
                                     app_action = AppAction::None;
                                 } else {
-                                    self.refreshing_status =
-                                        RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                    self.refreshing_status = RefreshingStatus::Refreshing;
+                                    let handle = MessageBanner::set_global(
+                                        ui.ctx(),
+                                        "Refreshing tokens...",
+                                        MessageType::Info,
+                                    );
+                                    handle.with_elapsed();
+                                    self.operation_banner = Some(handle);
                                     app_action = AppAction::Refresh;
                                 }
                             }
@@ -472,7 +478,14 @@ impl TokensScreen {
                                                                                 identity_id: itb.identity_id,
                                                                                 token_id: itb.token_id,
                                                                             })));
-                                                                            self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                                            self.refreshing_status = RefreshingStatus::Refreshing;
+                                                                            let handle = MessageBanner::set_global(
+                                                                                ui.ctx(),
+                                                                                "Estimating rewards...",
+                                                                                MessageType::Info,
+                                                                            );
+                                                                            handle.with_elapsed();
+                                                                            self.operation_banner = Some(handle);
                                                                         }
                                                                     })
                                                                 });
@@ -485,7 +498,14 @@ impl TokensScreen {
                                                                 identity_id: itb.identity_id,
                                                                 token_id: itb.token_id,
                                                             })));
-                                                            self.refreshing_status = RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                                                            self.refreshing_status = RefreshingStatus::Refreshing;
+                                                            let handle = MessageBanner::set_global(
+                                                                self.app_context.egui_ctx(),
+                                                                "Estimating rewards...",
+                                                                MessageType::Info,
+                                                            );
+                                                            handle.with_elapsed();
+                                                            self.operation_banner = Some(handle);
                                                         }
 
                                                 }

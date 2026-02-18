@@ -4,7 +4,6 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -12,11 +11,11 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
-use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::egui::Context;
@@ -25,7 +24,6 @@ use serde::Deserialize;
 use std::fs;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Deserialize)]
 struct MasternodeInfo {
@@ -77,7 +75,7 @@ enum WalletIdentitySearchMode {
 #[derive(PartialEq)]
 pub enum AddIdentityStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -105,6 +103,7 @@ pub struct AddExistingIdentityScreen {
     dpns_name_input: String,
     /// Whether to show advanced options
     show_advanced_options: bool,
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl AddExistingIdentityScreen {
@@ -137,6 +136,7 @@ impl AddExistingIdentityScreen {
             success_message: None,
             dpns_name_input: String::new(),
             show_advanced_options: false,
+            refresh_banner: None,
         }
     }
 
@@ -451,11 +451,14 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add_enabled(is_valid_id, button).clicked() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs();
-            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+            self.add_identity_status = AddIdentityStatus::WaitingForResult;
+            let handle = MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Loading identity...",
+                MessageType::Info,
+            );
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
             action = self.load_identity_clicked();
         }
 
@@ -652,13 +655,16 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add(button).clicked() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs();
-            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+            self.add_identity_status = AddIdentityStatus::WaitingForResult;
             self.backend_message = None;
             self.success_message = None;
+            let handle = MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Loading identity...",
+                MessageType::Info,
+            );
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
 
             // Parse identity index input
             if let Ok(identity_index) = self.identity_index_input.trim().parse::<u32>() {
@@ -813,13 +819,16 @@ impl AddExistingIdentityScreen {
             .corner_radius(3.0);
 
         if ui.add_enabled(is_valid, button).clicked() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
-                .as_secs();
-            self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
+            self.add_identity_status = AddIdentityStatus::WaitingForResult;
             self.backend_message = None;
             self.success_message = None;
+            let handle = MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Loading identity...",
+                MessageType::Info,
+            );
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
 
             // Get the selected wallet seed hash for key derivation
             let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
@@ -956,6 +965,9 @@ impl ScreenLike for AddExistingIdentityScreen {
         // Side-effects only: update status and progress tracking.
         match message_type {
             MessageType::Error => {
+                if let Some(handle) = self.refresh_banner.take() {
+                    handle.clear();
+                }
                 self.add_identity_status = AddIdentityStatus::Error;
             }
             MessageType::Success => {
@@ -963,12 +975,18 @@ impl ScreenLike for AddExistingIdentityScreen {
                 if message.starts_with("Successfully loaded")
                     || message.starts_with("Finished loading")
                 {
+                    if let Some(handle) = self.refresh_banner.take() {
+                        handle.clear();
+                    }
                     self.success_message = Some(message.to_string());
                     self.add_identity_status = AddIdentityStatus::Complete;
                     self.backend_message = None;
                 } else {
-                    // This is a progress update
+                    // This is a progress update - update the banner text
                     self.backend_message = Some(message.to_string());
+                    if let Some(ref handle) = self.refresh_banner {
+                        handle.set_message(message);
+                    }
                 }
             }
             _ => {}
@@ -978,6 +996,9 @@ impl ScreenLike for AddExistingIdentityScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::LoadedIdentity(_) => {
+                if let Some(handle) = self.refresh_banner.take() {
+                    handle.clear();
+                }
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;
                 self.backend_message = None;
@@ -985,12 +1006,18 @@ impl ScreenLike for AddExistingIdentityScreen {
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is a final success message or a progress update
                 if msg.starts_with("Successfully loaded") || msg.starts_with("Finished loading") {
+                    if let Some(handle) = self.refresh_banner.take() {
+                        handle.clear();
+                    }
                     self.success_message = Some(msg);
                     self.add_identity_status = AddIdentityStatus::Complete;
                     self.backend_message = None;
                 } else {
-                    // This is a progress update
-                    self.backend_message = Some(msg);
+                    // This is a progress update - update the banner text
+                    self.backend_message = Some(msg.clone());
+                    if let Some(ref handle) = self.refresh_banner {
+                        handle.set_message(&msg);
+                    }
                 }
             }
             _ => {}
@@ -1087,51 +1114,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                         }
                     }
 
-                    ui.add_space(10.0);
-
-                    match &self.add_identity_status {
-                        AddIdentityStatus::NotStarted => {
-                            // Do nothing
-                        }
-                        AddIdentityStatus::WaitingForResult(start_time) => {
-                            let now = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
-                                .as_secs();
-                            let elapsed_seconds = now - start_time;
-
-                            let display_time = if elapsed_seconds < 60 {
-                                format!(
-                                    "{} second{}",
-                                    elapsed_seconds,
-                                    if elapsed_seconds == 1 { "" } else { "s" }
-                                )
-                            } else {
-                                let minutes = elapsed_seconds / 60;
-                                let seconds = elapsed_seconds % 60;
-                                format!(
-                                    "{} minute{} and {} second{}",
-                                    minutes,
-                                    if minutes == 1 { "" } else { "s" },
-                                    seconds,
-                                    if seconds == 1 { "" } else { "s" }
-                                )
-                            };
-
-                            // Show progress message with time, or generic loading message
-                            if let Some(ref progress_msg) = self.backend_message {
-                                ui.label(format!("{} ({})", progress_msg, display_time));
-                            } else {
-                                ui.label(format!("Loading... ({})", display_time));
-                            }
-                        }
-                        AddIdentityStatus::Error => {
-                            // Error display is handled by the global MessageBanner
-                        }
-                        AddIdentityStatus::Complete => {
-                            // handled above
-                        }
-                    }
+                    // Status display is handled by the global MessageBanner
                 });
 
             inner_action

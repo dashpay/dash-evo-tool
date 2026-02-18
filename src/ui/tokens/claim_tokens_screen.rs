@@ -1,15 +1,15 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::components::Component;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -44,7 +44,7 @@ use super::tokens_screen::IdentityTokenBasicInfo;
 #[derive(PartialEq)]
 pub enum ClaimTokensStatus {
     NotStarted,
-    WaitingForResult(u64),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -65,6 +65,8 @@ pub struct ClaimTokensScreen {
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl ClaimTokensScreen {
@@ -135,6 +137,7 @@ impl ClaimTokensScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -204,11 +207,14 @@ impl ClaimTokensScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.status = ClaimTokensStatus::WaitingForResult(now);
+                self.status = ClaimTokensStatus::WaitingForResult;
+                let handle = MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Claiming tokens...",
+                    MessageType::Info,
+                );
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
 
                 AppAction::BackendTasks(
                     vec![
@@ -247,12 +253,18 @@ impl ScreenLike for ClaimTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.status = ClaimTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.status = ClaimTokensStatus::Complete;
         }
@@ -567,13 +579,8 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.add_space(10.0);
                 match &self.status {
                     ClaimTokensStatus::NotStarted => {}
-                    ClaimTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Claiming... elapsed: {}s", elapsed));
+                    ClaimTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     ClaimTokensStatus::Error => {
                         // Error display is handled by the global MessageBanner

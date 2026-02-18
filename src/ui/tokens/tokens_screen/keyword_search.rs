@@ -2,11 +2,12 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, ContractSearchStatus, TokensScreen,
 };
-use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
 use egui::{RichText, Ui};
@@ -59,8 +60,14 @@ impl TokensScreen {
                     if go_clicked || enter_pressed {
                         // Clear old results, set status
                         self.search_results.lock().unwrap().clear();
-                        let now = Utc::now().timestamp() as u64;
-                        self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
+                        self.contract_search_status = ContractSearchStatus::WaitingForResult;
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Searching contracts...",
+                            MessageType::Info,
+                        );
+                        handle.with_elapsed();
+                        self.operation_banner = Some(handle);
                         self.search_current_page = 1;
                         self.next_cursors.clear();
                         self.previous_cursors.clear();
@@ -103,13 +110,8 @@ impl TokensScreen {
             ContractSearchStatus::NotStarted => {
                 // Nothing
             }
-            ContractSearchStatus::WaitingForResult(start_time) => {
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                ui.horizontal(|ui| {
-                    ui.label(format!("Searching... {} seconds", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-                });
+            ContractSearchStatus::WaitingForResult => {
+                // Elapsed display is handled by the global MessageBanner
             }
             ContractSearchStatus::Complete => {
                 // Show the results

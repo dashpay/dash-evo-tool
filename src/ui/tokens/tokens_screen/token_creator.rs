@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, HashSet};
-use chrono::Utc;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::{TokenConfigurationPreset, TokenConfigurationPresetFeatures};
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationPresetFeatures::{MostRestrictive, WithAllAdvancedActions, WithExtremeActions, WithMintingAndBurningActions, WithOnlyEmergencyAction};
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::TokenDistributionRules;
@@ -954,21 +953,7 @@ impl TokensScreen {
             self.render_data_contract_json_popup(ui);
         }
 
-        // 8) If we are waiting, show spinner / time elapsed
-        if let TokenCreatorStatus::WaitingForResult(start_time) = self.token_creator_status {
-            let now = Utc::now().timestamp() as u64;
-            let elapsed = now - start_time;
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Registering token contract... elapsed {}s",
-                    elapsed
-                ));
-                ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-            });
-        }
-
-        // Error messages are displayed by the global MessageBanner
+        // Elapsed display for token creation is handled by the global MessageBanner
 
             }); // Close the ScrollArea from line 40
 
@@ -1504,8 +1489,14 @@ impl TokensScreen {
                     ];
 
                     action = AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Sequential);
-                    let now = Utc::now().timestamp() as u64;
-                    self.token_creator_status = TokenCreatorStatus::WaitingForResult(now);
+                    self.token_creator_status = TokenCreatorStatus::WaitingForResult;
+                    let handle = MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Creating token...",
+                        MessageType::Info,
+                    );
+                    handle.with_elapsed();
+                    self.operation_banner = Some(handle);
                     self.close_token_creator_confirmation_popup();
                 }
                 ConfirmationStatus::Canceled => {

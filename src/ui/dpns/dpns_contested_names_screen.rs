@@ -18,12 +18,12 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestState, ContestedName};
 use crate::model::qualified_identity::{DPNSNameInfo, QualifiedIdentity};
-use crate::ui::components::MessageBanner;
 use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
@@ -75,7 +75,7 @@ pub enum ScheduledVoteCastingStatus {
 #[derive(PartialEq)]
 pub enum VoteHandlingStatus {
     NotStarted,
-    CastingVotes(u64),
+    CastingVotes,
     SchedulingVotes,
     Completed,
     Failed(String),
@@ -83,7 +83,7 @@ pub enum VoteHandlingStatus {
 
 #[derive(PartialEq)]
 pub enum RefreshingStatus {
-    Refreshing(u64),
+    Refreshing,
     NotRefreshing,
 }
 
@@ -130,12 +130,14 @@ pub struct DPNSScreen {
     /// Which sub-screen is active: Active contests, Past, Owned, or Scheduled
     pub dpns_subscreen: DPNSSubscreen,
     refreshing_status: RefreshingStatus,
+    refresh_banner: Option<BannerHandle>,
 
     /// Selected vote handling
     show_bulk_schedule_popup: bool,
     bulk_identity_options: Vec<VoteOption>,
     bulk_schedule_message: Option<(MessageType, String)>,
     bulk_vote_handling_status: VoteHandlingStatus,
+    vote_banner: Option<BannerHandle>,
     set_all_option: VoteOption,
 }
 
@@ -197,12 +199,14 @@ impl DPNSScreen {
             pending_backend_task: None,
             dpns_subscreen,
             refreshing_status: RefreshingStatus::NotRefreshing,
+            refresh_banner: None,
 
             // Vote handling
             show_bulk_schedule_popup: false,
             bulk_identity_options,
             bulk_schedule_message: None,
             bulk_vote_handling_status: VoteHandlingStatus::NotStarted,
+            vote_banner: None,
             set_all_option: VoteOption::CastNow,
         }
     }
@@ -290,11 +294,10 @@ impl DPNSScreen {
                 ui.label(RichText::new("Please check back later or try refreshing the list.").color(DashColors::text_primary(dark_mode)));
                 ui.add_space(20.0);
                 if StyledButton::primary("Refresh").show(ui).clicked() {
-                    if let RefreshingStatus::Refreshing(_) = self.refreshing_status {
+                    if let RefreshingStatus::Refreshing = self.refreshing_status {
                         app_action = AppAction::None;
                     } else {
-                        let now = Utc::now().timestamp() as u64;
-                        self.refreshing_status = RefreshingStatus::Refreshing(now);
+                        self.refreshing_status = RefreshingStatus::Refreshing;
                         match self.dpns_subscreen {
                             DPNSSubscreen::Active | DPNSSubscreen::Past => {
                                 app_action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -1538,6 +1541,15 @@ impl DPNSScreen {
             .corner_radius(3.0);
         if ui.add(button).clicked() {
             action = self.bulk_apply_votes();
+            if self.bulk_vote_handling_status == VoteHandlingStatus::CastingVotes {
+                if let Some(h) = self.vote_banner.take() {
+                    h.clear();
+                }
+                let handle =
+                    MessageBanner::set_global(ui.ctx(), "Casting votes...", MessageType::Info);
+                handle.with_elapsed();
+                self.vote_banner = Some(handle);
+            }
         }
 
         ui.add_space(5.0);
@@ -1546,20 +1558,17 @@ impl DPNSScreen {
             self.show_bulk_schedule_popup = false;
             self.bulk_schedule_message = None;
             self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
+            if let Some(h) = self.vote_banner.take() {
+                h.clear();
+            }
         }
 
         // Handle status
         ui.add_space(10.0);
         match &self.bulk_vote_handling_status {
             VoteHandlingStatus::NotStarted => {}
-            VoteHandlingStatus::CastingVotes(start_time) => {
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                ui.label(
-                    RichText::new(format!("Casting votes... Time taken so far: {}", elapsed))
-                        .color(DashColors::text_primary(dark_mode)),
-                );
+            VoteHandlingStatus::CastingVotes => {
+                // Elapsed time is shown in the global banner
             }
             VoteHandlingStatus::SchedulingVotes => {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -1636,8 +1645,7 @@ impl DPNSScreen {
                 .iter()
                 .map(|sv| (sv.contested_name.clone(), sv.vote_choice))
                 .collect();
-            let now = Utc::now().timestamp() as u64;
-            self.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes(now);
+            self.bulk_vote_handling_status = VoteHandlingStatus::CastingVotes;
             if !scheduled_list.is_empty() {
                 AppAction::BackendTasks(
                     vec![
@@ -1822,8 +1830,16 @@ impl ScreenLike for DPNSScreen {
         self.refresh();
     }
 
-    fn display_message(&mut self, message: &str, _message_type: MessageType) {
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            if let Some(h) = self.refresh_banner.take() {
+                h.clear();
+            }
+            if let Some(h) = self.vote_banner.take() {
+                h.clear();
+            }
+        }
         if message.contains("Error casting scheduled vote") {
             self.scheduled_vote_cast_in_progress = false;
             if let Ok(mut guard) = self.scheduled_votes.lock() {
@@ -1875,11 +1891,17 @@ impl ScreenLike for DPNSScreen {
                     ));
                 }
 
+                if let Some(h) = self.vote_banner.take() {
+                    h.clear();
+                }
                 self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
             }
             // If scheduling succeeded
             BackendTaskSuccessResult::ScheduledVotes => {
                 if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
+                    if let Some(h) = self.vote_banner.take() {
+                        h.clear();
+                    }
                     self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
                 }
                 self.bulk_schedule_message =
@@ -1897,6 +1919,9 @@ impl ScreenLike for DPNSScreen {
             }
             BackendTaskSuccessResult::RefreshedDpnsContests
             | BackendTaskSuccessResult::RefreshedOwnedDpnsNames => {
+                if let Some(h) = self.refresh_banner.take() {
+                    h.clear();
+                }
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
@@ -2073,22 +2098,8 @@ impl ScreenLike for DPNSScreen {
                 }
             }
 
-            // Show either refreshing indicator or message, but not both
-            if let RefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                ui.add_space(25.0); // Space above
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    ui.label(
-                        RichText::new(format!("Refreshing... Time taken so far: {}", elapsed))
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-                });
-                ui.add_space(2.0); // Space below
-            }
+            // Refreshing indicator is shown via the global banner
+            // (no inline elapsed rendering needed)
             inner_action
         });
 
@@ -2098,17 +2109,38 @@ impl ScreenLike for DPNSScreen {
             AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContests,
             )) => {
-                self.refreshing_status =
-                    RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                if let Some(h) = self.refresh_banner.take() {
+                    h.clear();
+                }
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    "Refreshing contested names...",
+                    MessageType::Info,
+                );
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
+                self.refreshing_status = RefreshingStatus::Refreshing;
             }
             // If refreshing owned names, set self.refreshing = true
             AppAction::BackendTask(BackendTask::IdentityTask(
                 IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
             )) => {
-                self.refreshing_status =
-                    RefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
+                if let Some(h) = self.refresh_banner.take() {
+                    h.clear();
+                }
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    "Refreshing contested names...",
+                    MessageType::Info,
+                );
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
+                self.refreshing_status = RefreshingStatus::Refreshing;
             }
             AppAction::SetMainScreen(_) => {
+                if let Some(h) = self.refresh_banner.take() {
+                    h.clear();
+                }
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}

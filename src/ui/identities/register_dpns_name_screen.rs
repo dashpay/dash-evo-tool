@@ -5,7 +5,6 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -13,19 +12,19 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::identity::Purpose;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
-use dash_sdk::dpp::identity::{Purpose, TimestampMillis};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{Context, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::get_selected_wallet;
 
@@ -40,7 +39,7 @@ pub enum RegisterDpnsNameSource {
 #[derive(PartialEq)]
 pub enum RegisterDpnsNameStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -61,6 +60,7 @@ pub struct RegisterDpnsNameScreen {
     completed_fee_result: Option<FeeResult>,
     // Source of navigation to this screen
     pub source: RegisterDpnsNameSource,
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl RegisterDpnsNameScreen {
@@ -124,6 +124,7 @@ impl RegisterDpnsNameScreen {
             show_advanced_options: false,
             completed_fee_result: None,
             source,
+            refresh_banner: None,
         }
     }
 
@@ -303,6 +304,9 @@ impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
+            if let Some(handle) = self.refresh_banner.take() {
+                handle.clear();
+            }
             self.register_dpns_name_status = RegisterDpnsNameStatus::Error;
         }
     }
@@ -311,6 +315,9 @@ impl ScreenLike for RegisterDpnsNameScreen {
         if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) =
             backend_task_success_result
         {
+            if let Some(handle) = self.refresh_banner.take() {
+                handle.clear();
+            }
             self.completed_fee_result = Some(fee_result);
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
@@ -548,56 +555,11 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 .on_disabled_hover_text(&hover_text)
                 .clicked()
             {
-                // Set the status to waiting and capture the current time
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
-                    .as_secs();
-                self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult(now);
+                self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult;
+                let handle = MessageBanner::set_global(ui.ctx(), "Registering DPNS name...", MessageType::Info);
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
                 inner_action = self.register_dpns_name_clicked();
-            }
-
-            ui.add_space(10.0);
-
-            // Handle registration status messages
-            match &self.register_dpns_name_status {
-                RegisterDpnsNameStatus::NotStarted => {
-                    // Do nothing
-                }
-                RegisterDpnsNameStatus::WaitingForResult(start_time) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
-                        .as_secs();
-                    let elapsed_seconds = now - start_time;
-
-                    let display_time = if elapsed_seconds < 60 {
-                        format!(
-                            "{} second{}",
-                            elapsed_seconds,
-                            if elapsed_seconds == 1 { "" } else { "s" }
-                        )
-                    } else {
-                        let minutes = elapsed_seconds / 60;
-                        let seconds = elapsed_seconds % 60;
-                        format!(
-                            "{} minute{} and {} second{}",
-                            minutes,
-                            if minutes == 1 { "" } else { "s" },
-                            seconds,
-                            if seconds == 1 { "" } else { "s" }
-                        )
-                    };
-
-                    ui.label(format!(
-                        "Registering... Time taken so far: {}",
-                        display_time
-                    ));
-                }
-                RegisterDpnsNameStatus::Error => {
-                    // Error display is handled by the global MessageBanner
-                }
-                RegisterDpnsNameStatus::Complete => {}
             }
 
             ui.add_space(10.0);

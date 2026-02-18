@@ -3,11 +3,10 @@ use dash_evo_tool::ui::welcome_screen::WelcomeScreen;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-/// Helper to create a test harness with the standard configuration.
+/// Create a test harness with the standard configuration.
 /// Returns the runtime (must be kept alive) and the harness.
-/// Note: the tokio runtime guard is dropped after harness creation, so
-/// tests that trigger actions spawning tokio tasks should create their
-/// own runtime and enter it explicitly.
+/// Call `rt.enter()` on the returned runtime if the test triggers actions
+/// that spawn tokio tasks (e.g., button clicks that dispatch AppActions).
 fn create_test_harness() -> (
     tokio::runtime::Runtime,
     Harness<'static, dash_evo_tool::app::AppState>,
@@ -129,12 +128,8 @@ fn test_welcome_screen_action_cards_present() {
 /// Test that clicking "Just Explore" on the welcome screen dismisses it
 #[test]
 fn test_welcome_screen_just_explore_click() {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let (rt, mut harness) = create_test_harness();
     let _guard = rt.enter();
-
-    let mut harness = Harness::builder().with_max_steps(200).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
-    });
     harness.set_size(egui::vec2(1024.0, 768.0));
     enable_welcome_screen(&mut harness);
     harness.run_steps(10);
@@ -159,12 +154,8 @@ fn test_welcome_screen_just_explore_click() {
 /// Test that clicking "Create Wallet" navigates to wallets with add screen
 #[test]
 fn test_welcome_screen_create_wallet_click() {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let (rt, mut harness) = create_test_harness();
     let _guard = rt.enter();
-
-    let mut harness = Harness::builder().with_max_steps(200).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
-    });
     harness.set_size(egui::vec2(1024.0, 768.0));
     enable_welcome_screen(&mut harness);
     harness.run_steps(10);
@@ -193,12 +184,8 @@ fn test_welcome_screen_create_wallet_click() {
 /// Test that clicking "Import Wallet" navigates to wallets with import screen
 #[test]
 fn test_welcome_screen_import_wallet_click() {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let (rt, mut harness) = create_test_harness();
     let _guard = rt.enter();
-
-    let mut harness = Harness::builder().with_max_steps(200).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone()).with_animations(false)
-    });
     harness.set_size(egui::vec2(1024.0, 768.0));
     enable_welcome_screen(&mut harness);
     harness.run_steps(10);

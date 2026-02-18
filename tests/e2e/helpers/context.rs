@@ -10,10 +10,6 @@ pub struct TestContext {
     pub spv_synced: bool,
     pub network: String,
     pub wallet_reused: bool,
-    /// max_balance() snapshot taken before send-to-self (Phase 2)
-    pub pre_send_balance: u64,
-    /// wallet.transactions.len() snapshot taken before send-to-self (Phase 2)
-    pub pre_send_tx_count: usize,
     /// Identity ID created in Phase 5
     pub identity_id: Option<Identifier>,
     /// DPNS name registered in Phase 6
@@ -40,8 +36,6 @@ impl Default for TestContext {
             spv_synced: false,
             network: "testnet".to_string(),
             wallet_reused: false,
-            pre_send_balance: 0,
-            pre_send_tx_count: 0,
             identity_id: None,
             dpns_name: None,
             header_height: 0,

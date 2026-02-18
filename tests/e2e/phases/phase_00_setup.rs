@@ -14,17 +14,14 @@ use std::time::{Duration, Instant};
 const E2E_WALLET_ALIAS: &str = "E2E Test Wallet";
 
 /// Check if a wallet with the E2E alias already exists that we can reuse.
-/// Only matches by exact alias — never grabs unrelated wallets.
+/// Only matches by exact alias -- never grabs unrelated wallets.
 fn find_existing_e2e_wallet(harness: &Harness<'_, AppState>) -> Option<WalletSeedHash> {
     let app_ctx = harness.state().current_app_context();
     let wallets = app_ctx.wallets().read().unwrap();
-    for (seed_hash, wallet) in wallets.iter() {
-        let w = wallet.read().unwrap();
-        if w.alias.as_deref() == Some(E2E_WALLET_ALIAS) {
-            return Some(*seed_hash);
-        }
-    }
-    None
+    wallets
+        .iter()
+        .find(|(_, wallet)| wallet.read().unwrap().alias.as_deref() == Some(E2E_WALLET_ALIAS))
+        .map(|(seed_hash, _)| *seed_hash)
 }
 
 /// Import a wallet by pushing ImportMnemonicScreen and setting values directly.

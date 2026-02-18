@@ -4,6 +4,7 @@ use dash_evo_tool::spv::SpvStatus;
 use dash_evo_tool::ui::{RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dash_spv::sync::ProgressPercentage;
 use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT, Queryable};
 use std::time::{Duration, Instant};
 
 // ─── Centralized constants ───────────────────────────────────────────────────
@@ -12,19 +13,12 @@ use std::time::{Duration, Instant};
 pub const SPV_SYNC_TIMEOUT_SECS: u64 = 600;
 /// Minimum wallet balance (duffs) for SPV sync to be considered successful.
 pub const MIN_BALANCE_DUFFS: u64 = 100_000;
-/// Send-to-self transaction broadcast + confirmation.
-pub const SEND_TX_TIMEOUT: Duration = Duration::from_secs(180);
-/// Post-send SPV reconciliation (balance/UTXO update).
-/// dash-spv currently needs a confirmation, which can take 5-10 minutes.
-pub const POST_SEND_RECONCILE_TIMEOUT: Duration = Duration::from_secs(600);
 /// Platform read operations (DPNS lookup, contract fetch).
 pub const PLATFORM_READ_TIMEOUT: Duration = Duration::from_secs(120);
 /// Contract fetch (simpler than full platform reads).
 pub const CONTRACT_FETCH_TIMEOUT: Duration = Duration::from_secs(90);
 /// Token search.
 pub const TOKEN_SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
-/// Identity creation (asset lock + platform broadcast + confirmation).
-pub const IDENTITY_CREATION_TIMEOUT: Duration = Duration::from_secs(300);
 /// DPNS name registration.
 pub const DPNS_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(180);
 /// SPV stop timeout during teardown.
@@ -35,14 +29,6 @@ pub const PLATFORM_MAX_RETRIES: u32 = 3;
 pub const POLL_STEPS: usize = 30;
 /// Frames to run after navigation/screen push for UI settle.
 pub const SETTLE_STEPS: usize = 10;
-/// Minimum balance (duffs) required before send-to-self (0.1 DASH).
-pub const MIN_BALANCE_FOR_SEND: u64 = 10_000_000;
-/// Maximum acceptable balance drop after send-to-self.
-/// This is NOT just the fee — UTXO reconciliation delays can mean the sent
-/// amount and change outputs aren't reflected yet, inflating the apparent drop.
-/// Set high enough (0.05 DASH) to avoid flaky failures.
-pub const MAX_SEND_FEE: u64 = 5_000_000;
-
 // ─── Error classification ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,28 +148,7 @@ where
 pub fn wait_for_label(harness: &mut Harness<'_, AppState>, text: &str, timeout: Duration) -> bool {
     wait_until(
         harness,
-        |h| {
-            use egui_kittest::kittest::Queryable;
-            h.query_all_by_label_contains(text).next().is_some()
-        },
-        timeout,
-        5,
-    )
-}
-
-/// Wait until a label containing `text` disappears from the UI.
-/// Safe with ambiguous matches — returns true when no nodes match.
-pub fn wait_for_label_gone(
-    harness: &mut Harness<'_, AppState>,
-    text: &str,
-    timeout: Duration,
-) -> bool {
-    wait_until(
-        harness,
-        |h| {
-            use egui_kittest::kittest::Queryable;
-            h.query_all_by_label_contains(text).next().is_none()
-        },
+        |h| h.query_all_by_label_contains(text).next().is_some(),
         timeout,
         5,
     )
@@ -215,7 +180,6 @@ pub fn navigate_to_screen(harness: &mut Harness<'_, AppState>, screen: RootScree
 /// content is unreliable because AccessKit interactions don't always propagate,
 /// so we limit this to checking the button exists.
 pub fn verify_receive_button_visible(harness: &mut Harness<'_, AppState>) {
-    use egui_kittest::kittest::Queryable;
     // Use exact match to avoid "Total Received (DASH)"
     let found = harness.query_by_label("Receive").is_some();
     assert!(
@@ -233,8 +197,6 @@ pub fn verify_sidebar_label_and_navigate(
     label: &str,
     target: RootScreenType,
 ) {
-    use egui_kittest::kittest::Queryable;
-
     harness.state_mut().screen_stack.clear();
     harness.run_steps(5);
 
@@ -274,8 +236,6 @@ pub fn pop_screen(harness: &mut Harness<'_, AppState>) {
 ///
 /// `nth` is zero-indexed: 0 = first TextInput, 1 = second, etc.
 pub fn type_into_text_input(harness: &mut Harness<'_, AppState>, nth: usize, text: &str) {
-    use egui_kittest::kittest::Queryable;
-
     harness
         .query_all_by_role(egui::accesskit::Role::TextInput)
         .nth(nth)
@@ -299,8 +259,6 @@ pub fn type_into_text_input(harness: &mut Harness<'_, AppState>, nth: usize, tex
 
 /// Dismiss an error/info dialog if the "Dismiss" button is present.
 pub fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
-    use egui_kittest::kittest::Queryable;
-
     if let Some(dismiss) = harness.query_by_label_contains("Dismiss") {
         dismiss.click();
         harness.run_steps(5);
@@ -312,8 +270,6 @@ pub fn dismiss_if_present(harness: &mut Harness<'_, AppState>) {
 /// via the stable AccessKit `label()` API.
 /// Returns None if no error label is visible.
 pub fn capture_error_text(harness: &Harness<'_, AppState>) -> Option<String> {
-    use egui_kittest::kittest::NodeT;
-    use egui_kittest::kittest::Queryable;
     const PATTERNS: &[&str] = &["Error:", "Error registering", "Error "];
 
     for pattern in PATTERNS {

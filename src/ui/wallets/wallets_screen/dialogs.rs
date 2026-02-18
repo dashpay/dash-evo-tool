@@ -1118,12 +1118,6 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Close the receive dialog and reset its state.
-    #[allow(dead_code)]
-    pub(super) fn close_receive_dialog(&mut self) {
-        self.receive_dialog = ReceiveDialogState::default();
-    }
-
     /// Load Core addresses into the receive dialog
     fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
         let wallet_guard = match wallet.read() {

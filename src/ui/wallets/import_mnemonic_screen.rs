@@ -497,13 +497,6 @@ impl ImportMnemonicScreen {
 
 #[cfg(feature = "e2e")]
 impl ImportMnemonicScreen {
-    /// Set the seed phrase length (for testing).
-    /// Resizes the word vector to match.
-    pub fn set_seed_phrase_length(&mut self, length: usize) {
-        self.selected_seed_phrase_length = length;
-        self.seed_phrase_words.resize(length, String::new());
-    }
-
     /// Set all seed phrase words and parse the mnemonic (for testing).
     pub fn set_seed_phrase_words(&mut self, words: &[&str]) {
         self.selected_seed_phrase_length = words.len();

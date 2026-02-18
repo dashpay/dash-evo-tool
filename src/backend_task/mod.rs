@@ -311,10 +311,7 @@ impl AppContext {
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
         match task {
             BackendTask::ContractTask(contract_task) => {
                 self.run_contract_task(*contract_task, &sdk, sender).await

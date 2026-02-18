@@ -1800,6 +1800,7 @@ version = "1.0.0-dev"
 dependencies = [
  "aes-gcm",
  "arboard",
+ "arc-swap",
  "argon2",
  "base64 0.22.1",
  "bincode 2.0.1",

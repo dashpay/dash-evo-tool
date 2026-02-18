@@ -333,10 +333,7 @@ impl AppContext {
         &self,
         request: PlatformInfoTaskRequestType,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let sdk = {
-            let sdk_guard = self.sdk.read().unwrap();
-            sdk_guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         match request {
             PlatformInfoTaskRequestType::BasicPlatformInfo => {

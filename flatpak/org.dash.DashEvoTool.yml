@@ -1,0 +1,74 @@
+# Flatpak manifest for Dash Evo Tool
+# Build with: flatpak-builder --user --force-clean --repo=flatpak-repo build-dir flatpak/org.dash.DashEvoTool.yml
+# Install locally: flatpak-builder --user --install --force-clean build-dir flatpak/org.dash.DashEvoTool.yml
+# Create bundle: flatpak build-bundle flatpak-repo dash-evo-tool.flatpak org.dash.DashEvoTool
+
+app-id: org.dash.DashEvoTool
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.llvm21
+
+command: dash-evo-tool
+
+finish-args:
+  # X11 shared memory for display
+  - --share=ipc
+  # Network access for blockchain communication
+  - --share=network
+  # Display server support (prefer Wayland, fall back to X11)
+  - --socket=wayland
+  - --socket=fallback-x11
+  # GPU acceleration for egui rendering
+  - --device=dri
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm21/bin
+  build-args:
+    - --share=network
+  env:
+    CARGO_HOME: /run/build/dash-evo-tool/cargo
+    PROTOC: /app/bin/protoc
+    PROTOC_INCLUDE: /app/include
+
+modules:
+  # Module 1: Install protobuf compiler (required for building dash-sdk)
+  # NOTE: CI patches this module for aarch64 via sed (see .github/workflows/flatpak.yml).
+  - name: protoc
+    buildsystem: simple
+    sources:
+      - type: file
+        url: https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip
+        sha256: 78ab9c3288919bdaa6cfcec6127a04813cf8a0ce406afa625e48e816abee2878
+    build-commands:
+      - unzip protoc-25.2-linux-x86_64.zip bin/protoc -d /app
+      - unzip protoc-25.2-linux-x86_64.zip 'include/*' -d /app
+      - chmod 755 /app/bin/protoc
+
+  # Module 2: Build libsodium (required for crypto operations)
+  - name: libsodium
+    buildsystem: autotools
+    sources:
+      - type: archive
+        url: https://github.com/jedisct1/libsodium/releases/download/1.0.20-RELEASE/libsodium-1.0.20.tar.gz
+        sha256: ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19
+
+  # Module 3: Build dash-evo-tool from source
+  - name: dash-evo-tool
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .flatpak-builder
+          - build-dir
+          - flatpak-repo
+          - target
+    build-commands:
+      - cargo build --release --locked
+      - install -Dm755 target/release/dash-evo-tool /app/bin/dash-evo-tool
+      - install -Dm644 flatpak/org.dash.DashEvoTool.desktop /app/share/applications/org.dash.DashEvoTool.desktop
+      - install -Dm644 flatpak/org.dash.DashEvoTool.metainfo.xml /app/share/metainfo/org.dash.DashEvoTool.metainfo.xml
+      - install -Dm644 assets/DET_LOGO.png /app/share/icons/hicolor/512x512/apps/org.dash.DashEvoTool.png

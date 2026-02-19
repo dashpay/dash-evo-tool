@@ -9,6 +9,7 @@ use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPriv
 use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
+use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -409,81 +410,86 @@ pub async fn load_contacts(
         })
         .collect();
 
-    // Fetch profiles and usernames for all contacts
-    // First, collect all contact IDs
-    let contact_ids: Vec<Identifier> = contact_list.iter().map(|c| c.identity_id).collect();
+    // Fetch profiles and usernames for all contacts in parallel with bounded concurrency.
+    // Each contact requires two network queries (profile + DPNS username), so parallelizing
+    // in chunks significantly reduces total load time for large contact lists.
+    const CHUNK_SIZE: usize = 10;
 
-    // Fetch profiles for all contacts (batch query)
-    if !contact_ids.is_empty() {
-        // Query profiles for all contacts
-        for contact_id in &contact_ids {
-            // Fetch profile
-            let mut profile_query = DocumentQuery::new(dashpay_contract.clone(), "profile")
-                .map_err(|e| format!("Failed to create profile query: {}", e))?;
+    for chunk in contact_list.chunks_mut(CHUNK_SIZE) {
+        let futures: Vec<_> = chunk
+            .iter()
+            .map(|contact| {
+                let dashpay_contract = dashpay_contract.clone();
+                let dpns_contract = app_context.dpns_contract.clone();
+                let contact_id = contact.identity_id;
 
-            profile_query = profile_query.with_where(WhereClause {
-                field: "$ownerId".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(contact_id.to_buffer()),
-            });
-            profile_query.limit = 1;
+                async move {
+                    let mut display_name = None;
+                    let mut avatar_url = None;
+                    let mut bio = None;
+                    let mut username = None;
 
-            if let Ok(results) = Document::fetch_many(sdk, profile_query).await
-                && let Some((_, Some(doc))) = results.into_iter().next()
-            {
-                let props = doc.properties();
+                    // Fetch profile
+                    if let Ok(mut profile_query) = DocumentQuery::new(dashpay_contract, "profile") {
+                        profile_query = profile_query.with_where(WhereClause {
+                            field: "$ownerId".to_string(),
+                            operator: WhereOperator::Equal,
+                            value: Value::Identifier(contact_id.to_buffer()),
+                        });
+                        profile_query.limit = 1;
 
-                let display_name = props
-                    .get("displayName")
-                    .and_then(|v| v.as_text())
-                    .map(|s| s.to_string());
-
-                let avatar_url = props
-                    .get("avatarUrl")
-                    .and_then(|v| v.as_text())
-                    .map(|s| s.to_string());
-
-                let bio = props
-                    .get("publicMessage")
-                    .and_then(|v| v.as_text())
-                    .map(|s| s.to_string());
-
-                // Update the contact in the list
-                if let Some(contact) = contact_list
-                    .iter_mut()
-                    .find(|c| c.identity_id == *contact_id)
-                {
-                    contact.display_name = display_name;
-                    contact.avatar_url = avatar_url;
-                    contact.bio = bio;
-                }
-            }
-
-            // Fetch DPNS username
-            let dpns_contract = app_context.dpns_contract.clone();
-            let mut dpns_query = DocumentQuery::new(dpns_contract, "domain")
-                .map_err(|e| format!("Failed to create DPNS query: {}", e))?;
-
-            dpns_query = dpns_query.with_where(WhereClause {
-                field: "records.identity".to_string(),
-                operator: WhereOperator::Equal,
-                value: Value::Identifier(contact_id.to_buffer()),
-            });
-            dpns_query.limit = 1;
-
-            if let Ok(results) = Document::fetch_many(sdk, dpns_query).await
-                && let Some((_, Some(doc))) = results.into_iter().next()
-            {
-                let props = doc.properties();
-                if let Some(label) = props.get("label").and_then(|v| v.as_text()) {
-                    // Update the contact in the list
-                    if let Some(contact) = contact_list
-                        .iter_mut()
-                        .find(|c| c.identity_id == *contact_id)
-                    {
-                        contact.username = Some(label.to_string());
+                        if let Ok(results) = Document::fetch_many(sdk, profile_query).await
+                            && let Some((_, Some(doc))) = results.into_iter().next()
+                        {
+                            let props = doc.properties();
+                            display_name = props
+                                .get("displayName")
+                                .and_then(|v| v.as_text())
+                                .map(|s| s.to_string());
+                            avatar_url = props
+                                .get("avatarUrl")
+                                .and_then(|v| v.as_text())
+                                .map(|s| s.to_string());
+                            bio = props
+                                .get("publicMessage")
+                                .and_then(|v| v.as_text())
+                                .map(|s| s.to_string());
+                        }
                     }
+
+                    // Fetch DPNS username
+                    if let Ok(mut dpns_query) = DocumentQuery::new(dpns_contract, "domain") {
+                        dpns_query = dpns_query.with_where(WhereClause {
+                            field: "records.identity".to_string(),
+                            operator: WhereOperator::Equal,
+                            value: Value::Identifier(contact_id.to_buffer()),
+                        });
+                        dpns_query.limit = 1;
+
+                        if let Ok(results) = Document::fetch_many(sdk, dpns_query).await
+                            && let Some((_, Some(doc))) = results.into_iter().next()
+                        {
+                            let props = doc.properties();
+                            if let Some(label) = props.get("label").and_then(|v| v.as_text()) {
+                                username = Some(label.to_string());
+                            }
+                        }
+                    }
+
+                    (contact_id, display_name, avatar_url, bio, username)
                 }
+            })
+            .collect();
+
+        let results = join_all(futures).await;
+
+        // Apply fetched data back to the contacts in this chunk
+        for (contact_id, display_name, avatar_url, bio, username) in results {
+            if let Some(contact) = chunk.iter_mut().find(|c| c.identity_id == contact_id) {
+                contact.display_name = display_name;
+                contact.avatar_url = avatar_url;
+                contact.bio = bio;
+                contact.username = username;
             }
         }
     }

@@ -26,6 +26,7 @@ pub struct Contact {
     pub nickname: Option<String>,
     pub is_hidden: bool,
     pub account_reference: u32,
+    pub created_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +35,7 @@ pub enum SearchFilter {
     WithUsernames,    // Only contacts with usernames
     WithoutUsernames, // Only contacts without usernames
     WithBio,          // Contacts with bio
-    Recent,           // Recently added (TODO: needs database timestamp)
+    Recent,           // Added within the last 7 days
     Hidden,           // Only hidden contacts
     Visible,          // Only visible contacts
 }
@@ -43,7 +44,7 @@ pub enum SearchFilter {
 pub enum SortOrder {
     Name,       // Sort by display name/username
     Username,   // Sort by username specifically
-    DateAdded,  // Sort by date added (TODO: needs database timestamp)
+    DateAdded,  // Sort by date added (from database timestamp)
     AccountRef, // Sort by account reference number
 }
 
@@ -140,6 +141,7 @@ impl ContactsList {
                             nickname: None,   // Will be loaded separately from contact_private_info
                             is_hidden: false, // Will be loaded separately from contact_private_info
                             account_reference: 0, // This would need to be loaded from contactInfo document
+                            created_at: Some(stored_contact.created_at),
                         };
 
                         // Only add if contact status is accepted
@@ -480,6 +482,11 @@ impl ContactsList {
                                 );
                                 ui.selectable_value(
                                     &mut self.search_filter,
+                                    SearchFilter::Recent,
+                                    "Recent",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
                                     SearchFilter::Hidden,
                                     "Hidden",
                                 );
@@ -512,6 +519,11 @@ impl ContactsList {
                                     &mut self.sort_order,
                                     SortOrder::Username,
                                     "Username",
+                                );
+                                ui.selectable_value(
+                                    &mut self.sort_order,
+                                    SortOrder::DateAdded,
+                                    "Date added",
                                 );
                                 ui.selectable_value(
                                     &mut self.sort_order,
@@ -575,8 +587,15 @@ impl ContactsList {
                     SearchFilter::Hidden if !contact.is_hidden => return false,
                     SearchFilter::Visible if contact.is_hidden => return false,
                     SearchFilter::Recent => {
-                        // TODO: Implement when we have timestamp data
-                        // For now, treat as "All"
+                        let seven_days_ago = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                            - 7 * 24 * 60 * 60;
+                        match contact.created_at {
+                            Some(ts) if ts >= seven_days_ago => {}
+                            _ => return false,
+                        }
                     }
                     _ => {} // SearchFilter::All or other cases pass through
                 }
@@ -670,9 +689,9 @@ impl ContactsList {
                 }
                 SortOrder::AccountRef => a.account_reference.cmp(&b.account_reference),
                 SortOrder::DateAdded => {
-                    // TODO: Implement when we have timestamp data
-                    // For now, sort by identity ID as a proxy
-                    a.identity_id.cmp(&b.identity_id)
+                    // Sort by created_at descending (newest first)
+                    // Contacts without timestamps sort last
+                    b.created_at.unwrap_or(0).cmp(&a.created_at.unwrap_or(0))
                 }
             }
         });
@@ -1025,6 +1044,7 @@ impl ScreenLike for ContactsList {
                         nickname: None,
                         is_hidden: false,
                         account_reference: 0,
+                        created_at: None,
                     };
                     self.contacts.insert(contact_id, contact);
                 }
@@ -1072,6 +1092,12 @@ impl ScreenLike for ContactsList {
                             nickname: contact_data.nickname.clone(),
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
+                            created_at: Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64,
+                            ), // Fallback to current time for filter/sort
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
 
@@ -1122,6 +1148,12 @@ impl ScreenLike for ContactsList {
                             nickname: contact_data.nickname,
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
+                            created_at: Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64,
+                            ), // Fallback to current time for filter/sort
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
                     }

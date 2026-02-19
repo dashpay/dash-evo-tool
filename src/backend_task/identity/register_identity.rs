@@ -36,10 +36,7 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
             .await
@@ -296,7 +293,7 @@ impl AppContext {
             .create_identifier()
             .expect("expected to create an identifier");
 
-        let public_keys = keys.to_public_keys_map();
+        let public_keys = keys.to_public_keys_map()?;
 
         // Debug: Log the keys being registered to verify contract bounds are set
         for (key_id, key) in &public_keys {
@@ -646,12 +643,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::platform::transition::put_identity::PutIdentity;
 
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys.to_public_keys_map();
+        let public_keys = keys.to_public_keys_map()?;
 
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();

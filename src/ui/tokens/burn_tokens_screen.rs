@@ -597,18 +597,18 @@ impl ScreenLike for BurnTokensScreen {
                 ui.add_space(10.0);
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 egui::Frame::new()
-                    .fill(crate::ui::theme::DashColors::surface(dark_mode))
+                    .fill(DashColors::surface(dark_mode))
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .corner_radius(5.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Estimated Fee:")
-                                    .color(crate::ui::theme::DashColors::text_secondary(dark_mode)),
+                                    .color(DashColors::text_secondary(dark_mode)),
                             );
                             ui.label(
                                 RichText::new(format_credits_as_dash(estimated_fee))
-                                    .color(crate::ui::theme::DashColors::text_primary(dark_mode))
+                                    .color(DashColors::text_primary(dark_mode))
                                     .strong(),
                             );
                         });
@@ -619,7 +619,7 @@ impl ScreenLike for BurnTokensScreen {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))
+                            .fill(DashColors::ACTION_BUTTON_BLUE)
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() {

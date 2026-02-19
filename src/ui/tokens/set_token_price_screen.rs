@@ -1112,9 +1112,9 @@ impl ScreenLike for SetTokenPriceScreen {
                 let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult(_));
 
                 let button_color = if validation_result.is_ok() {
-                    Color32::from_rgb(0, 128, 255)
+                    DashColors::ACTION_BUTTON_BLUE
                 } else {
-                    Color32::from_rgb(100, 100, 100)
+                    DashColors::BUTTON_DISABLED
                 };
 
                 let button = egui::Button::new(RichText::new(set_price_text).color(Color32::WHITE))
@@ -1149,7 +1149,7 @@ impl ScreenLike for SetTokenPriceScreen {
                         ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
                     }
                     SetTokenPriceStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))

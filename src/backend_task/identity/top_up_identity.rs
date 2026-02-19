@@ -28,10 +28,7 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
             .await

@@ -11,12 +11,13 @@ The tool supports both Mainnet and Testnet networks. Check out the [documentatio
 
 ## Table of Contents
 
+- [Install via Flatpak (Linux)](#install-via-flatpak-linux)
 - [Prerequisites](#prerequisites)
   - [Rust Installation](#rust-installation)
   - [Dependencies](#dependencies)
   - [Windows Runtime Dependencies](#windows-runtime-dependencies)
   - [Dash Core Wallet Setup](#dash-core-wallet-setup)
-- [Installation](#installation)
+- [Build from Source](#build-from-source)
 - [Getting Started](#getting-started)
   - [Start the App](#start-the-app)
   - [Application directory](#application-directory)
@@ -31,7 +32,37 @@ The tool supports both Mainnet and Testnet networks. Check out the [documentatio
 - [Support](#support)
 - [Security Note](#security-note)
 
+## Install via Flatpak (Linux)
+
+The easiest way to run Dash Evo Tool on Linux is via Flatpak. Download the `.flatpak` bundle for your architecture from the [latest release](https://github.com/dashpay/dash-evo-tool/releases) and install it:
+
+``` shell
+# x86_64
+flatpak install dash-evo-tool-linux-x86_64.flatpak
+
+# aarch64 (ARM)
+flatpak install dash-evo-tool-linux-aarch64.flatpak
+```
+
+To run:
+
+``` shell
+flatpak run org.dash.DashEvoTool
+```
+
+To uninstall:
+
+``` shell
+flatpak uninstall org.dash.DashEvoTool
+```
+
+The Flatpak version runs in SPV (light client) mode — no full Dash Core node is required. Application data is stored in `~/.var/app/org.dash.DashEvoTool/config/dash-evo-tool/`.
+
+> **Note:** The Flatpak data path differs from native Linux builds, which use `~/.config/dash-evo-tool/`.
+
 ## Prerequisites
+
+The following prerequisites are only needed if you want to build from source.
 
 Before you begin, ensure you have met the following requirements:
 
@@ -82,9 +113,9 @@ If you use the prebuilt Windows binary, make sure the target machine has:
 
 - **Synchronize Wallet**: Ensure the wallet is fully synced with the network you intend to use (Mainnet or Testnet).
 
-## Installation
+## Build from Source
 
-To install Dash Evo Tool:
+To build Dash Evo Tool from source:
 
 1. **Clone the repository**:
 

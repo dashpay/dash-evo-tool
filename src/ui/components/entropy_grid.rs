@@ -1,6 +1,6 @@
 use crate::ui::theme::DashColors;
 use bip39::rand::{self, Rng};
-use egui::{Button, Color32, Grid, Ui, Vec2};
+use egui::{Button, Grid, Ui, Vec2};
 
 pub struct U256EntropyGrid {
     random_number: [u8; 32], // Current 256-bit number (32 bytes)
@@ -73,9 +73,9 @@ impl U256EntropyGrid {
                             } else {
                                 // Off squares: gray in dark mode, white in light mode
                                 if dark_mode {
-                                    Color32::from_rgb(80, 80, 80)
+                                    DashColors::ENTROPY_OFF_DARK
                                 } else {
-                                    Color32::WHITE
+                                    DashColors::WHITE
                                 }
                             };
 

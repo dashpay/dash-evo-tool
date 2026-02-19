@@ -397,7 +397,7 @@ impl IdentitiesScreen {
                         RichText::new("No Identities Loaded")
                             .strong()
                             .size(25.0)
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
 
                     // A separator line for visual clarity
@@ -415,7 +415,7 @@ impl IdentitiesScreen {
                         RichText::new("Here’s what you can do:")
                             .strong()
                             .size(18.0)
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(5.0);
 
@@ -614,7 +614,7 @@ impl IdentitiesScreen {
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                                        .frame(egui::Frame::popup(ui.style()).fill(if ui.ctx().style().visuals.dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
+                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
@@ -722,7 +722,7 @@ impl IdentitiesScreen {
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                                        .frame(egui::Frame::popup(ui.style()).fill(if ui.ctx().style().visuals.dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
+                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
                                                         .show(|ui| {
                                                             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
@@ -734,7 +734,7 @@ impl IdentitiesScreen {
 
                                                                     let key_label = self.format_key_name(key);
                                                                     let button = if holding_private_key.is_some() {
-                                                                        egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
+                                                                        egui::Button::new(&key_label).fill(DashColors::selected(dark_mode))
                                                                     } else {
                                                                         egui::Button::new(&key_label)
                                                                     };
@@ -765,7 +765,7 @@ impl IdentitiesScreen {
 
                                                                         let key_label = self.format_key_name(key);
                                                                         let button = if holding_private_key.is_some() {
-                                                                            egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
+                                                                            egui::Button::new(&key_label).fill(DashColors::selected(dark_mode))
                                                                         } else {
                                                                             egui::Button::new(&key_label)
                                                                         };
@@ -849,11 +849,7 @@ impl IdentitiesScreen {
                 egui::Order::Background,
                 egui::Id::new("confirm_removal_overlay"),
             ));
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-            );
+            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
@@ -867,13 +863,10 @@ impl IdentitiesScreen {
                         offset: [0, 8],
                         blur: 16,
                         spread: 0,
-                        color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                        color: DashColors::popup_shadow(),
                     },
                     fill: ctx.style().visuals.window_fill,
-                    stroke: egui::Stroke::new(
-                        1.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                    ),
+                    stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
                 })
                 .show(ctx, |ui| {
                     ui.set_min_width(350.0);
@@ -925,31 +918,48 @@ impl IdentitiesScreen {
                         // Yes button
                         let yes_button =
                             egui::Button::new(RichText::new("Yes").color(Color32::WHITE))
-                                .fill(Color32::from_rgb(200, 60, 60))
+                                .fill(DashColors::DANGER_RED)
                                 .corner_radius(egui::CornerRadius::same(4))
                                 .min_size(egui::Vec2::new(80.0, 32.0));
 
                         if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
-                            let mut lock = self.identities.lock().unwrap();
-                            lock.shift_remove(&identity_id);
 
-                            self.app_context
+                            match self
+                                .app_context
                                 .db
                                 .delete_local_qualified_identity(&identity_id, &self.app_context)
-                                .ok();
+                            {
+                                Ok(_) => {
+                                    let mut lock = self.identities.lock().unwrap();
+                                    lock.shift_remove(&identity_id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to delete identity from database: {}",
+                                        e
+                                    );
+                                    self.backend_message = Some((
+                                        format!("Failed to remove identity: {}", e),
+                                        MessageType::Error,
+                                        Utc::now(),
+                                    ));
+                                }
+                            }
 
                             if let Some((voter_identity, _)) =
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                self.app_context
-                                    .db
-                                    .delete_local_qualified_identity(
-                                        &voter_identity_id,
-                                        &self.app_context,
-                                    )
-                                    .ok();
+                                if let Err(e) = self.app_context.db.delete_local_qualified_identity(
+                                    &voter_identity_id,
+                                    &self.app_context,
+                                ) {
+                                    tracing::warn!(
+                                        "Failed to delete voter identity from database: {}",
+                                        e
+                                    );
+                                }
                             }
 
                             self.identity_to_remove = None;
@@ -975,11 +985,7 @@ impl IdentitiesScreen {
             egui::Order::Background,
             egui::Id::new("edit_alias_overlay"),
         ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-        );
+        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
         egui::Window::new("Update Alias")
             .collapsible(false)
@@ -993,13 +999,10 @@ impl IdentitiesScreen {
                     offset: [0, 8],
                     blur: 16,
                     spread: 0,
-                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                    color: DashColors::popup_shadow(),
                 },
                 fill: ctx.style().visuals.window_fill,
-                stroke: egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                ),
+                stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
             })
             .show(ctx, |ui| {
                 ui.set_min_width(300.0);

@@ -393,11 +393,7 @@ impl ScreenLike for AssetLockDetailScreen {
                 egui::Order::Background,
                 egui::Id::new("private_key_popup_overlay"),
             ));
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-            );
+            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
             egui::Window::new("Private Key")
                 .collapsible(false)
@@ -407,7 +403,7 @@ impl ScreenLike for AssetLockDetailScreen {
                     ui.set_min_width(400.0);
 
                     ui.add_space(10.0);
-                    ui.label(RichText::new("⚠ Warning").color(Color32::from_rgb(255, 152, 0)).strong());
+                    ui.label(RichText::new("⚠ Warning").color(DashColors::WARNING_BRIGHT).strong());
                     ui.label("Keep this private key secure! Anyone with access to it can spend these funds.");
                     ui.add_space(15.0);
 

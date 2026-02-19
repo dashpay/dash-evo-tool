@@ -19,7 +19,7 @@ use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -146,19 +146,36 @@ impl WithdrawalScreen {
             ui.horizontal(|ui| {
                 ui.label("Address:");
 
-                let response = ui.text_edit_singleline(&mut self.withdrawal_address);
+                let hint = if self.app_context.network == Network::Dash {
+                    "Enter Core address (X.../7...)"
+                } else {
+                    "Enter Core address (y.../8...)"
+                };
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.withdrawal_address)
+                        .hint_text(hint),
+                );
 
                 // Validate address when it changes
                 if response.changed() {
                     if self.withdrawal_address.is_empty() {
                         self.withdrawal_address_error = None;
                     } else {
-                        match Address::from_str(&self.withdrawal_address) {
-                            Ok(_) => {
-                                self.withdrawal_address_error = None;
-                            }
-                            Err(_) => {
-                                self.withdrawal_address_error = Some("Invalid address".to_string());
+                        let trimmed = self.withdrawal_address.trim();
+                        if crate::ui::helpers::is_platform_address_string(trimmed) {
+                            self.withdrawal_address_error = Some(
+                                "Platform addresses not supported for withdrawal. Use a Core address."
+                                    .to_string(),
+                            );
+                        } else {
+                            match Address::from_str(trimmed) {
+                                Ok(_) => {
+                                    self.withdrawal_address_error = None;
+                                }
+                                Err(_) => {
+                                    self.withdrawal_address_error =
+                                        Some("Invalid Core address".to_string());
+                                }
                             }
                         }
                     }
@@ -166,7 +183,7 @@ impl WithdrawalScreen {
 
                 // Show error next to input
                 if let Some(error) = &self.withdrawal_address_error {
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), error);
+                    ui.colored_label(DashColors::ERROR, error);
                 }
             });
 
@@ -319,14 +336,16 @@ impl ScreenLike for WithdrawalScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        self.identity = self
+        if let Some(refreshed) = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap()
+            .unwrap_or_default()
             .into_iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
-            .unwrap();
-        self.max_amount = self.identity.identity.balance();
+        {
+            self.identity = refreshed;
+            self.max_amount = self.identity.identity.balance();
+        }
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -548,7 +567,7 @@ impl ScreenLike for WithdrawalScreen {
                 // Withdraw button
 
                 let button = egui::Button::new(RichText::new("Withdraw").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::DASH_BLUE)
                     .frame(true)
                     .corner_radius(3.0)
                     .min_size(egui::vec2(60.0, 30.0));
@@ -623,7 +642,7 @@ impl ScreenLike for WithdrawalScreen {
                         ));
                     }
                     WithdrawFromIdentityStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))

@@ -16,7 +16,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, ThemeMode};
 use crate::ui::{RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
-use dash_sdk::dash_spv::sync::{SyncProgress as SpvSyncProgress, SyncState};
+use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
 use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, Ui};
@@ -35,6 +35,27 @@ enum SpvClearMessage {
 enum DatabaseClearMessage {
     Success(String),
     Error(String),
+}
+
+/// Renders DAPI endpoint status with appropriate color coding.
+fn add_dapi_status_label(
+    ui: &mut Ui,
+    dapi_total: u16,
+    dapi_available: bool,
+    dapi_label: &str,
+    dark_mode: bool,
+) {
+    ui.label("DAPI:");
+    if dapi_total == 0 {
+        ui.colored_label(DashColors::text_secondary(dark_mode), dapi_label);
+    } else {
+        let color = if dapi_available {
+            DashColors::SUCCESS
+        } else {
+            DashColors::ERROR
+        };
+        ui.colored_label(color, dapi_label);
+    }
 }
 
 pub struct NetworkChooserScreen {
@@ -469,11 +490,15 @@ impl NetworkChooserScreen {
                 None
             };
             let overall_connected = status.overall_connected();
+            let dapi_total = status.dapi_total_endpoints();
+            let dapi_available = status.dapi_available();
+            let dapi_label = status.dapi_status_label();
 
             // Button on the left with status
             ui.horizontal(|ui| {
                 if overall_connected {
                     if current_backend_mode == CoreBackendMode::Spv {
+                        let is_stopping = spv_status == SpvStatus::Stopping;
                         let disconnect_button = egui::Button::new(
                             egui::RichText::new("Disconnect").color(DashColors::WHITE),
                         )
@@ -482,7 +507,10 @@ impl NetworkChooserScreen {
                         .corner_radius(Shape::RADIUS_MD)
                         .min_size(egui::vec2(120.0, 36.0));
 
-                        if ui.add(disconnect_button).clicked() {
+                        if ui
+                            .add_enabled(!is_stopping, disconnect_button)
+                            .clicked()
+                        {
                             self.current_app_context().stop_spv();
                         }
 
@@ -617,6 +645,9 @@ impl NetworkChooserScreen {
                             let zmq_label = if zmq_connected { "Connected" } else { "Disconnected" };
                             ui.colored_label(zmq_color, zmq_label);
                         }
+
+                        ui.label(",");
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
                     });
                 }
 
@@ -649,6 +680,10 @@ impl NetworkChooserScreen {
                             ui.colored_label(color, label);
                         }
                     });
+
+                    ui.horizontal(|ui| {
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
+                    });
                 }
 
                 if current_backend_mode == CoreBackendMode::Spv {
@@ -660,6 +695,10 @@ impl NetworkChooserScreen {
                             DashColors::ERROR
                         };
                         ui.colored_label(color, spv_status.to_string());
+                    });
+
+                    ui.horizontal(|ui| {
+                        add_dapi_status_label(ui, dapi_total, dapi_available, &dapi_label, dark_mode);
                     });
                 }
             });

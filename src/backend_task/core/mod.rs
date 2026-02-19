@@ -12,6 +12,7 @@ use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
+use dash_sdk::dash_spv::sync::ProgressPercentage;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};

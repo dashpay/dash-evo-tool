@@ -1,5 +1,7 @@
 mod error;
 pub(crate) mod manager;
+#[cfg(test)]
+mod tests;
 
 pub use error::{SpvError, SpvResult};
 pub(crate) use manager::AssetLockFinalityEvent;

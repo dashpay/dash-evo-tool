@@ -7,6 +7,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_doc_type_chooser_with_filtering;
+use crate::ui::theme::DashColors;
 
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
@@ -144,8 +145,8 @@ impl DocumentVisualizerScreen {
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)
                 .desired_width(ui.available_width())
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .code_editor(),
         );
         if resp.changed() {
@@ -166,7 +167,7 @@ impl DocumentVisualizerScreen {
                 ui.colored_label(Color32::GRAY, "Select a contract and document type.");
             }
             DocumentParseStatus::Error(msg) => {
-                let error_color = Color32::from_rgb(255, 100, 100);
+                let error_color = DashColors::error_color(ui.visuals().dark_mode);
                 let msg = msg.clone();
                 Frame::new()
                     .fill(error_color.gamma_multiply(0.1))

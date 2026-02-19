@@ -191,6 +191,26 @@ impl WalletsBalancesScreen {
                 .retain(|data| data.account_category == category && data.account_index == index);
         }
 
+        let account_address_count = address_data.len();
+
+        if !self.show_zero_balance_addresses {
+            address_data.retain(|data| {
+                let is_platform_payment = data.account_category == AccountCategory::PlatformPayment;
+                if data.account_category.is_key_only() {
+                    true
+                } else if is_platform_payment {
+                    data.platform_credits > 0
+                } else {
+                    data.balance > 0
+                }
+            });
+        }
+
+        let hidden_by_balance_filter_count =
+            account_address_count.saturating_sub(address_data.len());
+        let show_balance_filter_hint =
+            !self.show_zero_balance_addresses && hidden_by_balance_filter_count > 0;
+
         // Space allocation for UI elements is handled by the layout system
 
         // Render the table
@@ -392,6 +412,19 @@ impl WalletsBalancesScreen {
                     });
                 }
             });
+
+        if show_balance_filter_hint {
+            ui.add_space(8.0);
+            let address_label = if hidden_by_balance_filter_count == 1 {
+                "address"
+            } else {
+                "addresses"
+            };
+            ui.label(format!(
+                "{} {} hidden by zero-balance filter. Enable \"Show zero-balance addresses\" to view all addresses.",
+                hidden_by_balance_filter_count, address_label
+            ));
+        }
         action
     }
 }

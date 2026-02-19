@@ -207,8 +207,9 @@ impl WalletsBalancesScreen {
             });
         }
 
-        let show_empty_due_to_balance_filter =
-            !self.show_zero_balance_addresses && account_address_count > 0 && address_data.is_empty();
+        let show_empty_due_to_balance_filter = !self.show_zero_balance_addresses
+            && account_address_count > 0
+            && address_data.is_empty();
 
         // Space allocation for UI elements is handled by the layout system
 

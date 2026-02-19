@@ -665,6 +665,7 @@ impl AddNewIdentityScreen {
                             });
                             row.col(|ui| {
                                 ui.vertical(|ui| {
+                                    let prev_purpose = *purpose;
                                     ComboBox::from_id_salt(format!("purpose_combo_{}", i))
                                         .selected_text(format!("{:?}", purpose))
                                         .show_ui(ui, |ui| {
@@ -678,7 +679,37 @@ impl AddNewIdentityScreen {
                                                 Purpose::TRANSFER,
                                                 "TRANSFER",
                                             );
+                                            ui.selectable_value(
+                                                purpose,
+                                                Purpose::ENCRYPTION,
+                                                "ENCRYPTION",
+                                            );
+                                            ui.selectable_value(
+                                                purpose,
+                                                Purpose::DECRYPTION,
+                                                "DECRYPTION",
+                                            );
                                         });
+                                    // Auto-set security level when purpose changes
+                                    if *purpose != prev_purpose {
+                                        match *purpose {
+                                            Purpose::TRANSFER => {
+                                                *security_level = SecurityLevel::CRITICAL;
+                                            }
+                                            Purpose::ENCRYPTION | Purpose::DECRYPTION => {
+                                                *security_level = SecurityLevel::MEDIUM;
+                                            }
+                                            Purpose::AUTHENTICATION => {
+                                                if *security_level != SecurityLevel::CRITICAL
+                                                    && *security_level != SecurityLevel::HIGH
+                                                    && *security_level != SecurityLevel::MEDIUM
+                                                {
+                                                    *security_level = SecurityLevel::CRITICAL;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                 });
                             });
                             row.col(|ui| {
@@ -707,6 +738,11 @@ impl AddNewIdentityScreen {
                                             if *purpose == Purpose::TRANSFER {
                                                 *security_level = SecurityLevel::CRITICAL;
                                                 ui.label("Locked to CRITICAL");
+                                            } else if *purpose == Purpose::ENCRYPTION
+                                                || *purpose == Purpose::DECRYPTION
+                                            {
+                                                *security_level = SecurityLevel::MEDIUM;
+                                                ui.label("Locked to MEDIUM");
                                             } else {
                                                 ui.selectable_value(
                                                     security_level,

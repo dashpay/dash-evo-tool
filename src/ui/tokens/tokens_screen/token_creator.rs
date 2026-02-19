@@ -1484,11 +1484,23 @@ impl TokensScreen {
                         }
                     };
 
+                    // Validate identity and key are selected
+                    let (identity, signing_key) =
+                        match (&self.selected_identity, &self.selected_key) {
+                            (Some(id), Some(key)) => (id.clone(), key.clone()),
+                            _ => {
+                                self.token_creator_error_message =
+                                    Some("Please select an identity and signing key.".to_string());
+                                self.close_token_creator_confirmation_popup();
+                                return AppAction::None;
+                            }
+                        };
+
                     // Now create your tasks
                     let tasks = vec![
                         BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
-                            identity: self.selected_identity.clone().unwrap(),
-                            signing_key: Box::new(self.selected_key.clone().unwrap()),
+                            identity,
+                            signing_key: Box::new(signing_key),
 
                             token_names: args.token_names,
                             contract_keywords: args.contract_keywords,

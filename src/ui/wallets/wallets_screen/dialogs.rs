@@ -168,7 +168,7 @@ impl WalletsBalancesScreen {
                 }
 
                 if let Some(error) = &self.send_dialog.address_error {
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), error);
+                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), error);
                 }
 
                 ui.add_space(8.0);

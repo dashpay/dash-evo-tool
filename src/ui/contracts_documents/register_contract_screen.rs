@@ -7,7 +7,7 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::error_display::ErrorDisplay;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -57,7 +57,6 @@ pub struct RegisterDataContractScreen {
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
-    error_details_expanded: bool,
     completed_fee_result: Option<FeeResult>,
     /// Set to true when the input JSON was auto-wrapped with contract metadata
     contract_was_wrapped: bool,
@@ -115,7 +114,6 @@ impl RegisterDataContractScreen {
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
-            error_details_expanded: false,
             completed_fee_result: None,
             contract_was_wrapped: false,
         }
@@ -207,9 +205,12 @@ impl RegisterDataContractScreen {
                         json_val = Self::wrap_document_schemas(json_val, &owner_id);
                         self.contract_was_wrapped = true;
                     } else {
-                        self.broadcast_status = BroadcastStatus::ParsingError(
-                            "Please select an identity before pasting raw document schemas."
-                                .to_string(),
+                        let msg = "Please select an identity before pasting raw document schemas.";
+                        self.broadcast_status = BroadcastStatus::ParsingError(msg.to_string());
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            msg,
+                            MessageType::Error,
                         );
                         return;
                     }
@@ -229,13 +230,20 @@ impl RegisterDataContractScreen {
                         self.broadcast_status = BroadcastStatus::ValidContract(Box::new(contract));
                     }
                     Err(e) => {
-                        self.broadcast_status =
-                            BroadcastStatus::ParsingError(format!("DataContract parse error: {e}"));
+                        let msg = format!("DataContract parse error: {e}");
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            &msg,
+                            MessageType::Error,
+                        );
+                        self.broadcast_status = BroadcastStatus::ParsingError(msg);
                     }
                 }
             }
             Err(e) => {
-                self.broadcast_status = BroadcastStatus::ParsingError(format!("Invalid JSON: {e}"));
+                let msg = format!("Invalid JSON: {e}");
+                MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Error);
+                self.broadcast_status = BroadcastStatus::ParsingError(msg);
             }
         }
     }
@@ -255,24 +263,6 @@ impl RegisterDataContractScreen {
         }
     }
 
-    /// Renders an error message at the top of the screen using the shared ErrorDisplay component
-    fn render_error_bubble(&mut self, ui: &mut egui::Ui) {
-        let error_msg = match &self.broadcast_status {
-            BroadcastStatus::ParsingError(err) => Some(format!("Parsing error: {err}")),
-            BroadcastStatus::BroadcastError(msg) => Some(format!("Broadcast error: {msg}")),
-            _ => None,
-        };
-
-        if let Some(msg) = error_msg {
-            let dismissed = ErrorDisplay::new(&msg).show(ui, &mut self.error_details_expanded);
-            if dismissed {
-                self.broadcast_status = BroadcastStatus::Idle;
-                self.error_details_expanded = false;
-            }
-            ui.add_space(10.0);
-        }
-    }
-
     fn ui_parsed_contract(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut app_action = AppAction::None;
 
@@ -283,7 +273,7 @@ impl RegisterDataContractScreen {
                 ui.label("No contract parsed yet or empty input.");
             }
             BroadcastStatus::ParsingError(_) | BroadcastStatus::BroadcastError(_) => {
-                // Errors are now shown at the top via render_error_bubble
+                // Errors are shown via the global MessageBanner
             }
             BroadcastStatus::ValidContract(contract) => {
                 // Show notification if the contract was auto-wrapped
@@ -509,9 +499,6 @@ impl ScreenLike for RegisterDataContractScreen {
                     });
                 });
                 ui.add_space(10.0);
-
-                // Show error message at the top if there's an error
-                self.render_error_bubble(ui);
 
                 // If no identities loaded, give message
                 if self.qualified_identities.is_empty() {

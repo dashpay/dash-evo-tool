@@ -454,7 +454,7 @@ impl ScreenLike for GroupActionsScreen {
             MessageType::Success => {
                 // Not used
             }
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.fetch_group_actions_status =
                     FetchGroupActionsStatus::ErrorMessage(message.to_string());
             }

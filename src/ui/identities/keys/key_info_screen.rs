@@ -83,7 +83,7 @@ impl ScreenLike for KeyInfoScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.error_message = Some(message.to_string());
                 self.disable_key_submitted = false;
                 self.replace_key_submitted = false;

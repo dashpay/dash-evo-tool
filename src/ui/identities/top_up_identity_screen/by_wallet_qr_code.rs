@@ -127,7 +127,11 @@ impl TopUpIdentityScreen {
             if let Ok(amount_dash) = self.funding_amount.parse::<f64>() {
                 if amount_dash > 0.0 {
                     if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                        self.error_message = Some(e);
+                        crate::ui::components::MessageBanner::set_global(
+                            ui.ctx(),
+                            &e,
+                            crate::ui::MessageType::Error,
+                        );
                     }
                 } else {
                     ui.label("Please enter an amount greater than 0");
@@ -174,25 +178,22 @@ impl TopUpIdentityScreen {
                 }
             }
 
-            // Only show status messages if there's no error
-            if self.error_message.is_none() {
-                match step {
-                    WalletFundedScreenStep::WaitingOnFunds => {
-                        ui.heading("=> Waiting for funds. <=");
-                    }
-                    WalletFundedScreenStep::WaitingForAssetLock => {
-                        ui.heading(
-                            "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
-                        );
-                    }
-                    WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                        ui.heading("=> Waiting for Platform acknowledgement. <=");
-                    }
-                    WalletFundedScreenStep::Success => {
-                        ui.heading("...Success...");
-                    }
-                    _ => {}
+            match step {
+                WalletFundedScreenStep::WaitingOnFunds => {
+                    ui.heading("=> Waiting for funds. <=");
                 }
+                WalletFundedScreenStep::WaitingForAssetLock => {
+                    ui.heading(
+                        "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                    );
+                }
+                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                    ui.heading("=> Waiting for Platform acknowledgement. <=");
+                }
+                WalletFundedScreenStep::Success => {
+                    ui.heading("...Success...");
+                }
+                _ => {}
             }
             AppAction::None
         });

@@ -83,31 +83,27 @@ impl TopUpIdentityScreen {
             .frame(true)
             .corner_radius(3.0);
         if ui.add(button).clicked() {
-            self.error_message = None;
             action = self.top_up_identity_clicked(FundingMethod::UseWalletBalance);
         }
 
         ui.add_space(20.0);
 
-        // Only show status messages if there's no error
-        if self.error_message.is_none() {
-            ui.vertical_centered(|ui| {
-                match step {
-                    WalletFundedScreenStep::WaitingForAssetLock => {
-                        ui.heading(
-                            "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
-                        );
-                    }
-                    WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                        ui.heading("=> Waiting for Platform acknowledgement <=");
-                    }
-                    WalletFundedScreenStep::Success => {
-                        ui.heading("...Success...");
-                    }
-                    _ => {}
-                };
-            });
-        }
+        ui.vertical_centered(|ui| {
+            match step {
+                WalletFundedScreenStep::WaitingForAssetLock => {
+                    ui.heading(
+                        "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                    );
+                }
+                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                    ui.heading("=> Waiting for Platform acknowledgement <=");
+                }
+                WalletFundedScreenStep::Success => {
+                    ui.heading("...Success...");
+                }
+                _ => {}
+            };
+        });
 
         ui.add_space(40.0);
         action

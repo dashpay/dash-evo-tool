@@ -322,6 +322,31 @@ impl DashColors {
         }
     }
 
+    /// Returns the foreground color for a message type, adapting to dark/light mode.
+    pub fn message_color(message_type: crate::ui::MessageType, dark_mode: bool) -> Color32 {
+        match message_type {
+            crate::ui::MessageType::Error => Self::error_color(dark_mode),
+            crate::ui::MessageType::Warning => Self::warning_color(dark_mode),
+            crate::ui::MessageType::Success => Self::success_color(dark_mode),
+            crate::ui::MessageType::Info => {
+                if dark_mode {
+                    Color32::from_rgb(100, 180, 255)
+                } else {
+                    Color32::from_rgb(30, 120, 200)
+                }
+            }
+        }
+    }
+
+    /// Returns the semi-transparent background color for a message type banner.
+    pub fn message_background_color(
+        message_type: crate::ui::MessageType,
+        dark_mode: bool,
+    ) -> Color32 {
+        let base = Self::message_color(message_type, dark_mode);
+        Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 20)
+    }
+
     pub fn muted_color(dark_mode: bool) -> Color32 {
         if dark_mode {
             Color32::from_rgb(150, 150, 150) // Lighter gray for dark mode
@@ -806,34 +831,4 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
 
     ctx.set_style(style);
     ctx.set_fonts(configure_fonts());
-}
-
-/// Message type styling
-#[allow(dead_code)]
-pub enum MessageType {
-    Success,
-    Error,
-    Warning,
-    Info,
-}
-
-#[allow(dead_code)]
-impl MessageType {
-    pub fn color(&self) -> Color32 {
-        match self {
-            MessageType::Success => DashColors::SUCCESS,
-            MessageType::Error => DashColors::ERROR,
-            MessageType::Warning => DashColors::WARNING,
-            MessageType::Info => DashColors::INFO,
-        }
-    }
-
-    pub fn background_color(&self) -> Color32 {
-        match self {
-            MessageType::Success => Color32::from_rgba_unmultiplied(39, 174, 96, 20),
-            MessageType::Error => Color32::from_rgba_unmultiplied(235, 87, 87, 20),
-            MessageType::Warning => Color32::from_rgba_unmultiplied(241, 196, 15, 20),
-            MessageType::Info => Color32::from_rgba_unmultiplied(52, 152, 219, 20),
-        }
-    }
 }

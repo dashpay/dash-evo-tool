@@ -1635,7 +1635,7 @@ impl ScreenLike for WalletSendScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.send_status = SendStatus::Error(message.to_string());
             }
             MessageType::Success => {

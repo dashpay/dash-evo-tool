@@ -927,7 +927,7 @@ impl UpdateTokenConfigScreen {
 impl ScreenLike for UpdateTokenConfigScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.backend_message = Some((message.to_string(), MessageType::Error, Utc::now()));
                 self.update_status = UpdateTokenConfigStatus::NotUpdating;
             }
@@ -1111,7 +1111,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                         MessageType::Success => {
                             ui.colored_label(Color32::DARK_GREEN, &msg);
                         }
-                        MessageType::Error => {
+                        MessageType::Error | MessageType::Warning => {
                             let error_color = DashColors::ERROR;
                             Frame::new()
                                 .fill(error_color.gamma_multiply(0.1))

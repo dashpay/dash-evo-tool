@@ -139,7 +139,7 @@ impl ContactInfoEditorScreen {
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
                 MessageType::Success => DashColors::SUCCESS,
-                MessageType::Error => DashColors::ERROR,
+                MessageType::Error | MessageType::Warning => DashColors::ERROR,
                 MessageType::Info => DashColors::INFO,
             };
             ui.colored_label(color, message);

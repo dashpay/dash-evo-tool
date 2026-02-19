@@ -536,7 +536,7 @@ impl ContactsList {
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
                 MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
+                MessageType::Error | MessageType::Warning => egui::Color32::DARK_RED,
                 MessageType::Info => egui::Color32::LIGHT_BLUE,
             };
             ui.colored_label(color, message);

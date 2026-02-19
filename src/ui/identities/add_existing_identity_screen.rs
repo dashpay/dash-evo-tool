@@ -955,7 +955,7 @@ impl AddExistingIdentityScreen {
 impl ScreenLike for AddExistingIdentityScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.add_identity_status = AddIdentityStatus::ErrorMessage(message.to_string());
             }
             MessageType::Success => {

@@ -1656,8 +1656,7 @@ impl NetworkChooserScreen {
                         .last_synced_filter_height
                         .unwrap_or(0);
                     if detailed.peer_best_height > 0 && filter_height > 0 {
-                        (filter_height as f32 / detailed.peer_best_height as f32)
-                            .clamp(0.0, 1.0)
+                        (filter_height as f32 / detailed.peer_best_height as f32).clamp(0.0, 1.0)
                     } else if detailed.sync_progress.filters_downloaded > 0
                         && detailed.peer_best_height > 0
                     {
@@ -1722,8 +1721,7 @@ impl NetworkChooserScreen {
                             .sync_progress
                             .last_synced_filter_height
                             .unwrap_or(0);
-                        (processed_height as f32 / detailed.peer_best_height as f32)
-                            .clamp(0.0, 1.0)
+                        (processed_height as f32 / detailed.peer_best_height as f32).clamp(0.0, 1.0)
                     }
                 }
             }

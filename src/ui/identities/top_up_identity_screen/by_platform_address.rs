@@ -203,7 +203,11 @@ impl TopUpIdentityScreen {
                         action = top_up_action;
                     }
                     Err(e) => {
-                        self.error_message = Some(e);
+                        crate::ui::components::MessageBanner::set_global(
+                            ui.ctx(),
+                            &e,
+                            crate::ui::MessageType::Error,
+                        );
                     }
                 }
             }

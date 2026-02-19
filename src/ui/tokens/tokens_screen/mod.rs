@@ -1402,7 +1402,7 @@ impl ScreenLike for TokensScreen {
                         ui.add_space(25.0); // Same space as refreshing indicator
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
                         let color = match msg_type {
-                            MessageType::Error => Color32::DARK_RED,
+                            MessageType::Error | MessageType::Warning => Color32::DARK_RED,
                             MessageType::Info => DashColors::text_primary(dark_mode),
                             MessageType::Success => Color32::DARK_GREEN,
                         };
@@ -1713,8 +1713,14 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            egui::Context::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -2019,8 +2025,14 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            egui::Context::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection
@@ -2139,8 +2151,14 @@ mod tests {
         db.initialize(Path::new(&db_file_path)).unwrap();
 
         ensure_test_env();
-        let app_context = AppContext::new(Network::Regtest, db, None, Default::default())
-            .expect("Expected to create AppContext");
+        let app_context = AppContext::new(
+            Network::Regtest,
+            db,
+            None,
+            Default::default(),
+            egui::Context::default(),
+        )
+        .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
 
         // Identity selection

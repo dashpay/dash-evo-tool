@@ -89,6 +89,9 @@ pub struct AppContext {
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
+    /// The egui context, stored here so backend tasks and non-UI code can
+    /// trigger global banner messages via `MessageBanner::set_global`.
+    egui_ctx: egui::Context,
 }
 
 impl AppContext {
@@ -97,6 +100,7 @@ impl AppContext {
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
         subtasks: Arc<TaskManager>,
+        egui_ctx: egui::Context,
     ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
@@ -323,6 +327,7 @@ impl AppContext {
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
+            egui_ctx,
         };
 
         let app_context = Arc::new(app_context);
@@ -463,6 +468,11 @@ impl AppContext {
 
     pub fn is_developer_mode(&self) -> bool {
         self.developer_mode.load(Ordering::Relaxed)
+    }
+
+    /// Returns a reference to the egui context for triggering global banner messages.
+    pub fn egui_ctx(&self) -> &egui::Context {
+        &self.egui_ctx
     }
 
     /// Repaints the UI if animations are enabled.

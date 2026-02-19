@@ -276,7 +276,7 @@ impl ScreenLike for AddContractsScreen {
             MessageType::Success => {
                 // Not used
             }
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.add_contracts_status = AddContractsStatus::ErrorMessage(message.to_string());
             }
             MessageType::Info => {

@@ -270,7 +270,7 @@ impl ScreenLike for AddTokenByIdScreen {
                     self.status = AddTokenStatus::Error(msg.to_owned());
                 }
             }
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 // Handle any error during the add token process
                 if msg.contains("Error inserting contract into the database") {
                     self.status = AddTokenStatus::Error("Failed to add token to database".into());

@@ -7,6 +7,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -61,7 +62,7 @@ pub struct MintTokensScreen {
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
     status: OperationStatus,
-    error_message: Option<String>,
+    init_error: Option<String>,
 
     /// Basic references
     pub app_context: Arc<AppContext>,
@@ -93,7 +94,7 @@ impl MintTokensScreen {
             )
             .cloned();
 
-        let mut error_message = None;
+        let mut init_error = None;
 
         let group = match identity_token_info
             .token_config
@@ -101,14 +102,14 @@ impl MintTokensScreen {
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                error_message = Some("Minting is not allowed on this token".to_string());
+                init_error = Some("Minting is not allowed on this token".to_string());
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
                     != identity_token_info.identity.identity.id()
                 {
-                    error_message = Some(
+                    init_error = Some(
                         "You are not allowed to mint this token. Only the contract owner is."
                             .to_string(),
                     );
@@ -117,14 +118,14 @@ impl MintTokensScreen {
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to mint this token".to_string());
+                    init_error = Some("You are not allowed to mint this token".to_string());
                 }
                 None
             }
             AuthorizedActionTakers::MainGroup => {
                 match identity_token_info.token_config.main_control_group() {
                     None => {
-                        error_message = Some(
+                        init_error = Some(
                             "Failed to load token contract: expected a main control group but none was found. The contract may have been modified on Platform."
                                 .to_string(),
                         );
@@ -138,7 +139,7 @@ impl MintTokensScreen {
                         {
                             Ok(group) => Some((group_pos, group.clone())),
                             Err(e) => {
-                                error_message = Some(format!(
+                                init_error = Some(format!(
                                     "Failed to load token contract. It may have been modified on Platform. ({})",
                                     e
                                 ));
@@ -156,7 +157,7 @@ impl MintTokensScreen {
                 {
                     Ok(group) => Some((*group_pos, group.clone())),
                     Err(e) => {
-                        error_message = Some(format!(
+                        init_error = Some(format!(
                             "Failed to load token contract. It may have been modified on Platform. ({})",
                             e
                         ));
@@ -186,7 +187,7 @@ impl MintTokensScreen {
             &identity_token_info.identity,
             None,
             possible_key.as_ref(),
-            &mut error_message,
+            &mut init_error,
         );
 
         Self {
@@ -202,7 +203,7 @@ impl MintTokensScreen {
             amount: None,
             amount_input: None,
             status: OperationStatus::NotStarted,
-            error_message,
+            init_error,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
@@ -278,14 +279,22 @@ impl MintTokensScreen {
 
     fn confirmation_ok(&mut self) -> AppAction {
         if self.selected_key.is_none() {
-            self.error_message = Some("No signing key selected".into());
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No signing key selected",
+                MessageType::Error,
+            );
             self.status = OperationStatus::ErrorMessage("No key selected".into());
             return AppAction::None;
         }
 
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Invalid amount",
+                MessageType::Error,
+            );
             self.status = OperationStatus::ErrorMessage("Invalid amount".into());
-            self.error_message = Some("Invalid amount".into());
             return AppAction::None;
         }
 
@@ -298,8 +307,12 @@ impl MintTokensScreen {
         );
 
         if parsed_receiver_id.is_err() {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Invalid receiver",
+                MessageType::Error,
+            );
             self.status = OperationStatus::ErrorMessage("Invalid receiver".into());
-            self.error_message = Some("Invalid receiver".into());
             return AppAction::None;
         }
 
@@ -361,7 +374,6 @@ impl ScreenLike for MintTokensScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
             self.status = OperationStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
         }
     }
 
@@ -494,7 +506,7 @@ impl ScreenLike for MintTokensScreen {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                        self.init_error = Some(e);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);

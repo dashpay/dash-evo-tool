@@ -1217,9 +1217,7 @@ impl SpvManager {
             .filter_headers()
             .map(|fh| is_done(fh.state()))
             .unwrap_or(true);
-        if !fh_done
-            && let Ok(fh) = watch_progress.filter_headers()
-        {
+        if !fh_done && let Ok(fh) = watch_progress.filter_headers() {
             return SyncStage::DownloadingFilterHeaders {
                 current: fh.current_height(),
                 target: fh.target_height(),
@@ -1231,9 +1229,7 @@ impl SpvManager {
             .filters()
             .map(|f| is_done(f.state()))
             .unwrap_or(true);
-        if !filters_done
-            && let Ok(f) = watch_progress.filters()
-        {
+        if !filters_done && let Ok(f) = watch_progress.filters() {
             return SyncStage::DownloadingFilters {
                 completed: f.current_height(),
                 total: f.target_height(),
@@ -1245,9 +1241,7 @@ impl SpvManager {
             .blocks()
             .map(|b| is_done(b.state()))
             .unwrap_or(true);
-        if !blocks_done
-            && let Ok(b) = watch_progress.blocks()
-        {
+        if !blocks_done && let Ok(b) = watch_progress.blocks() {
             return SyncStage::DownloadingBlocks {
                 pending: b.requested().saturating_sub(b.processed()) as usize,
             };

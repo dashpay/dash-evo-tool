@@ -1698,7 +1698,7 @@ impl DPNSScreen {
                     // This means DET side was successful, but Platform may have returned errors
                     if let Some(message) = &self.bulk_schedule_message {
                         match message.0 {
-                            MessageType::Error => {
+                            MessageType::Error | MessageType::Warning => {
                                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                                 ui.heading(
                                     RichText::new("❌").color(DashColors::text_primary(dark_mode)),
@@ -2117,7 +2117,7 @@ impl ScreenLike for DPNSScreen {
                 ui.add_space(25.0); // Same space as refreshing indicator
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 let color = match msg_type {
-                    MessageType::Error => Color32::DARK_RED,
+                    MessageType::Error | MessageType::Warning => Color32::DARK_RED,
                     MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => Color32::DARK_GREEN,
                 };

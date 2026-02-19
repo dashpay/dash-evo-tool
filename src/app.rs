@@ -13,11 +13,13 @@ use crate::lock_helper::{MutexExt, RwLockExt};
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::model::settings::ThemeMode;
+use crate::ui::components::MessageBanner;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
     DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
 };
+use crate::ui::helpers::recovery_suggestion;
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::tokens::tokens_screen::{TokensScreen, TokensSubscreen};
@@ -94,6 +96,7 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
+    last_repaint_request: Instant,      // Throttle periodic repaints for banner countdown updates
     pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
     pub show_welcome_screen: bool,
@@ -194,6 +197,7 @@ impl AppState {
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
+            ctx.clone(),
         )
         .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
         let testnet_app_context = AppContext::new(
@@ -201,18 +205,21 @@ impl AppState {
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
+            ctx.clone(),
         );
         let devnet_app_context = AppContext::new(
             Network::Devnet,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
+            ctx.clone(),
         );
         let local_app_context = AppContext::new(
             Network::Regtest,
             db.clone(),
             password_info,
             subtasks.clone(),
+            ctx.clone(),
         );
 
         // load fonts
@@ -640,6 +647,7 @@ impl AppState {
             task_result_receiver,
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
+            last_repaint_request: Instant::now(),
             subtasks,
             show_welcome_screen: !onboarding_completed,
             welcome_screen: None,
@@ -870,7 +878,8 @@ impl App for AppState {
                             ),
                         ) => {
                             self.theme_preference = new_theme;
-                            self.visible_screen_mut().display_message(
+                            MessageBanner::set_global(
+                                ctx,
                                 "Theme preference updated successfully",
                                 MessageType::Success,
                             );
@@ -884,7 +893,8 @@ impl App for AppState {
                                 vote.voter_id.as_slice(),
                                 vote.contested_name.clone(),
                             );
-                            self.visible_screen_mut().display_message(
+                            MessageBanner::set_global(
+                                ctx,
                                 "Successfully cast scheduled vote",
                                 MessageType::Success,
                             );
@@ -899,12 +909,25 @@ impl App for AppState {
                 TaskResult::Error(error) => {
                     let summary = error.user_message();
                     let details = error.technical_details();
+                    let suggestion = recovery_suggestion(&summary);
+                    let handle = MessageBanner::set_global(ctx, &summary, MessageType::Error);
+                    handle.with_details(&details);
+                    if !suggestion.is_empty() {
+                        handle.with_suggestion(suggestion);
+                    }
+                    // Still call display_error for side-effects (step resets, spinner clears)
                     self.visible_screen_mut().display_error(&summary, &details);
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();
                 }
             }
+        }
+
+        // Periodic repaint to keep banner countdown timers updated
+        if self.last_repaint_request.elapsed() >= Duration::from_secs(1) {
+            ctx.request_repaint_after(Duration::from_secs(1));
+            self.last_repaint_request = Instant::now();
         }
 
         // **Poll the instant_send_receiver for any new InstantSend messages**

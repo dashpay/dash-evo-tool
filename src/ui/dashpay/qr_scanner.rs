@@ -127,7 +127,9 @@ impl QRScannerScreen {
         if let Some((message, message_type)) = &self.message {
             let color = match message_type {
                 MessageType::Success => crate::ui::theme::DashColors::success_color(dark_mode),
-                MessageType::Error => crate::ui::theme::DashColors::error_color(dark_mode),
+                MessageType::Error | MessageType::Warning => {
+                    crate::ui::theme::DashColors::error_color(dark_mode)
+                }
                 MessageType::Info => crate::ui::theme::DashColors::DASH_BLUE,
             };
             ui.colored_label(color, message);

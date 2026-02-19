@@ -192,6 +192,21 @@ impl WalletsBalancesScreen {
                 .retain(|data| data.account_category == category && data.account_index == index);
         }
 
+        if !self.show_zero_balance_addresses {
+            address_data.retain(|data| {
+                let is_platform_payment = data
+                    .derivation_path
+                    .is_platform_payment(self.app_context.network);
+                if data.account_category.is_key_only() {
+                    true
+                } else if is_platform_payment {
+                    data.platform_credits > 0
+                } else {
+                    data.balance > 0
+                }
+            });
+        }
+
         // Space allocation for UI elements is handled by the layout system
 
         // Render the table

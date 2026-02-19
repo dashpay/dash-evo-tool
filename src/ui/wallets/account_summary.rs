@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use dash_sdk::dpp::balances::credits::Credits;
-use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference, Wallet};
 
@@ -152,22 +153,16 @@ impl AccountCategory {
     }
 }
 
-fn looks_like_bip44(path: &DerivationPath) -> bool {
-    matches!(
-        path.as_ref().first(),
-        Some(ChildNumber::Hardened { index: 44 })
-    )
-}
-
 pub(crate) fn categorize_account_path(
     path: &DerivationPath,
+    network: Network,
     reference: DerivationPathReference,
 ) -> (AccountCategory, Option<u32>) {
     // Derivation path shape is authoritative over stored metadata.
     // This prevents stale/misclassified references from surfacing wrong account labels.
     let category = if path.is_bip32() {
         AccountCategory::Bip32
-    } else if looks_like_bip44(path) {
+    } else if path.is_bip44(network) {
         AccountCategory::Bip44
     } else {
         AccountCategory::from_reference(reference)
@@ -230,11 +225,11 @@ impl AccountSummaryBuilder {
     }
 }
 
-pub fn collect_account_summaries(wallet: &Wallet) -> Vec<AccountSummary> {
+pub fn collect_account_summaries(wallet: &Wallet, network: Network) -> Vec<AccountSummary> {
     let mut builders: BTreeMap<AccountKey, AccountSummaryBuilder> = BTreeMap::new();
 
     for (path, info) in &wallet.watched_addresses {
-        let (category, index) = categorize_account_path(path, info.path_reference);
+        let (category, index) = categorize_account_path(path, network, info.path_reference);
 
         let balance = wallet
             .address_balances
@@ -274,6 +269,7 @@ pub fn collect_account_summaries(wallet: &Wallet) -> Vec<AccountSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 
     #[test]
     fn bip44_without_account_index_is_not_main_account() {
@@ -288,7 +284,8 @@ mod tests {
             ChildNumber::Normal { index: 3 },
         ]);
 
-        let (category, index) = categorize_account_path(&path, DerivationPathReference::BIP44);
+        let (category, index) =
+            categorize_account_path(&path, Network::Testnet, DerivationPathReference::BIP44);
         assert_eq!(category, AccountCategory::Bip32);
         assert_eq!(index, None);
     }
@@ -303,8 +300,24 @@ mod tests {
             ChildNumber::Normal { index: 1 },
         ]);
 
-        let (category, index) = categorize_account_path(&path, DerivationPathReference::BIP32);
+        let (category, index) =
+            categorize_account_path(&path, Network::Testnet, DerivationPathReference::BIP32);
         assert_eq!(category, AccountCategory::Bip44);
         assert_eq!(index, Some(0));
+    }
+
+    #[test]
+    fn bip44_requires_matching_coin_type_for_network() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 5 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 1 },
+        ]);
+
+        let (category, _) =
+            categorize_account_path(&path, Network::Testnet, DerivationPathReference::Unknown);
+        assert_ne!(category, AccountCategory::Bip44);
     }
 }

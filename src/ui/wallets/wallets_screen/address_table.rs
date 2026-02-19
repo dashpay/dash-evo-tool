@@ -93,8 +93,9 @@ impl WalletsBalancesScreen {
     pub(super) fn categorize_path(
         path: &DerivationPath,
         reference: DerivationPathReference,
+        network: Network,
     ) -> (AccountCategory, Option<u32>) {
-        categorize_account_path(path, reference)
+        categorize_account_path(path, network, reference)
     }
 
     pub(super) fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
@@ -148,8 +149,11 @@ impl WalletsBalancesScreen {
                         .get(derivation_path)
                         .map(|info| info.path_reference)
                         .unwrap_or(DerivationPathReference::Unknown);
-                    let (account_category, account_index) =
-                        Self::categorize_path(derivation_path, path_reference);
+                    let (account_category, account_index) = Self::categorize_path(
+                        derivation_path,
+                        path_reference,
+                        self.app_context.network,
+                    );
 
                     // Get Platform credits balance for Platform Payment addresses
                     // Use canonical lookup to handle potential Address key mismatches

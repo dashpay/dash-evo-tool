@@ -194,9 +194,8 @@ impl WalletsBalancesScreen {
 
         if !self.show_zero_balance_addresses {
             address_data.retain(|data| {
-                let is_platform_payment = data
-                    .derivation_path
-                    .is_platform_payment(self.app_context.network);
+                let is_platform_payment =
+                    data.account_category == AccountCategory::PlatformPayment;
                 if data.account_category.is_key_only() {
                     true
                 } else if is_platform_payment {

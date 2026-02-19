@@ -406,6 +406,14 @@ impl AppContext {
             }
         }
 
+        if derivation_path.is_bip32() {
+            return (DerivationPathReference::BIP32, default_type);
+        }
+
+        if derivation_path.is_bip44(self.network) {
+            return (DerivationPathReference::BIP44, default_type);
+        }
+
         (default_ref, default_type)
     }
 

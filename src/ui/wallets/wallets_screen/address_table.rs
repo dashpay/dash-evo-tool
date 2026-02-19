@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference};
-use crate::ui::wallets::account_summary::AccountCategory;
+use crate::ui::wallets::account_summary::{AccountCategory, categorize_account_path};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -94,12 +94,7 @@ impl WalletsBalancesScreen {
         path: &DerivationPath,
         reference: DerivationPathReference,
     ) -> (AccountCategory, Option<u32>) {
-        let category = AccountCategory::from_reference(reference);
-        let index = match category {
-            AccountCategory::Bip44 | AccountCategory::Bip32 => path.bip44_account_index(),
-            _ => None,
-        };
-        (category, index)
+        categorize_account_path(path, reference)
     }
 
     pub(super) fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {

@@ -2039,7 +2039,7 @@ impl ScreenLike for NetworkChooserScreen {
             if self.any_rpc_backend() {
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards");
+                    .unwrap_or_default();
                 if let Some(time) = self.recheck_time {
                     if current_time.as_millis() as u64 >= time {
                         action = AppAction::BackendTask(BackendTask::CoreTask(

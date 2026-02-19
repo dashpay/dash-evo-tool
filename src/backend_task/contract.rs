@@ -100,9 +100,20 @@ impl AppContext {
 
                                 let mut token_infos = vec![];
                                 for token in contract.tokens() {
-                                    let token_configuration = contract
+                                    let token_configuration = match contract
                                         .expected_token_configuration(*token.0)
-                                        .expect("Expected to get token configuration");
+                                    {
+                                        Ok(config) => config,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Skipping token at position {} in contract {}: {}",
+                                                token.0,
+                                                contract.id(),
+                                                e
+                                            );
+                                            continue;
+                                        }
+                                    };
                                     let token_name = {
                                         let TokenConfigurationConvention::V0(conventions) =
                                             &token_configuration.conventions();

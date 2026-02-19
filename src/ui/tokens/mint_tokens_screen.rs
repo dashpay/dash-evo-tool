@@ -310,7 +310,7 @@ impl MintTokensScreen {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.status = MintTokensStatus::WaitingForResult(now);
 
@@ -708,7 +708,7 @@ impl ScreenLike for MintTokensScreen {
                     MintTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Minting... elapsed: {} seconds", elapsed));

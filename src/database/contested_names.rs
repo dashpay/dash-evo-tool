@@ -74,7 +74,17 @@ impl Database {
 
             // Convert `awarded_to` to `Identifier` if it exists
             let awarded_to_id = awarded_to
-                .map(|id| Identifier::from_bytes(&id).expect("Expected 32 bytes for awarded_to"));
+                .map(|id| {
+                    Identifier::from_bytes(&id).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Blob,
+                            format!("Invalid awarded_to identifier ({} bytes): {}", id.len(), e)
+                                .into(),
+                        )
+                    })
+                })
+                .transpose()?;
 
             let state = if locked {
                 ContestState::Locked
@@ -82,7 +92,10 @@ impl Database {
                 ContestState::WonBy(awarded_to_id)
             } else if let Some(created_at) = created_at {
                 let elapsed_time = Duration::from_millis(
-                    (std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64)
+                    (std::time::UNIX_EPOCH
+                        .elapsed()
+                        .unwrap_or_default()
+                        .as_millis() as u64)
                         .saturating_sub(created_at),
                 );
 
@@ -115,16 +128,36 @@ impl Database {
                 (identity_id, contestant_name, votes, document_id)
             {
                 let contestant = Contestant {
-                    id: Identifier::from_bytes(&identity_id)
-                        .expect("Expected 32 bytes for identity_id"),
+                    id: Identifier::from_bytes(&identity_id).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            7,
+                            rusqlite::types::Type::Blob,
+                            format!(
+                                "Invalid identity_id identifier ({} bytes): {}",
+                                identity_id.len(),
+                                e
+                            )
+                            .into(),
+                        )
+                    })?,
                     name: contestant_name,
                     info: identity_info.unwrap_or_default(),
                     votes,
                     created_at,
                     created_at_block_height,
                     created_at_core_block_height,
-                    document_id: Identifier::from_bytes(&document_id)
-                        .expect("Expected 32 bytes for document_id"),
+                    document_id: Identifier::from_bytes(&document_id).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            13,
+                            rusqlite::types::Type::Blob,
+                            format!(
+                                "Invalid document_id identifier ({} bytes): {}",
+                                document_id.len(),
+                                e
+                            )
+                            .into(),
+                        )
+                    })?,
                 };
 
                 // Add the contestant to the contestants list
@@ -155,7 +188,10 @@ impl Database {
         } else {
             Duration::from_secs(60 * 90)
         };
-        let current_timestamp = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+        let current_timestamp = std::time::UNIX_EPOCH
+            .elapsed()
+            .unwrap_or_default()
+            .as_millis() as u64;
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT
@@ -208,7 +244,17 @@ impl Database {
 
             // Convert `awarded_to` to `Identifier` if it exists
             let awarded_to_id = awarded_to
-                .map(|id| Identifier::from_bytes(&id).expect("Expected 32 bytes for awarded_to"));
+                .map(|id| {
+                    Identifier::from_bytes(&id).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Blob,
+                            format!("Invalid awarded_to identifier ({} bytes): {}", id.len(), e)
+                                .into(),
+                        )
+                    })
+                })
+                .transpose()?;
 
             let state = if locked {
                 ContestState::Locked
@@ -216,7 +262,10 @@ impl Database {
                 ContestState::WonBy(awarded_to_id)
             } else if let Some(created_at) = created_at {
                 let elapsed_time = Duration::from_millis(
-                    (std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64)
+                    (std::time::UNIX_EPOCH
+                        .elapsed()
+                        .unwrap_or_default()
+                        .as_millis() as u64)
                         .saturating_sub(created_at),
                 );
 
@@ -249,16 +298,36 @@ impl Database {
                 (identity_id, contestant_name, votes, document_id)
             {
                 let contestant = Contestant {
-                    id: Identifier::from_bytes(&identity_id)
-                        .expect("Expected 32 bytes for identity_id"),
+                    id: Identifier::from_bytes(&identity_id).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            7,
+                            rusqlite::types::Type::Blob,
+                            format!(
+                                "Invalid identity_id identifier ({} bytes): {}",
+                                identity_id.len(),
+                                e
+                            )
+                            .into(),
+                        )
+                    })?,
                     name: contestant_name,
                     info: identity_info.unwrap_or_default(),
                     votes,
                     created_at,
                     created_at_block_height,
                     created_at_core_block_height,
-                    document_id: Identifier::from_bytes(&document_id)
-                        .expect("Expected 32 bytes for document_id"),
+                    document_id: Identifier::from_bytes(&document_id).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            13,
+                            rusqlite::types::Type::Blob,
+                            format!(
+                                "Invalid document_id identifier ({} bytes): {}",
+                                document_id.len(),
+                                e
+                            )
+                            .into(),
+                        )
+                    })?,
                 };
 
                 // Add the contestant to the contestants list
@@ -309,11 +378,26 @@ impl Database {
         match result {
             Ok((locked_votes, abstain_votes, awarded_to, ending_time)) => {
                 // Compare the current values with the new values
+                let db_awarded_to = awarded_to
+                    .as_ref()
+                    .map(|id| {
+                        Identifier::from_bytes(id).map_err(|e| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                2,
+                                rusqlite::types::Type::Blob,
+                                format!(
+                                    "Invalid awarded_to identifier ({} bytes): {}",
+                                    id.len(),
+                                    e
+                                )
+                                .into(),
+                            )
+                        })
+                    })
+                    .transpose()?;
                 let should_update = locked_votes != contested_name.locked_votes
                     || abstain_votes != contested_name.abstain_votes
-                    || awarded_to.as_ref().map(|id| {
-                        Identifier::from_bytes(id).expect("expected 32 bytes for awarded to")
-                    }) != contested_name.awarded_to
+                    || db_awarded_to != contested_name.awarded_to
                     || ending_time != contested_name.end_time;
 
                 if should_update {

@@ -225,7 +225,7 @@ impl TransferTokensScreen {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
 
@@ -552,7 +552,7 @@ impl ScreenLike for TransferTokensScreen {
                     TransferTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed_seconds = now - start_time;
 

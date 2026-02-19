@@ -383,8 +383,8 @@ fn test_network_chooser_shows_config_labels() {
     harness.state_mut().selected_main_screen = RootScreenType::RootScreenNetworkChooser;
     harness.run_steps(15);
 
-    // The network chooser should show the "Network:" and "Connection Type:" labels
-    // near the top of the settings page
+    // The network chooser always shows "Network:" and only shows
+    // "Connection Type:" when developer mode is enabled.
     let network_label = harness.query_by_label_contains("Network:");
     assert!(
         network_label.is_some(),
@@ -392,10 +392,18 @@ fn test_network_chooser_shows_config_labels() {
     );
 
     let connection_label = harness.query_by_label_contains("Connection Type:");
-    assert!(
-        connection_label.is_some(),
-        "Network chooser should show 'Connection Type:' label"
-    );
+    let is_developer_mode = harness.state().current_app_context().is_developer_mode();
+    if is_developer_mode {
+        assert!(
+            connection_label.is_some(),
+            "Network chooser should show 'Connection Type:' label in developer mode"
+        );
+    } else {
+        assert!(
+            connection_label.is_none(),
+            "Network chooser should hide 'Connection Type:' label when developer mode is disabled"
+        );
+    }
 }
 
 // =============================================================================

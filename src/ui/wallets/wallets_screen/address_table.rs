@@ -207,9 +207,10 @@ impl WalletsBalancesScreen {
             });
         }
 
-        let show_empty_due_to_balance_filter = !self.show_zero_balance_addresses
-            && account_address_count > 0
-            && address_data.is_empty();
+        let hidden_by_balance_filter_count =
+            account_address_count.saturating_sub(address_data.len());
+        let show_balance_filter_hint =
+            !self.show_zero_balance_addresses && hidden_by_balance_filter_count > 0;
 
         // Space allocation for UI elements is handled by the layout system
 
@@ -413,9 +414,17 @@ impl WalletsBalancesScreen {
                 }
             });
 
-        if show_empty_due_to_balance_filter {
+        if show_balance_filter_hint {
             ui.add_space(8.0);
-            ui.label("No addresses with balance. Enable \"Show zero-balance addresses\" to view all addresses.");
+            let address_label = if hidden_by_balance_filter_count == 1 {
+                "address"
+            } else {
+                "addresses"
+            };
+            ui.label(format!(
+                "{} {} hidden by zero-balance filter. Enable \"Show zero-balance addresses\" to view all addresses.",
+                hidden_by_balance_filter_count, address_label
+            ));
         }
         action
     }

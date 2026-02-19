@@ -717,9 +717,8 @@ impl AppState {
     }
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
-        // Note: change_network() guards against switching to unavailable networks,
-        // so the fallback branches below should never be reached in practice.
-        // They exist as defense-in-depth and log at error level to aid debugging.
+        // change_network() and enforce_network_context_invariant() keep this valid in normal flow.
+        // Fallback branches remain as last-resort safety to avoid hard crashes in production.
         match self.chosen_network {
             Network::Dash => &self.mainnet_app_context,
             Network::Testnet => {
@@ -760,6 +759,37 @@ impl AppState {
                 &self.mainnet_app_context
             }
         }
+    }
+
+    fn context_available_for_network(&self, network: Network) -> bool {
+        match network {
+            Network::Dash => true, // Mainnet is always available
+            Network::Testnet => self.testnet_app_context.is_some(),
+            Network::Devnet => self.devnet_app_context.is_some(),
+            Network::Regtest => self.local_app_context.is_some(),
+            _ => false,
+        }
+    }
+
+    fn enforce_network_context_invariant(&mut self) {
+        if self.context_available_for_network(self.chosen_network) {
+            return;
+        }
+
+        let unavailable_network = self.chosen_network;
+        tracing::error!(
+            "BUG: selected network {:?} has no AppContext. Switching to mainnet to prevent silent misrouting.",
+            unavailable_network
+        );
+
+        self.change_network(Network::Dash);
+        self.visible_screen_mut().display_message(
+            &format!(
+                "Selected network ({:?}) is unavailable. Switched to Mainnet to prevent accidental transactions.",
+                unavailable_network
+            ),
+            MessageType::Error,
+        );
     }
 
     // Handle the backend task and send the result through the channel
@@ -811,16 +841,7 @@ impl AppState {
     }
 
     pub fn change_network(&mut self, network: Network) {
-        // Verify the target network context exists before switching
-        let context_available = match network {
-            Network::Dash => true, // Mainnet is always available
-            Network::Testnet => self.testnet_app_context.is_some(),
-            Network::Devnet => self.devnet_app_context.is_some(),
-            Network::Regtest => self.local_app_context.is_some(),
-            _ => false,
-        };
-
-        if !context_available {
+        if !self.context_available_for_network(network) {
             tracing::error!(
                 "Cannot switch to {:?}: network context not available. Staying on current network.",
                 network
@@ -888,6 +909,7 @@ impl App for AppState {
         // Apply Dash theme with user preference
         crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
+        self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
 
         // Poll the receiver for any new task results

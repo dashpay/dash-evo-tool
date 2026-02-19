@@ -612,11 +612,9 @@ impl AppContext {
                                             format!("Failed to get transaction index: {}", e)
                                         })?;
                                     let output_script = ScriptBuf::from_bytes(address_bytes);
-                                    let address =
-                                        Address::from_script(&output_script, self.network)
-                                            .map_err(|e| {
-                                                format!("Failed to parse withdrawal address: {}", e)
-                                            })?;
+                                    let address = Address::from_script(&output_script, self.network)
+                                        .map(|addr| addr.to_string())
+                                        .unwrap_or_else(|e| format!("Invalid Address: {}", e));
                                     Ok(format!(
                                         "TX #{}: {:.8} Dash for {} to {} ({}) at {}",
                                         transaction_index,

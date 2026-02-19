@@ -267,57 +267,36 @@ impl AppState {
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
 
         let selected_main_screen = settings.root_screen_type;
-        // Validate the saved network and collect a user-visible warning if we must switch away.
-        let (chosen_network, startup_network_warning) = match settings.network {
-            Network::Dash => (Network::Dash, None),
-            Network::Testnet if testnet_app_context.is_none() => {
-                tracing::warn!(
-                    "Saved network is Testnet but context unavailable, defaulting to mainnet"
+        // Validate that the saved network has an available context.
+        // We fail fast instead of silently routing user actions to a different network.
+        let chosen_network = match settings.network {
+            Network::Dash => Network::Dash,
+            Network::Testnet => {
+                assert!(
+                    testnet_app_context.is_some(),
+                    "Saved network is Testnet but no Testnet AppContext is configured"
                 );
-                (
-                    Network::Dash,
-                    Some(
-                        "Saved network (Testnet) is unavailable. Switched to Mainnet to prevent accidental transactions.".to_string(),
-                    ),
-                )
+                Network::Testnet
             }
-            Network::Testnet => (Network::Testnet, None),
-            Network::Devnet if devnet_app_context.is_none() => {
-                tracing::warn!(
-                    "Saved network is Devnet but context unavailable, defaulting to mainnet"
+            Network::Devnet => {
+                assert!(
+                    devnet_app_context.is_some(),
+                    "Saved network is Devnet but no Devnet AppContext is configured"
                 );
-                (
-                    Network::Dash,
-                    Some(
-                        "Saved network (Devnet) is unavailable. Switched to Mainnet to prevent accidental transactions.".to_string(),
-                    ),
-                )
+                Network::Devnet
             }
-            Network::Devnet => (Network::Devnet, None),
-            Network::Regtest if local_app_context.is_none() => {
-                tracing::warn!(
-                    "Saved network is Regtest but context unavailable, defaulting to mainnet"
+            Network::Regtest => {
+                assert!(
+                    local_app_context.is_some(),
+                    "Saved network is Regtest but no Regtest AppContext is configured"
                 );
-                (
-                    Network::Dash,
-                    Some(
-                        "Saved network (Regtest) is unavailable. Switched to Mainnet to prevent accidental transactions.".to_string(),
-                    ),
-                )
+                Network::Regtest
             }
-            Network::Regtest => (Network::Regtest, None),
             unsupported_network => {
-                tracing::warn!(
-                    "Saved network {:?} is unsupported, defaulting to mainnet",
+                panic!(
+                    "Saved network {:?} is unsupported. Refusing automatic fallback.",
                     unsupported_network
                 );
-                (
-                    Network::Dash,
-                    Some(format!(
-                        "Saved network ({:?}) is unsupported. Switched to Mainnet.",
-                        unsupported_network
-                    )),
-                )
             }
         };
         network_chooser_screen.current_network = chosen_network;
@@ -696,12 +675,6 @@ impl AppState {
             welcome_screen: None,
         };
 
-        if let Some(message) = startup_network_warning.as_deref() {
-            app_state
-                .visible_screen_mut()
-                .display_message(message, MessageType::Error);
-        }
-
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
         if app_state.show_welcome_screen {
             app_state.welcome_screen =
@@ -795,19 +768,9 @@ impl AppState {
             return;
         }
 
-        let unavailable_network = self.chosen_network;
-        tracing::error!(
-            "BUG: selected network {:?} has no AppContext. Switching to mainnet to prevent silent misrouting.",
-            unavailable_network
-        );
-
-        self.change_network(Network::Dash);
-        self.visible_screen_mut().display_message(
-            &format!(
-                "Selected network ({:?}) is unavailable. Switched to Mainnet to prevent accidental transactions.",
-                unavailable_network
-            ),
-            MessageType::Error,
+        panic!(
+            "BUG: selected network {:?} has no AppContext. Refusing to auto-switch networks.",
+            self.chosen_network
         );
     }
 

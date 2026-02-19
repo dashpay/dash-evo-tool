@@ -293,7 +293,7 @@ impl AppContext {
             .create_identifier()
             .expect("expected to create an identifier");
 
-        let public_keys = keys.to_public_keys_map();
+        let public_keys = keys.to_public_keys_map()?;
 
         // Debug: Log the keys being registered to verify contract bounds are set
         for (key_id, key) in &public_keys {
@@ -645,7 +645,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys.to_public_keys_map();
+        let public_keys = keys.to_public_keys_map()?;
 
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();

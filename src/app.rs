@@ -267,27 +267,58 @@ impl AppState {
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
 
         let selected_main_screen = settings.root_screen_type;
-        // Validate that the saved network has an available context; fall back to mainnet if not
-        let chosen_network = match settings.network {
+        // Validate the saved network and collect a user-visible warning if we must switch away.
+        let (chosen_network, startup_network_warning) = match settings.network {
+            Network::Dash => (Network::Dash, None),
             Network::Testnet if testnet_app_context.is_none() => {
                 tracing::warn!(
                     "Saved network is Testnet but context unavailable, defaulting to mainnet"
                 );
-                Network::Dash
+                (
+                    Network::Dash,
+                    Some(
+                        "Saved network (Testnet) is unavailable. Switched to Mainnet to prevent accidental transactions.".to_string(),
+                    ),
+                )
             }
+            Network::Testnet => (Network::Testnet, None),
             Network::Devnet if devnet_app_context.is_none() => {
                 tracing::warn!(
                     "Saved network is Devnet but context unavailable, defaulting to mainnet"
                 );
-                Network::Dash
+                (
+                    Network::Dash,
+                    Some(
+                        "Saved network (Devnet) is unavailable. Switched to Mainnet to prevent accidental transactions.".to_string(),
+                    ),
+                )
             }
+            Network::Devnet => (Network::Devnet, None),
             Network::Regtest if local_app_context.is_none() => {
                 tracing::warn!(
                     "Saved network is Regtest but context unavailable, defaulting to mainnet"
                 );
-                Network::Dash
+                (
+                    Network::Dash,
+                    Some(
+                        "Saved network (Regtest) is unavailable. Switched to Mainnet to prevent accidental transactions.".to_string(),
+                    ),
+                )
             }
-            other => other,
+            Network::Regtest => (Network::Regtest, None),
+            unsupported_network => {
+                tracing::warn!(
+                    "Saved network {:?} is unsupported, defaulting to mainnet",
+                    unsupported_network
+                );
+                (
+                    Network::Dash,
+                    Some(format!(
+                        "Saved network ({:?}) is unsupported. Switched to Mainnet.",
+                        unsupported_network
+                    )),
+                )
+            }
         };
         network_chooser_screen.current_network = chosen_network;
 
@@ -665,6 +696,12 @@ impl AppState {
             welcome_screen: None,
         };
 
+        if let Some(message) = startup_network_warning.as_deref() {
+            app_state
+                .visible_screen_mut()
+                .display_message(message, MessageType::Error);
+        }
+
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
         if app_state.show_welcome_screen {
             app_state.welcome_screen =
@@ -717,47 +754,29 @@ impl AppState {
     }
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
-        // change_network() and enforce_network_context_invariant() keep this valid in normal flow.
-        // Fallback branches remain as last-resort safety to avoid hard crashes in production.
+        // Invariant: chosen_network must always have a corresponding context.
+        // Fail fast on violations to avoid silently routing operations to mainnet.
         match self.chosen_network {
             Network::Dash => &self.mainnet_app_context,
-            Network::Testnet => {
-                if let Some(ctx) = self.testnet_app_context.as_ref() {
-                    ctx
-                } else {
-                    tracing::error!(
-                        "BUG: Testnet app context not available but network is set to Testnet. Falling back to mainnet to avoid crash."
-                    );
-                    &self.mainnet_app_context
-                }
-            }
-            Network::Devnet => {
-                if let Some(ctx) = self.devnet_app_context.as_ref() {
-                    ctx
-                } else {
-                    tracing::error!(
-                        "BUG: Devnet app context not available but network is set to Devnet. Falling back to mainnet to avoid crash."
-                    );
-                    &self.mainnet_app_context
-                }
-            }
-            Network::Regtest => {
-                if let Some(ctx) = self.local_app_context.as_ref() {
-                    ctx
-                } else {
-                    tracing::error!(
-                        "BUG: Local/Regtest app context not available but network is set to Regtest. Falling back to mainnet to avoid crash."
-                    );
-                    &self.mainnet_app_context
-                }
-            }
-            _ => {
-                tracing::error!(
-                    "BUG: Unknown network variant {:?} in current_app_context. Falling back to mainnet to avoid crash.",
-                    self.chosen_network
-                );
-                &self.mainnet_app_context
-            }
+            Network::Testnet => self.testnet_app_context.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "BUG: chosen network is Testnet but testnet_app_context is missing; refusing silent mainnet fallback"
+                )
+            }),
+            Network::Devnet => self.devnet_app_context.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "BUG: chosen network is Devnet but devnet_app_context is missing; refusing silent mainnet fallback"
+                )
+            }),
+            Network::Regtest => self.local_app_context.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "BUG: chosen network is Regtest but local_app_context is missing; refusing silent mainnet fallback"
+                )
+            }),
+            unsupported_network => panic!(
+                "BUG: unsupported network variant {:?} in current_app_context; refusing silent mainnet fallback",
+                unsupported_network
+            ),
         }
     }
 

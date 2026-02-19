@@ -192,6 +192,8 @@ impl WalletsBalancesScreen {
                 .retain(|data| data.account_category == category && data.account_index == index);
         }
 
+        let account_address_count = address_data.len();
+
         if !self.show_zero_balance_addresses {
             address_data.retain(|data| {
                 let is_platform_payment = data.account_category == AccountCategory::PlatformPayment;
@@ -204,6 +206,9 @@ impl WalletsBalancesScreen {
                 }
             });
         }
+
+        let show_empty_due_to_balance_filter =
+            !self.show_zero_balance_addresses && account_address_count > 0 && address_data.is_empty();
 
         // Space allocation for UI elements is handled by the layout system
 
@@ -406,6 +411,11 @@ impl WalletsBalancesScreen {
                     });
                 }
             });
+
+        if show_empty_due_to_balance_filter {
+            ui.add_space(8.0);
+            ui.label("No addresses with balance. Enable \"Show zero-balance addresses\" to view all addresses.");
+        }
         action
     }
 }

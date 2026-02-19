@@ -80,7 +80,7 @@ struct BannerState {
 /// so the display text can be updated without losing the reference.
 ///
 /// The handle is `'static` and safe to store. Methods that modify the banner
-/// (`set_text`, `with_auto_dismiss`) take `&self` so the handle can be reused.
+/// (`set_message`, `with_auto_dismiss`) take `&self` so the handle can be reused.
 #[derive(Clone)]
 pub struct BannerHandle {
     ctx: egui::Context,
@@ -242,8 +242,10 @@ impl MessageBanner {
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
     pub fn set_global(ctx: &egui::Context, text: &str, message_type: MessageType) -> BannerHandle {
         let mut banners = get_banners(ctx);
-        if let Some(existing) = banners.iter().find(|b| b.text == text) {
+        if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
+            existing.message_type = message_type;
             let key = existing.key;
+            set_banners(ctx, banners);
             return BannerHandle {
                 ctx: ctx.clone(),
                 key,
@@ -299,6 +301,9 @@ impl MessageBanner {
             b.created_at = Instant::now();
             b.auto_dismiss_after = default_auto_dismiss(message_type);
             b.show_elapsed = false;
+            b.details = None;
+            b.suggestion = None;
+            b.details_expanded = false;
         } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
             key = existing.key;
         } else {

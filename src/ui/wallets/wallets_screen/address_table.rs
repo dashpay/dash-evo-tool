@@ -196,10 +196,9 @@ impl WalletsBalancesScreen {
 
         if !self.show_zero_balance_addresses {
             address_data.retain(|data| {
-                let is_platform_payment = data.account_category == AccountCategory::PlatformPayment;
                 if data.account_category.is_key_only() {
                     true
-                } else if is_platform_payment {
+                } else if data.account_category == AccountCategory::PlatformPayment {
                     data.platform_credits > 0
                 } else {
                     data.balance > 0
@@ -207,8 +206,11 @@ impl WalletsBalancesScreen {
             });
         }
 
-        let show_empty_due_to_balance_filter =
-            !self.show_zero_balance_addresses && account_address_count > 0 && address_data.is_empty();
+        let hidden_due_to_balance_filter = if self.show_zero_balance_addresses {
+            0
+        } else {
+            account_address_count.saturating_sub(address_data.len())
+        };
 
         // Space allocation for UI elements is handled by the layout system
 
@@ -412,9 +414,17 @@ impl WalletsBalancesScreen {
                 }
             });
 
-        if show_empty_due_to_balance_filter {
+        if hidden_due_to_balance_filter > 0 {
             ui.add_space(8.0);
-            ui.label("No addresses with balance. Enable \"Show zero-balance addresses\" to view all addresses.");
+            let noun = if hidden_due_to_balance_filter == 1 {
+                "address was"
+            } else {
+                "addresses were"
+            };
+            ui.label(format!(
+                "{} {} hidden by balance filter. Enable \"Show zero-balance addresses\" to view all addresses.",
+                hidden_due_to_balance_filter, noun
+            ));
         }
         action
     }

@@ -27,6 +27,9 @@ struct BannerState {
     created_at: Instant,                  // Monotonic timestamp for timing
     auto_dismiss_after: Option<Duration>, // None = persistent, Some = countdown
     show_elapsed: bool,                   // Show elapsed time instead of countdown
+    details: Option<String>,              // Technical details (collapsible section)
+    suggestion: Option<String>,           // Recovery suggestion (shown inline)
+    details_expanded: bool,               // Whether details section is expanded
 }
 ```
 
@@ -53,9 +56,11 @@ All query/mutation methods return `Option` to handle the case where the banner h
 | `set_message()` | `(&self, text: &str) -> Option<&Self>` | Update display text |
 | `with_auto_dismiss()` | `(&self, Duration) -> Option<&Self>` | Set/override countdown duration; resets timer to now |
 | `with_elapsed()` | `-> Option<&Self>` | Enable elapsed-time display mode (disables auto-dismiss) |
+| `with_details()` | `(&self, &str) -> Option<&Self>` | Attach collapsible technical details section |
+| `with_suggestion()` | `(&self, &str) -> Option<&Self>` | Attach inline recovery suggestion |
 | `clear()` | `(self)` | Remove banner immediately (consumes handle) |
 
-Methods that modify the banner (`set_message`, `with_auto_dismiss`, `with_elapsed`) return early without writing back to context data when the banner no longer exists.
+Methods that modify the banner (`set_message`, `with_auto_dismiss`, `with_elapsed`, `with_details`, `with_suggestion`) return early without writing back to context data when the banner no longer exists.
 
 ---
 
@@ -125,10 +130,16 @@ The `Component` trait implementation:
 Both global and per-instance paths call `render_banner()`:
 
 ```rust
-render_banner(ui, text, message_type, annotation: Option<&str>) -> bool (dismissed?)
+render_banner(
+    ui, text, message_type,
+    annotation: Option<&str>,
+    suggestion: Option<&str>,
+    details: Option<&str>,
+    details_expanded: &mut bool,
+) -> bool (dismissed?)
 ```
 
-The `annotation` parameter is generic — it receives either a countdown string `"(3s)"`, an elapsed string `"(5s)"`, or `None` for persistent banners. This is computed by `process_banner()` which handles the lifecycle logic.
+The `annotation` parameter is generic — it receives either a countdown string `"(3s)"`, an elapsed string `"(5s)"`, or `None` for persistent banners. This is computed by `process_banner()` which handles the lifecycle logic. The `suggestion` is shown inline below the message text, and `details` renders in a collapsible section (controlled by `details_expanded`).
 
 ### Visual Structure
 

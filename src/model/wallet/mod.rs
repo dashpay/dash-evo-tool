@@ -112,16 +112,20 @@ pub trait DerivationPathHelpers {
     ) -> DerivationPath;
 }
 
+pub(crate) fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
+    let coin_type = match network {
+        Network::Dash => 5,
+        _ => 1,
+    };
+    let components = path.as_ref();
+    components.len() >= 4
+        && components[0] == ChildNumber::Hardened { index: 44 }
+        && components[1] == ChildNumber::Hardened { index: coin_type }
+}
+
 impl DerivationPathHelpers for DerivationPath {
     fn is_bip44(&self, network: Network) -> bool {
-        let coin_type = match network {
-            Network::Dash => 5,
-            _ => 1,
-        };
-        let components = self.as_ref();
-        components.len() >= 4
-            && components[0] == ChildNumber::Hardened { index: 44 }
-            && components[1] == ChildNumber::Hardened { index: coin_type }
+        is_bip44_path(self, network)
     }
 
     fn is_bip44_external(&self, network: Network) -> bool {

@@ -596,7 +596,7 @@ impl WalletsBalancesScreen {
             .selected_account
             .as_ref()
             .is_some_and(|(category, index)| {
-                *category == AccountCategory::Bip44 && index.unwrap_or(0) == 0
+                *category == AccountCategory::Bip44 && *index == Some(0)
             });
 
         if wallet_is_open && is_main_account {
@@ -1133,7 +1133,7 @@ impl WalletsBalancesScreen {
                         let summaries = {
                             let wallet = wallet_arc.read().unwrap();
                             self.render_wallet_overview(ui, &wallet);
-                            collect_account_summaries(&wallet)
+                            collect_account_summaries(&wallet, self.app_context.network)
                         };
 
                         self.ensure_account_selection(&summaries);

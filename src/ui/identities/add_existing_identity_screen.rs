@@ -57,7 +57,17 @@ struct TestnetNodes {
 
 fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
     let file_content = fs::read_to_string(file_path).ok()?;
-    serde_yaml_ng::from_str(&file_content).expect("expected proper yaml")
+    match serde_yaml_ng::from_str(&file_content) {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            tracing::error!(
+                "Failed to parse YAML file '{}': {}. Please check the file format.",
+                file_path,
+                e
+            );
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

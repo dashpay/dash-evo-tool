@@ -55,19 +55,19 @@ struct TestnetNodes {
     hp_masternodes: std::collections::HashMap<String, HPMasternodeInfo>,
 }
 
-fn load_testnet_nodes_from_yml(file_path: &str) -> Option<TestnetNodes> {
-    let file_content = fs::read_to_string(file_path).ok()?;
-    match serde_yaml_ng::from_str(&file_content) {
-        Ok(nodes) => nodes,
-        Err(e) => {
-            tracing::error!(
+fn load_testnet_nodes_from_yml(file_path: &str) -> Result<Option<TestnetNodes>, String> {
+    let file_content = match fs::read_to_string(file_path) {
+        Ok(content) => content,
+        Err(_) => return Ok(None),
+    };
+    serde_yaml_ng::from_str::<TestnetNodes>(&file_content)
+        .map(Some)
+        .map_err(|e| {
+            format!(
                 "Failed to parse YAML file '{}': {}. Please check the file format.",
-                file_path,
-                e
-            );
-            None
-        }
-    }
+                file_path, e
+            )
+        })
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -120,10 +120,13 @@ pub struct AddExistingIdentityScreen {
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
-        let testnet_loaded_nodes = if app_context.network == Network::Testnet {
-            load_testnet_nodes_from_yml(".testnet_nodes.yml")
+        let (testnet_loaded_nodes, error_message) = if app_context.network == Network::Testnet {
+            match load_testnet_nodes_from_yml(".testnet_nodes.yml") {
+                Ok(nodes) => (nodes, None),
+                Err(e) => (None, Some(e)),
+            }
         } else {
-            None
+            (None, None)
         };
         Self {
             identity_id_input: String::new(),
@@ -138,7 +141,7 @@ impl AddExistingIdentityScreen {
             selected_wallet,
             identity_associated_with_wallet: true,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message: None,
+            error_message,
             identity_index_input: String::new(),
             app_context: app_context.clone(),
             show_pop_up_info: None,
@@ -883,10 +886,7 @@ impl AddExistingIdentityScreen {
         if let Some((name, hpmn)) = self
             .testnet_loaded_nodes
             .as_ref()
-            .unwrap()
-            .hp_masternodes
-            .iter()
-            .choose(&mut thread_rng())
+            .and_then(|nodes| nodes.hp_masternodes.iter().choose(&mut thread_rng()))
         {
             self.identity_id_input = hpmn.protx_tx_hash.clone();
             self.identity_type = IdentityType::Evonode;
@@ -901,10 +901,7 @@ impl AddExistingIdentityScreen {
         if let Some((name, masternode)) = self
             .testnet_loaded_nodes
             .as_ref()
-            .unwrap()
-            .masternodes
-            .iter()
-            .choose(&mut thread_rng())
+            .and_then(|nodes| nodes.masternodes.iter().choose(&mut thread_rng()))
         {
             self.identity_id_input = masternode.pro_tx_hash.clone();
             self.identity_type = IdentityType::Masternode;

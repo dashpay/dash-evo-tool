@@ -454,7 +454,7 @@ impl AddExistingIdentityScreen {
         if ui.add_enabled(is_valid_id, button).clicked() {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
+                .unwrap_or_default()
                 .as_secs();
             self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
             action = self.load_identity_clicked();
@@ -656,7 +656,7 @@ impl AddExistingIdentityScreen {
         if ui.add(button).clicked() {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
+                .unwrap_or_default()
                 .as_secs();
             self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
             self.backend_message = None;
@@ -813,7 +813,7 @@ impl AddExistingIdentityScreen {
         if ui.add_enabled(is_valid, button).clicked() {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .expect("Time went backwards")
+                .unwrap_or_default()
                 .as_secs();
             self.add_identity_status = AddIdentityStatus::WaitingForResult(now);
             self.backend_message = None;
@@ -1115,7 +1115,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                         AddIdentityStatus::WaitingForResult(start_time) => {
                             let now = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
+                                .unwrap_or_default()
                                 .as_secs();
                             let elapsed_seconds = now - start_time;
 

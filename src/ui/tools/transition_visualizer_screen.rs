@@ -237,7 +237,7 @@ impl TransitionVisualizerScreen {
                         // Mark as submitting
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         self.broadcast_status = TransitionBroadcastStatus::Submitting(now);
 
@@ -265,7 +265,7 @@ impl TransitionVisualizerScreen {
             TransitionBroadcastStatus::Submitting(start_time) => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 let elapsed_seconds = now - start_time;
 

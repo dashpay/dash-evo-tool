@@ -320,7 +320,7 @@ impl TransferScreen {
         // Set waiting state
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
 
@@ -373,7 +373,7 @@ impl TransferScreen {
         // Set waiting state and create backend task
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
 
@@ -505,14 +505,21 @@ impl ScreenLike for TransferScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        self.identity = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap()
-            .into_iter()
+        let identities = match self.app_context.load_local_qualified_identities() {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("Failed to load identities during refresh: {}", e);
+                Vec::new()
+            }
+        };
+        if let Some(refreshed) = identities
+            .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
-            .unwrap();
-        self.max_amount = self.identity.identity.balance();
+        {
+            self.identity = refreshed.clone();
+            self.max_amount = self.identity.identity.balance();
+        }
+        self.known_identities = identities;
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -764,7 +771,7 @@ impl ScreenLike for TransferScreen {
                     TransferCreditsStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed_seconds = now - start_time;
 

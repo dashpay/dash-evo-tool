@@ -716,6 +716,9 @@ impl IdentitiesScreen {
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
                                                         .show(|ui| {
+                                                            // Wrap in a scroll area so popups with many keys are accessible
+                                                            let max_popup_height = ui.ctx().content_rect().height() * 0.6;
+                                                            egui::ScrollArea::vertical().max_height(max_popup_height).show(ui, |ui| {
                                                             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                                                             // Main Identity Keys
@@ -784,6 +787,7 @@ impl IdentitiesScreen {
                                                                     )));
                                                                    ui.close_kind(egui::UiKind::Menu);
                                                                 }
+                                                            }); // end ScrollArea
                                                         },
                                                     );
                                                 }
@@ -916,25 +920,42 @@ impl IdentitiesScreen {
 
                         if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
-                            let mut lock = self.identities.lock().unwrap();
-                            lock.shift_remove(&identity_id);
 
-                            self.app_context
+                            match self
+                                .app_context
                                 .db
                                 .delete_local_qualified_identity(&identity_id, &self.app_context)
-                                .ok();
+                            {
+                                Ok(_) => {
+                                    let mut lock = self.identities.lock().unwrap();
+                                    lock.shift_remove(&identity_id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to delete identity from database: {}",
+                                        e
+                                    );
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        &format!("Failed to remove identity: {}", e),
+                                        MessageType::Error,
+                                    );
+                                }
+                            }
 
                             if let Some((voter_identity, _)) =
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                self.app_context
-                                    .db
-                                    .delete_local_qualified_identity(
-                                        &voter_identity_id,
-                                        &self.app_context,
-                                    )
-                                    .ok();
+                                if let Err(e) = self.app_context.db.delete_local_qualified_identity(
+                                    &voter_identity_id,
+                                    &self.app_context,
+                                ) {
+                                    tracing::warn!(
+                                        "Failed to delete voter identity from database: {}",
+                                        e
+                                    );
+                                }
                             }
 
                             self.identity_to_remove = None;

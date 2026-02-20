@@ -559,7 +559,7 @@ impl ScreenLike for GroupActionsScreen {
                     self.fetch_group_actions_status = FetchGroupActionsStatus::WaitingForResult(
                         SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs(),
                     );
                     fetch_clicked = true;
@@ -593,7 +593,7 @@ impl ScreenLike for GroupActionsScreen {
                 FetchGroupActionsStatus::WaitingForResult(start_time) => {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
+                        .unwrap_or_default()
                         .as_secs();
                     let elapsed = now - start_time;
                     let status = if elapsed < 60 {

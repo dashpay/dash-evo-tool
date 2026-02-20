@@ -4,6 +4,7 @@ use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::InnerResponse;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tracing::{debug, error, warn};
 
 const DEFAULT_AUTO_DISMISS: Duration = Duration::from_secs(5);
 const MAX_BANNERS: usize = 5;
@@ -73,6 +74,23 @@ struct BannerState {
     suggestion: Option<String>,
     /// Whether the details section is currently expanded.
     details_expanded: bool,
+    /// Whether the banner has been logged (to avoid duplicate log entries on each frame).
+    logged: bool,
+}
+
+impl BannerState {
+    /// Emits a tracing log for this banner, with log level based on message type.
+    fn log(&self) {
+        let text = self.text.as_str();
+        let details = self.details.as_deref();
+        match self.message_type {
+            MessageType::Error => error!(banner = text, details, "Banner displayed"),
+            MessageType::Warning => warn!(banner = text, details, "Banner displayed"),
+            MessageType::Success | MessageType::Info => {
+                debug!(banner = text, details, "Banner displayed")
+            }
+        }
+    }
 }
 
 /// Handle for a global banner, returned by [`MessageBanner::set_global`] and
@@ -202,6 +220,7 @@ impl MessageBanner {
                 details: None,
                 suggestion: None,
                 details_expanded: false,
+                logged: false,
             });
         }
         self
@@ -263,6 +282,7 @@ impl MessageBanner {
                 details: None,
                 suggestion: None,
                 details_expanded: false,
+                logged: false,
             });
             if banners.len() > MAX_BANNERS {
                 banners.remove(0);
@@ -304,6 +324,7 @@ impl MessageBanner {
             b.details = None;
             b.suggestion = None;
             b.details_expanded = false;
+            b.logged = false;
         } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
             key = existing.key;
         } else {
@@ -318,6 +339,7 @@ impl MessageBanner {
                 details: None,
                 suggestion: None,
                 details_expanded: false,
+                logged: false,
             });
             if banners.len() > MAX_BANNERS {
                 banners.remove(0);
@@ -433,6 +455,12 @@ fn process_banner(ui: &mut egui::Ui, state: &mut BannerState) -> BannerStatus {
     } else {
         None
     };
+
+    // Log banner message once on first display
+    if !state.logged {
+        state.logged = true;
+        state.log();
+    }
 
     if render_banner(
         ui,

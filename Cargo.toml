@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d6f4eb9ac9feafaa914f06e1b78eb66beceef3b7", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "b445b6f0e0bd486357f86100ba8b7fddab283bd7", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -90,17 +90,6 @@ egui_kittest = { version = "0.33.3", features = ["eframe"] }
 
 [build-dependencies]
 winres = "0.1"
-
-[patch."https://github.com/dashpay/rust-dashcore"]
-dash-network = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dash-spv = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore-private = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore-rpc = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore-rpc-json = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-dashcore_hashes = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-key-wallet = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
-key-wallet-manager = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

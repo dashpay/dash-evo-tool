@@ -1,5 +1,5 @@
 use crate::context::AppContext;
-use crate::database::Database;
+use crate::database::{CorruptedBlobError, Database};
 use crate::model::contested_name::{ContestState, Contestant, ContestedName};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
@@ -528,15 +528,41 @@ impl Database {
             // Serialize the document if available
             let deserialized_contender = contender
                 .try_to_contender(dpns_domain_document_type, app_context.platform_version())
-                .expect("expect a contender document deserialization");
+                .map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Blob,
+                        Box::new(CorruptedBlobError(format!(
+                            "Failed to deserialize contender for identity {}: {}",
+                            identity_id, e
+                        ))),
+                    )
+                })?;
 
-            let document = deserialized_contender.document().as_ref().unwrap().clone();
+            let document = deserialized_contender.document().as_ref().ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(format!(
+                        "Missing contender document for identity {}",
+                        identity_id
+                    ))),
+                )
+            })?;
 
             let name = document
                 .get("label")
-                .expect("expected name")
-                .as_str()
-                .unwrap();
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(CorruptedBlobError(format!(
+                            "Missing or invalid contender label for identity {}",
+                            identity_id
+                        ))),
+                    )
+                })?;
 
             let created_at = document.created_at();
             let created_at_block_height = document.created_at_block_height();

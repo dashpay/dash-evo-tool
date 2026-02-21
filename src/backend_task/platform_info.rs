@@ -264,11 +264,10 @@ fn format_withdrawal_documents_with_daily_limit(
         "Withdrawal Information:\n\n\
          Total Amount: {:.8} Dash\n\
          Daily Withdrawal Limit: {:.8} Dash\n\
-         Remaining Today: {:.8} Dash\n\n\
+         Remaining Today: N/A (24h usage data unavailable)\n\n\
          Recent Withdrawals:\n    {}",
         total_amount as f64 / (dash_to_credits!(1) as f64),
         daily_withdrawal_limit as f64 / (dash_to_credits!(1) as f64),
-        daily_withdrawal_limit as f64 / (dash_to_credits!(1) as f64), // TODO: subtract actual 24h withdrawal amount when available
         amounts.join("\n    ")
     ))
 }

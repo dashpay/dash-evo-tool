@@ -4,6 +4,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
 use bincode::config;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use rusqlite::Result;
@@ -20,52 +21,44 @@ impl AppContext {
         // Get contracts from the database
         let mut contracts = self.db.get_contracts(self, limit, offset)?;
 
-        // Add the DPNS contract to the list
-        let dpns_contract = QualifiedContract {
-            contract: Arc::clone(&self.dpns_contract).as_ref().clone(),
-            alias: Some("dpns".to_string()),
-        };
+        // Build the list of system contracts to prepend
+        let system_contracts = vec![
+            QualifiedContract {
+                contract: Arc::clone(&self.dpns_contract).as_ref().clone(),
+                alias: Some("dpns".to_string()),
+            },
+            QualifiedContract {
+                contract: Arc::clone(&self.token_history_contract).as_ref().clone(),
+                alias: Some("token_history".to_string()),
+            },
+            QualifiedContract {
+                contract: Arc::clone(&self.withdraws_contract).as_ref().clone(),
+                alias: Some("withdrawals".to_string()),
+            },
+            QualifiedContract {
+                contract: Arc::clone(&self.keyword_search_contract).as_ref().clone(),
+                alias: Some("keyword_search".to_string()),
+            },
+            QualifiedContract {
+                contract: Arc::clone(&self.dashpay_contract).as_ref().clone(),
+                alias: Some("dashpay".to_string()),
+            },
+        ];
 
-        // Insert the DPNS contract at 0
-        contracts.insert(0, dpns_contract);
+        // Collect system contract IDs to deduplicate DB contracts that match
+        let system_ids: std::collections::HashSet<_> = system_contracts
+            .iter()
+            .map(|c| c.contract.id())
+            .collect();
 
-        // Add the token history contract to the list
-        let token_history_contract = QualifiedContract {
-            contract: Arc::clone(&self.token_history_contract).as_ref().clone(),
-            alias: Some("token_history".to_string()),
-        };
+        // Remove any DB contracts that duplicate a system contract
+        contracts.retain(|c| !system_ids.contains(&c.contract.id()));
 
-        // Insert the token history contract at 1
-        contracts.insert(1, token_history_contract);
+        // Prepend system contracts in order
+        let mut result = system_contracts;
+        result.append(&mut contracts);
 
-        // Add the withdrawal contract to the list
-        let withdraws_contract = QualifiedContract {
-            contract: Arc::clone(&self.withdraws_contract).as_ref().clone(),
-            alias: Some("withdrawals".to_string()),
-        };
-
-        // Insert the withdrawal contract at 2
-        contracts.insert(2, withdraws_contract);
-
-        // Add the keyword search contract to the list
-        let keyword_search_contract = QualifiedContract {
-            contract: Arc::clone(&self.keyword_search_contract).as_ref().clone(),
-            alias: Some("keyword_search".to_string()),
-        };
-
-        // Insert the keyword search contract at 3
-        contracts.insert(3, keyword_search_contract);
-
-        // Add the DashPay contract to the list
-        let dashpay_contract = QualifiedContract {
-            contract: Arc::clone(&self.dashpay_contract).as_ref().clone(),
-            alias: Some("dashpay".to_string()),
-        };
-
-        // Insert the DashPay contract at 4
-        contracts.insert(4, dashpay_contract);
-
-        Ok(contracts)
+        Ok(result)
     }
 
     pub fn get_contract_by_id(

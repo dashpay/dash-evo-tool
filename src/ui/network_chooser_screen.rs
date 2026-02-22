@@ -886,7 +886,9 @@ impl NetworkChooserScreen {
                             if is_valid {
                                 self.custom_dash_qt_path = Some(resolved_path);
                                 self.custom_dash_qt_error_message = None;
-                                self.save().expect("Expected to save db settings");
+                                if let Err(e) = self.save() {
+                                    tracing::warn!("Failed to save Dash-Qt path setting: {}", e);
+                                }
                             } else {
                                 let required_file_name = if cfg!(target_os = "windows") {
                                     "dash-qt.exe"
@@ -906,7 +908,9 @@ impl NetworkChooserScreen {
                     if self.custom_dash_qt_path.is_some() && ui.button("Clear").clicked() {
                         self.custom_dash_qt_path = Some(PathBuf::new());
                         self.custom_dash_qt_error_message = None;
-                        self.save().expect("Expected to save db settings");
+                        if let Err(e) = self.save() {
+                            tracing::warn!("Failed to save cleared Dash-Qt path setting: {}", e);
+                        }
                     }
                 });
 
@@ -956,7 +960,9 @@ impl NetworkChooserScreen {
                         .show(ui)
                         .clicked()
                     {
-                        self.save().expect("Expected to save db settings");
+                        if let Err(e) = self.save() {
+                            tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
+                        }
                     }
                     ui.label(
                         egui::RichText::new("Auto-configure required settings")

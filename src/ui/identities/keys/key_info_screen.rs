@@ -256,7 +256,13 @@ impl ScreenLike for KeyInfoScreen {
                                 ui.label(RichText::new(hash_hex).color(text_primary));
                             }
                             Err(e) => {
-                                ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!("Error: {}", e))
+                                            .color(egui::Color32::RED),
+                                    )
+                                    .wrap(),
+                                );
                             }
                         }
 
@@ -281,7 +287,13 @@ impl ScreenLike for KeyInfoScreen {
                                     );
                                 }
                                 Err(e) => {
-                                    ui.colored_label(egui::Color32::RED, format!("Error: {}", e));
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!("Error: {}", e))
+                                                .color(egui::Color32::RED),
+                                        )
+                                        .wrap(),
+                                    );
                                 }
                             }
                         }
@@ -420,14 +432,22 @@ impl ScreenLike for KeyInfoScreen {
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {
-                                            ui.label(format!("Error: {}", e));
+                                            ui.add(
+                                                egui::Label::new(format!("Error: {}", e)).wrap(),
+                                            );
                                             return;
                                         }
                                     }
                                 }
                                 self.render_sign_input(ui);
                             } else if self.wallet_open {
-                                ui.colored_label(Color32::DARK_RED, "Key is in encrypted wallet");
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new("Key is in encrypted wallet")
+                                            .color(Color32::DARK_RED),
+                                    )
+                                    .wrap(),
+                                );
                                 ui.add_space(10.0);
 
                                 if ui.button("View Private Key").clicked() {
@@ -476,14 +496,22 @@ impl ScreenLike for KeyInfoScreen {
                                             self.decrypted_private_key = Some(private_key);
                                         }
                                         Err(e) => {
-                                            ui.label(format!("Error: {}", e));
+                                            ui.add(
+                                                egui::Label::new(format!("Error: {}", e)).wrap(),
+                                            );
                                             return;
                                         }
                                     }
                                 }
                                 self.render_sign_input(ui);
                             } else {
-                                ui.colored_label(Color32::DARK_RED, "Key is in encrypted wallet");
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new("Key is in encrypted wallet")
+                                            .color(Color32::DARK_RED),
+                                    )
+                                    .wrap(),
+                                );
                                 ui.add_space(10.0);
 
                                 if ui.button("View Private Key").clicked() {

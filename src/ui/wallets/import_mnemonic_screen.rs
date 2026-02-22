@@ -473,7 +473,7 @@ impl ImportMnemonicScreen {
         // Show error if any
         if let Some(ref err) = self.error {
             ui.add_space(5.0);
-            ui.colored_label(DashColors::ERROR, err);
+            ui.add(egui::Label::new(egui::RichText::new(err).color(DashColors::ERROR)).wrap());
         }
     }
 
@@ -603,7 +603,13 @@ impl ScreenLike for ImportMnemonicScreen {
                             if let Some(ref error_msg) = self.error
                                 && error_msg.contains("Invalid seed phrase") {
                                     ui.add_space(10.0);
-                                    ui.colored_label(DashColors::ERROR, error_msg);
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(error_msg)
+                                                .color(DashColors::ERROR),
+                                        )
+                                        .wrap(),
+                                    );
                                 }
 
                             if self.seed_phrase.is_none() {

@@ -71,7 +71,16 @@ impl TokensScreen {
                             Ok(identities) => identities.into_iter().filter(|qi| !qi.private_keys.private_keys.is_empty()).collect::<Vec<_>>(),
                             Err(e) => {
                                 tracing::error!(err=?e, "Error loading identities from local DB.");
-                                ui.colored_label(Color32::DARK_RED,format!("Error loading identities from local DB: {}", e));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(format!(
+                                            "Error loading identities from local DB: {}",
+                                            e
+                                        ))
+                                        .color(Color32::DARK_RED),
+                                    )
+                                    .wrap(),
+                                );
                                 return;
                             }
                         };
@@ -547,7 +556,16 @@ impl TokensScreen {
                                         seen_keywords.insert(name.0.clone());
                                         for keyword in contract_keywords.iter() {
                                             if seen_keywords.contains(*keyword) {
-                                                ui.colored_label(Color32::DARK_RED, format!("Duplicate contract keyword: {}", keyword));
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(format!(
+                                                            "Duplicate contract keyword: {}",
+                                                            keyword
+                                                        ))
+                                                        .color(Color32::DARK_RED),
+                                                    )
+                                                    .wrap(),
+                                                );
                                             }
                                             seen_keywords.insert(keyword.to_string());
                                         }
@@ -979,7 +997,12 @@ impl TokensScreen {
                 .stroke(egui::Stroke::new(1.0, error_color))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", err_msg)).color(error_color));
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!("Error: {}", err_msg)).color(error_color),
+                            )
+                            .wrap(),
+                        );
                         ui.add_space(10.0);
                         if ui.small_button("Dismiss").clicked() {
                             self.token_creator_error_message = None;

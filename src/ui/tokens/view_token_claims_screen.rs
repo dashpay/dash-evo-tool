@@ -154,7 +154,12 @@ impl ScreenLike for ViewTokenClaimsScreen {
                         ui.colored_label(DashColors::success_color(dark_mode), msg);
                     }
                     MessageType::Error | MessageType::Warning => {
-                        ui.colored_label(DashColors::error_color(dark_mode), msg);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(msg).color(DashColors::error_color(dark_mode)),
+                            )
+                            .wrap(),
+                        );
                     }
                     MessageType::Info => {
                         ui.label(msg);

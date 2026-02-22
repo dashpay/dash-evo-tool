@@ -1113,7 +1113,12 @@ impl ScreenLike for AddNewIdentityScreen {
                         .stroke(egui::Stroke::new(1.0, message_color))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&error_message).color(message_color));
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&error_message).color(message_color),
+                                    )
+                                    .wrap(),
+                                );
                                 ui.add_space(10.0);
                                 if ui.small_button("Dismiss").clicked() {
                                     self.error_message = None;

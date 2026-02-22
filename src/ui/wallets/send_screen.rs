@@ -1063,9 +1063,12 @@ impl WalletSendScreen {
         }
         if wallet_needs_unlock(wallet) {
             ui.add_space(10.0);
-            ui.colored_label(
-                egui::Color32::from_rgb(200, 150, 50),
-                "Wallet is locked. Please unlock to continue.",
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("Wallet is locked. Please unlock to continue.")
+                        .color(egui::Color32::from_rgb(200, 150, 50)),
+                )
+                .wrap(),
             );
             ui.add_space(8.0);
             if ui.button("Unlock Wallet").clicked() {
@@ -1149,7 +1152,12 @@ impl WalletSendScreen {
                         .stroke(egui::Stroke::new(1.0, DashColors::ERROR))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new(&error_msg).color(DashColors::ERROR));
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&error_msg).color(DashColors::ERROR),
+                                    )
+                                    .wrap(),
+                                );
                                 ui.add_space(10.0);
                                 if ui.small_button("Dismiss").clicked() {
                                     dismiss = true;

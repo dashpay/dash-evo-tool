@@ -1686,7 +1686,13 @@ impl ScreenLike for WalletsBalancesScreen {
                                 .stroke(egui::Stroke::new(1.0, error_color))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(format!("Error: {}", error_message))
+                                                    .color(error_color),
+                                            )
+                                            .wrap(),
+                                        );
                                         ui.add_space(10.0);
                                         if ui.small_button("Dismiss").clicked() {
                                             self.sk_error_message = None;

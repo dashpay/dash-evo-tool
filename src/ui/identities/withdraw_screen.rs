@@ -183,7 +183,12 @@ impl WithdrawalScreen {
 
                 // Show error next to input
                 if let Some(error) = &self.withdrawal_address_error {
-                    ui.colored_label(DashColors::ERROR, error);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(error).color(DashColors::ERROR),
+                        )
+                        .wrap(),
+                    );
                 }
             });
 

@@ -519,7 +519,15 @@ impl SetTokenPriceScreen {
                 self.render_tiered_pricing_preview(ui);
             }
             PricingType::RemovePricing => {
-                ui.colored_label(Color32::from_rgb(180, 100, 0), "WARNING: This will remove the pricing schedule, making the token unavailable for direct purchase.");
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            "WARNING: This will remove the pricing schedule, making the token unavailable for direct purchase.",
+                        )
+                        .color(Color32::from_rgb(180, 100, 0)),
+                    )
+                    .wrap(),
+                );
                 ui.label("Users will no longer be able to buy this token directly.");
             }
         }
@@ -554,7 +562,13 @@ impl SetTokenPriceScreen {
                 }
 
                 if has_errors {
-                    ui.colored_label(Color32::DARK_RED, "X Some tiers have invalid values");
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("X Some tiers have invalid values")
+                                .color(Color32::DARK_RED),
+                        )
+                        .wrap(),
+                    );
                 }
 
                 if !valid_tiers.is_empty() {
@@ -1158,7 +1172,13 @@ impl ScreenLike for SetTokenPriceScreen {
                             .stroke(egui::Stroke::new(1.0, error_color))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!("Error: {}", msg))
+                                                .color(error_color),
+                                        )
+                                        .wrap(),
+                                    );
                                     ui.add_space(10.0);
                                     if ui.small_button("Dismiss").clicked() {
                                         self.status = SetTokenPriceStatus::NotStarted;

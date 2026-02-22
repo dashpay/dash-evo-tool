@@ -134,8 +134,8 @@ impl TransferScreen {
         ui.add_space(5.0);
 
         // Calculate max amount minus fee for the "Max" button
-        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0002).max(0.0);
-        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        // 0.0002 DASH = 20_000_000 credits (1 DASH = 100_000_000_000 credits)
+        let max_amount_credits = self.max_amount.saturating_sub(20_000_000);
 
         let amount_input = self.amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))

@@ -959,10 +959,9 @@ impl NetworkChooserScreen {
                     if StyledCheckbox::new(&mut self.overwrite_dash_conf, "Overwrite dash.conf")
                         .show(ui)
                         .clicked()
+                        && let Err(e) = self.save()
                     {
-                        if let Err(e) = self.save() {
-                            tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
-                        }
+                        tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
                     }
                     ui.label(
                         egui::RichText::new("Auto-configure required settings")

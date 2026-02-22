@@ -878,9 +878,15 @@ impl Database {
             let wallet_seed_hash: Vec<u8> = row.get(1)?;
             let wallet_index: u32 = row.get(2)?;
 
-            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash
-                .try_into()
-                .expect("Seed hash should be 32 bytes");
+            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(
+                        "Identity wallet seed hash should be 32 bytes".to_string(),
+                    )),
+                )
+            })?;
 
             Ok((data, wallet_seed_hash_array, wallet_index))
         })?;

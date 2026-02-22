@@ -28,6 +28,10 @@ pub mod top_up_identity_screen;
 pub mod transfer_screen;
 pub mod withdraw_screen;
 
+fn max_amount_after_fee(balance: u64, fee: u64) -> u64 {
+    balance.saturating_sub(fee)
+}
+
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///
 /// # Description
@@ -121,5 +125,21 @@ pub fn get_selected_wallet(
             .cloned()
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::max_amount_after_fee;
+
+    #[test]
+    fn max_amount_after_fee_handles_boundaries() {
+        let reserve = 100_u64;
+
+        assert_eq!(max_amount_after_fee(0, reserve), 0);
+        assert_eq!(max_amount_after_fee(reserve - 1, reserve), 0);
+        assert_eq!(max_amount_after_fee(reserve, reserve), 0);
+        assert_eq!(max_amount_after_fee(reserve + 1, reserve), 1);
+        assert_eq!(max_amount_after_fee(u64::MAX, reserve), u64::MAX - reserve);
     }
 }

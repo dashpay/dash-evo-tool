@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
+use super::{get_selected_wallet, max_amount_after_fee};
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -133,9 +133,14 @@ impl TransferScreen {
         ui.label(format!("Available balance: {:.8} DASH", balance_in_dash));
         ui.add_space(5.0);
 
-        // Calculate max amount minus fee for the "Max" button
-        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.0002).max(0.0);
-        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        let fee_estimator = self.app_context.fee_estimator();
+        let estimated_fee = match self.destination_type {
+            TransferDestinationType::Identity => fee_estimator.estimate_credit_transfer(),
+            TransferDestinationType::PlatformAddress => {
+                fee_estimator.estimate_credit_transfer_to_addresses(1)
+            }
+        };
+        let max_amount_credits = max_amount_after_fee(self.max_amount, estimated_fee);
 
         let amount_input = self.amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))

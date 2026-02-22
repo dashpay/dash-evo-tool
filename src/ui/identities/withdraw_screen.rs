@@ -33,9 +33,9 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::get_selected_wallet;
 use super::keys::add_key_screen::AddKeyScreen;
 use super::keys::key_info_screen::KeyInfoScreen;
+use super::{get_selected_wallet, max_amount_after_fee};
 
 #[derive(PartialEq)]
 pub enum WithdrawFromIdentityStatus {
@@ -107,8 +107,11 @@ impl WithdrawalScreen {
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
-        let max_amount_minus_fee = (self.max_amount as f64 / 100_000_000_000.0 - 0.005).max(0.0);
-        let max_amount_credits = (max_amount_minus_fee * 100_000_000_000.0) as u64;
+        let estimated_fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_credit_withdrawal();
+        let max_amount_credits = max_amount_after_fee(self.max_amount, estimated_fee);
 
         // Lazy initialization with basic configuration
         let amount_input = self.withdrawal_amount_input.get_or_insert_with(|| {

@@ -618,14 +618,16 @@ impl IdentitiesScreen {
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
-                                                        // Minimum balance needed for withdrawal (0.005 DASH fee in credits)
-                                                        let min_withdrawal_balance: u64 = 500_000_000; // 0.005 DASH in credits
+                                                        let min_withdrawal_balance = self
+                                                            .app_context
+                                                            .fee_estimator()
+                                                            .estimate_credit_withdrawal();
                                                         let can_withdraw = qualified_identity.identity.balance() > min_withdrawal_balance;
 
                                                         let withdraw_hover = if can_withdraw {
                                                             "Withdraw credits from this identity to a Dash Core address"
                                                         } else {
-                                                            "Insufficient balance for withdrawal (need at least 0.005 DASH for fees)"
+                                                            "Insufficient balance for withdrawal fees"
                                                         };
                                                         let width = ui.available_width();
                                                         ui.scope(|ui| {
@@ -654,14 +656,16 @@ impl IdentitiesScreen {
                                                             );
                                                         }
 
-                                                        // Minimum balance needed for transfer (0.0002 DASH fee in credits)
-                                                        let min_transfer_balance: u64 = 20_000_000;
+                                                        let min_transfer_balance = self
+                                                            .app_context
+                                                            .fee_estimator()
+                                                            .estimate_credit_transfer();
                                                         let can_transfer = qualified_identity.identity.balance() > min_transfer_balance;
 
                                                         let transfer_hover = if can_transfer {
                                                             "Transfer credits from this identity to another identity"
                                                         } else {
-                                                            "Insufficient balance for transfer (need at least 0.0002 DASH for fees)"
+                                                            "Insufficient balance for transfer fees"
                                                         };
                                                         let width = ui.available_width();
                                                         ui.scope(|ui| {

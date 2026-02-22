@@ -499,11 +499,13 @@ impl AppContext {
                     .map(|h| h.current_height())
             })
             .ok_or("Cannot build transaction: SPV sync height is not yet known")?;
+        const MAX_FEE_ITERATIONS: usize = 50;
+
         let total_amount: u64 = recipients.iter().map(|(_, amt)| *amt).sum();
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;
 
-        loop {
+        for _ in 0..MAX_FEE_ITERATIONS {
             let scaled_recipients: Vec<(Address, u64)> = recipients
                 .iter()
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
@@ -545,6 +547,8 @@ impl AppContext {
                 }
             }
         }
+
+        Err("Could not build transaction after maximum fee adjustment attempts".to_string())
     }
 
     fn estimate_fallback_amount(

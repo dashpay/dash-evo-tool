@@ -150,7 +150,7 @@ The `annotation` parameter is generic — it receives either a countdown string 
 ```
 
 - Frame: `DashColors::message_background_color()` fill, `DashColors::message_color()` border
-- Icon: Unicode character (⚠ for Error/Warning, ✓ for Success, ℹ for Info)
+- Icon: Unicode character (❌ for Error, ⚠ for Warning, ✓ for Success, ℹ for Info)
 - Text: `DashColors::message_color()` foreground
 - Annotation: `DashColors::text_secondary()` color, `Typography::body_small()` font
 - Dismiss: `ui.small_button("x")`

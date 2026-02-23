@@ -275,7 +275,7 @@ impl UpdateDataContractScreen {
                 // Show how long we've been fetching nonce
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 let elapsed = now - start_time;
                 ui.label(format!(
@@ -287,7 +287,7 @@ impl UpdateDataContractScreen {
                 // Show how long we've been broadcasting
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 let elapsed = now - start_time;
                 ui.label("Fetched nonce successfully. ✅ ");
@@ -299,7 +299,7 @@ impl UpdateDataContractScreen {
             BroadcastStatus::ProofError(start_time) => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 let elapsed = now - start_time;
                 ui.label("Fetched nonce successfully. ✅ ");
@@ -319,7 +319,7 @@ impl UpdateDataContractScreen {
             self.broadcast_status = BroadcastStatus::FetchingNonce(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs(),
             );
         }
@@ -378,7 +378,7 @@ impl ScreenLike for UpdateDataContractScreen {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs(),
                 );
             }
@@ -390,7 +390,7 @@ impl ScreenLike for UpdateDataContractScreen {
                 self.broadcast_status = BroadcastStatus::ProofError(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs(),
                 );
             }

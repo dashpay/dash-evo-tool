@@ -52,15 +52,20 @@ pub fn core_cookie_path(
     network: Network,
     devnet_name: &Option<String>,
 ) -> Result<PathBuf, std::io::Error> {
-    core_user_data_dir_path().map(|path| {
+    core_user_data_dir_path().and_then(|path| {
         let network_dir = match network {
             Network::Dash => "",
             Network::Testnet => "testnet3",
             Network::Devnet => devnet_name.as_deref().unwrap_or(""),
             Network::Regtest => "regtest",
-            _ => unimplemented!(),
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("Unsupported network for cookie path: {:?}", network),
+                ));
+            }
         };
-        path.join(network_dir).join(".cookie")
+        Ok(path.join(network_dir).join(".cookie"))
     })
 }
 

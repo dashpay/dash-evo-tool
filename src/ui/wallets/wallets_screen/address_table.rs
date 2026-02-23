@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference};
-use crate::ui::wallets::account_summary::AccountCategory;
+use crate::ui::wallets::account_summary::{AccountCategory, categorize_account_path};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -93,13 +93,9 @@ impl WalletsBalancesScreen {
     pub(super) fn categorize_path(
         path: &DerivationPath,
         reference: DerivationPathReference,
+        network: Network,
     ) -> (AccountCategory, Option<u32>) {
-        let category = AccountCategory::from_reference(reference);
-        let index = match category {
-            AccountCategory::Bip44 | AccountCategory::Bip32 => path.bip44_account_index(),
-            _ => None,
-        };
-        (category, index)
+        categorize_account_path(path, network, reference)
     }
 
     pub(super) fn render_address_table(&mut self, ui: &mut Ui) -> AppAction {
@@ -153,8 +149,11 @@ impl WalletsBalancesScreen {
                         .get(derivation_path)
                         .map(|info| info.path_reference)
                         .unwrap_or(DerivationPathReference::Unknown);
-                    let (account_category, account_index) =
-                        Self::categorize_path(derivation_path, path_reference);
+                    let (account_category, account_index) = Self::categorize_path(
+                        derivation_path,
+                        path_reference,
+                        self.app_context.network,
+                    );
 
                     // Get Platform credits balance for Platform Payment addresses
                     // Use canonical lookup to handle potential Address key mismatches
@@ -191,6 +190,26 @@ impl WalletsBalancesScreen {
             address_data
                 .retain(|data| data.account_category == category && data.account_index == index);
         }
+
+        let account_address_count = address_data.len();
+
+        if !self.show_zero_balance_addresses {
+            address_data.retain(|data| {
+                let is_platform_payment = data.account_category == AccountCategory::PlatformPayment;
+                if data.account_category.is_key_only() {
+                    true
+                } else if is_platform_payment {
+                    data.platform_credits > 0
+                } else {
+                    data.balance > 0
+                }
+            });
+        }
+
+        let hidden_by_balance_filter_count =
+            account_address_count.saturating_sub(address_data.len());
+        let show_balance_filter_hint =
+            !self.show_zero_balance_addresses && hidden_by_balance_filter_count > 0;
 
         // Space allocation for UI elements is handled by the layout system
 
@@ -393,6 +412,19 @@ impl WalletsBalancesScreen {
                     });
                 }
             });
+
+        if show_balance_filter_hint {
+            ui.add_space(8.0);
+            let address_label = if hidden_by_balance_filter_count == 1 {
+                "address"
+            } else {
+                "addresses"
+            };
+            ui.label(format!(
+                "{} {} hidden by zero-balance filter. Enable \"Show zero-balance addresses\" to view all addresses.",
+                hidden_by_balance_filter_count, address_label
+            ));
+        }
         action
     }
 }

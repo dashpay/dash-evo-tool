@@ -16,7 +16,7 @@ use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use eframe::egui::{self, ComboBox, Context};
 use eframe::epaint::TextureHandle;
 use egui::load::SizedTexture;
-use egui::{Color32, Frame, Margin, RichText, TextureOptions};
+use egui::{Frame, Margin, RichText, TextureOptions};
 use std::sync::{Arc, RwLock};
 
 use super::WalletsBalancesScreen;
@@ -168,7 +168,7 @@ impl WalletsBalancesScreen {
                 }
 
                 if let Some(error) = &self.send_dialog.address_error {
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), error);
+                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), error);
                 }
 
                 ui.add_space(8.0);

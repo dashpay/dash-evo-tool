@@ -4,10 +4,13 @@ use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::InnerResponse;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use tracing::{debug, error, warn};
 
 const DEFAULT_AUTO_DISMISS: Duration = Duration::from_secs(5);
 const MAX_BANNERS: usize = 5;
 const BANNER_STATE_ID: &str = "__global_message_banner";
+/// Maximum height for the expanded details section before scrolling.
+const DETAILS_MAX_HEIGHT: f32 = 120.0;
 
 /// Monotonic counter for generating unique banner keys.
 static BANNER_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -65,6 +68,59 @@ struct BannerState {
     auto_dismiss_after: Option<Duration>,
     /// When `true`, display elapsed time since creation instead of countdown.
     show_elapsed: bool,
+    /// Optional technical details (shown in a collapsible section).
+    details: Option<String>,
+    /// Optional recovery suggestion (shown inline below the summary).
+    suggestion: Option<String>,
+    /// Whether the details section is currently expanded.
+    details_expanded: bool,
+    /// Whether the banner has been logged (to avoid duplicate log entries on each frame).
+    logged: bool,
+}
+
+impl BannerState {
+    /// Create a fresh banner with a new key and default auto-dismiss for the given type.
+    fn new(key: u64, text: String, message_type: MessageType) -> Self {
+        Self {
+            key,
+            text,
+            message_type,
+            created_at: Instant::now(),
+            auto_dismiss_after: default_auto_dismiss(message_type),
+            show_elapsed: false,
+            details: None,
+            suggestion: None,
+            details_expanded: false,
+            logged: false,
+        }
+    }
+
+    /// Reset an existing banner's content, keeping its key.
+    /// Resets timestamps, clears details/suggestion, resets logged flag.
+    fn reset_to(&mut self, text: String, message_type: MessageType) {
+        self.text = text;
+        self.message_type = message_type;
+        self.created_at = Instant::now();
+        self.auto_dismiss_after = default_auto_dismiss(message_type);
+        self.show_elapsed = false;
+        self.details = None;
+        self.suggestion = None;
+        self.details_expanded = false;
+        self.logged = false;
+    }
+
+    /// Emits a tracing log for this banner, with log level based on message type.
+    fn log(&self) {
+        let text = self.text.as_str();
+        let details = self.details.as_deref();
+        match self.message_type {
+            MessageType::Error => error!(banner = text, details, "Banner displayed"),
+            MessageType::Warning => warn!(banner = text, details, "Banner displayed"),
+            MessageType::Success | MessageType::Info => {
+                debug!(banner = text, details, "Banner displayed")
+            }
+        }
+    }
 }
 
 /// Handle for a global banner, returned by [`MessageBanner::set_global`] and
@@ -72,7 +128,8 @@ struct BannerState {
 /// so the display text can be updated without losing the reference.
 ///
 /// The handle is `'static` and safe to store. Methods that modify the banner
-/// (`set_text`, `with_auto_dismiss`) take `&self` so the handle can be reused.
+/// (`set_message`, `with_auto_dismiss`) take `&self` so the handle can be reused.
+#[derive(Clone)]
 pub struct BannerHandle {
     ctx: egui::Context,
     key: u64,
@@ -123,6 +180,34 @@ impl BannerHandle {
         Some(self)
     }
 
+    /// Attach optional technical details to this banner.
+    /// Details are shown in a collapsible section (collapsed by default).
+    /// Returns `None` if the banner no longer exists.
+    pub fn with_details(&self, details: &str) -> Option<&Self> {
+        if details.is_empty() {
+            return Some(self);
+        }
+        let mut banners = get_banners(&self.ctx);
+        let b = banners.iter_mut().find(|b| b.key == self.key)?;
+        b.details = Some(details.to_string());
+        set_banners(&self.ctx, banners);
+        Some(self)
+    }
+
+    /// Attach an optional recovery suggestion to this banner.
+    /// The suggestion is shown inline (visible without expanding).
+    /// Returns `None` if the banner no longer exists.
+    pub fn with_suggestion(&self, suggestion: &str) -> Option<&Self> {
+        if suggestion.is_empty() {
+            return Some(self);
+        }
+        let mut banners = get_banners(&self.ctx);
+        let b = banners.iter_mut().find(|b| b.key == self.key)?;
+        b.suggestion = Some(suggestion.to_string());
+        set_banners(&self.ctx, banners);
+        Some(self)
+    }
+
     /// Remove this banner immediately.
     pub fn clear(self) {
         let mut banners = get_banners(&self.ctx);
@@ -155,14 +240,11 @@ impl MessageBanner {
         if text.is_empty() {
             self.state = None;
         } else {
-            self.state = Some(BannerState {
-                key: next_banner_key(),
-                text: text.to_string(),
+            self.state = Some(BannerState::new(
+                next_banner_key(),
+                text.to_string(),
                 message_type,
-                created_at: Instant::now(),
-                auto_dismiss_after: default_auto_dismiss(message_type),
-                show_elapsed: false,
-            });
+            ));
         }
         self
     }
@@ -202,8 +284,10 @@ impl MessageBanner {
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
     pub fn set_global(ctx: &egui::Context, text: &str, message_type: MessageType) -> BannerHandle {
         let mut banners = get_banners(ctx);
-        if let Some(existing) = banners.iter().find(|b| b.text == text) {
+        if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
+            existing.reset_to(text.to_string(), message_type);
             let key = existing.key;
+            set_banners(ctx, banners);
             return BannerHandle {
                 ctx: ctx.clone(),
                 key,
@@ -211,14 +295,7 @@ impl MessageBanner {
         }
         let key = next_banner_key();
         if !text.is_empty() {
-            banners.push(BannerState {
-                key,
-                text: text.to_string(),
-                message_type,
-                created_at: Instant::now(),
-                auto_dismiss_after: default_auto_dismiss(message_type),
-                show_elapsed: false,
-            });
+            banners.push(BannerState::new(key, text.to_string(), message_type));
             if banners.len() > MAX_BANNERS {
                 banners.remove(0);
             }
@@ -251,23 +328,13 @@ impl MessageBanner {
         let key;
         if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
             key = b.key;
-            b.text = new_text.to_string();
-            b.message_type = message_type;
-            b.created_at = Instant::now();
-            b.auto_dismiss_after = default_auto_dismiss(message_type);
-            b.show_elapsed = false;
-        } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
+            b.reset_to(new_text.to_string(), message_type);
+        } else if let Some(existing) = banners.iter_mut().find(|b| b.text == new_text) {
             key = existing.key;
+            existing.reset_to(new_text.to_string(), message_type);
         } else {
             key = next_banner_key();
-            banners.push(BannerState {
-                key,
-                text: new_text.to_string(),
-                message_type,
-                created_at: Instant::now(),
-                auto_dismiss_after: default_auto_dismiss(message_type),
-                show_elapsed: false,
-            });
+            banners.push(BannerState::new(key, new_text.to_string(), message_type));
             if banners.len() > MAX_BANNERS {
                 banners.remove(0);
             }
@@ -299,7 +366,7 @@ impl MessageBanner {
         if banners.is_empty() {
             return;
         }
-        banners.retain(|b| process_banner(ui, b) == BannerStatus::Visible);
+        banners.retain_mut(|b| process_banner(ui, b) == BannerStatus::Visible);
         set_banners(ui.ctx(), banners);
     }
 }
@@ -315,7 +382,7 @@ impl Component for MessageBanner {
     type Response = MessageBannerResponse;
 
     fn show(&mut self, ui: &mut egui::Ui) -> InnerResponse<Self::Response> {
-        let Some(state) = &self.state else {
+        let Some(state) = &mut self.state else {
             return empty_response(ui);
         };
         let status = process_banner(ui, state);
@@ -363,7 +430,7 @@ fn empty_response(ui: &mut egui::Ui) -> InnerResponse<MessageBannerResponse> {
 
 /// Processes a single banner: checks expiry, renders, handles dismiss, requests repaint.
 /// Returns the banner's resulting status.
-fn process_banner(ui: &mut egui::Ui, state: &BannerState) -> BannerStatus {
+fn process_banner(ui: &mut egui::Ui, state: &mut BannerState) -> BannerStatus {
     let elapsed = state.created_at.elapsed();
 
     // Check auto-dismiss expiry
@@ -375,7 +442,7 @@ fn process_banner(ui: &mut egui::Ui, state: &BannerState) -> BannerStatus {
 
     // Compute the right-side time annotation
     let annotation = if state.show_elapsed {
-        Some(format!("({}s)", elapsed.as_secs() + 1))
+        Some(format!("({}s)", elapsed.as_secs()))
     } else if let Some(duration) = state.auto_dismiss_after {
         let remaining = duration.saturating_sub(elapsed);
         Some(format!("({}s)", remaining.as_secs() + 1))
@@ -383,7 +450,21 @@ fn process_banner(ui: &mut egui::Ui, state: &BannerState) -> BannerStatus {
         None
     };
 
-    if render_banner(ui, &state.text, state.message_type, annotation.as_deref()) {
+    // Log banner message once on first display
+    if !state.logged {
+        state.logged = true;
+        state.log();
+    }
+
+    if render_banner(
+        ui,
+        &state.text,
+        state.message_type,
+        annotation.as_deref(),
+        state.suggestion.as_deref(),
+        state.details.as_deref(),
+        &mut state.details_expanded,
+    ) {
         return BannerStatus::Dismissed;
     }
     if state.auto_dismiss_after.is_some() || state.show_elapsed {
@@ -399,6 +480,9 @@ fn render_banner(
     text: &str,
     message_type: MessageType,
     annotation: Option<&str>,
+    suggestion: Option<&str>,
+    details: Option<&str>,
+    details_expanded: &mut bool,
 ) -> bool {
     let dark_mode = ui.ctx().style().visuals.dark_mode;
     let fg_color = DashColors::message_color(message_type, dark_mode);
@@ -437,6 +521,66 @@ fn render_banner(
                     }
                 });
             });
+
+            // Recovery suggestion (always visible, inline)
+            if let Some(suggestion) = suggestion {
+                ui.add_space(2.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(suggestion)
+                            .color(secondary_color)
+                            .italics()
+                            .font(Typography::body_small()),
+                    )
+                    .wrap(),
+                );
+            }
+
+            // Technical details (collapsible)
+            if let Some(details) = details {
+                ui.add_space(2.0);
+                let toggle_text = if *details_expanded {
+                    "Hide details"
+                } else {
+                    "Show details"
+                };
+                if ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(toggle_text)
+                                .font(Typography::body_small())
+                                .color(DashColors::DASH_BLUE)
+                                .underline(),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .clicked()
+                {
+                    *details_expanded = !*details_expanded;
+                }
+
+                if *details_expanded {
+                    ui.add_space(4.0);
+                    egui::Frame::new()
+                        .fill(DashColors::input_background(dark_mode))
+                        .inner_margin(egui::Margin::symmetric(8, 6))
+                        .corner_radius(Shape::RADIUS_SM as f32)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .max_height(DETAILS_MAX_HEIGHT)
+                                .show(ui, |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(details)
+                                                .font(Typography::monospace())
+                                                .color(secondary_color),
+                                        )
+                                        .wrap(),
+                                    );
+                                });
+                        });
+                }
+            }
         });
     ui.add_space(Spacing::SM);
 
@@ -461,8 +605,8 @@ fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
 
 fn icon_for_type(message_type: MessageType) -> &'static str {
     match message_type {
-        MessageType::Error => "\u{26A0}",   // warning sign
-        MessageType::Warning => "\u{26A0}", // warning sign (differentiated by color)
+        MessageType::Error => "\u{274C}",   // cross mark
+        MessageType::Warning => "\u{26A0}", // warning sign
         MessageType::Success => "\u{2713}", // check mark
         MessageType::Info => "\u{2139}",    // info
     }

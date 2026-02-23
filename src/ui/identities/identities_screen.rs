@@ -61,6 +61,9 @@ pub struct IdentitiesScreen {
     sort_order: IdentitiesSortOrder,
     use_custom_order: bool,
     refresh_banner: Option<BannerHandle>,
+    pending_refresh_count: usize,
+    /// Total identities dispatched in the current refresh batch (for pluralization).
+    total_refresh_count: usize,
     // Alias editing state
     editing_alias_identity: Option<Identifier>,
     editing_alias_value: String,
@@ -86,6 +89,8 @@ impl IdentitiesScreen {
             sort_order: IdentitiesSortOrder::Ascending,
             use_custom_order: true,
             refresh_banner: None,
+            pending_refresh_count: 0,
+            total_refresh_count: 0,
             editing_alias_identity: None,
             editing_alias_value: String::new(),
         };
@@ -716,6 +721,9 @@ impl IdentitiesScreen {
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                                                         .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
                                                         .show(|ui| {
+                                                            // Wrap in a scroll area so popups with many keys are accessible
+                                                            let max_popup_height = ui.ctx().content_rect().height() * 0.6;
+                                                            egui::ScrollArea::vertical().max_height(max_popup_height).show(ui, |ui| {
                                                             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                                                             // Main Identity Keys
@@ -784,6 +792,7 @@ impl IdentitiesScreen {
                                                                     )));
                                                                    ui.close_kind(egui::UiKind::Menu);
                                                                 }
+                                                            }); // end ScrollArea
                                                         },
                                                     );
                                                 }
@@ -916,25 +925,42 @@ impl IdentitiesScreen {
 
                         if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
-                            let mut lock = self.identities.lock().unwrap();
-                            lock.shift_remove(&identity_id);
 
-                            self.app_context
+                            match self
+                                .app_context
                                 .db
                                 .delete_local_qualified_identity(&identity_id, &self.app_context)
-                                .ok();
+                            {
+                                Ok(_) => {
+                                    let mut lock = self.identities.lock().unwrap();
+                                    lock.shift_remove(&identity_id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to delete identity from database: {}",
+                                        e
+                                    );
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        &format!("Failed to remove identity: {}", e),
+                                        MessageType::Error,
+                                    );
+                                }
+                            }
 
                             if let Some((voter_identity, _)) =
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                self.app_context
-                                    .db
-                                    .delete_local_qualified_identity(
-                                        &voter_identity_id,
-                                        &self.app_context,
-                                    )
-                                    .ok();
+                                if let Err(e) = self.app_context.db.delete_local_qualified_identity(
+                                    &voter_identity_id,
+                                    &self.app_context,
+                                ) {
+                                    tracing::warn!(
+                                        "Failed to delete voter identity from database: {}",
+                                        e
+                                    );
+                                }
                             }
 
                             self.identity_to_remove = None;
@@ -1097,14 +1123,25 @@ impl ScreenLike for IdentitiesScreen {
         if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) =
             backend_task_success_result
         {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
+            self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
+            if self.pending_refresh_count == 0 {
+                if let Some(handle) = self.refresh_banner.take() {
+                    handle.clear();
+                }
+                let message = if self.total_refresh_count == 1 {
+                    "Successfully refreshed identity".to_string()
+                } else {
+                    format!(
+                        "Successfully refreshed {} identities",
+                        self.total_refresh_count
+                    )
+                };
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    &message,
+                    MessageType::Success,
+                );
             }
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Successfully refreshed identity",
-                MessageType::Success,
-            );
         }
     }
 
@@ -1184,11 +1221,19 @@ impl ScreenLike for IdentitiesScreen {
         });
 
         match action {
-            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_)))
-            | AppAction::BackendTasks(_, _) => {
+            AppAction::BackendTasks(ref tasks, _)
+                if tasks.iter().all(|t| {
+                    matches!(
+                        t,
+                        BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))
+                    )
+                }) =>
+            {
                 if let Some(handle) = self.refresh_banner.take() {
                     handle.clear();
                 }
+                self.pending_refresh_count = tasks.len();
+                self.total_refresh_count = tasks.len();
                 let handle =
                     MessageBanner::set_global(ctx, "Refreshing identities...", MessageType::Info);
                 handle.with_elapsed();

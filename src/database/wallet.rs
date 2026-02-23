@@ -140,8 +140,7 @@ impl Database {
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
-        let address = check_address_for_network(address.as_unchecked().clone(), network)
-            .expect("Expected address to be valid for network");
+        let address = check_address_for_network(address.as_unchecked().clone(), network)?;
 
         // Step 1: Check if the address already exists for the given seed.
         let mut stmt = conn.prepare(
@@ -441,11 +440,26 @@ impl Database {
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
-                ExtendedPubKey::decode(&master_ecdsa_bip44_account_0_epk_bytes)
-                    .expect("Failed to decode ExtendedPubKey");
+                ExtendedPubKey::decode(&master_ecdsa_bip44_account_0_epk_bytes).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Blob,
+                        Box::new(CorruptedBlobError(format!(
+                            "Failed to decode ExtendedPubKey: {}",
+                            e
+                        ))),
+                    )
+                })?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(
+                        "Seed hash should be 32 bytes".to_string(),
+                    )),
+                )
+            })?;
             let closed_wallet_seed = ClosedKeyItem {
                 seed_hash: seed_hash_array,
                 encrypted_seed: encrypted_seed.clone(),
@@ -457,9 +471,15 @@ impl Database {
                 WalletSeed::Closed(closed_wallet_seed)
             } else {
                 WalletSeed::Open(OpenWalletSeed {
-                    seed: encrypted_seed
-                        .try_into()
-                        .expect("expected to decrypt seed with no password"),
+                    seed: encrypted_seed.try_into().map_err(|_| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Blob,
+                            Box::new(CorruptedBlobError(
+                                "Seed should be 64 bytes for open wallet".to_string(),
+                            )),
+                        )
+                    })?,
                     wallet_info: closed_wallet_seed,
                 })
             };
@@ -519,8 +539,11 @@ impl Database {
             let path_type: u32 = row.get(5)?;
             let total_received: Option<u64> = row.get(6)?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName(
+                    "Seed hash should be 32 bytes".to_string(),
+                )
+            })?;
 
             // Convert u32 to DerivationPathReference safely
             let path_reference =
@@ -553,12 +576,21 @@ impl Database {
             } else {
                 // Standard Core addresses - validate network
                 let address_unchecked =
-                    Address::from_str(&address_str).expect("Invalid address format");
+                    Address::from_str(&address_str).map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!(
+                            "Invalid address format '{}': {}",
+                            address_str, e
+                        ))
+                    })?;
                 check_address_for_network(address_unchecked, network)?
             };
 
-            let derivation_path = DerivationPath::from_str(&derivation_path)
-                .expect("Expected to convert to derivation path");
+            let derivation_path = DerivationPath::from_str(&derivation_path).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Invalid derivation path '{}': {}",
+                    derivation_path, e
+                ))
+            })?;
 
             let path_type = DerivationPathType::from_bits_truncate(path_type);
 
@@ -645,11 +677,18 @@ impl Database {
             let script_pubkey: Vec<u8> = row.get(4)?;
 
             let address = Address::from_str(&address)
-                .expect("Invalid address format")
+                .map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Invalid UTXO address format '{}': {}",
+                        address, e
+                    ))
+                })?
                 .assume_checked();
 
             let outpoint = OutPoint {
-                txid: Txid::from_slice(&txid).expect("Invalid txid"),
+                txid: Txid::from_slice(&txid).map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!("Invalid UTXO txid: {}", e))
+                })?,
                 vout: vout as u32,
             };
             let tx_out = TxOut {
@@ -685,30 +724,49 @@ impl Database {
             let islock_data: Option<Vec<u8>> = row.get(3)?;
             let chain_locked_height: Option<CoreBlockHeight> = row.get(4)?;
 
-            let wallet_seed_hash_array: [u8; 32] =
-                wallet_seed.try_into().expect("Seed should be 64 bytes");
-            let tx: Transaction = deserialize(&tx_data).expect("Failed to deserialize transaction");
+            let wallet_seed_hash_array: [u8; 32] = wallet_seed.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName("Wallet seed should be 32 bytes".to_string())
+            })?;
+            let tx: Transaction = deserialize(&tx_data).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to deserialize asset lock transaction: {}",
+                    e
+                ))
+            })?;
 
             // Ensure the transaction payload is AssetLockPayloadType
             let Some(TransactionPayload::AssetLockPayloadType(payload)) =
                 &tx.special_transaction_payload
             else {
-                panic!("Expected AssetLockPayloadType in special_transaction_payload");
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "Expected AssetLockPayloadType in special_transaction_payload".to_string(),
+                ));
             };
 
             // Get the first credit output
-            let first = payload
-                .credit_outputs
-                .first()
-                .expect("Expected at least one credit output");
+            let first =
+                payload
+                    .credit_outputs
+                    .first()
+                    .ok_or(rusqlite::Error::InvalidParameterName(
+                        "Expected at least one credit output in asset lock".to_string(),
+                    ))?;
 
-            let address =
-                Address::from_script(&first.script_pubkey, *network).expect("expected an address");
+            let address = Address::from_script(&first.script_pubkey, *network).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to derive address from credit output: {}",
+                    e
+                ))
+            })?;
 
             let (islock, proof) = if let Some(islock_bytes) = islock_data {
                 // Deserialize the InstantLock
-                let is_lock: InstantLock =
-                    deserialize(&islock_bytes).expect("Failed to deserialize InstantLock");
+                let is_lock: InstantLock = deserialize(&islock_bytes).map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Failed to deserialize InstantLock: {}",
+                        e
+                    ))
+                })?;
                 (
                     Some(is_lock.clone()),
                     Some(AssetLockProof::Instant(InstantAssetLockProof::new(
@@ -761,14 +819,26 @@ impl Database {
             let is_ours: bool = row.get(8)?;
             let raw_transaction: Vec<u8> = row.get(9)?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
-            let txid = Txid::from_slice(&txid_bytes).expect("Invalid txid bytes");
-            let transaction: Transaction =
-                deserialize(&raw_transaction).expect("Failed to deserialize transaction");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
+            })?;
+            let txid = Txid::from_slice(&txid_bytes).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Invalid transaction txid: {}", e))
+            })?;
+            let transaction: Transaction = deserialize(&raw_transaction).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to deserialize transaction: {}",
+                    e
+                ))
+            })?;
             let block_hash = block_hash_bytes
                 .as_ref()
-                .map(|bytes| BlockHash::from_slice(bytes).expect("Invalid block hash"));
+                .map(|bytes| {
+                    BlockHash::from_slice(bytes).map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!("Invalid block hash: {}", e))
+                    })
+                })
+                .transpose()?;
             let fee = fee.map(|f| f as u64);
             let height = height.map(|h| h as u32);
 
@@ -808,9 +878,15 @@ impl Database {
             let wallet_seed_hash: Vec<u8> = row.get(1)?;
             let wallet_index: u32 = row.get(2)?;
 
-            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash
-                .try_into()
-                .expect("Seed hash should be 32 bytes");
+            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(
+                        "Identity wallet seed hash should be 32 bytes".to_string(),
+                    )),
+                )
+            })?;
 
             Ok((data, wallet_seed_hash_array, wallet_index))
         })?;
@@ -861,8 +937,9 @@ impl Database {
             let balance: i64 = row.get(2)?;
             let nonce: i64 = row.get(3)?;
             let last_full_sync_balance: Option<i64> = row.get(4)?;
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
+            })?;
             Ok((
                 seed_hash_array,
                 address_str,
@@ -1199,7 +1276,9 @@ impl From<WalletError> for rusqlite::Error {
 mod tests {
     use super::*;
     use crate::database::test_helpers::create_test_database;
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPrivKey};
     use std::str::FromStr;
 
     fn create_test_address(network: Network) -> Address {
@@ -1214,6 +1293,121 @@ mod tests {
             *byte = i as u8;
         }
         hash
+    }
+
+    fn create_test_master_epk_bytes(network: Network) -> Vec<u8> {
+        let seed = [7u8; 64];
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(network, &seed).expect("master key");
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let account = master
+            .derive_priv(&secp, &path)
+            .expect("derive bip44 account");
+        ExtendedPubKey::from_priv(&secp, &account).encode()
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_epk_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let seed_hash = create_test_seed_hash();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    vec![0u8; 64],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    vec![0u8; 78],
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_seed_hash_length_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let valid_epk = create_test_master_epk_bytes(Network::Testnet);
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    vec![0u8; 31],
+                    vec![0u8; 64],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    valid_epk,
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_open_seed_length_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let seed_hash = create_test_seed_hash();
+        let valid_epk = create_test_master_epk_bytes(Network::Testnet);
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    vec![0u8; 63],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    valid_epk,
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
     }
 
     #[test]

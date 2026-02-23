@@ -720,9 +720,21 @@ impl AppContext {
                 // Update in-memory UTXOs map
                 w.utxos = new_utxos;
 
+                // Zero out balances for known addresses that no longer have any UTXOs.
+                // Without this, spent addresses retain stale non-zero balances because
+                // per_address_sum only contains addresses with current UTXOs.
+                for addr in &known_addresses {
+                    if !w.utxos.contains_key(addr)
+                        && let Err(e) = w.update_address_balance(addr, 0, self)
+                    {
+                        tracing::debug!(address = %addr, error = %e, "Failed to zero spent address balance");
+                    }
+                }
+
                 for (addr, sum) in per_address_sum.into_iter() {
-                    // Update wallet and DB through model helper
-                    let _ = w.update_address_balance(&addr, sum, self);
+                    if let Err(e) = w.update_address_balance(&addr, sum, self) {
+                        tracing::debug!(address = %addr, error = %e, "Failed to update address balance");
+                    }
                 }
             }
 

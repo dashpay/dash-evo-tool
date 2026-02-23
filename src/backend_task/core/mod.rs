@@ -392,6 +392,8 @@ impl AppContext {
             || lower.contains("connection reset")
             || lower.contains("broken pipe")
             || lower.contains("unexpected eof")
+            || lower.contains("method not found")
+            || lower.contains("unable to find any chainlock")
     }
 
     async fn send_wallet_payment(
@@ -418,7 +420,7 @@ mod tests {
             Err("connection refused".to_string()),
             Err("transport error".to_string()),
             Err("timed out".to_string()),
-            Err("Regtest config not found".to_string()),
+            Err("JSON-RPC error: Method not found".to_string()),
         )
         .expect("expected offline errors should not return task error");
 

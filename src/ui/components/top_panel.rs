@@ -112,15 +112,12 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     };
 
     // Pulsation: synced = normal pulse, syncing = slower pulse, disconnected = none
-    let pulse_scale = if overall == OverallConnectionState::Disconnected {
-        1.0
-    } else {
-        let time = ui.ctx().input(|i| i.time as f32);
-        match overall {
-            OverallConnectionState::Synced => 1.0 + 0.2 * (time * 2.0).sin(),
-            OverallConnectionState::Syncing => 1.0 + 0.15 * (time * 1.2).sin(),
-            OverallConnectionState::Disconnected => unreachable!(),
-        }
+    let time = ui.ctx().input(|i| i.time as f32);
+
+    let pulse_scale = match overall {
+        OverallConnectionState::Synced => 1.0 + 0.2 * (time * 2.0).sin(),
+        OverallConnectionState::Syncing => 1.0 + 0.15 * (time * 1.2).sin(),
+        OverallConnectionState::Disconnected => 1.0, // No pulse when disconnected
     };
 
     // Wrap in a container that can be positioned vertically

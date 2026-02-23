@@ -378,10 +378,11 @@ impl MintTokensScreen {
 
 impl ScreenLike for MintTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
+        // Global banner is set by AppState before calling display_message; this only updates status.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.status = MintTokensStatus::Error;
         }
+        // Success/Info: no local state change needed; the global banner is the display mechanism.
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {

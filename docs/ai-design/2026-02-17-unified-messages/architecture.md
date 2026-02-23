@@ -170,8 +170,7 @@ TaskResult::Error(message)
   → screen.display_message(&message, MessageType::Error)  // for side-effects
 
 TaskResult::Success (default)
-  → MessageBanner::set_global(ctx, "Success", MessageType::Success)
-  → screen.display_task_result(result)
+  → screen.display_task_result(result)   // screens decide whether to surface a banner
 ```
 
 The call to `screen.display_message()` is retained alongside `set_global` so screens can perform side-effects (e.g., resetting step state on error, clearing refresh handles) without being responsible for rendering.

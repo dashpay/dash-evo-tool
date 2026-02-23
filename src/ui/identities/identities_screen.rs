@@ -61,6 +61,9 @@ pub struct IdentitiesScreen {
     sort_order: IdentitiesSortOrder,
     use_custom_order: bool,
     refresh_banner: Option<BannerHandle>,
+    pending_refresh_count: usize,
+    /// Total identities dispatched in the current refresh batch (for pluralization).
+    total_refresh_count: usize,
     // Alias editing state
     editing_alias_identity: Option<Identifier>,
     editing_alias_value: String,
@@ -86,6 +89,8 @@ impl IdentitiesScreen {
             sort_order: IdentitiesSortOrder::Ascending,
             use_custom_order: true,
             refresh_banner: None,
+            pending_refresh_count: 0,
+            total_refresh_count: 0,
             editing_alias_identity: None,
             editing_alias_value: String::new(),
         };
@@ -1118,14 +1123,25 @@ impl ScreenLike for IdentitiesScreen {
         if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) =
             backend_task_success_result
         {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
+            self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
+            if self.pending_refresh_count == 0 {
+                if let Some(handle) = self.refresh_banner.take() {
+                    handle.clear();
+                }
+                let message = if self.total_refresh_count == 1 {
+                    "Successfully refreshed identity".to_string()
+                } else {
+                    format!(
+                        "Successfully refreshed {} identities",
+                        self.total_refresh_count
+                    )
+                };
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    &message,
+                    MessageType::Success,
+                );
             }
-            MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                "Successfully refreshed identity",
-                MessageType::Success,
-            );
         }
     }
 
@@ -1205,11 +1221,19 @@ impl ScreenLike for IdentitiesScreen {
         });
 
         match action {
-            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_)))
-            | AppAction::BackendTasks(_, _) => {
+            AppAction::BackendTasks(ref tasks, _)
+                if tasks.iter().all(|t| {
+                    matches!(
+                        t,
+                        BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))
+                    )
+                }) =>
+            {
                 if let Some(handle) = self.refresh_banner.take() {
                     handle.clear();
                 }
+                self.pending_refresh_count = tasks.len();
+                self.total_refresh_count = tasks.len();
                 let handle =
                     MessageBanner::set_global(ctx, "Refreshing identities...", MessageType::Info);
                 handle.with_elapsed();

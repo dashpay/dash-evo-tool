@@ -79,6 +79,36 @@ struct BannerState {
 }
 
 impl BannerState {
+    /// Create a fresh banner with a new key and default auto-dismiss for the given type.
+    fn new(key: u64, text: String, message_type: MessageType) -> Self {
+        Self {
+            key,
+            text,
+            message_type,
+            created_at: Instant::now(),
+            auto_dismiss_after: default_auto_dismiss(message_type),
+            show_elapsed: false,
+            details: None,
+            suggestion: None,
+            details_expanded: false,
+            logged: false,
+        }
+    }
+
+    /// Reset an existing banner's content, keeping its key.
+    /// Resets timestamps, clears details/suggestion, resets logged flag.
+    fn reset_to(&mut self, text: String, message_type: MessageType) {
+        self.text = text;
+        self.message_type = message_type;
+        self.created_at = Instant::now();
+        self.auto_dismiss_after = default_auto_dismiss(message_type);
+        self.show_elapsed = false;
+        self.details = None;
+        self.suggestion = None;
+        self.details_expanded = false;
+        self.logged = false;
+    }
+
     /// Emits a tracing log for this banner, with log level based on message type.
     fn log(&self) {
         let text = self.text.as_str();
@@ -210,18 +240,11 @@ impl MessageBanner {
         if text.is_empty() {
             self.state = None;
         } else {
-            self.state = Some(BannerState {
-                key: next_banner_key(),
-                text: text.to_string(),
+            self.state = Some(BannerState::new(
+                next_banner_key(),
+                text.to_string(),
                 message_type,
-                created_at: Instant::now(),
-                auto_dismiss_after: default_auto_dismiss(message_type),
-                show_elapsed: false,
-                details: None,
-                suggestion: None,
-                details_expanded: false,
-                logged: false,
-            });
+            ));
         }
         self
     }
@@ -262,7 +285,7 @@ impl MessageBanner {
     pub fn set_global(ctx: &egui::Context, text: &str, message_type: MessageType) -> BannerHandle {
         let mut banners = get_banners(ctx);
         if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
-            existing.message_type = message_type;
+            existing.reset_to(text.to_string(), message_type);
             let key = existing.key;
             set_banners(ctx, banners);
             return BannerHandle {
@@ -272,18 +295,7 @@ impl MessageBanner {
         }
         let key = next_banner_key();
         if !text.is_empty() {
-            banners.push(BannerState {
-                key,
-                text: text.to_string(),
-                message_type,
-                created_at: Instant::now(),
-                auto_dismiss_after: default_auto_dismiss(message_type),
-                show_elapsed: false,
-                details: None,
-                suggestion: None,
-                details_expanded: false,
-                logged: false,
-            });
+            banners.push(BannerState::new(key, text.to_string(), message_type));
             if banners.len() > MAX_BANNERS {
                 banners.remove(0);
             }
@@ -316,31 +328,13 @@ impl MessageBanner {
         let key;
         if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
             key = b.key;
-            b.text = new_text.to_string();
-            b.message_type = message_type;
-            b.created_at = Instant::now();
-            b.auto_dismiss_after = default_auto_dismiss(message_type);
-            b.show_elapsed = false;
-            b.details = None;
-            b.suggestion = None;
-            b.details_expanded = false;
-            b.logged = false;
-        } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
+            b.reset_to(new_text.to_string(), message_type);
+        } else if let Some(existing) = banners.iter_mut().find(|b| b.text == new_text) {
             key = existing.key;
+            existing.reset_to(new_text.to_string(), message_type);
         } else {
             key = next_banner_key();
-            banners.push(BannerState {
-                key,
-                text: new_text.to_string(),
-                message_type,
-                created_at: Instant::now(),
-                auto_dismiss_after: default_auto_dismiss(message_type),
-                show_elapsed: false,
-                details: None,
-                suggestion: None,
-                details_expanded: false,
-                logged: false,
-            });
+            banners.push(BannerState::new(key, new_text.to_string(), message_type));
             if banners.len() > MAX_BANNERS {
                 banners.remove(0);
             }

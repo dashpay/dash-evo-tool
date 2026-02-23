@@ -79,7 +79,7 @@ fn test_banner_renders_error_message() {
 #[test]
 fn test_banner_renders_all_types() {
     let variants = [
-        (MessageType::Error, "Error message", "\u{26A0}"),
+        (MessageType::Error, "Error message", "\u{274C}"),
         (MessageType::Warning, "Warning message", "\u{26A0}"),
         (MessageType::Success, "Success message", "\u{2713}"),
         (MessageType::Info, "Info message", "\u{2139}"),

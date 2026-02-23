@@ -98,6 +98,9 @@ pub struct AppContext {
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
+    /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
+    /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
+    egui_ctx: egui::Context,
 }
 
 impl AppContext {
@@ -107,6 +110,7 @@ impl AppContext {
         password_info: Option<PasswordInfo>,
         subtasks: Arc<TaskManager>,
         connection_status: Arc<ConnectionStatus>,
+        egui_ctx: egui::Context,
     ) -> Option<Arc<Self>> {
         let config = match Config::load() {
             Ok(config) => config,
@@ -333,6 +337,7 @@ impl AppContext {
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
+            egui_ctx,
         };
 
         let app_context = Arc::new(app_context);
@@ -395,6 +400,10 @@ impl AppContext {
 
     pub fn connection_status(&self) -> &ConnectionStatus {
         &self.connection_status
+    }
+
+    pub fn egui_ctx(&self) -> &egui::Context {
+        &self.egui_ctx
     }
 
     pub fn set_core_backend_mode(self: &Arc<Self>, mode: CoreBackendMode) {

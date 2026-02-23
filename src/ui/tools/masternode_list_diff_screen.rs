@@ -1565,6 +1565,7 @@ impl MasternodeListDiffScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let message_color = match msg_type {
             MessageType::Error => DashColors::ERROR,
+            MessageType::Warning => DashColors::WARNING,
             MessageType::Info => DashColors::text_primary(dark_mode),
             // Dark green for success text
             MessageType::Success => Color32::DARK_GREEN,
@@ -4181,7 +4182,7 @@ impl MasternodeListDiffScreen {
 impl ScreenLike for MasternodeListDiffScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.task.pending = None;
                 self.ui_state.error = Some(message.to_string());
             }

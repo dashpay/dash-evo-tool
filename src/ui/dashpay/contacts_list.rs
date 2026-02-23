@@ -547,6 +547,7 @@ impl ContactsList {
             let color = match message_type {
                 MessageType::Success => egui::Color32::DARK_GREEN,
                 MessageType::Error => egui::Color32::DARK_RED,
+                MessageType::Warning => DashColors::WARNING,
                 MessageType::Info => egui::Color32::LIGHT_BLUE,
             };
             ui.colored_label(color, message);

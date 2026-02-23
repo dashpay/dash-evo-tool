@@ -11,6 +11,7 @@ use crate::context::connection_status::ConnectionStatus;
 use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
+use crate::ui::components::MessageBanner;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -187,6 +188,7 @@ impl AppState {
             password_info.clone(),
             subtasks.clone(),
             connection_status.clone(),
+            ctx.clone(),
         )
         .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
         let testnet_app_context = AppContext::new(
@@ -195,6 +197,7 @@ impl AppState {
             password_info.clone(),
             subtasks.clone(),
             connection_status.clone(),
+            ctx.clone(),
         );
         let devnet_app_context = AppContext::new(
             Network::Devnet,
@@ -202,6 +205,7 @@ impl AppState {
             password_info.clone(),
             subtasks.clone(),
             connection_status.clone(),
+            ctx.clone(),
         );
         let local_app_context = AppContext::new(
             Network::Regtest,
@@ -209,6 +213,7 @@ impl AppState {
             password_info,
             subtasks.clone(),
             connection_status.clone(),
+            ctx.clone(),
         );
 
         // load fonts
@@ -917,6 +922,11 @@ impl App for AppState {
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
+                            MessageBanner::set_global(
+                                ctx,
+                                "Theme preference updated successfully",
+                                MessageType::Success,
+                            );
                             self.visible_screen_mut().display_message(
                                 "Theme preference updated successfully",
                                 MessageType::Success,
@@ -927,6 +937,11 @@ impl App for AppState {
                                 vote.voter_id.as_slice(),
                                 vote.contested_name.clone(),
                             );
+                            MessageBanner::set_global(
+                                ctx,
+                                "Successfully cast scheduled vote",
+                                MessageType::Success,
+                            );
                             self.visible_screen_mut().display_message(
                                 "Successfully cast scheduled vote",
                                 MessageType::Success,
@@ -934,12 +949,15 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         _ => {
+                            // For all other success results, let the screen decide how to display
+                            // the outcome without showing a generic global success banner.
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
                     }
                 }
                 TaskResult::Error(message) => {
+                    MessageBanner::set_global(ctx, &message, MessageType::Error);
                     self.visible_screen_mut()
                         .display_message(&message, MessageType::Error);
                 }

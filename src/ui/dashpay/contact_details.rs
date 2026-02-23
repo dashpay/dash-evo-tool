@@ -262,6 +262,7 @@ impl ContactDetailsScreen {
             let color = match message_type {
                 MessageType::Success => DashColors::SUCCESS,
                 MessageType::Error => DashColors::ERROR,
+                MessageType::Warning => DashColors::WARNING,
                 MessageType::Info => DashColors::INFO,
             };
             ui.colored_label(color, message);

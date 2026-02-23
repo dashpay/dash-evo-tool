@@ -1385,6 +1385,7 @@ impl ScreenLike for WalletsBalancesScreen {
             if let Some((message, message_type, _timestamp)) = message {
                 let message_color = match message_type {
                     MessageType::Error => DashColors::ERROR,
+                    MessageType::Warning => DashColors::WARNING,
                     MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };

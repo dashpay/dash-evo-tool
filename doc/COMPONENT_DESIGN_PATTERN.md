@@ -98,3 +98,27 @@ impl ComponentResponse for MyComponentResponse {
 - Not clearing invalid data
 
 See `AmountInput` in `src/ui/components/amount_input.rs` for a complete example.
+
+---
+
+## Display-Only Components
+
+Not all components produce domain values. **Display-only** components like `StyledButton`, `GradientHeading`, and `InfoPopup` consume data for rendering and do not implement the `Component` trait. They follow the same structural conventions (private fields, `new()` constructor, builder methods, `show()`) but omit `ComponentResponse` and `update()`.
+
+`MessageBanner` is a **hybrid**: it implements the `Component` trait for per-instance usage (owned by a screen struct), and it also exposes a global API via static methods for app-wide messaging.
+
+### Global State via egui Context
+
+In addition to its per-screen `Component` usage, `MessageBanner` demonstrates a pattern for **app-wide UI state** stored in egui context data rather than in a screen struct. This is useful when the same widget must be accessible from multiple call sites (e.g., `AppState::update()` sets it, `island_central_panel()` renders it).
+
+```rust
+// Setting from anywhere with &egui::Context
+MessageBanner::set_global(ctx, "Error message", MessageType::Error);
+
+// Rendering from a central location
+MessageBanner::show_global(ui);
+```
+
+Use this pattern sparingly. Per-screen ownership (the standard lazy-init pattern above) is preferred for most components. Global state is appropriate only when the rendering site and the state-setting site are architecturally separate (e.g., task result handling vs. screen rendering).
+
+See `src/ui/components/message_banner.rs` for the implementation.

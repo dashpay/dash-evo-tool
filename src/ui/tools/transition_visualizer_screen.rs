@@ -414,7 +414,7 @@ impl ScreenLike for TransitionVisualizerScreen {
                     self.broadcast_status = TransitionBroadcastStatus::Complete(Instant::now());
                 }
             }
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.broadcast_status =
                     TransitionBroadcastStatus::Error(message.to_string(), Instant::now());
             }

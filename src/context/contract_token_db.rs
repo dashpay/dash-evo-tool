@@ -45,12 +45,14 @@ impl AppContext {
             },
         ];
 
-        // Collect system contract IDs to deduplicate DB contracts that match
-        let system_ids: std::collections::HashSet<_> =
-            system_contracts.iter().map(|c| c.contract.id()).collect();
+        // Collect system contract IDs in a map to deduplicate DB contracts that match.
+        let system_contracts_by_id: std::collections::BTreeMap<_, _> = system_contracts
+            .iter()
+            .map(|c| (c.contract.id(), ()))
+            .collect();
 
         // Remove any DB contracts that duplicate a system contract
-        contracts.retain(|c| !system_ids.contains(&c.contract.id()));
+        contracts.retain(|c| !system_contracts_by_id.contains_key(&c.contract.id()));
 
         // Prepend system contracts in order
         let mut result = system_contracts;

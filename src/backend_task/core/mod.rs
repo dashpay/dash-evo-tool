@@ -177,31 +177,12 @@ impl AppContext {
                 let devnet_result = Self::get_best_chain_lock(maybe_devnet_config, Network::Devnet);
                 let local_result = Self::get_best_chain_lock(maybe_local_config, Network::Regtest);
 
-                // Convert each to Option<ChainLock>
-                let mainnet_chainlock = mainnet_result.ok();
-                let testnet_chainlock = testnet_result.ok();
-                let devnet_chainlock = devnet_result.ok();
-                let local_chainlock = local_result.ok();
-
-                // If all three failed, bail out with an error
-                if mainnet_chainlock.is_none()
-                    && testnet_chainlock.is_none()
-                    && devnet_chainlock.is_none()
-                    && local_chainlock.is_none()
-                {
-                    return Err(
-                        "Failed to get best chain lock for mainnet, testnet, devnet, and local network"
-                            .to_string(),
-                    );
-                }
-
-                // Otherwise, return the successes we have
-                Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-                    mainnet_chainlock,
-                    testnet_chainlock,
-                    devnet_chainlock,
-                    local_chainlock,
-                )))
+                Self::build_best_chain_locks_result(
+                    mainnet_result,
+                    testnet_result,
+                    devnet_result,
+                    local_result,
+                )
             }
             CoreTask::RefreshWalletInfo(wallet, platform_sync_mode) => {
                 // Get wallet seed hash for Platform balance refresh
@@ -308,7 +289,7 @@ impl AppContext {
                     )
                 }
             }
-                .map_err(|_| format!("Failed to create {} client", network))?;
+            .map_err(|e| format!("Failed to create {} client: {}", network, e))?;
 
             client
                 .get_best_chain_lock()
@@ -316,6 +297,101 @@ impl AppContext {
         } else {
             Err(format!("{} config not found", network))
         }
+    }
+
+    fn build_best_chain_locks_result(
+        mainnet_result: Result<ChainLock, String>,
+        testnet_result: Result<ChainLock, String>,
+        devnet_result: Result<ChainLock, String>,
+        local_result: Result<ChainLock, String>,
+    ) -> Result<BackendTaskSuccessResult, String> {
+        let (mainnet_chainlock, mainnet_error) = match mainnet_result {
+            Ok(chain_lock) => (Some(chain_lock), None),
+            Err(err) => (None, Some(format!("mainnet: {}", err))),
+        };
+        let (testnet_chainlock, testnet_error) = match testnet_result {
+            Ok(chain_lock) => (Some(chain_lock), None),
+            Err(err) => (None, Some(format!("testnet: {}", err))),
+        };
+        let (devnet_chainlock, devnet_error) = match devnet_result {
+            Ok(chain_lock) => (Some(chain_lock), None),
+            Err(err) => (None, Some(format!("devnet: {}", err))),
+        };
+        let (local_chainlock, local_error) = match local_result {
+            Ok(chain_lock) => (Some(chain_lock), None),
+            Err(err) => (None, Some(format!("local: {}", err))),
+        };
+
+        let errors: Vec<String> = [mainnet_error, testnet_error, devnet_error, local_error]
+            .into_iter()
+            .flatten()
+            .collect();
+        let all_failed = mainnet_chainlock.is_none()
+            && testnet_chainlock.is_none()
+            && devnet_chainlock.is_none()
+            && local_chainlock.is_none();
+
+        if all_failed {
+            let unexpected_errors: Vec<&str> = errors
+                .iter()
+                .filter_map(|error| {
+                    if Self::is_expected_offline_poll_error(error) {
+                        None
+                    } else {
+                        Some(error.as_str())
+                    }
+                })
+                .collect();
+
+            if unexpected_errors.is_empty() {
+                tracing::debug!(
+                    errors = ?errors,
+                    "All chain lock polls failed with expected offline errors"
+                );
+                return Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
+                    mainnet_chainlock,
+                    testnet_chainlock,
+                    devnet_chainlock,
+                    local_chainlock,
+                )));
+            }
+
+            return Err(format!(
+                "Failed to poll chain locks due to unexpected errors: {}",
+                unexpected_errors.join(" | ")
+            ));
+        }
+
+        if !errors.is_empty() {
+            tracing::debug!(
+                errors = ?errors,
+                "Some chain lock polls failed; using available successful chain lock(s)"
+            );
+        }
+
+        Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
+            mainnet_chainlock,
+            testnet_chainlock,
+            devnet_chainlock,
+            local_chainlock,
+        )))
+    }
+
+    fn is_expected_offline_poll_error(error: &str) -> bool {
+        let lower = error.to_ascii_lowercase();
+        lower.contains("config not found")
+            || lower.contains("connection refused")
+            || lower.contains("network is unreachable")
+            || lower.contains("no route to host")
+            || lower.contains("failed to lookup address information")
+            || lower.contains("temporary failure in name resolution")
+            || lower.contains("timed out")
+            || lower.contains("timeout")
+            || lower.contains("deadline has elapsed")
+            || lower.contains("transport error")
+            || lower.contains("connection reset")
+            || lower.contains("broken pipe")
+            || lower.contains("unexpected eof")
     }
 
     async fn send_wallet_payment(
@@ -327,6 +403,42 @@ impl AppContext {
             CoreBackendMode::Spv => self.send_wallet_payment_via_spv(wallet, request).await,
             CoreBackendMode::Rpc => self.send_wallet_payment_via_rpc(wallet, request).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppContext;
+    use crate::backend_task::BackendTaskSuccessResult;
+    use crate::backend_task::core::CoreItem;
+
+    #[test]
+    fn build_best_chain_locks_result_returns_success_for_expected_offline_failures() {
+        let result = AppContext::build_best_chain_locks_result(
+            Err("connection refused".to_string()),
+            Err("transport error".to_string()),
+            Err("timed out".to_string()),
+            Err("Regtest config not found".to_string()),
+        )
+        .expect("expected offline errors should not return task error");
+
+        assert!(matches!(
+            result,
+            BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(None, None, None, None))
+        ));
+    }
+
+    #[test]
+    fn build_best_chain_locks_result_returns_error_for_unexpected_failures() {
+        let result = AppContext::build_best_chain_locks_result(
+            Err("failed to parse cookie path".to_string()),
+            Err("transport error".to_string()),
+            Err("connection refused".to_string()),
+            Err("Regtest config not found".to_string()),
+        );
+
+        let error = result.expect_err("unexpected errors should still fail task");
+        assert!(error.contains("failed to parse cookie path"));
     }
 }
 

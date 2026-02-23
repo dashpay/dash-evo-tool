@@ -260,14 +260,6 @@ impl ConnectionStatus {
                 }
                 _ => {}
             },
-            TaskResult::Error(message) => {
-                if message.contains(
-                    "Failed to get best chain lock for mainnet, testnet, devnet, and local",
-                ) {
-                    self.set_rpc_online(false);
-                    self.refresh_overall();
-                }
-            }
             _ => {}
         }
     }

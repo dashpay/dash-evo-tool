@@ -441,14 +441,24 @@ impl Database {
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
                 ExtendedPubKey::decode(&master_ecdsa_bip44_account_0_epk_bytes).map_err(|e| {
-                    rusqlite::Error::InvalidParameterName(format!(
-                        "Failed to decode ExtendedPubKey: {}",
-                        e
-                    ))
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Blob,
+                        Box::new(CorruptedBlobError(format!(
+                            "Failed to decode ExtendedPubKey: {}",
+                            e
+                        ))),
+                    )
                 })?;
 
             let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
-                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(
+                        "Seed hash should be 32 bytes".to_string(),
+                    )),
+                )
             })?;
             let closed_wallet_seed = ClosedKeyItem {
                 seed_hash: seed_hash_array,
@@ -462,8 +472,12 @@ impl Database {
             } else {
                 WalletSeed::Open(OpenWalletSeed {
                     seed: encrypted_seed.try_into().map_err(|_| {
-                        rusqlite::Error::InvalidParameterName(
-                            "Seed should be 64 bytes for open wallet".to_string(),
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Blob,
+                            Box::new(CorruptedBlobError(
+                                "Seed should be 64 bytes for open wallet".to_string(),
+                            )),
                         )
                     })?,
                     wallet_info: closed_wallet_seed,
@@ -864,9 +878,15 @@ impl Database {
             let wallet_seed_hash: Vec<u8> = row.get(1)?;
             let wallet_index: u32 = row.get(2)?;
 
-            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash
-                .try_into()
-                .expect("Seed hash should be 32 bytes");
+            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(
+                        "Identity wallet seed hash should be 32 bytes".to_string(),
+                    )),
+                )
+            })?;
 
             Ok((data, wallet_seed_hash_array, wallet_index))
         })?;
@@ -1256,7 +1276,9 @@ impl From<WalletError> for rusqlite::Error {
 mod tests {
     use super::*;
     use crate::database::test_helpers::create_test_database;
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPrivKey};
     use std::str::FromStr;
 
     fn create_test_address(network: Network) -> Address {
@@ -1271,6 +1293,121 @@ mod tests {
             *byte = i as u8;
         }
         hash
+    }
+
+    fn create_test_master_epk_bytes(network: Network) -> Vec<u8> {
+        let seed = [7u8; 64];
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(network, &seed).expect("master key");
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let account = master
+            .derive_priv(&secp, &path)
+            .expect("derive bip44 account");
+        ExtendedPubKey::from_priv(&secp, &account).encode()
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_epk_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let seed_hash = create_test_seed_hash();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    vec![0u8; 64],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    vec![0u8; 78],
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_seed_hash_length_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let valid_epk = create_test_master_epk_bytes(Network::Testnet);
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    vec![0u8; 31],
+                    vec![0u8; 64],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    valid_epk,
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_open_seed_length_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let seed_hash = create_test_seed_hash();
+        let valid_epk = create_test_master_epk_bytes(Network::Testnet);
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    vec![0u8; 63],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    valid_epk,
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
     }
 
     #[test]

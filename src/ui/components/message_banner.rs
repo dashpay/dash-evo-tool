@@ -605,8 +605,8 @@ fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
 
 fn icon_for_type(message_type: MessageType) -> &'static str {
     match message_type {
-        MessageType::Error => "\u{26A0}",   // warning sign
-        MessageType::Warning => "\u{26A0}", // warning sign (differentiated by color)
+        MessageType::Error => "\u{274C}",   // cross mark
+        MessageType::Warning => "\u{26A0}", // warning sign
         MessageType::Success => "\u{2713}", // check mark
         MessageType::Info => "\u{2139}",    // info
     }

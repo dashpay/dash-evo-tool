@@ -524,34 +524,6 @@ impl ScreenLike for TopUpIdentityScreen {
             let mut inner_action = AppAction::None;
             let _dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            // Display error message at the top, outside of scroll area
-            if let Some(error_message) = self.error_message.clone() {
-                let message_color = DashColors::ERROR;
-
-                ui.horizontal(|ui| {
-                    egui::Frame::new()
-                        .fill(message_color.gamma_multiply(0.1))
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, message_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&error_message).color(message_color),
-                                    )
-                                    .wrap(),
-                                );
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.error_message = None;
-                                }
-                            });
-                        });
-                });
-                ui.add_space(10.0);
-            }
-
             ScrollArea::vertical().show(ui, |ui| {
                 let step = { *self.step.read().unwrap() };
                 if step == WalletFundedScreenStep::Success {

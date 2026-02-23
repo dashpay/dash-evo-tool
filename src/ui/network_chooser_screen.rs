@@ -858,9 +858,9 @@ impl NetworkChooserScreen {
                     if ui.button("Select File").clicked()
                         && let Some(path) = rfd::FileDialog::new().pick_file()
                     {
+                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
                         let file_name = path.file_name().and_then(|f| f.to_str());
                         if let Some(file_name) = file_name {
-                            self.custom_dash_qt_path = None;
                             self.custom_dash_qt_error_message = None;
 
                             // Handle macOS .app bundles
@@ -888,6 +888,11 @@ impl NetworkChooserScreen {
                                 self.custom_dash_qt_error_message = None;
                                 if let Err(e) = self.save() {
                                     tracing::warn!("Failed to save Dash-Qt path setting: {}", e);
+                                    self.custom_dash_qt_error_message = Some(
+                                        "Failed to save Dash-Qt path setting. Please try again."
+                                            .to_string(),
+                                    );
+                                    self.custom_dash_qt_path = previous_custom_dash_qt_path;
                                 }
                             } else {
                                 let required_file_name = if cfg!(target_os = "windows") {
@@ -906,26 +911,33 @@ impl NetworkChooserScreen {
                     }
 
                     if self.custom_dash_qt_path.is_some() && ui.button("Clear").clicked() {
+                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
                         self.custom_dash_qt_path = Some(PathBuf::new());
                         self.custom_dash_qt_error_message = None;
                         if let Err(e) = self.save() {
                             tracing::warn!("Failed to save cleared Dash-Qt path setting: {}", e);
+                            self.custom_dash_qt_error_message = Some(
+                                "Failed to clear Dash-Qt path setting. Please try again."
+                                    .to_string(),
+                            );
+                            self.custom_dash_qt_path = previous_custom_dash_qt_path;
                         }
                     }
                 });
 
-                if let Some(ref file) = self.custom_dash_qt_path {
-                    if !file.as_os_str().is_empty() {
-                        ui.horizontal(|ui| {
-                            ui.label("Path:");
-                            ui.label(
-                                egui::RichText::new(format_path_for_display(file))
-                                    .color(DashColors::SUCCESS)
-                                    .italics(),
-                            );
-                        });
-                    }
-                } else if let Some(ref error) = self.custom_dash_qt_error_message {
+                if let Some(ref file) = self.custom_dash_qt_path
+                    && !file.as_os_str().is_empty()
+                {
+                    ui.horizontal(|ui| {
+                        ui.label("Path:");
+                        ui.label(
+                            egui::RichText::new(format_path_for_display(file))
+                                .color(DashColors::SUCCESS)
+                                .italics(),
+                        );
+                    });
+                }
+                if let Some(ref error) = self.custom_dash_qt_error_message {
                     let error_color = Color32::from_rgb(255, 100, 100);
                     let error = error.clone();
                     Frame::new()
@@ -956,12 +968,20 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
+                    let previous_overwrite_dash_conf = self.overwrite_dash_conf;
                     if StyledCheckbox::new(&mut self.overwrite_dash_conf, "Overwrite dash.conf")
                         .show(ui)
                         .clicked()
-                        && let Err(e) = self.save()
                     {
-                        tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
+                        self.custom_dash_qt_error_message = None;
+                        if let Err(e) = self.save() {
+                            tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
+                            self.custom_dash_qt_error_message = Some(
+                                "Failed to save overwrite dash.conf setting. Please try again."
+                                    .to_string(),
+                            );
+                            self.overwrite_dash_conf = previous_overwrite_dash_conf;
+                        }
                     }
                     ui.label(
                         egui::RichText::new("Auto-configure required settings")

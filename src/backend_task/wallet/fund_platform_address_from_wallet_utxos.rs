@@ -107,6 +107,20 @@ impl AppContext {
             .await
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 
+        // Step 3.5: Store the asset lock transaction in the database immediately
+        // after broadcast. The SPV finality listener retrieves the transaction
+        // from the DB to process InstantLock/ChainLock events — without this
+        // store, the finality proof is never populated and the wait loop times out.
+        self.db
+            .store_asset_lock_transaction(
+                &asset_lock_transaction,
+                asset_lock_amount,
+                None, // No islock yet — SPV/ZMQ will update this
+                &seed_hash,
+                self.network,
+            )
+            .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+
         // Step 4: Remove used UTXOs from wallet
         {
             let wallet_arc = {

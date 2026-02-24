@@ -129,7 +129,7 @@ Screens hold `Arc<AppContext>` and manage their own UI state.
 
 ## UI Component Pattern
 
-Components follow a lazy initialization pattern (see `doc/COMPONENT_DESIGN_PATTERN.md`):
+Components follow a lazy initialization pattern (see `docs/COMPONENT_DESIGN_PATTERN.md`):
 
 ```rust
 struct MyScreen {

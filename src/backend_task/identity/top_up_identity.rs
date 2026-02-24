@@ -3,7 +3,6 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
-use crate::spv::CoreBackendMode;
 use dash_sdk::Error;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
@@ -111,27 +110,21 @@ impl AppContext {
                             Some(self),
                         ) {
                             Ok(transaction) => transaction,
-                            Err(e) => match self.core_backend_mode() {
-                                CoreBackendMode::Rpc => {
-                                    let core_client = self.core_client.read().map_err(|e| {
-                                        format!("Core client lock was poisoned: {}", e)
-                                    })?;
-                                    wallet
-                                        .reload_utxos(&core_client, self.network, Some(self))
-                                        .map_err(|e| e.to_string())?;
-                                    wallet.top_up_asset_lock_transaction(
-                                        sdk.network,
-                                        amount,
-                                        true,
-                                        identity_index,
-                                        top_up_index,
-                                        Some(self),
-                                    )?
-                                }
-                                CoreBackendMode::Spv => {
+                            Err(e) => {
+                                // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
+                                // Only retry if something actually changed.
+                                if !wallet.reload_utxos(self)? {
                                     return Err(e);
                                 }
-                            },
+                                wallet.top_up_asset_lock_transaction(
+                                    sdk.network,
+                                    amount,
+                                    true,
+                                    identity_index,
+                                    top_up_index,
+                                    Some(self),
+                                )?
+                            }
                         };
                         (
                             tx_result.0,

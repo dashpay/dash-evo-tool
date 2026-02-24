@@ -2045,6 +2045,15 @@ impl ScreenLike for WalletsBalancesScreen {
         match backend_task_success_result {
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
+                // Refresh the cached platform sync info so the panel shows
+                // updated timestamps and block heights after a wallet sync.
+                let seed_hash = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+                if let Some(hash) = seed_hash {
+                    self.refresh_platform_sync_info_cache(&hash);
+                }
                 if let Some(warn_msg) = warning {
                     self.set_message(
                         format!("Wallet refreshed with warning: {}", warn_msg),

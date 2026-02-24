@@ -300,7 +300,7 @@ impl AppContext {
                 .await
                 .map_err(|e| format!("Task join error: {}", e))??;
 
-                let mined_count = mined.len();
+                let mined_count = mined.len() as u64;
 
                 // Refresh wallet balances via RPC so the UI reflects the new coins
                 let refresh_ctx = self.clone();

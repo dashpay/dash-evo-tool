@@ -268,7 +268,7 @@ pub enum BackendTaskSuccessResult {
     BroadcastedStateTransition,
 
     // Mining results (dev mode, Regtest/Devnet only)
-    MineBlocksSuccess(usize),
+    MineBlocksSuccess(u64),
 }
 
 impl BackendTaskSuccessResult {}

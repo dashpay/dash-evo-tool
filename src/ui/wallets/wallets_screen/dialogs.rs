@@ -1282,16 +1282,16 @@ impl WalletsBalancesScreen {
         }
 
         let mut action = AppAction::None;
+        let mut open = self.mine_dialog.is_open;
         let dark_mode = ctx.style().visuals.dark_mode;
 
         Self::draw_modal_overlay(ctx, "mine_dialog_overlay");
 
-        let mut close = false;
         egui::Window::new("Mine Blocks")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut self.mine_dialog.is_open)
+            .open(&mut open)
             .frame(Self::modal_frame(ctx))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
@@ -1396,7 +1396,7 @@ impl WalletsBalancesScreen {
                         .min_size(egui::Vec2::new(80.0, 32.0));
 
                         if ui.add(cancel_button).clicked() {
-                            close = true;
+                            self.mine_dialog = MineDialogState::default();
                         }
 
                         ui.add_space(8.0);
@@ -1461,13 +1461,15 @@ impl WalletsBalancesScreen {
                                     wallet,
                                 },
                             ));
-                            close = true;
+                            self.mine_dialog = MineDialogState::default();
                         }
                     });
                 });
             });
 
-        if close || !self.mine_dialog.is_open {
+        // X button sets `open` to false; Cancel/Mine reset dialog state
+        // (which sets is_open to false) inside the closure.
+        if !open || !self.mine_dialog.is_open {
             self.mine_dialog = MineDialogState::default();
         }
         action

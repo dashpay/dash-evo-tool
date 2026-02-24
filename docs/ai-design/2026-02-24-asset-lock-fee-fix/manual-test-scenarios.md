@@ -266,7 +266,7 @@ with "min relay fee not met" now succeed.
   `allow_take_fee_from_amount` path or return an error. Verify no panic or silent data loss occurs.
 
 
-### E4: Concurrent Asset Lock Creation
+### E3: Concurrent Asset Lock Creation
 - If two asset lock transactions are created in quick succession (e.g., rapid identity registration
   attempts), verify that UTXO double-spend is prevented and the second attempt either uses different
   UTXOs or fails gracefully.

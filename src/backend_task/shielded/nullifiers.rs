@@ -2,6 +2,7 @@ use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::ShieldedWalletState;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::platform::nullifier_sync::NullifierSyncConfig;
 use std::sync::Arc;
 
 /// Check which unspent notes have been spent on-chain using the SDK's
@@ -15,10 +16,7 @@ pub async fn check_nullifiers(
     shielded_state: &mut ShieldedWalletState,
     network: Network,
 ) -> Result<u32, String> {
-    let sdk = {
-        let guard = app_context.sdk.read().unwrap();
-        guard.clone()
-    };
+    let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let network_str = network.to_string();
 
@@ -51,7 +49,7 @@ pub async fn check_nullifiers(
     let result = sdk
         .sync_nullifiers(
             &unspent_nullifiers,
-            None,
+            None::<NullifierSyncConfig>,
             last_sync_height,
             last_sync_timestamp,
         )

@@ -265,10 +265,7 @@ impl ShieldCreditsScreen {
             // the next is submitted (the platform increments the address nonce only
             // after a state transition is finalised, so broadcasting without waiting
             // would cause "expected N, got N+1" errors).
-            let sdk = {
-                let guard = app_ctx.sdk.read().unwrap();
-                guard.clone()
-            };
+            let sdk = { app_ctx.sdk.load().as_ref().clone() };
 
             for (i, result) in build_results.into_iter().enumerate() {
                 let stage = &stages[i];

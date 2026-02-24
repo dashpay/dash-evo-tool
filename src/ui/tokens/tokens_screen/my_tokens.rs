@@ -852,7 +852,7 @@ impl TokensScreen {
 
                 if is_loading {
                     // Show loading spinner
-                    ui.add(egui::Spinner::new().color(crate::ui::theme::DashColors::DASH_BLUE));
+                    ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
                 } else if has_pricing_data {
                     // Check if identity has enough credits for at least one token
                     let has_credits = self

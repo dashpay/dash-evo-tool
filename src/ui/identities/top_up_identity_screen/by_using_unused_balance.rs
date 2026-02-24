@@ -78,35 +78,31 @@ impl TopUpIdentityScreen {
         new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
         ui.set_style(new_style);
         let button = egui::Button::new(RichText::new("Top Up Identity").color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::DASH_BLUE)
             .frame(true)
             .corner_radius(3.0);
         if ui.add(button).clicked() {
-            self.error_message = None;
             action = self.top_up_identity_clicked(FundingMethod::UseWalletBalance);
         }
 
         ui.add_space(20.0);
 
-        // Only show status messages if there's no error
-        if self.error_message.is_none() {
-            ui.vertical_centered(|ui| {
-                match step {
-                    WalletFundedScreenStep::WaitingForAssetLock => {
-                        ui.heading(
-                            "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
-                        );
-                    }
-                    WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                        ui.heading("=> Waiting for Platform acknowledgement <=");
-                    }
-                    WalletFundedScreenStep::Success => {
-                        ui.heading("...Success...");
-                    }
-                    _ => {}
-                };
-            });
-        }
+        ui.vertical_centered(|ui| {
+            match step {
+                WalletFundedScreenStep::WaitingForAssetLock => {
+                    ui.heading(
+                        "=> Waiting for Core Chain to produce proof of transfer of funds. <=",
+                    );
+                }
+                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                    ui.heading("=> Waiting for Platform acknowledgement <=");
+                }
+                WalletFundedScreenStep::Success => {
+                    ui.heading("...Success...");
+                }
+                _ => {}
+            };
+        });
 
         ui.add_space(40.0);
         action

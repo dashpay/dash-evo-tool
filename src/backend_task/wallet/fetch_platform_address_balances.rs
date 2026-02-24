@@ -45,10 +45,7 @@ impl AppContext {
         let mut provider = provider;
 
         // Sync using SDK's privacy-preserving method (handles both full and incremental)
-        let sdk = {
-            let guard = self.sdk.read().map_err(|e| e.to_string())?;
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         let config = if sdk.network == Network::Regtest {
             Some(AddressSyncConfig {

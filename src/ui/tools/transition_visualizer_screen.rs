@@ -6,6 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -155,8 +156,8 @@ impl TransitionVisualizerScreen {
             TextEdit::multiline(&mut self.input_data)
                 .desired_rows(6)
                 .desired_width(ui.available_width())
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .code_editor(),
         );
 
@@ -209,8 +210,8 @@ impl TransitionVisualizerScreen {
                     TextEdit::multiline(&mut json.clone())
                         .desired_rows(10)
                         .desired_width(ui.available_width())
-                        .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                        .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                        .text_color(DashColors::text_primary(dark_mode))
+                        .background_color(DashColors::input_background(dark_mode))
                         .font(egui::TextStyle::Monospace),
                 );
 
@@ -228,7 +229,7 @@ impl TransitionVisualizerScreen {
                     let button = egui::Button::new(
                         RichText::new("Broadcast Transition to Platform").color(Color32::WHITE),
                     )
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .frame(true)
                     .corner_radius(3.0);
 
@@ -236,7 +237,7 @@ impl TransitionVisualizerScreen {
                         // Mark as submitting
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         self.broadcast_status = TransitionBroadcastStatus::Submitting(now);
 
@@ -264,7 +265,7 @@ impl TransitionVisualizerScreen {
             TransitionBroadcastStatus::Submitting(start_time) => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 let elapsed_seconds = now - start_time;
 
@@ -413,7 +414,7 @@ impl ScreenLike for TransitionVisualizerScreen {
                     self.broadcast_status = TransitionBroadcastStatus::Complete(Instant::now());
                 }
             }
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.broadcast_status =
                     TransitionBroadcastStatus::Error(message.to_string(), Instant::now());
             }

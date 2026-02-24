@@ -178,11 +178,7 @@ impl TransferScreen {
         // Colors for selected/unselected states
         let selected_fill = DashColors::DASH_BLUE;
         let selected_text = Color32::WHITE;
-        let unselected_fill = if dark_mode {
-            Color32::from_rgb(60, 60, 60)
-        } else {
-            Color32::from_rgb(220, 220, 220)
-        };
+        let unselected_fill = DashColors::unselected_fill(dark_mode);
         let unselected_text = DashColors::text_primary(dark_mode);
 
         ui.horizontal(|ui| {
@@ -247,7 +243,15 @@ impl TransferScreen {
             ui.add_space(5.0);
             ui.add(
                 egui::TextEdit::singleline(&mut self.platform_address_input)
-                    .hint_text("Enter Platform address (y...)")
+                    .hint_text(
+                        if self.app_context.network
+                            == dash_sdk::dashcore_rpc::dashcore::Network::Dash
+                        {
+                            "Enter Platform address (dash1...)"
+                        } else {
+                            "Enter Platform address (tdash1...)"
+                        },
+                    )
                     .desired_width(400.0),
             );
         });
@@ -261,8 +265,8 @@ impl TransferScreen {
 
         let input = self.platform_address_input.trim();
 
-        // Try to parse as Bech32m Platform address first (dash1.../tdash1...)
-        if crate::ui::helpers::is_platform_address(input) {
+        // Try to parse as Bech32m Platform address first (dash1.../tdash1... per DIP-18)
+        if crate::ui::helpers::is_platform_address_string(input) {
             let (addr, _network) = PlatformAddress::from_bech32m_string(input)
                 .map_err(|e| format!("Invalid Bech32m address: {}", e))?;
             return Ok(addr);
@@ -316,7 +320,7 @@ impl TransferScreen {
         // Set waiting state
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
 
@@ -369,7 +373,7 @@ impl TransferScreen {
         // Set waiting state and create backend task
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.transfer_credits_status = TransferCreditsStatus::WaitingForResult(now);
 
@@ -501,14 +505,21 @@ impl ScreenLike for TransferScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        self.identity = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap()
-            .into_iter()
+        let identities = match self.app_context.load_local_qualified_identities() {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::warn!("Failed to load identities during refresh: {}", e);
+                Vec::new()
+            }
+        };
+        if let Some(refreshed) = identities
+            .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
-            .unwrap();
-        self.max_amount = self.identity.identity.balance();
+        {
+            self.identity = refreshed.clone();
+            self.max_amount = self.identity.identity.balance();
+        }
+        self.known_identities = identities;
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -719,7 +730,7 @@ impl ScreenLike for TransferScreen {
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
                 let button = egui::Button::new(RichText::new("Transfer").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::DASH_BLUE)
                     .frame(true)
                     .corner_radius(3.0);
 
@@ -760,7 +771,7 @@ impl ScreenLike for TransferScreen {
                     TransferCreditsStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed_seconds = now - start_time;
 
@@ -788,7 +799,7 @@ impl ScreenLike for TransferScreen {
                         ));
                     }
                     TransferCreditsStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))

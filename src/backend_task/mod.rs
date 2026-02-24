@@ -351,10 +351,7 @@ impl AppContext {
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
         match task {
             BackendTask::ContractTask(contract_task) => {
                 self.run_contract_task(*contract_task, &sdk, sender).await
@@ -385,7 +382,7 @@ impl AppContext {
                 mnlist::run_mnlist_task(self, mnlist_task).await
             }
             BackendTask::PlatformInfo(platform_info_task) => {
-                self.run_platform_info_task(platform_info_task).await
+                self.run_platform_info_task(platform_info_task, &sdk).await
             }
             BackendTask::GroveSTARKTask(grovestark_task) => {
                 grovestark::run_grovestark_task(grovestark_task, &sdk).await

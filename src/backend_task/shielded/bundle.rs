@@ -76,10 +76,7 @@ pub fn build_shield_credit(
     from_address: PlatformAddress,
     nonce: u32,
 ) -> Result<dash_sdk::dpp::state_transition::StateTransition, String> {
-    let sdk = {
-        let guard = app_context.sdk.read().unwrap();
-        guard.clone()
-    };
+    let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let proving_key = get_proving_key();
     let recipient_addr = payment_address_to_orchard(recipient_payment_address);
@@ -123,10 +120,7 @@ pub async fn shield_credits(
     nonce_override: Option<u32>,
     stage: Option<Arc<Mutex<ShieldStage>>>,
 ) -> Result<(), String> {
-    let sdk = {
-        let guard = app_context.sdk.read().unwrap();
-        guard.clone()
-    };
+    let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let proving_key = get_proving_key();
 
@@ -208,10 +202,7 @@ pub async fn shielded_transfer(
     amount: u64,
     recipient_address_bytes: &[u8],
 ) -> Result<Vec<Nullifier>, String> {
-    let sdk = {
-        let guard = app_context.sdk.read().unwrap();
-        guard.clone()
-    };
+    let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let proving_key = get_proving_key();
 
@@ -284,10 +275,7 @@ pub async fn unshield_credits(
     amount: u64,
     to_platform_address: PlatformAddress,
 ) -> Result<Vec<Nullifier>, String> {
-    let sdk = {
-        let guard = app_context.sdk.read().unwrap();
-        guard.clone()
-    };
+    let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let proving_key = get_proving_key();
 
@@ -511,10 +499,7 @@ pub async fn shield_from_asset_lock(
     }
 
     // Step 7: Build and broadcast the shield-from-asset-lock transition
-    let sdk = {
-        let guard = app_context.sdk.read().unwrap();
-        guard.clone()
-    };
+    let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let recipient = payment_address_to_orchard(&shielded_state.keys.default_address);
 
@@ -557,10 +542,7 @@ pub async fn shielded_withdrawal(
     amount: u64,
     to_core_address: Address,
 ) -> Result<Vec<Nullifier>, String> {
-    let sdk = {
-        let guard = app_context.sdk.read().unwrap();
-        guard.clone()
-    };
+    let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let proving_key = get_proving_key();
 

@@ -12,6 +12,29 @@ use std::time::{Duration, Instant};
 
 const REFRESH_CONNECTED: Duration = Duration::from_secs(10);
 const REFRESH_DISCONNECTED: Duration = Duration::from_secs(2);
+
+/// Three-state connection indicator matching the UI's red/orange/green circle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum OverallConnectionState {
+    /// No connection at all — red indicator.
+    Disconnected = 0,
+    /// All subsystems connected but still syncing data — orange indicator.
+    Syncing = 1,
+    /// Fully connected and operational — green indicator.
+    Synced = 2,
+}
+
+impl From<u8> for OverallConnectionState {
+    fn from(v: u8) -> Self {
+        match v {
+            1 => Self::Syncing,
+            2 => Self::Synced,
+            _ => Self::Disconnected,
+        }
+    }
+}
+
 /// Tracks the connection status to currently active network, and provides helper methods
 /// to determine overall connectivity status.
 ///
@@ -23,7 +46,7 @@ pub struct ConnectionStatus {
     spv_status: AtomicU8,
     backend_mode: AtomicU8,
     disable_zmq: AtomicBool,
-    overall_connected: AtomicBool,
+    overall_state: AtomicU8,
     last_update: Mutex<Instant>,
     dapi_total_endpoints: AtomicU16,
     dapi_available_endpoints: AtomicU16,
@@ -37,7 +60,7 @@ impl ConnectionStatus {
             spv_status: AtomicU8::new(SpvStatus::Idle as u8),
             backend_mode: AtomicU8::new(CoreBackendMode::Rpc.as_u8()),
             disable_zmq: AtomicBool::new(false),
-            overall_connected: AtomicBool::new(false),
+            overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             last_update: Mutex::new(Instant::now()),
             dapi_total_endpoints: AtomicU16::new(0),
             dapi_available_endpoints: AtomicU16::new(0),
@@ -48,7 +71,7 @@ impl ConnectionStatus {
     /// so the status reflects the new network from a clean slate.
     ///
     /// `backend_mode` should be the new network's current backend mode so that
-    /// `overall_connected()` and `tooltip_text()` read the correct mode immediately.
+    /// `overall_state()` and `tooltip_text()` read the correct mode immediately.
     pub fn reset(&self, backend_mode: CoreBackendMode) {
         self.rpc_online.store(false, Ordering::Relaxed);
         if let Ok(mut status) = self.zmq_status.lock() {
@@ -59,7 +82,10 @@ impl ConnectionStatus {
         self.backend_mode
             .store(backend_mode.as_u8(), Ordering::Relaxed);
         self.disable_zmq.store(false, Ordering::Relaxed);
-        self.overall_connected.store(false, Ordering::Relaxed);
+        self.overall_state.store(
+            OverallConnectionState::Disconnected as u8,
+            Ordering::Relaxed,
+        );
         // Set last_update to epoch so the next trigger_refresh fires immediately
         if let Ok(mut last) = self.last_update.lock() {
             *last = Instant::now() - REFRESH_CONNECTED;
@@ -153,28 +179,47 @@ impl ConnectionStatus {
         status.is_active()
     }
 
-    pub fn overall_connected(&self) -> bool {
-        self.overall_connected.load(Ordering::Relaxed)
+    pub fn overall_state(&self) -> OverallConnectionState {
+        self.overall_state.load(Ordering::Relaxed).into()
     }
 
-    pub fn refresh_overall(&self) {
+    pub fn refresh_state(&self) {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
         let spv_status = self.spv_status();
         let dapi_available = self.dapi_available();
-        let connected = match backend_mode {
+
+        let state = match backend_mode {
             CoreBackendMode::Rpc => {
-                self.rpc_online() && (disable_zmq || self.zmq_connected()) && dapi_available
+                // RPC mode: no intermediate syncing state exposed, so red or green only.
+                if self.rpc_online() && (disable_zmq || self.zmq_connected()) && dapi_available {
+                    OverallConnectionState::Synced
+                } else {
+                    OverallConnectionState::Disconnected
+                }
             }
-            CoreBackendMode::Spv => Self::spv_connected(spv_status) && dapi_available,
+            CoreBackendMode::Spv => {
+                if !dapi_available {
+                    OverallConnectionState::Disconnected
+                } else {
+                    match spv_status {
+                        SpvStatus::Running => OverallConnectionState::Synced,
+                        SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Stopping => {
+                            OverallConnectionState::Syncing
+                        }
+                        _ => OverallConnectionState::Disconnected,
+                    }
+                }
+            }
         };
-        self.overall_connected.store(connected, Ordering::Relaxed);
+        self.overall_state.store(state as u8, Ordering::Relaxed);
     }
 
     pub fn tooltip_text(&self) -> String {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
         let spv_status = self.spv_status();
+        let overall = self.overall_state();
         let dapi_status = format!("DAPI: {}", self.dapi_status_label());
         match backend_mode {
             CoreBackendMode::Rpc => {
@@ -191,27 +236,27 @@ impl ConnectionStatus {
                     "ZMQ: Disconnected"
                 };
 
-                if self.overall_connected() {
-                    format!(
-                        "Connected to Dash Core Wallet\n{rpc_status}\n{zmq_status}\n{dapi_status}"
-                    )
-                } else if self.rpc_online() {
-                    format!(
-                        "Dash Core connection incomplete\n{rpc_status}\n{zmq_status}\n{dapi_status}"
-                    )
-                } else {
-                    format!(
-                        "Disconnected from Dash Core Wallet. Click to start it.\n{rpc_status}\n{zmq_status}\n{dapi_status}"
-                    )
-                }
+                let header = match overall {
+                    OverallConnectionState::Synced => "Connected to Dash Core Wallet",
+                    // RPC mode doesn't currently produce Syncing, but kept for forward-compat.
+                    OverallConnectionState::Syncing => "Syncing to Dash Core Wallet",
+                    OverallConnectionState::Disconnected if self.rpc_online() => {
+                        "Dash Core connection incomplete"
+                    }
+                    OverallConnectionState::Disconnected => {
+                        "Disconnected from Dash Core Wallet. Click to start it."
+                    }
+                };
+                format!("{header}\n{rpc_status}\n{zmq_status}\n{dapi_status}")
             }
             CoreBackendMode::Spv => {
                 let spv_label = format!("SPV: {:?}", spv_status);
-                if self.overall_connected() {
-                    format!("SPV connected\n{spv_label}\n{dapi_status}")
-                } else {
-                    format!("SPV disconnected\n{spv_label}\n{dapi_status}")
-                }
+                let header = match overall {
+                    OverallConnectionState::Synced => "SPV synced",
+                    OverallConnectionState::Syncing => "SPV syncing",
+                    OverallConnectionState::Disconnected => "SPV disconnected",
+                };
+                format!("{header}\n{spv_label}\n{dapi_status}")
             }
         }
     }
@@ -250,12 +295,12 @@ impl ConnectionStatus {
                         devnet_chainlock,
                         local_chainlock,
                     );
-                    self.refresh_overall();
+                    self.refresh_state();
                 }
                 BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) => {
                     if *network == active_network {
                         self.set_rpc_online(true);
-                        self.refresh_overall();
+                        self.refresh_state();
                     }
                 }
                 _ => {}
@@ -265,7 +310,7 @@ impl ConnectionStatus {
                     "Failed to get best chain lock for mainnet, testnet, devnet, and local",
                 ) {
                     self.set_rpc_online(false);
-                    self.refresh_overall();
+                    self.refresh_state();
                 }
             }
             _ => {}
@@ -283,7 +328,7 @@ impl ConnectionStatus {
             // Poll frequently during SPV shutdown so the UI updates
             // within ~200ms of the Stopping → Stopped transition.
             Duration::from_millis(200)
-        } else if self.overall_connected() {
+        } else if self.overall_state() == OverallConnectionState::Synced {
             REFRESH_CONNECTED
         } else {
             REFRESH_DISCONNECTED
@@ -330,22 +375,15 @@ impl ConnectionStatus {
         }
 
         // Update DAPI endpoint status
-        if let Ok(sdk) = app_context.sdk.read() {
+        {
+            let sdk = app_context.sdk.load();
             let address_list = sdk.address_list();
             let total = address_list.len() as u16;
-            // get_live_address() returns Option<&Uri>, so count it as 1 if available, 0 if not
-            // TODO: once Dash Platform SDK supports rust-dashcore v0.42,
-            // update platform and use get_live_addresses() which returns all available addresses
-            //for more accurate status
-            let available = if address_list.get_live_address().is_some() {
-                1
-            } else {
-                0
-            };
+            let available = address_list.get_live_addresses().len() as u16;
             self.set_dapi_status(total, available);
         }
 
-        self.refresh_overall();
+        self.refresh_state();
     }
 }
 

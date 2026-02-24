@@ -242,6 +242,7 @@ impl ScreenLike for AddContactScreen {
                 let color = match message_type {
                     MessageType::Success => egui::Color32::DARK_GREEN,
                     MessageType::Error => egui::Color32::DARK_RED,
+                    MessageType::Warning => DashColors::WARNING,
                     MessageType::Info => egui::Color32::LIGHT_BLUE,
                 };
                 ui.colored_label(color, message);
@@ -357,7 +358,7 @@ impl ScreenLike for AddContactScreen {
             if let ContactRequestStatus::Error(ref err) = self.status {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 let error_color = if dark_mode {
-                    egui::Color32::from_rgb(255, 100, 100)
+                    DashColors::ERROR
                 } else {
                     egui::Color32::DARK_RED
                 };

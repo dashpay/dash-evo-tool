@@ -11,6 +11,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{
@@ -20,7 +21,6 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
-use chrono::{DateTime, Utc};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
@@ -52,12 +52,6 @@ enum IdentitiesSortOrder {
     Descending,
 }
 
-#[derive(PartialEq)]
-enum IdentitiesRefreshingStatus {
-    Refreshing(u64),
-    NotRefreshing,
-}
-
 pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
@@ -66,8 +60,10 @@ pub struct IdentitiesScreen {
     sort_column: IdentitiesSortColumn,
     sort_order: IdentitiesSortOrder,
     use_custom_order: bool,
-    refreshing_status: IdentitiesRefreshingStatus,
-    backend_message: Option<(String, MessageType, DateTime<Utc>)>,
+    refresh_banner: Option<BannerHandle>,
+    pending_refresh_count: usize,
+    /// Total identities dispatched in the current refresh batch (for pluralization).
+    total_refresh_count: usize,
     // Alias editing state
     editing_alias_identity: Option<Identifier>,
     editing_alias_value: String,
@@ -92,8 +88,9 @@ impl IdentitiesScreen {
             sort_column: IdentitiesSortColumn::Alias,
             sort_order: IdentitiesSortOrder::Ascending,
             use_custom_order: true,
-            refreshing_status: IdentitiesRefreshingStatus::NotRefreshing,
-            backend_message: None,
+            refresh_banner: None,
+            pending_refresh_count: 0,
+            total_refresh_count: 0,
             editing_alias_identity: None,
             editing_alias_value: String::new(),
         };
@@ -397,7 +394,7 @@ impl IdentitiesScreen {
                         RichText::new("No Identities Loaded")
                             .strong()
                             .size(25.0)
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
 
                     // A separator line for visual clarity
@@ -415,7 +412,7 @@ impl IdentitiesScreen {
                         RichText::new("Here’s what you can do:")
                             .strong()
                             .size(18.0)
-                            .color(crate::ui::theme::DashColors::text_primary(dark_mode)),
+                            .color(DashColors::text_primary(dark_mode)),
                     );
                     ui.add_space(5.0);
 
@@ -447,7 +444,7 @@ impl IdentitiesScreen {
     /// Returns Some `AppAction` if any identity needs to be refreshed,
     /// otherwise returns None.
     pub fn ensure_identities_status(&self, identities: &[QualifiedIdentity]) -> Option<AppAction> {
-        if self.refreshing_status != IdentitiesRefreshingStatus::NotRefreshing {
+        if self.refresh_banner.is_some() {
             // avoid refresh loop
             return None;
         }
@@ -614,7 +611,7 @@ impl IdentitiesScreen {
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                                        .frame(egui::Frame::popup(ui.style()).fill(if ui.ctx().style().visuals.dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
+                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
@@ -722,8 +719,11 @@ impl IdentitiesScreen {
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                                        .frame(egui::Frame::popup(ui.style()).fill(if ui.ctx().style().visuals.dark_mode { Color32::from_rgb(40, 40, 40) } else { Color32::WHITE }))
+                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
                                                         .show(|ui| {
+                                                            // Wrap in a scroll area so popups with many keys are accessible
+                                                            let max_popup_height = ui.ctx().content_rect().height() * 0.6;
+                                                            egui::ScrollArea::vertical().max_height(max_popup_height).show(ui, |ui| {
                                                             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
                                                             // Main Identity Keys
@@ -734,7 +734,7 @@ impl IdentitiesScreen {
 
                                                                     let key_label = self.format_key_name(key);
                                                                     let button = if holding_private_key.is_some() {
-                                                                        egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
+                                                                        egui::Button::new(&key_label).fill(DashColors::selected(dark_mode))
                                                                     } else {
                                                                         egui::Button::new(&key_label)
                                                                     };
@@ -765,7 +765,7 @@ impl IdentitiesScreen {
 
                                                                         let key_label = self.format_key_name(key);
                                                                         let button = if holding_private_key.is_some() {
-                                                                            egui::Button::new(&key_label).fill(crate::ui::theme::DashColors::selected(dark_mode))
+                                                                            egui::Button::new(&key_label).fill(DashColors::selected(dark_mode))
                                                                         } else {
                                                                             egui::Button::new(&key_label)
                                                                         };
@@ -792,6 +792,7 @@ impl IdentitiesScreen {
                                                                     )));
                                                                    ui.close_kind(egui::UiKind::Menu);
                                                                 }
+                                                            }); // end ScrollArea
                                                         },
                                                     );
                                                 }
@@ -849,11 +850,7 @@ impl IdentitiesScreen {
                 egui::Order::Background,
                 egui::Id::new("confirm_removal_overlay"),
             ));
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-            );
+            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
             egui::Window::new("Confirm Removal")
                 .collapsible(false)
@@ -867,13 +864,10 @@ impl IdentitiesScreen {
                         offset: [0, 8],
                         blur: 16,
                         spread: 0,
-                        color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                        color: DashColors::popup_shadow(),
                     },
                     fill: ctx.style().visuals.window_fill,
-                    stroke: egui::Stroke::new(
-                        1.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                    ),
+                    stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
                 })
                 .show(ctx, |ui| {
                     ui.set_min_width(350.0);
@@ -925,31 +919,48 @@ impl IdentitiesScreen {
                         // Yes button
                         let yes_button =
                             egui::Button::new(RichText::new("Yes").color(Color32::WHITE))
-                                .fill(Color32::from_rgb(200, 60, 60))
+                                .fill(DashColors::DANGER_RED)
                                 .corner_radius(egui::CornerRadius::same(4))
                                 .min_size(egui::Vec2::new(80.0, 32.0));
 
                         if ui.add(yes_button).clicked() {
                             let identity_id = identity_to_remove.identity.id();
-                            let mut lock = self.identities.lock().unwrap();
-                            lock.shift_remove(&identity_id);
 
-                            self.app_context
+                            match self
+                                .app_context
                                 .db
                                 .delete_local_qualified_identity(&identity_id, &self.app_context)
-                                .ok();
+                            {
+                                Ok(_) => {
+                                    let mut lock = self.identities.lock().unwrap();
+                                    lock.shift_remove(&identity_id);
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to delete identity from database: {}",
+                                        e
+                                    );
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        &format!("Failed to remove identity: {}", e),
+                                        MessageType::Error,
+                                    );
+                                }
+                            }
 
                             if let Some((voter_identity, _)) =
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                self.app_context
-                                    .db
-                                    .delete_local_qualified_identity(
-                                        &voter_identity_id,
-                                        &self.app_context,
-                                    )
-                                    .ok();
+                                if let Err(e) = self.app_context.db.delete_local_qualified_identity(
+                                    &voter_identity_id,
+                                    &self.app_context,
+                                ) {
+                                    tracing::warn!(
+                                        "Failed to delete voter identity from database: {}",
+                                        e
+                                    );
+                                }
                             }
 
                             self.identity_to_remove = None;
@@ -975,11 +986,7 @@ impl IdentitiesScreen {
             egui::Order::Background,
             egui::Id::new("edit_alias_overlay"),
         ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-        );
+        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
         egui::Window::new("Update Alias")
             .collapsible(false)
@@ -993,13 +1000,10 @@ impl IdentitiesScreen {
                     offset: [0, 8],
                     blur: 16,
                     spread: 0,
-                    color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                    color: DashColors::popup_shadow(),
                 },
                 fill: ctx.style().visuals.window_fill,
-                stroke: egui::Stroke::new(
-                    1.0,
-                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                ),
+                stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
             })
             .show(ctx, |ui| {
                 ui.set_min_width(300.0);
@@ -1082,22 +1086,6 @@ impl IdentitiesScreen {
 
         AppAction::None
     }
-
-    fn dismiss_message(&mut self) {
-        self.backend_message = None;
-    }
-
-    fn check_message_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.backend_message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            // Automatically dismiss the message after 10 seconds
-            if elapsed.num_seconds() >= 10 {
-                self.dismiss_message();
-            }
-        }
-    }
 }
 
 impl ScreenLike for IdentitiesScreen {
@@ -1119,11 +1107,13 @@ impl ScreenLike for IdentitiesScreen {
         }
     }
 
-    fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
-        if let crate::ui::MessageType::Error = message_type {
-            self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning)
+            && let Some(handle) = self.refresh_banner.take()
+        {
+            handle.clear();
         }
-        self.backend_message = Some((message.to_string(), message_type, Utc::now()));
     }
 
     fn display_task_result(
@@ -1133,18 +1123,29 @@ impl ScreenLike for IdentitiesScreen {
         if let crate::ui::BackendTaskSuccessResult::RefreshedIdentity(_) =
             backend_task_success_result
         {
-            self.refreshing_status = IdentitiesRefreshingStatus::NotRefreshing;
-            self.backend_message = Some((
-                "Successfully refreshed identity".to_string(),
-                crate::ui::MessageType::Success,
-                Utc::now(),
-            ));
+            self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
+            if self.pending_refresh_count == 0 {
+                if let Some(handle) = self.refresh_banner.take() {
+                    handle.clear();
+                }
+                let message = if self.total_refresh_count == 1 {
+                    "Successfully refreshed identity".to_string()
+                } else {
+                    format!(
+                        "Successfully refreshed {} identities",
+                        self.total_refresh_count
+                    )
+                };
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    &message,
+                    MessageType::Success,
+                );
+            }
         }
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_message_expiration();
-
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             vec![
                 (
@@ -1216,54 +1217,27 @@ impl ScreenLike for IdentitiesScreen {
                 inner_action |= self.show_alias_edit_popup(ctx);
             }
 
-            // Show either refreshing indicator or message, but not both
-            if let IdentitiesRefreshingStatus::Refreshing(start_time) = self.refreshing_status {
-                ui.add_space(25.0); // Space above
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-                    ui.label(format!("Refreshing... Time taken so far: {}", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-                });
-                ui.add_space(2.0); // Space below
-            } else if let Some((message, message_type, timestamp)) = self.backend_message.clone() {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
-                let message_color = match message_type {
-                    MessageType::Error => egui::Color32::DARK_RED,
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                };
-
-                ui.add_space(25.0); // Same space as refreshing indicator
-                ui.horizontal(|ui| {
-                    ui.add_space(10.0);
-
-                    // Calculate remaining seconds
-                    let now = Utc::now();
-                    let elapsed = now.signed_duration_since(timestamp);
-                    let remaining = (10 - elapsed.num_seconds()).max(0);
-
-                    // Add the message with auto-dismiss countdown
-                    let full_msg = format!("{} ({}s)", message, remaining);
-                    ui.label(egui::RichText::new(full_msg).color(message_color));
-                });
-                ui.add_space(2.0); // Same space below as refreshing indicator
-            }
             inner_action
         });
 
         match action {
-            AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))) => {
-                self.refreshing_status =
-                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-                self.backend_message = None // Clear any existing message
-            }
-            AppAction::BackendTasks(_, _) => {
-                // Going to assume this is only going to be Refresh All
-                self.refreshing_status =
-                    IdentitiesRefreshingStatus::Refreshing(Utc::now().timestamp() as u64);
-                self.backend_message = None // Clear any existing message
+            AppAction::BackendTasks(ref tasks, _)
+                if tasks.iter().all(|t| {
+                    matches!(
+                        t,
+                        BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))
+                    )
+                }) =>
+            {
+                if let Some(handle) = self.refresh_banner.take() {
+                    handle.clear();
+                }
+                self.pending_refresh_count = tasks.len();
+                self.total_refresh_count = tasks.len();
+                let handle =
+                    MessageBanner::set_global(ctx, "Refreshing identities...", MessageType::Info);
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
             }
             _ => {}
         }

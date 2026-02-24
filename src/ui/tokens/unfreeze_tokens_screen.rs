@@ -252,36 +252,46 @@ impl UnfreezeTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
+        let signing_key = match self.selected_key.clone() {
+            Some(key) => key,
+            None => {
+                self.error_message = Some("No signing key selected".into());
+                self.status = UnfreezeTokensStatus::ErrorMessage("No key selected".into());
+                return AppAction::None;
+            }
+        };
+
         // Validate user input
-        let parsed = Identifier::from_string_try_encodings(
+        let unfreeze_id = match Identifier::from_string_try_encodings(
             &self.unfreeze_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        );
-        if parsed.is_err() {
-            self.error_message = Some("Please enter a valid identity ID.".into());
-            self.status = UnfreezeTokensStatus::ErrorMessage("Invalid identity ID".into());
-            return AppAction::None;
-        }
-        let unfreeze_id = parsed.unwrap();
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                self.error_message = Some("Please enter a valid identity ID.".into());
+                self.status = UnfreezeTokensStatus::ErrorMessage("Invalid identity ID".into());
+                return AppAction::None;
+            }
+        };
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.status = UnfreezeTokensStatus::WaitingForResult(now);
 
         // Grab the data contract for this token from the app context
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
-        let group_info = if self.group_action_id.is_some() {
+        let group_info = if let Some(action_id) = self.group_action_id {
             self.group.as_ref().map(|(pos, _)| {
                 GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                     GroupStateTransitionInfo {
                         group_contract_position: *pos,
-                        action_id: self.group_action_id.unwrap(),
+                        action_id,
                         action_is_proposer: false,
                     },
                 )
@@ -298,7 +308,7 @@ impl UnfreezeTokensScreen {
                 actor_identity: self.identity.clone(),
                 data_contract,
                 token_position: self.identity_token_info.token_position,
-                signing_key: self.selected_key.clone().expect("No key selected"),
+                signing_key,
                 public_note: if self.group_action_id.is_some() {
                     None
                 } else {
@@ -571,7 +581,7 @@ impl ScreenLike for UnfreezeTokensScreen {
                     ui.add_space(10.0);
                     let button =
                         egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(Color32::from_rgb(0, 128, 255))
+                            .fill(DashColors::ACTION_BUTTON_BLUE)
                             .corner_radius(3.0);
 
                     if ui.add(button).clicked() {
@@ -602,13 +612,13 @@ impl ScreenLike for UnfreezeTokensScreen {
                     UnfreezeTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Unfreezing... elapsed: {}s", elapsed));
                     }
                     UnfreezeTokensStatus::ErrorMessage(msg) => {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         let msg = msg.clone();
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))

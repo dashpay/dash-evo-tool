@@ -20,10 +20,7 @@ pub async fn sync_notes(
     shielded_state: &mut ShieldedWalletState,
     network: Network,
 ) -> Result<(u32, u64), String> {
-    let sdk = {
-        let guard = app_context.sdk.read().unwrap();
-        guard.clone()
-    };
+    let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let network_str = network.to_string();
     let prepared_ivk = shielded_state.keys.ivk.prepare();

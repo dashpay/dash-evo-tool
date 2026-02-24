@@ -1551,7 +1551,7 @@ impl DPNSScreen {
 
         // "Apply Votes" button
         let button = egui::Button::new(RichText::new("Apply Votes").color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::ACTION_BUTTON_BLUE)
             .corner_radius(3.0);
         if ui.add(button).clicked() {
             action = self.bulk_apply_votes();
@@ -2114,6 +2114,7 @@ impl ScreenLike for DPNSScreen {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 let color = match msg_type {
                     MessageType::Error => Color32::DARK_RED,
+                    MessageType::Warning => DashColors::warning_color(dark_mode),
                     MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => Color32::DARK_GREEN,
                 };

@@ -383,7 +383,7 @@ impl DocumentActionScreen {
                         self.broadcast_status = BroadcastStatus::Fetching(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .unwrap()
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
@@ -464,7 +464,7 @@ impl DocumentActionScreen {
         if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
             let elapsed = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs()
                 - start;
             ui.add_space(10.0);
@@ -507,7 +507,7 @@ impl DocumentActionScreen {
                     self.broadcast_status = BroadcastStatus::Fetching(
                         SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_secs(),
                     );
                     action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
@@ -523,7 +523,7 @@ impl DocumentActionScreen {
         if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
             let elapsed = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs()
                 - start;
             ui.add_space(10.0);
@@ -572,7 +572,7 @@ impl DocumentActionScreen {
                         self.broadcast_status = BroadcastStatus::Fetching(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .unwrap()
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
@@ -589,7 +589,7 @@ impl DocumentActionScreen {
         if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
             let elapsed = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs()
                 - start;
             ui.add_space(10.0);
@@ -618,7 +618,7 @@ impl DocumentActionScreen {
             }
         } else if self.broadcast_status == BroadcastStatus::Fetched {
             ui.add_space(10.0);
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::error_color(ui.visuals().dark_mode);
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))
@@ -913,7 +913,7 @@ impl DocumentActionScreen {
         };
 
         let button = egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-            .fill(Color32::from_rgb(0, 128, 255))
+            .fill(DashColors::ACTION_BUTTON_BLUE)
             .frame(true)
             .corner_radius(3.0)
             .min_size(egui::vec2(100.0, 30.0));
@@ -925,7 +925,7 @@ impl DocumentActionScreen {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs(),
                 );
                 action = AppAction::BackendTask(task);
@@ -938,7 +938,7 @@ impl DocumentActionScreen {
                 ui.add_space(10.0);
                 let elapsed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs()
                     - start_time;
                 ui.label(format!("Broadcasting... {}s", elapsed));
@@ -947,7 +947,7 @@ impl DocumentActionScreen {
                 ui.add_space(10.0);
                 let elapsed = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs()
                     - start_time;
                 ui.label(format!("Fetching... {}s", elapsed));
@@ -1798,7 +1798,7 @@ impl DocumentActionScreen {
 
                 if let Some(ref msg) = self.backend_message {
                     ui.add_space(10.0);
-                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let error_color = DashColors::error_color(ui.visuals().dark_mode);
                     let msg = msg.clone();
                     Frame::new()
                         .fill(error_color.gamma_multiply(0.1))

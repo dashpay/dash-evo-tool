@@ -13,6 +13,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
@@ -53,7 +54,6 @@ pub struct TopUpIdentityScreen {
     funding_amount_input: Option<AmountInput>,
     funding_utxo: Option<(OutPoint, TxOut, Address)>,
     copied_to_clipboard: Option<Option<String>>,
-    error_message: Option<String>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_pop_up_info: Option<String>,
     pub app_context: Arc<AppContext>,
@@ -79,7 +79,6 @@ impl TopUpIdentityScreen {
             funding_amount_input: None,
             funding_utxo: None,
             copied_to_clipboard: None,
-            error_message: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_pop_up_info: None,
             app_context: app_context.clone(),
@@ -427,9 +426,9 @@ impl TopUpIdentityScreen {
 }
 
 impl ScreenLike for TopUpIdentityScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message_type == MessageType::Error {
-            self.error_message = Some(format!("Error topping up identity: {}", message));
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             // Reset step so UI is not stuck on waiting messages
             let mut step = self.step.write().unwrap();
             if *step == WalletFundedScreenStep::WaitingForPlatformAcceptance
@@ -437,8 +436,6 @@ impl ScreenLike for TopUpIdentityScreen {
             {
                 *step = WalletFundedScreenStep::ReadyToCreate;
             }
-        } else {
-            self.error_message = Some(message.to_string());
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -453,7 +450,6 @@ impl ScreenLike for TopUpIdentityScreen {
             self.funding_amount_exact = None;
             self.funding_amount_input = None;
             self.copied_to_clipboard = None;
-            self.error_message = None;
 
             let mut step = self.step.write().unwrap();
             *step = WalletFundedScreenStep::Success;
@@ -526,30 +522,6 @@ impl ScreenLike for TopUpIdentityScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-            let _dark_mode = ui.ctx().style().visuals.dark_mode;
-
-            // Display error message at the top, outside of scroll area
-            if let Some(error_message) = self.error_message.clone() {
-                let message_color = egui::Color32::from_rgb(255, 100, 100);
-
-                ui.horizontal(|ui| {
-                    egui::Frame::new()
-                        .fill(message_color.gamma_multiply(0.1))
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, message_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&error_message).color(message_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.error_message = None;
-                                }
-                            });
-                        });
-                });
-                ui.add_space(10.0);
-            }
 
             ScrollArea::vertical().show(ui, |ui| {
                 let step = { *self.step.read().unwrap() };
@@ -639,7 +611,7 @@ impl ScreenLike for TopUpIdentityScreen {
 
                     if let Some(wallet) = &self.wallet {
                         if let Err(e) = try_open_wallet_no_password(wallet) {
-                            self.error_message = Some(e);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                         if wallet_needs_unlock(wallet) {
                             ui.add_space(10.0);

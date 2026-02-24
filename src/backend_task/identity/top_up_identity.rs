@@ -28,10 +28,7 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
             .await
@@ -425,20 +422,23 @@ impl AppContext {
                                 );
                             }
 
-                            let identity_create_transition =
-                                IdentityTopUpTransition::try_from_identity(
-                                    &qualified_identity.identity,
-                                    asset_lock_proof,
-                                    asset_lock_proof_private_key.inner.as_ref(),
-                                    0,
-                                    self.platform_version(),
-                                    None,
-                                )
-                                .expect("expected to make transition");
-                            format!(
-                                "error: {}, transaction is {:?}",
-                                e, identity_create_transition
-                            )
+                            match IdentityTopUpTransition::try_from_identity(
+                                &qualified_identity.identity,
+                                asset_lock_proof,
+                                asset_lock_proof_private_key.inner.as_ref(),
+                                0,
+                                self.platform_version(),
+                                None,
+                            ) {
+                                Ok(transition) => format!(
+                                    "error: {}, transaction is {:?}",
+                                    e, transition
+                                ),
+                                Err(transition_err) => format!(
+                                    "error: {}, also failed to recreate transition for debugging: {}",
+                                    e, transition_err
+                                ),
+                            }
                         })?
                 } else {
                     return Err(error_string);

@@ -76,7 +76,7 @@ impl AppContext {
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
-        self.connection_status.refresh_overall();
+        self.connection_status.refresh_state();
         Ok(())
     }
 
@@ -405,6 +405,14 @@ impl AppContext {
             }
         }
 
+        if derivation_path.is_bip32() {
+            return (DerivationPathReference::BIP32, default_type);
+        }
+
+        if derivation_path.is_bip44(self.network) {
+            return (DerivationPathReference::BIP44, default_type);
+        }
+
         (default_ref, default_type)
     }
 
@@ -477,10 +485,7 @@ impl AppContext {
                     return Ok(());
                 }
 
-                let sdk = {
-                    let guard = self.sdk.read().map_err(|_| "SDK lock poisoned")?;
-                    guard.clone()
-                };
+                let sdk = self.sdk.load().as_ref().clone();
 
                 for txid in pending_txids {
                     match get_transaction_info(&sdk, &txid).await {
@@ -772,7 +777,7 @@ impl AppContext {
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
-        self.connection_status.refresh_overall();
+        self.connection_status.refresh_state();
         // Reset the throttle timer so trigger_refresh() starts polling
         // at 200ms intervals and picks up the Stopped transition quickly.
         self.connection_status.reset_timer();

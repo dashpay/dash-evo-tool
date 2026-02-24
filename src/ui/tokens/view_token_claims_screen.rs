@@ -74,8 +74,8 @@ impl ScreenLike for ViewTokenClaimsScreen {
             MessageType::Success => {
                 self.message = Some((message.to_string(), MessageType::Success, Utc::now()));
             }
-            MessageType::Error => {
-                self.message = Some((message.to_string(), MessageType::Error, Utc::now()));
+            MessageType::Error | MessageType::Warning => {
+                self.message = Some((message.to_string(), message_type, Utc::now()));
                 if message.contains("Error fetching documents") {
                     self.fetch_status = FetchStatus::NotFetching;
                 }
@@ -136,7 +136,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
 
             let fetch_button =
                 egui::Button::new(RichText::new("Fetch claims").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .frame(true)
                     .corner_radius(3.0);
 
@@ -153,7 +153,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
                     MessageType::Success => {
                         ui.colored_label(DashColors::success_color(dark_mode), msg);
                     }
-                    MessageType::Error => {
+                    MessageType::Error | MessageType::Warning => {
                         ui.colored_label(DashColors::error_color(dark_mode), msg);
                     }
                     MessageType::Info => {

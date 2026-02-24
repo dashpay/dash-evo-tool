@@ -101,6 +101,7 @@ pub struct WalletsBalancesScreen {
     private_key_dialog: PrivateKeyDialogState,
     mine_dialog: MineDialogState,
     selected_account: Option<(AccountCategory, Option<u32>)>,
+    show_zero_balance_addresses: bool,
     /// Pending refresh of platform address balances (triggered after transfers)
     pending_platform_balance_refresh: Option<WalletSeedHash>,
     /// Whether we should refresh the wallet after it's unlocked
@@ -206,6 +207,7 @@ impl WalletsBalancesScreen {
             private_key_dialog: PrivateKeyDialogState::default(),
             mine_dialog: MineDialogState::default(),
             selected_account: None,
+            show_zero_balance_addresses: false,
             pending_platform_balance_refresh: None,
             pending_refresh_after_unlock: false,
             pending_refresh_mode: RefreshMode::default(),
@@ -625,7 +627,7 @@ impl WalletsBalancesScreen {
             .selected_account
             .as_ref()
             .is_some_and(|(category, index)| {
-                *category == AccountCategory::Bip44 && index.unwrap_or(0) == 0
+                *category == AccountCategory::Bip44 && *index == Some(0)
             });
 
         if wallet_is_open && is_main_account {
@@ -1545,7 +1547,7 @@ impl WalletsBalancesScreen {
                                 let summaries = {
                                     let wallet = wallet_arc.read().unwrap();
                                     self.render_wallet_overview(ui, &wallet);
-                                    collect_account_summaries(&wallet)
+                                    collect_account_summaries(&wallet, self.app_context.network)
                                 };
 
                                 self.ensure_account_selection(&summaries);
@@ -1767,7 +1769,8 @@ impl ScreenLike for WalletsBalancesScreen {
             let message = self.message.clone();
             if let Some((message, message_type, _timestamp)) = message {
                 let message_color = match message_type {
-                    MessageType::Error => egui::Color32::from_rgb(255, 100, 100),
+                    MessageType::Error => DashColors::ERROR,
+                    MessageType::Warning => DashColors::WARNING,
                     MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };
@@ -2067,7 +2070,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         // Display error message if the password was incorrect
                         if let Some(error_message) = self.sk_error_message.clone() {
                             ui.add_space(5.0);
-                            let error_color = Color32::from_rgb(255, 100, 100);
+                            let error_color = DashColors::ERROR;
                             Frame::new()
                                 .fill(error_color.gamma_multiply(0.1))
                                 .inner_margin(Margin::symmetric(10, 8))

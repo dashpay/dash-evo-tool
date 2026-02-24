@@ -37,11 +37,11 @@ impl Database {
             if current_version != DEFAULT_DB_VERSION {
                 self.backup_db(db_file_path)?;
                 if let Err(e) = self.try_perform_migration(current_version, DEFAULT_DB_VERSION) {
-                    let version_after_migration = self.db_schema_version()?;
-                    panic!(
-                        "Database migration from version {} to {} failed, database is at version {}. Error: {:?}",
+                    let version_after_migration = self.db_schema_version().unwrap_or(0);
+                    return Err(rusqlite::Error::InvalidParameterName(format!(
+                        "Database migration from version {} to {} failed (database is at version {}): {}",
                         current_version, DEFAULT_DB_VERSION, version_after_migration, e
-                    );
+                    )));
                 }
             }
         }

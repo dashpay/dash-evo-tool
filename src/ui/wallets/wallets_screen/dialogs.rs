@@ -9,14 +9,14 @@ use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::DashColors;
-use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
+use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use eframe::egui::{self, ComboBox, Context};
 use eframe::epaint::TextureHandle;
 use egui::load::SizedTexture;
-use egui::{Color32, Frame, Margin, RichText, TextureOptions};
+use egui::{Frame, Margin, RichText, TextureOptions};
 use std::sync::{Arc, RwLock};
 
 use super::WalletsBalancesScreen;
@@ -25,6 +25,7 @@ use super::WalletsBalancesScreen;
 pub(super) struct SendDialogState {
     pub is_open: bool,
     pub address: String,
+    pub address_error: Option<String>,
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
     pub subtract_fee: bool,
@@ -112,11 +113,7 @@ impl WalletsBalancesScreen {
             egui::Order::Background,
             egui::Id::new(id),
         ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120),
-        );
+        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
     }
 
     pub(super) fn modal_frame(ctx: &Context) -> Frame {
@@ -128,13 +125,10 @@ impl WalletsBalancesScreen {
                 offset: [0, 8],
                 blur: 16,
                 spread: 0,
-                color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                color: DashColors::popup_shadow(),
             },
             fill: ctx.style().visuals.window_fill,
-            stroke: egui::Stroke::new(
-                1.0,
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-            ),
+            stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
         }
     }
 
@@ -151,7 +145,41 @@ impl WalletsBalancesScreen {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.label("Recipient Address");
-                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text("y..."));
+                let hint = if self.app_context.network == Network::Dash {
+                    "Enter Core address (X.../7...)"
+                } else {
+                    "Enter Core address (y.../8...)"
+                };
+                let response = ui
+                    .add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text(hint));
+
+                // Validate address when it changes
+                if response.changed() {
+                    if self.send_dialog.address.trim().is_empty() {
+                        self.send_dialog.address_error = None;
+                    } else {
+                        let trimmed = self.send_dialog.address.trim();
+                        if crate::ui::helpers::is_platform_address_string(trimmed) {
+                            self.send_dialog.address_error = Some(
+                                "Platform addresses not supported. Use a Core address.".to_string(),
+                            );
+                        } else {
+                            match trimmed.parse::<Address<NetworkUnchecked>>() {
+                                Ok(_) => {
+                                    self.send_dialog.address_error = None;
+                                }
+                                Err(_) => {
+                                    self.send_dialog.address_error =
+                                        Some("Invalid Core address".to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(error) = &self.send_dialog.address_error {
+                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), error);
+                }
 
                 ui.add_space(8.0);
 
@@ -175,7 +203,7 @@ impl WalletsBalancesScreen {
                 ui.add(egui::TextEdit::singleline(&mut self.send_dialog.memo));
 
                 if let Some(error) = self.send_dialog.error.clone() {
-                    let error_color = Color32::from_rgb(255, 100, 100);
+                    let error_color = DashColors::ERROR;
                     Frame::new()
                         .fill(error_color.gamma_multiply(0.1))
                         .inner_margin(Margin::symmetric(10, 8))
@@ -196,7 +224,11 @@ impl WalletsBalancesScreen {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Send").clicked() {
+                    let has_address_error = self.send_dialog.address_error.is_some();
+                    if ui
+                        .add_enabled(!has_address_error, egui::Button::new("Send"))
+                        .clicked()
+                    {
                         match self.prepare_send_action() {
                             Ok(app_action) => {
                                 action = app_action;
@@ -590,7 +622,7 @@ impl WalletsBalancesScreen {
     }
 
     /// Generate a new Platform address for the wallet.
-    /// Returns the address in Bech32m format (e.g., tdash1... for testnet)
+    /// Returns the address in Bech32m format (e.g., tdash1k... for testnet per DIP-18)
     pub(super) fn generate_platform_address(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
@@ -713,7 +745,7 @@ impl WalletsBalancesScreen {
                     // Status message
                     if let Some(status) = &self.fund_platform_dialog.status {
                         let status_color = if self.fund_platform_dialog.status_is_error {
-                            egui::Color32::from_rgb(220, 50, 50)
+                            DashColors::DANGER_RED
                         } else {
                             DashColors::text_secondary(dark_mode)
                         };
@@ -955,8 +987,8 @@ impl WalletsBalancesScreen {
                 return AppAction::None;
             };
 
-            // Parse the Platform address (Bech32m format: dash1.../tdash1...)
-            let platform_addr = if crate::ui::helpers::is_platform_address(selected_addr) {
+            // Parse the Platform address (Bech32m format: dash1.../tdash1... per DIP-18)
+            let platform_addr = if crate::ui::helpers::is_platform_address_string(selected_addr) {
                 match PlatformAddress::from_bech32m_string(selected_addr) {
                     Ok((addr, network)) => {
                         // Validate that address network matches app network

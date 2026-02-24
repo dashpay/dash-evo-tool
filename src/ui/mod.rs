@@ -873,6 +873,7 @@ impl Screen {
 pub enum MessageType {
     Success,
     Info,
+    Warning,
     Error,
 }
 

@@ -75,7 +75,7 @@ impl StyledButton {
             ButtonVariant::Danger => (
                 DashColors::WHITE,
                 DashColors::ERROR,
-                Color32::from_rgb(200, 0, 0),
+                DashColors::DANGER_HOVER,
                 None,
             ),
             ButtonVariant::Ghost => (
@@ -560,7 +560,10 @@ pub fn island_central_panel<R>(ctx: &Context, content: impl FnOnce(&mut Ui) -> R
                 .inner_margin(Margin::same(inner_margin as i8))
                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                 .shadow(Shadow::elevated())
-                .show(ui, |ui| content(ui))
+                .show(ui, |ui| {
+                    super::MessageBanner::show_global(ui);
+                    content(ui)
+                })
                 .inner
         })
         .inner

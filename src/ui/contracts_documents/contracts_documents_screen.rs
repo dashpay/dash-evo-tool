@@ -187,15 +187,15 @@ impl DocumentQueryScreen {
             ui.add(
                 egui::TextEdit::singleline(&mut self.document_query)
                     .desired_width(text_width)
-                    .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                    .background_color(crate::ui::theme::DashColors::input_background(dark_mode)),
+                    .text_color(DashColors::text_primary(dark_mode))
+                    .background_color(DashColors::input_background(dark_mode)),
             );
 
             ui.add_space(spacing);
 
             let button_fetch =
                 egui::Button::new(egui::RichText::new("Fetch Documents").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 255))
+                    .fill(DashColors::ACTION_BUTTON_BLUE)
                     .frame(true)
                     .corner_radius(3.0)
                     .min_size(egui::vec2(button_width - spacing, 0.0));
@@ -211,7 +211,7 @@ impl DocumentQueryScreen {
                         // Set the status to waiting and capture the current time
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(now);
                         self.current_page = 1; // Reset to first page
@@ -346,7 +346,7 @@ impl DocumentQueryScreen {
                     DocumentQueryStatus::WaitingForResult(start_time) => {
                         let time_elapsed = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs()
                             - start_time;
                         ui.horizontal(|ui| {
@@ -390,7 +390,7 @@ impl DocumentQueryScreen {
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         self.current_page -= 1;
@@ -403,7 +403,7 @@ impl DocumentQueryScreen {
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         self.current_page = 1;
@@ -424,7 +424,7 @@ impl DocumentQueryScreen {
                         self.document_query_status = DocumentQueryStatus::WaitingForResult(
                             SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
-                                .expect("Time went backwards")
+                                .unwrap_or_default()
                                 .as_secs(),
                         );
                         if self.current_page > 1 {
@@ -478,8 +478,8 @@ impl DocumentQueryScreen {
             egui::TextEdit::multiline(&mut combined_string)
                 .desired_rows(10)
                 // Remove desired_width to respect parent container margins
-                .text_color(crate::ui::theme::DashColors::text_primary(dark_mode))
-                .background_color(crate::ui::theme::DashColors::input_background(dark_mode))
+                .text_color(DashColors::text_primary(dark_mode))
+                .background_color(DashColors::input_background(dark_mode))
                 .font(egui::TextStyle::Monospace),
         );
     }

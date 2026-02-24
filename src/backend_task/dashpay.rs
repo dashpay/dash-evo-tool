@@ -22,6 +22,8 @@ pub mod validation;
 pub use contacts::ContactData;
 
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,21 +167,51 @@ impl AppContext {
                 identity,
                 request_id,
             } => contact_requests::reject_contact_request(self, sdk, identity, request_id).await,
-            DashPayTask::LoadPaymentHistory { identity: _ } => {
-                // TODO: Implement payment history loading according to DIP-0015
-                // This requires an SPV client to query the blockchain, which is not yet available.
-                // Once SPV support is added, the implementation would:
-                // 1. Get all established contacts (bidirectional contact requests)
-                // 2. For each contact, derive payment addresses from their encrypted extended public key
-                // 3. Query blockchain via SPV for transactions to/from those addresses
-                // 4. Build payment history records with amount, timestamp, memo, etc.
-                // 5. Store in local database for faster access
-                //
-                // The derivation path for DashPay addresses is:
-                // m/9'/5'/15'/account'/(our_identity_id)/(contact_identity_id)/index
-                //
-                // For now, return empty payment history until SPV client is available
-                Ok(BackendTaskSuccessResult::DashPayPaymentHistory(Vec::new()))
+            DashPayTask::LoadPaymentHistory { identity } => {
+                // Reuse the shared payment history loader to avoid duplicating logic.
+                let identity_id = identity.identity.id();
+                let records = payments::load_payment_history(self, &identity_id, None).await?;
+
+                let network_str = self.network.to_string();
+                let contacts = self
+                    .db
+                    .load_dashpay_contacts(&identity_id, &network_str)
+                    .unwrap_or_default();
+
+                let results: Vec<_> = records
+                    .into_iter()
+                    .map(|rec| {
+                        let is_incoming = rec.to_identity == identity_id;
+                        let contact_id = if is_incoming {
+                            rec.from_identity
+                        } else {
+                            rec.to_identity
+                        };
+
+                        let contact_name = contacts
+                            .iter()
+                            .find(|c| {
+                                Identifier::from_bytes(&c.contact_identity_id)
+                                    .map(|id| id == contact_id)
+                                    .unwrap_or(false)
+                            })
+                            .and_then(|c| c.username.clone().or(c.display_name.clone()))
+                            .unwrap_or_else(|| {
+                                let s = contact_id.to_string(Encoding::Base58);
+                                format!("Unknown ({})", &s[..s.len().min(8)])
+                            });
+
+                        (
+                            rec.tx_id.unwrap_or_default(),
+                            contact_name,
+                            rec.amount,
+                            is_incoming,
+                            rec.memo.unwrap_or_default(),
+                        )
+                    })
+                    .collect();
+
+                Ok(BackendTaskSuccessResult::DashPayPaymentHistory(results))
             }
             DashPayTask::SendPaymentToContact {
                 identity,

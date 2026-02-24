@@ -507,7 +507,7 @@ impl ScreenLike for KeyInfoScreen {
 
                     // Display error message if validation fails
                     if let Some(error_message) = self.error_message.clone() {
-                        let error_color = Color32::from_rgb(255, 100, 100);
+                        let error_color = DashColors::ERROR;
                         Frame::new()
                             .fill(error_color.gamma_multiply(0.1))
                             .inner_margin(Margin::symmetric(10, 8))
@@ -707,7 +707,7 @@ impl KeyInfoScreen {
         }
 
         if let Some(error_message) = self.sign_error_message.clone() {
-            let error_color = Color32::from_rgb(255, 100, 100);
+            let error_color = DashColors::ERROR;
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
                 .inner_margin(Margin::symmetric(10, 8))

@@ -1,4 +1,4 @@
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -15,8 +15,9 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike, ScreenType};
+use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use dash_sdk::platform::Identifier;
+use dash_sdk::platform::{Document, Identifier};
 use egui::{Frame, Margin, RichText, ScrollArea, Ui};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -30,6 +31,10 @@ pub struct ContactRequest {
     pub to_identity: Identifier,
     pub from_username: Option<String>,
     pub from_display_name: Option<String>,
+    /// Username of the recipient (used for outgoing requests)
+    pub to_username: Option<String>,
+    /// Display name of the recipient (used for outgoing requests)
+    pub to_display_name: Option<String>,
     pub account_reference: u32,
     pub account_label: Option<String>,
     pub timestamp: u64,
@@ -60,6 +65,8 @@ pub struct ContactRequests {
     pub wallet_unlock_popup: WalletUnlockPopup,
     /// Structured error for displaying with action buttons
     error: Option<DashPayError>,
+    /// Identity IDs that need profile fetching from Platform
+    pending_profile_fetches: HashSet<Identifier>,
 }
 
 impl ContactRequests {
@@ -81,6 +88,7 @@ impl ContactRequests {
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error: None,
+            pending_profile_fetches: HashSet::new(),
         };
 
         // Auto-select first identity on creation if available
@@ -136,6 +144,7 @@ impl ContactRequests {
             self.outgoing_requests.clear();
             self.message = None;
             self.has_fetched_requests = false;
+            self.pending_profile_fetches.clear();
 
             // Load requests from database for the newly selected identity
             self.load_requests_from_database();
@@ -179,6 +188,8 @@ impl ContactRequests {
                                 to_identity: identity_id,
                                 from_username: request.to_username, // This field is misnamed in DB
                                 from_display_name: None,
+                                to_username: None,
+                                to_display_name: None,
                                 account_reference: 0,
                                 account_label: request.account_label,
                                 timestamp: request.created_at as u64,
@@ -209,6 +220,8 @@ impl ContactRequests {
                                 to_identity: to_id,
                                 from_username: None,
                                 from_display_name: None,
+                                to_username: None,
+                                to_display_name: None,
                                 account_reference: 0,
                                 account_label: request.account_label,
                                 timestamp: request.created_at as u64,
@@ -222,6 +235,202 @@ impl ContactRequests {
                     tracing::error!("Failed to load outgoing contact requests: {}", e);
                 }
             }
+
+            // Resolve names from local cache and mark unresolved for Platform fetch
+            let unresolved = self.resolve_names_from_local_cache();
+            self.pending_profile_fetches.extend(unresolved);
+        }
+    }
+
+    /// Resolve usernames and display names for contact requests using local DB cache.
+    /// Returns a list of identity IDs that were not found locally and need Platform fetching.
+    fn resolve_names_from_local_cache(&mut self) -> Vec<Identifier> {
+        use std::collections::HashMap;
+
+        let network_str = self.app_context.network.to_string();
+        let mut unresolved_ids = Vec::new();
+
+        // Pre-load contacts once to avoid N+1 queries inside the loop
+        let contacts_by_id: HashMap<Identifier, (Option<String>, Option<String>)> =
+            if let Some(selected_identity) = &self.selected_identity {
+                let owner_id = selected_identity.identity.id();
+                self.app_context
+                    .db
+                    .load_dashpay_contacts(&owner_id, &network_str)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|c| {
+                        Identifier::from_bytes(&c.contact_identity_id)
+                            .ok()
+                            .map(|id| (id, (c.username, c.display_name)))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
+
+        // Collect all identity IDs we need to look up profiles for
+        let incoming_ids: Vec<Identifier> = self
+            .incoming_requests
+            .values()
+            .filter(|r| r.from_username.is_none() && r.from_display_name.is_none())
+            .map(|r| r.from_identity)
+            .collect();
+        let outgoing_ids: Vec<Identifier> = self
+            .outgoing_requests
+            .values()
+            .filter(|r| r.to_username.is_none() && r.to_display_name.is_none())
+            .map(|r| r.to_identity)
+            .collect();
+
+        // Pre-load profiles for all needed IDs (one DB query each, but only for unresolved)
+        let mut profiles_cache: HashMap<Identifier, Option<String>> = HashMap::new();
+        for id in incoming_ids.iter().chain(outgoing_ids.iter()) {
+            if !profiles_cache.contains_key(id) {
+                let display_name = self
+                    .app_context
+                    .db
+                    .load_dashpay_profile(id, &network_str)
+                    .ok()
+                    .flatten()
+                    .and_then(|p| p.display_name);
+                profiles_cache.insert(*id, display_name);
+            }
+        }
+
+        // Resolve names for incoming requests (need from_identity info)
+        for request in self.incoming_requests.values_mut() {
+            if request.from_username.is_some() || request.from_display_name.is_some() {
+                continue;
+            }
+
+            let identity_id = request.from_identity;
+            let mut found = false;
+
+            // Try profile cache first (has display_name)
+            if let Some(Some(display_name)) = profiles_cache.get(&identity_id) {
+                request.from_display_name = Some(display_name.clone());
+                found = true;
+            }
+
+            // Try contacts cache (has username and display_name)
+            if let Some((username, display_name)) = contacts_by_id.get(&identity_id) {
+                if request.from_username.is_none() {
+                    request.from_username = username.clone();
+                }
+                if request.from_display_name.is_none() {
+                    request.from_display_name = display_name.clone();
+                }
+                found = true;
+            }
+
+            if !found {
+                unresolved_ids.push(identity_id);
+            }
+        }
+
+        // Resolve names for outgoing requests (need to_identity info)
+        for request in self.outgoing_requests.values_mut() {
+            if request.to_username.is_some() || request.to_display_name.is_some() {
+                continue;
+            }
+
+            let identity_id = request.to_identity;
+            let mut found = false;
+
+            // Try profile cache first
+            if let Some(Some(display_name)) = profiles_cache.get(&identity_id) {
+                request.to_display_name = Some(display_name.clone());
+                found = true;
+            }
+
+            // Try contacts cache
+            if let Some((username, display_name)) = contacts_by_id.get(&identity_id) {
+                if request.to_username.is_none() {
+                    request.to_username = username.clone();
+                }
+                if request.to_display_name.is_none() {
+                    request.to_display_name = display_name.clone();
+                }
+                found = true;
+            }
+
+            if !found {
+                unresolved_ids.push(identity_id);
+            }
+        }
+
+        // Deduplicate
+        unresolved_ids.sort();
+        unresolved_ids.dedup();
+        unresolved_ids
+    }
+
+    /// Trigger backend fetches for identity profiles that aren't cached locally.
+    fn fetch_unresolved_profiles(&self, unresolved_ids: Vec<Identifier>) -> AppAction {
+        let Some(identity) = self.selected_identity.as_ref() else {
+            return AppAction::None;
+        };
+        if unresolved_ids.is_empty() {
+            return AppAction::None;
+        }
+
+        let identity = identity.clone();
+        let tasks: Vec<BackendTask> = unresolved_ids
+            .into_iter()
+            .map(|contact_id| {
+                BackendTask::DashPayTask(Box::new(DashPayTask::FetchContactProfile {
+                    identity: identity.clone(),
+                    contact_id,
+                }))
+            })
+            .collect();
+
+        AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent)
+    }
+
+    /// Update contact request names from a fetched profile document.
+    fn update_names_from_profile(&mut self, contact_id: Identifier, doc: &Document) {
+        let display_name = doc
+            .get("displayName")
+            .and_then(|v| v.as_text())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+
+        // Update incoming requests where from_identity matches
+        for request in self.incoming_requests.values_mut() {
+            if request.from_identity == contact_id && request.from_display_name.is_none() {
+                request.from_display_name = display_name.clone();
+            }
+        }
+
+        // Update outgoing requests where to_identity matches
+        for request in self.outgoing_requests.values_mut() {
+            if request.to_identity == contact_id && request.to_display_name.is_none() {
+                request.to_display_name = display_name.clone();
+            }
+        }
+
+        // Save to local DB for future lookups
+        let network_str = self.app_context.network.to_string();
+        let bio = doc
+            .get("publicMessage")
+            .and_then(|v| v.as_text())
+            .filter(|s| !s.is_empty());
+        let avatar_url = doc
+            .get("avatarUrl")
+            .and_then(|v| v.as_text())
+            .filter(|s| !s.is_empty());
+
+        if let Err(e) = self.app_context.db.save_dashpay_profile(
+            &contact_id,
+            &network_str,
+            display_name.as_deref(),
+            bio,
+            avatar_url,
+            None,
+        ) {
+            tracing::warn!("Failed to cache profile for {}: {}", contact_id, e);
         }
     }
 
@@ -284,6 +493,12 @@ impl ContactRequests {
 
     fn render_content(&mut self, ui: &mut Ui, show_header: bool) -> AppAction {
         let mut action = AppAction::None;
+
+        // Trigger Platform fetches for unresolved profiles
+        if !self.pending_profile_fetches.is_empty() {
+            let pending: Vec<_> = self.pending_profile_fetches.drain().collect();
+            action |= self.fetch_unresolved_profiles(pending);
+        }
 
         // Handle accept confirmation dialog
         if let Some((dialog, request)) = &mut self.accept_confirmation_dialog {
@@ -369,6 +584,7 @@ impl ContactRequests {
                             self.outgoing_requests.clear();
                             self.message = None;
                             self.has_fetched_requests = false;
+                            self.pending_profile_fetches.clear();
 
                             // Update wallet for the newly selected identity
                             if let Some(identity) = &self.selected_identity {
@@ -401,7 +617,7 @@ impl ContactRequests {
         if let Some(err) = self.error.clone() {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             let error_color = if dark_mode {
-                egui::Color32::from_rgb(255, 100, 100)
+                DashColors::ERROR
             } else {
                 egui::Color32::DARK_RED
             };
@@ -435,6 +651,7 @@ impl ContactRequests {
             let color = match message_type {
                 MessageType::Success => egui::Color32::DARK_GREEN,
                 MessageType::Error => egui::Color32::DARK_RED,
+                MessageType::Warning => DashColors::WARNING,
                 MessageType::Info => egui::Color32::LIGHT_BLUE,
             };
             // Only show error messages here if there's no structured error
@@ -753,13 +970,29 @@ impl ContactRequests {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
                                         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-                                        // For outgoing requests, show the TO identity
+                                        // For outgoing requests, show display name or username or truncated ID
                                         let id_str = request.to_identity.to_string(Encoding::Base58);
-                                        let name = format!("To: {}...{}", &id_str[..6], &id_str[id_str.len()-6..]);
+                                        let name = request
+                                            .to_display_name
+                                            .as_ref()
+                                            .or(request.to_username.as_ref())
+                                            .cloned()
+                                            .unwrap_or_else(|| {
+                                                format!("{}...{}", &id_str[..6], &id_str[id_str.len()-6..])
+                                            });
 
-                                        ui.label(RichText::new(name).strong().color(DashColors::text_primary(dark_mode)));
+                                        ui.label(RichText::new(format!("To: {}", name)).strong().color(DashColors::text_primary(dark_mode)));
 
-                                        // Show full identity ID
+                                        // Show username if display name is shown
+                                        if let Some(username) = &request.to_username
+                                            && request.to_display_name.is_some()
+                                        {
+                                            ui.label(
+                                                RichText::new(format!("@{}", username)).small().color(DashColors::text_secondary(dark_mode)),
+                                            );
+                                        }
+
+                                        // Show identity ID
                                         ui.label(
                                             RichText::new(format!("ID: {}", id_str))
                                                 .small()
@@ -786,13 +1019,13 @@ impl ContactRequests {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            if ui.button("Cancel").clicked() {
-                                                // TODO: Cancel outgoing request
-                                                self.display_message(
-                                                    "Request cancelled",
-                                                    MessageType::Info,
-                                                );
-                                            }
+                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                            ui.label(
+                                                RichText::new("Cannot be cancelled once sent")
+                                                    .small()
+                                                    .italics()
+                                                    .color(DashColors::text_secondary(dark_mode)),
+                                            );
                                         },
                                     );
                                 });
@@ -860,8 +1093,6 @@ impl ScreenLike for ContactRequests {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        use dash_sdk::dpp::document::DocumentV0Getters;
-
         self.loading = false;
 
         match result {
@@ -899,8 +1130,10 @@ impl ScreenLike for ContactRequests {
                         request_id: *id,
                         from_identity,
                         to_identity: current_identity_id,
-                        from_username: None, // TODO: Resolve username from identity
-                        from_display_name: None, // TODO: Fetch from profile
+                        from_username: None,
+                        from_display_name: None,
+                        to_username: None,
+                        to_display_name: None,
                         account_reference,
                         account_label: None, // TODO: Decrypt if present
                         timestamp,
@@ -950,8 +1183,10 @@ impl ScreenLike for ContactRequests {
                         request_id: *id,
                         from_identity: current_identity_id,
                         to_identity,
-                        from_username: None,     // This would be our username
-                        from_display_name: None, // This would be our display name
+                        from_username: None,
+                        from_display_name: None,
+                        to_username: None,
+                        to_display_name: None,
                         account_reference,
                         account_label: None, // TODO: Decrypt if present
                         timestamp,
@@ -981,7 +1216,17 @@ impl ScreenLike for ContactRequests {
                     }
                 }
 
-                // Don't show a message, just display the results
+                // Resolve names from local cache and trigger Platform fetches for unknowns
+                let unresolved = self.resolve_names_from_local_cache();
+                self.pending_profile_fetches.extend(unresolved);
+            }
+            BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
+                // A profile was fetched for an identity — update any matching requests
+                let contact_id = doc.owner_id();
+                self.update_names_from_profile(contact_id, &doc);
+            }
+            BackendTaskSuccessResult::DashPayContactProfile(None) => {
+                // No profile found for this identity — nothing to update
             }
             BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
                 // Mark as accepted only after successful backend operation

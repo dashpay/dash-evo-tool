@@ -9,6 +9,7 @@ use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::sync::SyncEvent;
 use dash_sdk::dash_spv::sync::SyncProgress as SpvSyncProgress;
+use dash_sdk::dash_spv::sync::SyncState;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
@@ -1049,6 +1050,7 @@ impl SpvManager {
         mut progress_rx: tokio::sync::watch::Receiver<SpvSyncProgress>,
     ) {
         let status = Arc::clone(&self.status);
+        let last_error = Arc::clone(&self.last_error);
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
@@ -1063,6 +1065,7 @@ impl SpvManager {
                         }
                         let watch_progress = progress_rx.borrow().clone();
                         let is_synced = watch_progress.is_synced();
+                        let is_error = watch_progress.state() == SyncState::Error;
 
                         // Update sync progress state
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
@@ -1076,6 +1079,12 @@ impl SpvManager {
                         if let Ok(mut status_guard) = status.write() {
                             if is_synced {
                                 *status_guard = SpvStatus::Running;
+                            } else if is_error {
+                                *status_guard = SpvStatus::Error;
+                                if let Ok(mut err_guard) = last_error.write() {
+                                    *err_guard =
+                                        Some("Sync failed (reported by SPV library)".into());
+                                }
                             } else if !matches!(*status_guard, SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error) {
                                 *status_guard = SpvStatus::Syncing;
                             }
@@ -1091,6 +1100,7 @@ impl SpvManager {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
         let status = Arc::clone(&self.status);
+        let last_error = Arc::clone(&self.last_error);
         let cancel = self.subtasks.cancellation_token.clone();
 
         self.subtasks.spawn_sync("spv_sync_event_handler", async move {
@@ -1135,6 +1145,21 @@ impl SpvManager {
                                 {
                                     *guard = SpvStatus::Running;
                                 }
+
+                                // Transition to Error when a sync manager reports a
+                                // fatal failure. The dash-spv library emits this event
+                                // but does NOT update the progress channel on the error
+                                // path, so we must react to the event directly.
+                                if let SyncEvent::ManagerError { ref manager, ref error } = event {
+                                    tracing::error!("SPV manager {:?} reported error: {}", manager, error);
+                                    if let Ok(mut guard) = status.write() {
+                                        *guard = SpvStatus::Error;
+                                    }
+                                    if let Ok(mut err_guard) = last_error.write() {
+                                        *err_guard = Some(format!("Sync manager {} failed: {}", manager, error));
+                                    }
+                                }
+
                                 if should_signal
                                     && let Some(ref tx) = reconcile_tx
                                 {

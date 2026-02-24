@@ -9,7 +9,7 @@ use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
-use crate::spv::CoreBackendMode;
+use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -23,6 +23,7 @@ use crate::ui::wallets::account_summary::{
 };
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
+use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self, ComboBox, Context, Ui};
@@ -114,6 +115,8 @@ pub struct WalletsBalancesScreen {
     utxo_page: usize,
     /// Selected refresh mode (only shown in dev mode)
     refresh_mode: RefreshMode,
+    /// Cached platform sync info: (last_sync_timestamp, last_sync_height)
+    platform_sync_info: Option<(u64, u64)>,
 }
 
 impl WalletsBalancesScreen {
@@ -171,6 +174,13 @@ impl WalletsBalancesScreen {
         selected_wallet: Option<Arc<RwLock<Wallet>>>,
         selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
     ) -> Self {
+        let platform_sync_info = selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+            .and_then(|hash| app_context.db.get_platform_sync_info(&hash).ok())
+            .map(|(ts, checkpoint, _terminal)| (ts, checkpoint))
+            .filter(|(ts, _)| *ts > 0);
+
         Self {
             selected_wallet,
             selected_single_key_wallet,
@@ -201,6 +211,7 @@ impl WalletsBalancesScreen {
             pending_asset_lock_search_after_unlock: false,
             utxo_page: 0,
             refresh_mode: RefreshMode::default(),
+            platform_sync_info,
         }
     }
 
@@ -224,6 +235,17 @@ impl WalletsBalancesScreen {
             .update_selected_single_key_hash(hash.as_ref());
     }
 
+    /// Refresh the cached platform sync info from the database.
+    fn refresh_platform_sync_info_cache(&mut self, seed_hash: &WalletSeedHash) {
+        self.platform_sync_info = self
+            .app_context
+            .db
+            .get_platform_sync_info(seed_hash)
+            .ok()
+            .map(|(ts, checkpoint, _terminal)| (ts, checkpoint))
+            .filter(|(ts, _)| *ts > 0);
+    }
+
     fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
         self.selected_wallet = Some(wallet.clone());
         self.selected_single_key_wallet = None;
@@ -231,6 +253,7 @@ impl WalletsBalancesScreen {
 
         if let Ok(hash) = wallet.read().map(|g| g.seed_hash()) {
             self.persist_selected_wallet_hash(Some(hash));
+            self.refresh_platform_sync_info_cache(&hash);
         }
         self.persist_selected_single_key_hash(None);
     }
@@ -794,6 +817,29 @@ impl WalletsBalancesScreen {
         Amount::dash_from_duffs(amount_duffs).to_string()
     }
 
+    /// Format a Unix timestamp (seconds since epoch) as a relative "time ago" string.
+    fn format_unix_time_ago(unix_ts: u64) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let elapsed_secs = now.saturating_sub(unix_ts);
+        Self::format_duration_ago(std::time::Duration::from_secs(elapsed_secs))
+    }
+
+    fn format_duration_ago(duration: std::time::Duration) -> String {
+        let secs = duration.as_secs();
+        if secs < 60 {
+            format!("{}s ago", secs)
+        } else if secs < 3600 {
+            format!("{}m ago", secs / 60)
+        } else if secs < 86400 {
+            format!("{}h ago", secs / 3600)
+        } else {
+            format!("{}d ago", secs / 86400)
+        }
+    }
+
     fn transaction_direction_label(tx: &WalletTransaction) -> &'static str {
         if tx.is_incoming() {
             "Received"
@@ -1083,6 +1129,199 @@ impl WalletsBalancesScreen {
                     });
                 }
             });
+    }
+
+    fn render_sync_status(&self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        Frame::group(ui.style())
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(16, 8))
+            .show(ui, |ui| {
+                // Line 1 -- Core sync status
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Core:")
+                            .size(12.0)
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+
+                    match self.app_context.core_backend_mode() {
+                        CoreBackendMode::Rpc => {
+                            if self.app_context.connection_status().rpc_online() {
+                                ui.colored_label(
+                                    Color32::DARK_GREEN,
+                                    RichText::new("Connected").size(12.0),
+                                );
+                            } else {
+                                ui.colored_label(
+                                    DashColors::ERROR,
+                                    RichText::new("Disconnected").size(12.0),
+                                );
+                            }
+                        }
+                        CoreBackendMode::Spv => {
+                            let snapshot = self.app_context.spv_manager().status();
+                            match snapshot.status {
+                                SpvStatus::Idle | SpvStatus::Stopped => {
+                                    ui.label(
+                                        RichText::new("Disconnected")
+                                            .size(12.0)
+                                            .color(DashColors::text_secondary(dark_mode)),
+                                    );
+                                }
+                                SpvStatus::Starting => {
+                                    ui.add(
+                                        egui::Spinner::new()
+                                            .size(12.0)
+                                            .color(DashColors::DASH_BLUE),
+                                    );
+                                    ui.label(
+                                        RichText::new("Connecting...")
+                                            .size(12.0)
+                                            .color(DashColors::DASH_BLUE),
+                                    );
+                                }
+                                SpvStatus::Syncing => {
+                                    ui.add(
+                                        egui::Spinner::new()
+                                            .size(12.0)
+                                            .color(DashColors::DASH_BLUE),
+                                    );
+                                    let phase_text =
+                                        Self::spv_active_phase_text(&snapshot.sync_progress);
+                                    ui.label(
+                                        RichText::new(format!("Syncing — {phase_text}"))
+                                            .size(12.0)
+                                            .color(DashColors::DASH_BLUE),
+                                    );
+                                }
+                                SpvStatus::Running => {
+                                    ui.colored_label(
+                                        Color32::DARK_GREEN,
+                                        RichText::new(format!(
+                                            "Synced — {} peers",
+                                            snapshot.connected_peers
+                                        ))
+                                        .size(12.0),
+                                    );
+                                }
+                                SpvStatus::Stopping => {
+                                    ui.add(
+                                        egui::Spinner::new()
+                                            .size(12.0)
+                                            .color(DashColors::DASH_BLUE),
+                                    );
+                                    ui.label(
+                                        RichText::new("Disconnecting...")
+                                            .size(12.0)
+                                            .color(DashColors::DASH_BLUE),
+                                    );
+                                }
+                                SpvStatus::Error => {
+                                    ui.colored_label(
+                                        DashColors::ERROR,
+                                        RichText::new("Error").size(12.0),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // Line 2 -- Platform sync status
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Platform:")
+                            .size(12.0)
+                            .strong()
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+
+                    // Addresses
+                    let addr_count = self
+                        .selected_wallet
+                        .as_ref()
+                        .and_then(|w| w.read().ok())
+                        .map(|w| w.platform_address_info.len())
+                        .unwrap_or(0);
+                    if self.refreshing {
+                        ui.add(egui::Spinner::new().size(12.0).color(DashColors::DASH_BLUE));
+                    }
+                    let addr_text =
+                        if let Some((last_sync_ts, sync_height)) = self.platform_sync_info {
+                            let ago = Self::format_unix_time_ago(last_sync_ts);
+                            format!(
+                                "Addresses: {} synced (blk {}, {})",
+                                addr_count, sync_height, ago
+                            )
+                        } else {
+                            "Addresses: never synced".to_string()
+                        };
+                    ui.label(
+                        RichText::new(addr_text)
+                            .size(12.0)
+                            .color(if self.refreshing {
+                                DashColors::DASH_BLUE
+                            } else {
+                                DashColors::text_secondary(dark_mode)
+                            }),
+                    );
+                });
+            });
+    }
+
+    /// Get a text summary of the active SPV sync phase.
+    fn spv_active_phase_text(sync_progress: &Option<SpvSyncProgress>) -> String {
+        let Some(progress) = sync_progress else {
+            return "starting...".to_string();
+        };
+
+        // Grab target height from headers (blocks doesn't expose target_height directly)
+        let target_height = progress
+            .headers()
+            .ok()
+            .map(|h| h.target_height())
+            .unwrap_or(0);
+
+        // Check phases in order of execution
+        if let Ok(headers) = progress.headers()
+            && headers.state() == SyncState::Syncing
+        {
+            let pct = Self::simple_progress_pct(headers.current_height(), headers.target_height());
+            return format!("Headers {pct}%");
+        }
+
+        if let Ok(fh) = progress.filter_headers()
+            && fh.state() == SyncState::Syncing
+        {
+            let pct = Self::simple_progress_pct(fh.current_height(), fh.target_height());
+            return format!("Filter Headers {pct}%");
+        }
+
+        if let Ok(filters) = progress.filters()
+            && filters.state() == SyncState::Syncing
+        {
+            let pct = Self::simple_progress_pct(filters.current_height(), filters.target_height());
+            return format!("Filters {pct}%");
+        }
+
+        if let Ok(blocks) = progress.blocks()
+            && blocks.state() == SyncState::Syncing
+        {
+            let pct = Self::simple_progress_pct(blocks.last_processed(), target_height);
+            return format!("Blocks {pct}%");
+        }
+
+        "syncing...".to_string()
+    }
+
+    fn simple_progress_pct(current: u32, target: u32) -> u32 {
+        if target == 0 {
+            return 0;
+        }
+        ((current as f64 / target as f64) * 100.0).clamp(0.0, 100.0) as u32
     }
 
     fn render_wallet_detail_panel(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
@@ -1438,6 +1677,12 @@ impl ScreenLike for WalletsBalancesScreen {
                         });
 
                     ui.add_space(10.0);
+
+                    // Sync status panel (only for HD wallets)
+                    if self.selected_wallet.is_some() {
+                        self.render_sync_status(ui);
+                        ui.add_space(6.0);
+                    }
 
                     // Render the appropriate detail view based on selection
                     if self.selected_wallet.is_some() {

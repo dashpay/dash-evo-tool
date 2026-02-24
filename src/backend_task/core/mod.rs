@@ -286,12 +286,16 @@ impl AppContext {
                 address,
                 wallet,
             } => {
-                let mined = self
-                    .core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
-                    .generate_to_address(block_count, &address)
-                    .map_err(|e| e.to_string())?;
+                let ctx = self.clone();
+                let mined = tokio::task::spawn_blocking(move || {
+                    ctx.core_client
+                        .read()
+                        .map_err(|e| format!("Core client lock was poisoned: {}", e))?
+                        .generate_to_address(block_count, &address)
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| format!("Task join error: {}", e))??;
 
                 let mined_count = mined.len();
 

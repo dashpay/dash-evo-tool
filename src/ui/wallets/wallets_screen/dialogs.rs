@@ -1405,9 +1405,17 @@ impl WalletsBalancesScreen {
 
                         if ui.add(mine_button).clicked() {
                             // Validate and dispatch
+                            const MAX_MINE_BLOCKS: u64 = 1_000;
                             let block_count: u64 =
                                 match self.mine_dialog.block_count_str.trim().parse() {
-                                    Ok(n) if n > 0 => n,
+                                    Ok(n) if n > 0 && n <= MAX_MINE_BLOCKS => n,
+                                    Ok(n) if n > MAX_MINE_BLOCKS => {
+                                        self.mine_dialog.error = Some(format!(
+                                            "Maximum {} blocks at a time",
+                                            MAX_MINE_BLOCKS
+                                        ));
+                                        return;
+                                    }
                                     _ => {
                                         self.mine_dialog.error = Some(
                                             "Enter a valid number of blocks (> 0)".to_string(),

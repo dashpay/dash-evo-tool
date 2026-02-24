@@ -28,17 +28,6 @@ impl Database {
             [],
         )?;
 
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS shielded_tree_state (
-                wallet_seed_hash BLOB NOT NULL,
-                network TEXT NOT NULL,
-                tree_data BLOB NOT NULL,
-                last_synced_index INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (wallet_seed_hash, network)
-            )",
-            [],
-        )?;
-
         Ok(())
     }
 
@@ -160,53 +149,129 @@ impl Database {
         )
     }
 
-    /// Save the serialized commitment tree state for a wallet.
-    pub fn save_shielded_tree_state(
+    /// Delete all shielded notes for a wallet (used by resync).
+    pub fn delete_shielded_notes(
         &self,
         wallet_seed_hash: &WalletSeedHash,
-        tree_data: &[u8],
-        last_synced_index: u64,
         network: &str,
-    ) -> rusqlite::Result<()> {
+    ) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO shielded_tree_state (wallet_seed_hash, network, tree_data, last_synced_index)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(wallet_seed_hash, network)
-             DO UPDATE SET tree_data = excluded.tree_data, last_synced_index = excluded.last_synced_index",
-            params![
-                wallet_seed_hash.as_slice(),
-                network,
-                tree_data,
-                last_synced_index as i64,
-            ],
+            "DELETE FROM shielded_notes WHERE wallet_seed_hash = ?1 AND network = ?2",
+            params![wallet_seed_hash.as_slice(), network],
+        )
+    }
+
+    /// Clear all commitment tree SQLite tables (used by resync).
+    ///
+    /// The `ClientPersistentCommitmentTree` stores its shards, caps, and
+    /// checkpoints in `commitment_tree_*` tables. This deletes all rows so a
+    /// fresh tree can be opened on the same connection.
+    pub fn clear_commitment_tree_tables(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        // Tables are created by grovedb on first use; ignore errors if missing.
+        let _ = conn.execute("DELETE FROM commitment_tree_shards", []);
+        let _ = conn.execute("DELETE FROM commitment_tree_cap", []);
+        let _ = conn.execute("DELETE FROM commitment_tree_checkpoints", []);
+        let _ = conn.execute("DELETE FROM commitment_tree_checkpoint_marks_removed", []);
+        Ok(())
+    }
+
+    /// Create the shielded_wallet_meta table (v29 migration).
+    pub(crate) fn create_shielded_wallet_meta_table(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS shielded_wallet_meta (
+                wallet_seed_hash BLOB NOT NULL,
+                network TEXT NOT NULL,
+                last_nullifier_sync_height INTEGER NOT NULL DEFAULT 0,
+                last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (wallet_seed_hash, network)
+            )",
+            [],
         )?;
         Ok(())
     }
 
-    /// Load the commitment tree state for a wallet.
-    pub fn load_shielded_tree_state(
+    /// Migration: Add last_nullifier_sync_timestamp column (v30).
+    pub(crate) fn add_nullifier_sync_timestamp_column(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        let table_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='shielded_wallet_meta'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if table_exists {
+            let has_column: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('shielded_wallet_meta') WHERE name='last_nullifier_sync_timestamp'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap_or(false);
+
+            if !has_column {
+                conn.execute(
+                    "ALTER TABLE shielded_wallet_meta ADD COLUMN last_nullifier_sync_timestamp INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the last nullifier sync height and timestamp for a wallet on a given network.
+    pub fn get_nullifier_sync_info(
         &self,
         wallet_seed_hash: &WalletSeedHash,
         network: &str,
-    ) -> rusqlite::Result<Option<(Vec<u8>, u64)>> {
+    ) -> Result<(u64, u64), String> {
         let conn = self.conn.lock().unwrap();
         let result = conn.query_row(
-            "SELECT tree_data, last_synced_index FROM shielded_tree_state
+            "SELECT last_nullifier_sync_height, last_nullifier_sync_timestamp FROM shielded_wallet_meta
              WHERE wallet_seed_hash = ?1 AND network = ?2",
             params![wallet_seed_hash.as_slice(), network],
             |row| {
-                let tree_data: Vec<u8> = row.get(0)?;
-                let last_synced_index: i64 = row.get(1)?;
-                Ok((tree_data, last_synced_index as u64))
+                let height: i64 = row.get(0)?;
+                let timestamp: i64 = row.get(1)?;
+                Ok((height as u64, timestamp as u64))
             },
         );
-
         match result {
-            Ok(data) => Ok(Some(data)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
+            Ok(info) => Ok(info),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok((0, 0)),
+            Err(e) => Err(format!("Failed to get nullifier sync info: {e}")),
         }
+    }
+
+    /// Set the last nullifier sync height and timestamp for a wallet on a given network.
+    pub fn set_nullifier_sync_info(
+        &self,
+        wallet_seed_hash: &WalletSeedHash,
+        network: &str,
+        height: u64,
+        timestamp: u64,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO shielded_wallet_meta
+             (wallet_seed_hash, network, last_nullifier_sync_height, last_nullifier_sync_timestamp)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                wallet_seed_hash.as_slice(),
+                network,
+                height as i64,
+                timestamp as i64
+            ],
+        )
+        .map_err(|e| format!("Failed to set nullifier sync info: {e}"))?;
+        Ok(())
     }
 
     /// Get total shielded balance (sum of unspent note values) for a wallet.

@@ -30,6 +30,10 @@ pub struct ShieldedTabView {
     pending_task: Option<BackendTask>,
     /// Wallet unlock popup for the initialize flow.
     wallet_unlock_popup: WalletUnlockPopup,
+    /// Currently selected diversified address index.
+    selected_address_index: u32,
+    /// Number of diversified addresses generated (always >= 1).
+    address_count: u32,
 }
 
 impl ShieldedTabView {
@@ -46,7 +50,13 @@ impl ShieldedTabView {
             tree_synced: false,
             pending_task: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            selected_address_index: 0,
+            address_count: 1,
         }
+    }
+
+    pub fn is_syncing(&self) -> bool {
+        self.syncing
     }
 
     pub fn update_seed_hash(&mut self, seed_hash: WalletSeedHash) {
@@ -89,14 +99,16 @@ impl ShieldedTabView {
                 new_notes,
                 balance,
             } if *seed_hash == self.seed_hash => {
-                self.syncing = false;
                 self.tree_synced = true;
                 self.shielded_balance = *balance;
                 if *new_notes > 0 {
                     self.success_message = Some(format!("Synced {} new note(s)", new_notes));
-                } else {
-                    self.success_message = Some("Notes are up to date".to_string());
                 }
+                // Auto-check nullifiers after sync to detect spent notes
+                self.pending_task =
+                    Some(BackendTask::ShieldedTask(ShieldedTask::CheckNullifiers {
+                        seed_hash: self.seed_hash,
+                    }));
                 true
             }
             BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }
@@ -119,10 +131,26 @@ impl ShieldedTabView {
                 self.success_message = Some(format!("Unshielded {}", format_credits(*amount)));
                 true
             }
+            BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
+                if *seed_hash == self.seed_hash =>
+            {
+                self.success_message = Some(format!(
+                    "Shielded {} from core wallet",
+                    format_credits(*amount)
+                ));
+                true
+            }
             BackendTaskSuccessResult::ShieldedNullifiersChecked {
                 seed_hash,
                 spent_count,
             } if *seed_hash == self.seed_hash => {
+                self.syncing = false;
+                // Update balance from state after nullifier check
+                let states = self.app_context.shielded_states.lock().unwrap();
+                if let Some(state) = states.get(&self.seed_hash) {
+                    self.shielded_balance = state.shielded_balance;
+                }
+                drop(states);
                 if *spent_count > 0 {
                     self.success_message = Some(format!("Detected {} spent note(s)", spent_count));
                 }
@@ -180,7 +208,26 @@ impl ShieldedTabView {
             ui.add_space(5.0);
         }
 
-        // --- Not yet initialized: show Initialize button + unlock popup ---
+        // --- Not yet initialized ---
+        // Auto-initialize if the wallet is already open (no user click needed)
+        if !self.is_initialized && !self.initializing {
+            let wallet_arc = {
+                let wallets = self.app_context.wallets.read().unwrap();
+                wallets.get(&self.seed_hash).cloned()
+            };
+            if let Some(wallet) = &wallet_arc
+                && !wallet_needs_unlock(wallet)
+            {
+                let _ = try_open_wallet_no_password(wallet);
+                self.initializing = true;
+                action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                    ShieldedTask::InitializeShieldedWallet {
+                        seed_hash: self.seed_hash,
+                    },
+                ));
+            }
+        }
+
         if !self.is_initialized {
             if self.initializing {
                 ui.horizontal(|ui| {
@@ -291,12 +338,19 @@ impl ShieldedTabView {
 
         ui.add_space(10.0);
 
-        // Payment address
+        // Payment address (bech32m encoded: dash1z... or tdash1z...)
         let address_str = {
             let states = self.app_context.shielded_states.lock().unwrap();
             states.get(&self.seed_hash).map(|state| {
-                let raw = state.keys.default_address.to_raw_address_bytes();
-                hex::encode(raw)
+                use dash_sdk::dpp::address_funds::OrchardAddress;
+                use dash_sdk::grovedb_commitment_tree::Scope;
+                let addr = state
+                    .keys
+                    .fvk
+                    .address_at(self.selected_address_index, Scope::External);
+                let raw = addr.to_raw_address_bytes();
+                let orchard_addr = OrchardAddress::from_raw_bytes(&raw);
+                orchard_addr.to_bech32m_string(self.app_context.network)
             })
         };
 
@@ -306,19 +360,39 @@ impl ShieldedTabView {
                 .inner_margin(Margin::symmetric(16, 12))
                 .corner_radius(8.0)
                 .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("Shielded Payment Address")
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "Shielded Payment Address ({})",
+                                self.selected_address_index
+                            ))
                             .size(14.0)
                             .color(DashColors::text_secondary(dark_mode)),
-                    );
+                        );
+
+                        // Address selector: prev/next arrows
+                        if self.selected_address_index > 0 && ui.small_button("<").clicked() {
+                            self.selected_address_index -= 1;
+                        }
+                        if self.selected_address_index + 1 < self.address_count
+                            && ui.small_button(">").clicked()
+                        {
+                            self.selected_address_index += 1;
+                        }
+
+                        // Generate new diversified address
+                        if ui
+                            .small_button("+")
+                            .on_hover_text("Generate new diversified address")
+                            .clicked()
+                        {
+                            self.selected_address_index = self.address_count;
+                            self.address_count += 1;
+                        }
+                    });
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        let truncated = if addr.len() > 20 {
-                            format!("{}...{}", &addr[..10], &addr[addr.len() - 10..])
-                        } else {
-                            addr.clone()
-                        };
-                        ui.monospace(&truncated);
+                        ui.monospace(addr);
                         if ui.small_button("Copy").clicked() {
                             let _ = copy_text_to_clipboard(addr);
                         }
@@ -340,6 +414,23 @@ impl ShieldedTabView {
             {
                 action |= AppAction::AddScreen(
                     ScreenType::ShieldCreditsScreen(self.seed_hash)
+                        .create_screen(&self.app_context),
+                );
+            }
+
+            let shield_core_btn = egui::Button::new(
+                RichText::new("Shield from Core")
+                    .color(Color32::WHITE)
+                    .size(14.0),
+            )
+            .fill(DashColors::DASH_BLUE);
+            if ui
+                .add_enabled(!self.syncing, shield_core_btn)
+                .on_hover_text("Shield core DASH directly into the shielded pool via asset lock")
+                .clicked()
+            {
+                action |= AppAction::AddScreen(
+                    ScreenType::ShieldFromAssetLockScreen(self.seed_hash)
                         .create_screen(&self.app_context),
                 );
             }
@@ -383,48 +474,108 @@ impl ShieldedTabView {
                         .create_screen(&self.app_context),
                 );
             }
-
-            ui.add_space(10.0);
-
-            if self.syncing {
-                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
-                ui.label("Syncing...");
-            } else if ui.button("Sync Notes").clicked() {
-                self.syncing = true;
-                self.success_message = None;
-                self.error_message = None;
-                action |=
-                    AppAction::BackendTask(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
-                    }));
-            }
         });
 
         ui.add_space(15.0);
 
-        // Notes table
-        let notes_info: Vec<(u64, u64, bool)> = {
+        // Notes section header with sync status and buttons
+        let (notes_info, synced_index): (Vec<(u64, u64, bool)>, u64) = {
             let states = self.app_context.shielded_states.lock().unwrap();
             states
                 .get(&self.seed_hash)
                 .map(|state| {
-                    state
+                    let notes = state
                         .notes
                         .iter()
                         .map(|n| (n.value, n.block_height, n.is_spent))
-                        .collect()
+                        .collect();
+                    (notes, state.last_synced_index)
                 })
                 .unwrap_or_default()
         };
 
-        if !notes_info.is_empty() {
+        ui.horizontal(|ui| {
             ui.label(
                 RichText::new("Shielded Notes")
                     .size(16.0)
                     .color(DashColors::text_primary(dark_mode)),
             );
-            ui.add_space(5.0);
 
+            if !notes_info.is_empty() {
+                ui.label(
+                    RichText::new(format!(
+                        "(synced to index {}, {} our notes)",
+                        synced_index,
+                        notes_info.len()
+                    ))
+                    .size(12.0)
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+            }
+
+            // Sync status indicator
+            if self.syncing {
+                ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
+                ui.label(
+                    RichText::new("Syncing...")
+                        .size(12.0)
+                        .color(DashColors::DASH_BLUE),
+                );
+            } else if self.tree_synced {
+                ui.label(
+                    RichText::new("Synced")
+                        .size(12.0)
+                        .color(Color32::DARK_GREEN),
+                );
+            }
+
+            // Sync buttons
+            if !self.syncing {
+                if ui.small_button("Sync Notes").clicked() {
+                    self.syncing = true;
+                    self.success_message = None;
+                    self.error_message = None;
+                    action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                        ShieldedTask::SyncNotes {
+                            seed_hash: self.seed_hash,
+                        },
+                    ));
+                }
+
+                if self.app_context.is_developer_mode() && ui.small_button("Resync Notes").clicked()
+                {
+                    // Remove in-memory state entirely (will be recreated by init)
+                    {
+                        let mut states = self.app_context.shielded_states.lock().unwrap();
+                        states.remove(&self.seed_hash);
+                    }
+                    // Clear persisted notes and commitment tree data
+                    let network_str = self.app_context.network.to_string();
+                    let _ = self
+                        .app_context
+                        .db
+                        .delete_shielded_notes(&self.seed_hash, &network_str);
+                    let _ = self.app_context.db.clear_commitment_tree_tables();
+
+                    self.shielded_balance = 0;
+                    self.tree_synced = false;
+                    self.is_initialized = false;
+                    self.initializing = true;
+                    self.syncing = false;
+                    self.success_message = None;
+                    self.error_message = None;
+                    // Re-initialize (creates fresh persistent tree) then auto-syncs
+                    action |= AppAction::BackendTask(BackendTask::ShieldedTask(
+                        ShieldedTask::InitializeShieldedWallet {
+                            seed_hash: self.seed_hash,
+                        },
+                    ));
+                }
+            }
+        });
+        ui.add_space(5.0);
+
+        if !notes_info.is_empty() {
             egui::Grid::new("shielded_notes_grid")
                 .num_columns(3)
                 .striped(true)
@@ -452,7 +603,7 @@ impl ShieldedTabView {
                         ui.end_row();
                     }
                 });
-        } else {
+        } else if !self.syncing {
             ui.label(
                 RichText::new("No shielded notes yet. Shield some credits to get started.")
                     .color(DashColors::text_secondary(dark_mode)),

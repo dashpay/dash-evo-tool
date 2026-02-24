@@ -261,8 +261,8 @@ impl TransferScreen {
 
         let input = self.platform_address_input.trim();
 
-        // Try to parse as Bech32m Platform address first (evo1.../tevo1...)
-        if input.starts_with("evo1") || input.starts_with("tevo1") {
+        // Try to parse as Bech32m Platform address first (dash1.../tdash1...)
+        if crate::ui::helpers::is_platform_address(input) {
             let (addr, _network) = PlatformAddress::from_bech32m_string(input)
                 .map_err(|e| format!("Invalid Bech32m address: {}", e))?;
             return Ok(addr);

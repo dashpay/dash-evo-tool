@@ -19,7 +19,7 @@ mod wallet;
 
 use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{Connection, Params};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Error indicating a corrupted data blob in the database.
 ///
@@ -42,15 +42,23 @@ impl From<CorruptedBlobError> for rusqlite::Error {
 
 #[derive(Debug)]
 pub struct Database {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
     pub fn new<P: AsRef<std::path::Path>>(path: P) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Get a shared reference to the underlying connection.
+    ///
+    /// Used by `ClientPersistentCommitmentTree` to share the same SQLite
+    /// connection for the shielded commitment tree tables.
+    pub fn shared_connection(&self) -> Arc<Mutex<Connection>> {
+        self.conn.clone()
     }
 
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
@@ -164,10 +172,13 @@ impl Database {
             rusqlite::params![&network_str],
         )?;
 
-        tx.execute(
-            "DELETE FROM shielded_tree_state WHERE network = ?1",
-            rusqlite::params![&network_str],
-        )?;
+        // Clear commitment tree tables (persistent shielded tree data).
+        // These tables are created by grovedb on first use, so they may not
+        // exist yet — ignore errors from missing tables.
+        let _ = tx.execute("DELETE FROM commitment_tree_shards", []);
+        let _ = tx.execute("DELETE FROM commitment_tree_cap", []);
+        let _ = tx.execute("DELETE FROM commitment_tree_checkpoints", []);
+        let _ = tx.execute("DELETE FROM commitment_tree_checkpoint_marks_removed", []);
 
         tx.commit()
     }

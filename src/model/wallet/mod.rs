@@ -295,10 +295,6 @@ impl PartialEq for WalletArcRef {
 pub struct PlatformAddressInfo {
     pub balance: Credits,
     pub nonce: AddressNonce,
-    /// Balance recorded at the last sync checkpoint. Updated by `set_platform_address_info_from_sync`
-    /// during both full and terminal syncs; preserved by `set_platform_address_info` during internal
-    /// updates (e.g., after transfers) to avoid double-counting AddToCredits on subsequent syncs.
-    pub last_full_sync_balance: Option<Credits>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1917,97 +1913,52 @@ impl Wallet {
         None
     }
 
-    /// Update Platform address info (balance and nonce)
+    /// Update Platform address info (balance and nonce).
     ///
-    /// This method handles the case where the same platform address may be represented
-    /// by different Address objects. It normalizes by comparing PlatformAddress bytes
-    /// and removes any duplicate entries before inserting.
+    /// Handles canonical address deduplication: if the same platform address is
+    /// stored under a different `Address` key, the duplicate is removed first.
     pub fn set_platform_address_info(
         &mut self,
         address: Address,
         balance: Credits,
         nonce: AddressNonce,
     ) {
-        // Convert the incoming address to PlatformAddress for canonical comparison
-        let (keys_to_remove, last_full_sync_balance) =
-            if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
-                let canonical_bytes = platform_addr.to_bytes();
+        // Remove duplicate entries for the same canonical platform address
+        if let Ok(platform_addr) = PlatformAddress::try_from(address.clone()) {
+            let canonical_bytes = platform_addr.to_bytes();
+            let keys_to_remove: Vec<Address> = self
+                .platform_address_info
+                .keys()
+                .filter(|existing_addr| {
+                    if let Ok(existing_platform) =
+                        PlatformAddress::try_from((*existing_addr).clone())
+                    {
+                        existing_platform.to_bytes() == canonical_bytes
+                            && *existing_addr != &address
+                    } else {
+                        false
+                    }
+                })
+                .cloned()
+                .collect();
 
-                // First, find last_full_sync_balance from any canonical-equivalent entry
-                // (must be done BEFORE removing duplicates)
-                let last_full_sync_balance =
-                    self.platform_address_info
-                        .iter()
-                        .find_map(|(existing_addr, info)| {
-                            if let Ok(existing_platform) =
-                                PlatformAddress::try_from(existing_addr.clone())
-                                && existing_platform.to_bytes() == canonical_bytes
-                            {
-                                return info.last_full_sync_balance;
-                            }
-                            None
-                        });
-
-                // Find duplicate entries to remove (same platform address, different key)
-                let keys_to_remove: Vec<Address> = self
-                    .platform_address_info
-                    .keys()
-                    .filter(|existing_addr| {
-                        if let Ok(existing_platform) =
-                            PlatformAddress::try_from((*existing_addr).clone())
-                        {
-                            existing_platform.to_bytes() == canonical_bytes
-                                && *existing_addr != &address
-                        } else {
-                            false
-                        }
-                    })
-                    .cloned()
-                    .collect();
-
-                (keys_to_remove, last_full_sync_balance)
-            } else {
-                // Fallback: try direct lookup if canonical conversion fails
-                let last_full_sync_balance = self
-                    .platform_address_info
-                    .get(&address)
-                    .and_then(|info| info.last_full_sync_balance);
-                (vec![], last_full_sync_balance)
-            };
-
-        // Remove duplicate entries
-        for key in keys_to_remove {
-            self.platform_address_info.remove(&key);
+            for key in keys_to_remove {
+                self.platform_address_info.remove(&key);
+            }
         }
 
-        self.platform_address_info.insert(
-            address,
-            PlatformAddressInfo {
-                balance,
-                nonce,
-                last_full_sync_balance,
-            },
-        );
+        self.platform_address_info
+            .insert(address, PlatformAddressInfo { balance, nonce });
     }
 
-    /// Set platform address info from a sync operation.
-    /// Always updates `last_full_sync_balance` to the current balance, as this becomes
-    /// the baseline for pre-population in the next terminal sync.
+    /// Set platform address info from a sync operation (same as `set_platform_address_info`).
     pub fn set_platform_address_info_from_sync(
         &mut self,
         address: Address,
         balance: Credits,
         nonce: AddressNonce,
     ) {
-        self.platform_address_info.insert(
-            address,
-            PlatformAddressInfo {
-                balance,
-                nonce,
-                // Always update to current balance - this is the baseline for next sync
-                last_full_sync_balance: Some(balance),
-            },
-        );
+        self.set_platform_address_info(address, balance, nonce);
     }
 
     /// Get the private key for a Platform address
@@ -2166,6 +2117,10 @@ pub struct WalletAddressProvider {
     highest_found: Option<AddressIndex>,
     /// Results: address -> balance for addresses found with balance
     found_balances: BTreeMap<Address, AddressFunds>,
+    /// Known balances from previous sync for incremental catch-up
+    stored_balances: Vec<(AddressIndex, AddressKey, AddressFunds)>,
+    /// Last sync height from previous sync for incremental catch-up
+    stored_sync_height: u64,
 }
 
 impl WalletAddressProvider {
@@ -2201,6 +2156,8 @@ impl WalletAddressProvider {
             resolved: BTreeSet::new(),
             highest_found: None,
             found_balances: BTreeMap::new(),
+            stored_balances: Vec::new(),
+            stored_sync_height: 0,
         };
 
         // Bootstrap initial addresses (0 to gap_limit - 1)
@@ -2309,6 +2266,41 @@ impl WalletAddressProvider {
                 );
             }
         }
+    }
+
+    /// Populate stored balances and sync height from a wallet's known state.
+    ///
+    /// Call this after construction to enable incremental catch-up.
+    /// The SDK uses `current_balances()` as the baseline and `last_sync_height()`
+    /// as the starting block for applying delta operations.
+    pub fn with_stored_state(
+        mut self,
+        wallet: &Wallet,
+        network: Network,
+        last_sync_height: u64,
+    ) -> Self {
+        self.stored_sync_height = last_sync_height;
+
+        // Populate stored_balances from wallet's known platform addresses
+        for (core_addr, info) in &wallet.platform_address_info {
+            // Find the matching pending address to get the index and key
+            for (index, (key, pending_addr)) in &self.pending {
+                let canonical = Wallet::canonical_address(pending_addr, network);
+                if &canonical == core_addr {
+                    self.stored_balances.push((
+                        *index,
+                        key.clone(),
+                        AddressFunds {
+                            balance: info.balance,
+                            nonce: info.nonce,
+                        },
+                    ));
+                    break;
+                }
+            }
+        }
+
+        self
     }
 
     /// Derive a Platform address at the given index.
@@ -2430,6 +2422,14 @@ impl AddressProvider for WalletAddressProvider {
 
     fn highest_found_index(&self) -> Option<AddressIndex> {
         self.highest_found
+    }
+
+    fn current_balances(&self) -> Vec<(AddressIndex, AddressKey, AddressFunds)> {
+        self.stored_balances.clone()
+    }
+
+    fn last_sync_height(&self) -> u64 {
+        self.stored_sync_height
     }
 }
 
@@ -2782,7 +2782,6 @@ mod tests {
             PlatformAddressInfo {
                 balance: 1_000_000,
                 nonce: 0,
-                last_full_sync_balance: None,
             },
         );
         wallet.platform_address_info.insert(
@@ -2790,7 +2789,6 @@ mod tests {
             PlatformAddressInfo {
                 balance: 2_000_000,
                 nonce: 1,
-                last_full_sync_balance: None,
             },
         );
 
@@ -2807,24 +2805,19 @@ mod tests {
         let info = wallet.platform_address_info.get(&addr).unwrap();
         assert_eq!(info.balance, 500_000);
         assert_eq!(info.nonce, 3);
-        assert_eq!(info.last_full_sync_balance, Some(500_000));
     }
 
     #[test]
-    fn test_set_platform_address_info_preserves_sync_balance() {
+    fn test_set_platform_address_info_update() {
         let mut wallet = test_wallet();
         let addr = test_address(1);
 
-        // First set via sync (establishes last_full_sync_balance)
         wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
-
-        // Then update via non-sync (should preserve last_full_sync_balance)
         wallet.set_platform_address_info(addr.clone(), 600_000, 4);
 
         let info = wallet.platform_address_info.get(&addr).unwrap();
         assert_eq!(info.balance, 600_000);
         assert_eq!(info.nonce, 4);
-        assert_eq!(info.last_full_sync_balance, Some(500_000));
     }
 
     #[test]
@@ -2837,7 +2830,6 @@ mod tests {
             PlatformAddressInfo {
                 balance: 100_000,
                 nonce: 1,
-                last_full_sync_balance: None,
             },
         );
 

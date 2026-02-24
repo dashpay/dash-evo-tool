@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 28;
+pub const DEFAULT_DB_VERSION: u16 = 30;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -51,6 +51,12 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            30 => {
+                self.add_nullifier_sync_timestamp_column(tx)?;
+            }
+            29 => {
+                self.create_shielded_wallet_meta_table(tx)?;
+            }
             28 => {
                 self.create_shielded_tables(tx)?;
             }
@@ -511,6 +517,7 @@ impl Database {
 
         // Initialize shielded pool tables
         self.create_shielded_tables(&conn)?;
+        self.create_shielded_wallet_meta_table(&conn)?;
 
         Ok(())
     }

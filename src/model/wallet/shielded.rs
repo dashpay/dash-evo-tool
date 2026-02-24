@@ -1,9 +1,10 @@
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::grovedb_commitment_tree::RandomSeed;
 use dash_sdk::grovedb_commitment_tree::{
-    ClientCommitmentTree, FullViewingKey, IncomingViewingKey, Note, NoteValue, Nullifier,
+    ClientPersistentCommitmentTree, FullViewingKey, IncomingViewingKey, Note, NoteValue, Nullifier,
     OutgoingViewingKey, PaymentAddress, Position, Rho, Scope, SpendAuthorizingKey, SpendingKey,
 };
+use std::sync::Mutex;
 use zip32::AccountId;
 
 /// Dash coin types per BIP44
@@ -79,18 +80,31 @@ pub struct ShieldedNote {
 
 /// Per-wallet shielded state, initialized lazily when the shielded tab is first opened.
 ///
-/// Manual `Debug` impl because `ClientCommitmentTree` does not implement `Debug`.
+/// Manual `Debug` impl because `ClientPersistentCommitmentTree` does not implement `Debug`.
 pub struct ShieldedWalletState {
     /// ZIP32-derived Orchard keys (requires wallet to be unlocked)
     pub keys: OrchardKeySet,
     /// All tracked shielded notes
     pub notes: Vec<ShieldedNote>,
-    /// Client-side Sinsemilla commitment tree for witness generation
-    pub commitment_tree: ClientCommitmentTree,
+    /// Client-side Sinsemilla commitment tree for witness generation (SQLite-backed).
+    ///
+    /// Wrapped in `Mutex` because `ClientPersistentCommitmentTree` contains a
+    /// SQLite `Connection` which is `!Sync`. The mutex makes
+    /// `ShieldedWalletState` `Sync` so `&ShieldedWalletState` is `Send` across
+    /// `.await` points in tokio tasks.
+    pub commitment_tree: Mutex<ClientPersistentCommitmentTree>,
     /// Last note global position synced from platform
     pub last_synced_index: u64,
+    /// Block height up to which nullifier sync has been completed
+    pub last_nullifier_sync_height: u64,
+    /// Timestamp of last nullifier sync
+    pub last_nullifier_sync_timestamp: u64,
     /// Sum of unspent note values (cached)
     pub shielded_balance: u64,
+    /// When notes were last synced (in-memory only, resets on app restart)
+    pub last_notes_synced_at: Option<std::time::Instant>,
+    /// When nullifiers were last checked (in-memory only, resets on app restart)
+    pub last_nullifiers_synced_at: Option<std::time::Instant>,
 }
 
 impl std::fmt::Debug for ShieldedWalletState {
@@ -98,23 +112,16 @@ impl std::fmt::Debug for ShieldedWalletState {
         f.debug_struct("ShieldedWalletState")
             .field("notes_count", &self.notes.len())
             .field("last_synced_index", &self.last_synced_index)
+            .field(
+                "last_nullifier_sync_height",
+                &self.last_nullifier_sync_height,
+            )
             .field("shielded_balance", &self.shielded_balance)
             .finish_non_exhaustive()
     }
 }
 
 impl ShieldedWalletState {
-    /// Create a new shielded wallet state from ZIP32-derived keys.
-    pub fn new(keys: OrchardKeySet) -> Self {
-        Self {
-            keys,
-            notes: Vec::new(),
-            commitment_tree: ClientCommitmentTree::new(100),
-            last_synced_index: 0,
-            shielded_balance: 0,
-        }
-    }
-
     /// Recalculate the cached shielded balance from unspent notes.
     pub fn recalculate_balance(&mut self) {
         self.shielded_balance = self

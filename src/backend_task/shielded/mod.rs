@@ -4,6 +4,7 @@ pub mod sync;
 
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::dashcore::Address;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShieldedTask {
@@ -18,6 +19,8 @@ pub enum ShieldedTask {
         seed_hash: WalletSeedHash,
         amount: u64,
         from_address: PlatformAddress,
+        /// When set, use this nonce instead of reading from wallet (for batch parallel mode).
+        nonce_override: Option<u32>,
     },
 
     /// Private transfer within the shielded pool (Type 16)
@@ -37,6 +40,19 @@ pub enum ShieldedTask {
 
     /// Check nullifiers to detect spent notes
     CheckNullifiers { seed_hash: WalletSeedHash },
+
+    /// Shield core DASH directly into the shielded pool via asset lock (Type 18)
+    ShieldFromAssetLock {
+        seed_hash: WalletSeedHash,
+        amount_duffs: u64,
+    },
+
+    /// Withdraw from the shielded pool directly to a core L1 address (Type 19)
+    ShieldedWithdrawal {
+        seed_hash: WalletSeedHash,
+        amount: u64,
+        to_core_address: Address,
+    },
 
     /// Warm up the proving key in background (~30s)
     WarmUpProvingKey,

@@ -19,24 +19,26 @@ enum Status {
     Complete,
 }
 
-pub struct ShieldedSendScreen {
+pub struct ShieldFromAssetLockScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
     amount_str: String,
-    recipient_address_input: String,
-    max_balance: u64,
+    core_balance_duffs: u64,
     status: Status,
     error_message: Option<String>,
     success_message: Option<String>,
 }
 
-impl ShieldedSendScreen {
+impl ShieldFromAssetLockScreen {
     pub fn new(seed_hash: WalletSeedHash, app_context: &Arc<AppContext>) -> Self {
-        let max_balance = {
-            let states = app_context.shielded_states.lock().unwrap();
-            states
+        let core_balance_duffs = {
+            let wallets = app_context.wallets.read().unwrap();
+            wallets
                 .get(&seed_hash)
-                .map(|s| s.shielded_balance)
+                .map(|w| {
+                    let wallet = w.read().unwrap();
+                    wallet.total_balance_duffs()
+                })
                 .unwrap_or(0)
         };
 
@@ -44,62 +46,39 @@ impl ShieldedSendScreen {
             app_context: app_context.clone(),
             seed_hash,
             amount_str: String::new(),
-            recipient_address_input: String::new(),
-            max_balance,
+            core_balance_duffs,
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
         }
     }
 
-    fn parse_amount_credits(&self) -> Option<u64> {
+    /// Parse amount input as DASH (decimal) and return duffs.
+    fn parse_amount_duffs(&self) -> Option<u64> {
         let trimmed = self.amount_str.trim();
         if trimmed.is_empty() {
             return None;
         }
-        if trimmed.contains('.') {
-            let dash: f64 = trimmed.parse().ok()?;
-            if dash <= 0.0 {
-                return None;
-            }
-            Some((dash * CREDITS_PER_DUFF as f64 * 1e8) as u64)
-        } else {
-            let credits: u64 = trimmed.parse().ok()?;
-            if credits == 0 {
-                return None;
-            }
-            Some(credits)
-        }
-    }
-
-    fn validate_recipient(&self) -> Option<Vec<u8>> {
-        let trimmed = self.recipient_address_input.trim();
-        if trimmed.is_empty() {
+        let dash: f64 = trimmed.parse().ok()?;
+        if dash <= 0.0 {
             return None;
         }
-        // Try bech32m first (dash1z... or tdash1z...)
-        if let Ok((addr, _network)) =
-            dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(trimmed)
-        {
-            return Some(addr.to_raw_bytes().to_vec());
-        }
-        // Fall back to raw hex (43 bytes = 86 hex chars)
-        let bytes = hex::decode(trimmed).ok()?;
-        if bytes.len() != 43 {
+        let duffs = (dash * 1e8) as u64;
+        if duffs == 0 {
             return None;
         }
-        Some(bytes)
+        Some(duffs)
     }
 }
 
-impl ScreenLike for ShieldedSendScreen {
+impl ScreenLike for ShieldFromAssetLockScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::PopScreen),
-                ("Send (Private)", AppAction::None),
+                ("Shield from Core", AppAction::None),
             ],
             vec![],
         );
@@ -111,14 +90,14 @@ impl ScreenLike for ShieldedSendScreen {
         );
 
         island_central_panel(ctx, |ui| {
-            ui.heading("Send (Private)");
+            ui.heading("Shield from Core Wallet");
             ui.add_space(10.0);
-            ui.label("Transfer credits privately within the shielded pool.");
+            ui.label("Send core DASH directly into the shielded pool via an asset lock.");
             ui.add_space(5.0);
 
-            let dash_balance = self.max_balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+            let dash_balance = self.core_balance_duffs as f64 / 1e8;
             ui.label(format!(
-                "Available shielded balance: {:.8} DASH",
+                "Available core wallet balance: {:.8} DASH",
                 dash_balance
             ));
             ui.add_space(15.0);
@@ -137,42 +116,37 @@ impl ScreenLike for ShieldedSendScreen {
                 return;
             }
 
-            // Recipient address input
-            ui.label("Recipient shielded address (dash1z.../tdash1z... or hex):");
-            ui.add_space(2.0);
-            ui.text_edit_singleline(&mut self.recipient_address_input);
-            if !self.recipient_address_input.trim().is_empty()
-                && self.validate_recipient().is_none()
-            {
-                ui.colored_label(Color32::from_rgb(255, 100, 100), "Invalid shielded address");
-            }
-            ui.add_space(10.0);
-
             // Amount input
             ui.horizontal(|ui| {
-                ui.label("Amount (DASH or credits):");
+                ui.label("Amount (DASH):");
                 ui.text_edit_singleline(&mut self.amount_str);
             });
-            if let Some(credits) = self.parse_amount_credits() {
-                let dash = credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                ui.label(format!("= {:.8} DASH ({} credits)", dash, credits));
-                if credits > self.max_balance {
-                    ui.colored_label(Color32::from_rgb(255, 100, 100), "Exceeds shielded balance");
+            if let Some(duffs) = self.parse_amount_duffs() {
+                let credits = duffs * CREDITS_PER_DUFF;
+                let dash = duffs as f64 / 1e8;
+                ui.label(format!(
+                    "= {:.8} DASH = {} credits on platform",
+                    dash, credits
+                ));
+                if duffs > self.core_balance_duffs {
+                    ui.colored_label(
+                        Color32::from_rgb(255, 100, 100),
+                        "Exceeds core wallet balance",
+                    );
                 }
             }
             ui.add_space(15.0);
 
             // Confirm
             let amount_ok = self
-                .parse_amount_credits()
-                .is_some_and(|a| a <= self.max_balance);
-            let recipient_ok = self.validate_recipient().is_some();
-            let can_confirm = self.status == Status::NotStarted && amount_ok && recipient_ok;
+                .parse_amount_duffs()
+                .is_some_and(|a| a <= self.core_balance_duffs);
+            let can_confirm = self.status == Status::NotStarted && amount_ok;
 
             if self.status == Status::WaitingForResult {
                 ui.horizontal(|ui| {
                     ui.add(egui::Spinner::new());
-                    ui.label("Sending privately...");
+                    ui.label("Creating asset lock and shielding... (this may take a few minutes)");
                 });
             } else {
                 ui.horizontal(|ui| {
@@ -180,21 +154,21 @@ impl ScreenLike for ShieldedSendScreen {
                         .add_enabled(
                             can_confirm,
                             egui::Button::new(
-                                RichText::new("Send").color(Color32::WHITE).size(16.0),
+                                RichText::new("Shield from Core")
+                                    .color(Color32::WHITE)
+                                    .size(16.0),
                             )
                             .fill(crate::ui::theme::DashColors::DASH_BLUE),
                         )
                         .clicked()
-                        && let (Some(amount), Some(recipient_bytes)) =
-                            (self.parse_amount_credits(), self.validate_recipient())
+                        && let Some(amount_duffs) = self.parse_amount_duffs()
                     {
                         self.status = Status::WaitingForResult;
                         self.error_message = None;
                         action = AppAction::BackendTask(BackendTask::ShieldedTask(
-                            ShieldedTask::ShieldedTransfer {
+                            ShieldedTask::ShieldFromAssetLock {
                                 seed_hash: self.seed_hash,
-                                amount,
-                                recipient_address_bytes: recipient_bytes,
+                                amount_duffs,
                             },
                         ));
                     }
@@ -212,13 +186,15 @@ impl ScreenLike for ShieldedSendScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::ShieldedTransferComplete { seed_hash, amount }
+            BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
             {
                 self.status = Status::Complete;
                 let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                self.success_message =
-                    Some(format!("Successfully sent {:.8} DASH privately", dash));
+                self.success_message = Some(format!(
+                    "Successfully shielded {:.8} DASH from core wallet",
+                    dash
+                ));
             }
             _ => {}
         }

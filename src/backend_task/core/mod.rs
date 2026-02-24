@@ -46,18 +46,14 @@ fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     )
 }
 
-use crate::backend_task::wallet::PlatformSyncMode;
-
 #[derive(Debug, Clone)]
 pub enum CoreTask {
     #[allow(dead_code)] // May be used for getting single chain lock
     GetBestChainLock,
     GetBestChainLocks,
-    /// Refresh wallet info from Core. The optional PlatformSyncMode controls whether
-    /// and how to sync Platform address balances:
-    /// - None: Skip Platform sync entirely (Core only)
-    /// - Some(mode): Sync Platform with the specified mode
-    RefreshWalletInfo(Arc<RwLock<Wallet>>, Option<PlatformSyncMode>),
+    /// Refresh wallet info from Core. The bool controls whether to also sync
+    /// Platform address balances (true) or skip Platform sync (false, Core only).
+    RefreshWalletInfo(Arc<RwLock<Wallet>>, bool),
     RefreshSingleKeyWalletInfo(Arc<RwLock<SingleKeyWallet>>),
     StartDashQT(Network, PathBuf, bool),
     CreateRegistrationAssetLock(Arc<RwLock<Wallet>>, Credits, u32), // wallet, amount in credits, identity index
@@ -71,6 +67,11 @@ pub enum CoreTask {
         request: WalletPaymentRequest,
     },
     RecoverAssetLocks(Arc<RwLock<Wallet>>),
+    MineBlocks {
+        block_count: u64,
+        address: Address,
+        wallet: Arc<RwLock<Wallet>>,
+    },
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -110,6 +111,7 @@ impl PartialEq for CoreTask {
                     CoreTask::RecoverAssetLocks(_),
                     CoreTask::RecoverAssetLocks(_),
                 )
+                | (CoreTask::MineBlocks { .. }, CoreTask::MineBlocks { .. })
         )
     }
 }
@@ -203,7 +205,7 @@ impl AppContext {
                     local_chainlock,
                 )))
             }
-            CoreTask::RefreshWalletInfo(wallet, platform_sync_mode) => {
+            CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
                 // Get wallet seed hash for Platform balance refresh
                 let seed_hash = {
                     let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
@@ -223,12 +225,9 @@ impl AppContext {
                         .map_err(|e| format!("Error refreshing wallet: {}", e))?;
                 }
 
-                // Also refresh Platform address balances if a sync mode is specified
-                let warning = if let Some(sync_mode) = platform_sync_mode {
-                    match self
-                        .fetch_platform_address_balances(seed_hash, sync_mode)
-                        .await
-                    {
+                // Also refresh Platform address balances if requested
+                let warning = if sync_platform {
+                    match self.fetch_platform_address_balances(seed_hash).await {
                         Ok(_) => None,
                         Err(e) => {
                             tracing::warn!("Failed to fetch Platform address balances: {}", e);
@@ -274,6 +273,29 @@ impl AppContext {
                 tokio::task::spawn_blocking(move || ctx.recover_asset_locks(wallet))
                     .await
                     .map_err(|e| format!("Task join error: {}", e))?
+            }
+            CoreTask::MineBlocks {
+                block_count,
+                address,
+                wallet,
+            } => {
+                let mined = self
+                    .core_client
+                    .read()
+                    .expect("Core client lock was poisoned")
+                    .generate_to_address(block_count, &address)
+                    .map_err(|e| e.to_string())?;
+
+                let mined_count = mined.len();
+
+                // Refresh wallet balances via RPC so the UI reflects the new coins
+                let ctx = self.clone();
+                tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                    .await
+                    .map_err(|e| format!("Task join error: {}", e))?
+                    .map_err(|e| format!("Error refreshing wallet after mining: {}", e))?;
+
+                Ok(BackendTaskSuccessResult::MineBlocksSuccess(mined_count))
             }
         }
     }

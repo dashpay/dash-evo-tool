@@ -267,6 +267,7 @@ fn allocate_platform_addresses(
 pub enum AddressType {
     Core,
     Platform,
+    Shielded,
     Unknown,
 }
 
@@ -277,6 +278,8 @@ pub enum SourceSelection {
     CoreWallet,
     /// Use all Platform addresses (stores list of platform address, core address, and balance)
     PlatformAddresses(Vec<(PlatformAddress, Address, u64)>),
+    /// Use shielded pool balance (stores seed_hash and balance in credits)
+    Shielded(WalletSeedHash, u64),
 }
 
 /// Status of the send operation
@@ -520,8 +523,13 @@ impl WalletSendScreen {
             return AddressType::Unknown;
         }
 
+        // Check for shielded address (dash1z... or tdash1z...)
+        if Self::is_shielded_address(trimmed) {
+            return AddressType::Shielded;
+        }
+
         // Check for Platform address (Bech32m format)
-        if trimmed.starts_with("evo1") || trimmed.starts_with("tevo1") {
+        if crate::ui::helpers::is_platform_address(trimmed) {
             return AddressType::Platform;
         }
 
@@ -531,6 +539,10 @@ impl WalletSendScreen {
         }
 
         AddressType::Unknown
+    }
+
+    fn is_shielded_address(s: &str) -> bool {
+        s.starts_with("dash1z") || s.starts_with("tdash1z")
     }
 
     fn min_output_amount(
@@ -557,6 +569,10 @@ impl WalletSendScreen {
             (AddressType::Unknown, AddressType::Platform) => Some(platform_min),
             (AddressType::Core, AddressType::Unknown) => Some(core_min),
             (AddressType::Platform, AddressType::Unknown) => Some(platform_min),
+            (AddressType::Shielded, AddressType::Shielded) => Some(platform_min),
+            (AddressType::Shielded, AddressType::Platform) => Some(platform_min),
+            (AddressType::Shielded, _) => Some(platform_min),
+            (_, AddressType::Shielded) => Some(platform_min),
         }
     }
 
@@ -619,6 +635,35 @@ impl WalletSendScreen {
             .collect()
     }
 
+    /// Get shielded pool balance for the selected wallet (if initialized).
+    fn get_shielded_balance(&self) -> Option<(WalletSeedHash, u64)> {
+        let seed_hash = self.selected_wallet_seed_hash?;
+        // Try in-memory state first (most accurate, reflects optimistic spend marks)
+        let states = self.app_context.shielded_states.lock().unwrap();
+        if let Some(state) = states.get(&seed_hash) {
+            let balance = state.shielded_balance;
+            return if balance > 0 {
+                Some((seed_hash, balance))
+            } else {
+                None
+            };
+        }
+        drop(states);
+        // Fall back to database balance (works even if shielded state is temporarily
+        // removed during an async operation, or if the Shielded tab was never visited)
+        let network_str = self.app_context.network.to_string();
+        let balance = self
+            .app_context
+            .db
+            .get_shielded_balance(&seed_hash, &network_str)
+            .ok()?;
+        if balance > 0 {
+            Some((seed_hash, balance))
+        } else {
+            None
+        }
+    }
+
     /// Get Core wallet balance
     fn get_core_balance(&self) -> u64 {
         self.selected_wallet
@@ -653,6 +698,10 @@ impl WalletSendScreen {
                 "Platform Transfer"
             }
             (Some(SourceSelection::PlatformAddresses(_)), AddressType::Core) => "Withdraw to Core",
+            (Some(SourceSelection::Shielded(..)), AddressType::Shielded) => {
+                "Private Transfer (Shielded)"
+            }
+            (Some(SourceSelection::Shielded(..)), AddressType::Platform) => "Unshield to Platform",
             _ => "Send",
         }
     }
@@ -680,7 +729,7 @@ impl WalletSendScreen {
         let dest_type = Self::detect_address_type(&self.destination_address);
         if dest_type == AddressType::Unknown {
             return Err(
-                "Invalid destination address. Use a Dash address (X.../y...) or Platform address (evo1.../tevo1...)"
+                "Invalid destination address. Use a Dash address (X.../y...) or Platform address (dash1.../tdash1...)"
                     .to_string(),
             );
         }
@@ -707,6 +756,12 @@ impl WalletSendScreen {
             }
             (SourceSelection::PlatformAddresses(addresses), AddressType::Core) => {
                 self.send_platform_to_core(seed_hash, addresses, network)
+            }
+            (SourceSelection::Shielded(sh, _), AddressType::Shielded) => {
+                self.send_shielded_to_shielded(sh)
+            }
+            (SourceSelection::Shielded(sh, _), AddressType::Platform) => {
+                self.send_shielded_to_platform(sh)
             }
             _ => Err("Invalid source/destination combination".to_string()),
         }
@@ -1249,6 +1304,65 @@ impl WalletSendScreen {
         }
     }
 
+    /// Send from shielded pool to another shielded address (private transfer).
+    fn send_shielded_to_shielded(
+        &mut self,
+        seed_hash: WalletSeedHash,
+    ) -> Result<AppAction, String> {
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
+
+        let recipient = self.destination_address.trim().to_string();
+        let recipient_bytes = if let Ok((addr, _)) =
+            dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&recipient)
+        {
+            addr.to_raw_bytes().to_vec()
+        } else {
+            return Err("Invalid shielded address".to_string());
+        };
+
+        self.send_status = SendStatus::WaitingForResult(Self::now_epoch_secs());
+        Ok(AppAction::BackendTask(
+            crate::backend_task::BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::ShieldedTransfer {
+                    seed_hash,
+                    amount: amount_credits,
+                    recipient_address_bytes: recipient_bytes,
+                },
+            ),
+        ))
+    }
+
+    /// Send from shielded pool to a platform address (unshield).
+    fn send_shielded_to_platform(
+        &mut self,
+        seed_hash: WalletSeedHash,
+    ) -> Result<AppAction, String> {
+        let amount_credits = self
+            .amount
+            .as_ref()
+            .ok_or_else(|| "Amount is required".to_string())?
+            .value();
+
+        let address_str = self.destination_address.trim();
+        let (platform_addr, _) = PlatformAddress::from_bech32m_string(address_str)
+            .map_err(|e| format!("Invalid platform address: {e}"))?;
+
+        self.send_status = SendStatus::WaitingForResult(Self::now_epoch_secs());
+        Ok(AppAction::BackendTask(
+            crate::backend_task::BackendTask::ShieldedTask(
+                crate::backend_task::shielded::ShieldedTask::UnshieldCredits {
+                    seed_hash,
+                    amount: amount_credits,
+                    to_platform_address: platform_addr,
+                },
+            ),
+        ))
+    }
+
     fn render_source_selection(&mut self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
@@ -1355,6 +1469,52 @@ impl WalletSendScreen {
                     });
                 });
         }
+
+        // Shielded balance option
+        let shielded_balance = self.get_shielded_balance();
+        if let Some((seed_hash, balance)) = shielded_balance
+            && balance > 0
+        {
+            ui.add_space(5.0);
+
+            let is_shielded_selected =
+                matches!(&self.selected_source, Some(SourceSelection::Shielded(..)));
+
+            Frame::group(ui.style())
+                .fill(if is_shielded_selected {
+                    DashColors::DASH_BLUE.gamma_multiply(0.1)
+                } else {
+                    DashColors::surface(dark_mode)
+                })
+                .stroke(if is_shielded_selected {
+                    egui::Stroke::new(2.0, DashColors::DASH_BLUE)
+                } else {
+                    egui::Stroke::new(1.0, DashColors::border_light(dark_mode))
+                })
+                .inner_margin(Margin::symmetric(12, 8))
+                .corner_radius(5.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let mut selected = is_shielded_selected;
+                        if ui.radio_value(&mut selected, true, "").changed() && selected {
+                            self.selected_source =
+                                Some(SourceSelection::Shielded(seed_hash, balance));
+                        }
+                        ui.label(
+                            RichText::new("Shielded Balance")
+                                .color(DashColors::text_primary(dark_mode))
+                                .strong(),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(Self::format_credits(balance))
+                                    .color(DashColors::SUCCESS)
+                                    .strong(),
+                            );
+                        });
+                    });
+                });
+        }
     }
 
     fn render_destination_input(&mut self, ui: &mut Ui) {
@@ -1375,6 +1535,7 @@ impl WalletSendScreen {
                 let (type_text, type_color) = match dest_type {
                     AddressType::Core => ("Core Address", DashColors::DASH_BLUE),
                     AddressType::Platform => ("Platform Address", Color32::from_rgb(130, 80, 220)),
+                    AddressType::Shielded => ("Shielded Address", Color32::from_rgb(0, 180, 120)),
                     AddressType::Unknown => ("", Color32::GRAY),
                 };
                 ui.label(
@@ -1394,7 +1555,7 @@ impl WalletSendScreen {
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.destination_address)
-                        .hint_text("Enter address (X.../y.../evo1.../tevo1...)")
+                        .hint_text("Enter address (X.../y.../dash1.../tdash1...)")
                         .desired_width(f32::INFINITY),
                 );
             });
@@ -1494,12 +1655,16 @@ impl WalletSendScreen {
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
+            Some(SourceSelection::Shielded(_, balance)) => {
+                (Some(*balance), Some("Shielded pool balance".to_string()))
+            }
             None => (None, None),
         };
 
         let input_type = match self.selected_source {
             Some(SourceSelection::CoreWallet) => AddressType::Core,
             Some(SourceSelection::PlatformAddresses(_)) => AddressType::Platform,
+            Some(SourceSelection::Shielded(_, _)) => AddressType::Shielded,
             None => AddressType::Unknown,
         };
         let output_type = Self::detect_address_type(&self.destination_address);
@@ -2173,7 +2338,7 @@ impl WalletSendScreen {
                             ui.label("To:");
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.advanced_outputs[idx].address)
-                                    .hint_text("Enter address (X.../y.../evo1.../tevo1...)")
+                                    .hint_text("Enter address (X.../y.../dash1.../tdash1...)")
                                     .desired_width(350.0),
                             );
 
@@ -2183,6 +2348,9 @@ impl WalletSendScreen {
                                     AddressType::Core => ("Core", DashColors::DASH_BLUE),
                                     AddressType::Platform => {
                                         ("Platform", Color32::from_rgb(130, 80, 220))
+                                    }
+                                    AddressType::Shielded => {
+                                        ("Shielded", Color32::from_rgb(0, 180, 120))
                                     }
                                     AddressType::Unknown => ("", Color32::GRAY),
                                 };
@@ -2731,6 +2899,24 @@ impl ScreenLike for WalletSendScreen {
             } => {
                 self.send_status =
                     SendStatus::Complete("Platform credits transferred successfully!".to_string());
+            }
+            crate::backend_task::BackendTaskSuccessResult::ShieldedTransferComplete {
+                amount,
+                ..
+            } => {
+                self.send_status = SendStatus::Complete(format!(
+                    "Shielded transfer of {} complete!",
+                    format_credits_as_dash(amount)
+                ));
+            }
+            crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsUnshielded {
+                amount,
+                ..
+            } => {
+                self.send_status = SendStatus::Complete(format!(
+                    "Unshielded {} to platform address!",
+                    format_credits_as_dash(amount)
+                ));
             }
             _ => {
                 // Ignore other results

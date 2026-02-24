@@ -145,19 +145,44 @@ impl Wallet {
         let asset_lock_public_key = private_key.public_key(&secp);
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
-        let fee = 3_000;
 
-        let (utxos, change_option) = self
-            .take_unspent_utxos_for(amount, fee, allow_take_fee_from_amount)
+        // Use a small initial estimate to select UTXOs; we recalculate the fee
+        // below based on the actual number of inputs.
+        let initial_fee_estimate = 3_000u64;
+
+        let (utxos, initial_change_option) = self
+            .take_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
             .ok_or("take_unspent_utxos_for() returned None".to_string())?;
 
-        let actual_amount = if change_option.is_none() && allow_take_fee_from_amount {
-            // The amount has been adjusted by taking the fee from the amount
-            // Calculate the adjusted amount based on the total value of the UTXOs minus the fee
-            let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
-            total_input_value - fee
+        // Calculate fee based on actual transaction size so we always meet the
+        // min relay fee (1 duff/byte = 1000 duffs/kB).
+        // Sizes: P2PKH input ~148 B, output ~34 B, header ~10 B, payload ~60 B.
+        let num_inputs = utxos.len();
+        let has_initial_change = initial_change_option.is_some();
+        let num_outputs = 1 + if has_initial_change { 1 } else { 0 };
+        let estimated_size = 10 + (num_inputs * 148) + (num_outputs * 34) + 60;
+        let fee = std::cmp::max(initial_fee_estimate, estimated_size as u64);
+
+        // Recalculate amount and change with the real fee
+        let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
+
+        let (actual_amount, change_option) = if total_input_value < amount + fee {
+            if allow_take_fee_from_amount {
+                // Deduct the fee shortfall from the output amount
+                let adjusted = total_input_value.saturating_sub(fee);
+                if adjusted == 0 {
+                    return Err("Insufficient funds for transaction fee".to_string());
+                }
+                (adjusted, None)
+            } else {
+                return Err(format!(
+                    "Insufficient funds: need {} + {} fee, have {}",
+                    amount, fee, total_input_value
+                ));
+            }
         } else {
-            amount
+            let change = total_input_value - amount - fee;
+            (amount, if change > 0 { Some(change) } else { None })
         };
 
         let payload_output = TxOut {

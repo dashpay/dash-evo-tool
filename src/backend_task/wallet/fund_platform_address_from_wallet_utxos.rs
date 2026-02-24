@@ -1,5 +1,4 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use crate::spv::CoreBackendMode;
@@ -256,8 +255,7 @@ impl AppContext {
             .map_err(|e| format!("Failed to fund platform address: {}", e))?;
 
         // Step 9: Refresh platform address balances
-        self.fetch_platform_address_balances(seed_hash, PlatformSyncMode::Auto)
-            .await?;
+        self.fetch_platform_address_balances(seed_hash).await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
     }

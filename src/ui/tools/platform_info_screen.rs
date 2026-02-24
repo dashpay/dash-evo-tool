@@ -89,6 +89,11 @@ impl PlatformInfoScreen {
                 "Fetch Recently Completed Withdrawals",
                 PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals,
             ),
+            (
+                "shielded_pool",
+                "Fetch Shielded Pool State",
+                PlatformInfoTaskRequestType::ShieldedPoolState,
+            ),
         ];
 
         let mut action = AppAction::None;
@@ -304,6 +309,7 @@ impl ScreenLike for PlatformInfoScreen {
                         ("validator_set", "Current Validator Set Information"),
                         ("withdrawals_queue", "Current Withdrawals in Queue"),
                         ("recent_withdrawals", "Recently Completed Withdrawals"),
+                        ("shielded_pool", "Shielded Pool State"),
                     ];
 
                     // Try to identify which task completed based on active tasks

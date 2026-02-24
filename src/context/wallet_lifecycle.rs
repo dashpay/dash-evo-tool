@@ -244,15 +244,14 @@ impl AppContext {
                 // Update in-memory wallet state
                 wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
 
-                // Update database (not a sync operation - preserve last_full_sync_balance
-                // so the next terminal sync can correctly apply any pending AddToCredits)
+                // Update database
                 if let Err(e) = self.db.set_platform_address_info(
                     &seed_hash,
                     &core_addr,
                     info.balance,
                     info.nonce,
                     &self.network,
-                    false, // Not a sync operation
+                    false,
                 ) {
                     tracing::warn!("Failed to store Platform address info in database: {}", e);
                 }

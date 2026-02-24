@@ -5,6 +5,7 @@ pub mod create_asset_lock_screen;
 pub mod import_mnemonic_screen;
 pub mod send_screen;
 pub mod shield_credits_screen;
+pub mod shield_from_asset_lock_screen;
 pub mod shielded_send_screen;
 pub mod shielded_tab;
 pub mod single_key_send_screen;

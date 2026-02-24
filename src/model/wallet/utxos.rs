@@ -1,8 +1,9 @@
 use crate::context::AppContext;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
+use crate::spv::CoreBackendMode;
+use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::ListUnspentResultEntry;
-use dash_sdk::dashcore_rpc::{Client, RpcApi};
-use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut};
+use dash_sdk::dpp::dashcore::{Address, OutPoint, TxOut};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 impl Wallet {
@@ -89,14 +90,27 @@ impl Wallet {
         }
     }
 
-    pub fn reload_utxos(
-        &mut self,
-        core_client: &Client,
-        network: Network,
-        save: Option<&AppContext>,
-    ) -> Result<HashMap<OutPoint, TxOut>, String> {
+    /// Reload UTXOs from Core RPC, updating both in-memory state and database.
+    ///
+    /// Returns `true` if the UTXO set changed (something was added or
+    /// removed), `false` if nothing changed. In SPV mode this is a no-op
+    /// (`Ok(false)`) because the wallet state is authoritative — UTXOs are
+    /// synced continuously via compact block filters.
+    pub fn reload_utxos(&mut self, app_context: &AppContext) -> Result<bool, String> {
+        let network = app_context.network;
+
+        // SPV wallet state is authoritative — reload is a no-op.
+        if app_context.core_backend_mode() == CoreBackendMode::Spv {
+            return Ok(false);
+        }
+
+        let core_client = app_context
+            .core_client
+            .read()
+            .map_err(|e| format!("Core client lock was poisoned: {}", e))?;
+
         // Collect Core chain addresses for which we want to load UTXOs.
-        // Platform addresses  are NOT valid on Core chain and must be excluded.
+        // Platform addresses are NOT valid on Core chain and must be excluded.
         let addresses: Vec<_> = self
             .known_addresses
             .iter()
@@ -120,7 +134,8 @@ impl Wallet {
                 .map_err(|e| e.to_string())?
         };
 
-        // Use the RPC client to list unspent outputs.
+        // Drop the RPC client guard before the rest of the bookkeeping
+        drop(core_client);
 
         // Initialize the HashMap to store the new UTXOs.
         let mut new_utxo_map = HashMap::new();
@@ -152,6 +167,8 @@ impl Wallet {
         let added_outpoints: HashSet<_> =
             new_outpoints.difference(&old_outpoints).cloned().collect();
 
+        let changed = !removed_outpoints.is_empty() || !added_outpoints.is_empty();
+
         // Now update self.utxos by removing UTXOs not present in new_outpoints
         let current_utxos = &mut self.utxos;
         // Remove UTXOs that are no longer unspent
@@ -174,17 +191,15 @@ impl Wallet {
                 .insert(*outpoint, tx_out.clone());
         }
 
-        // If save is Some, update the database
-        if let Some(app_context) = save {
+        // Persist changes to the database only when something actually changed
+        if changed {
             let db = &app_context.db;
 
-            // Remove UTXOs that are no longer unspent
             for outpoint in removed_outpoints {
                 db.drop_utxo(&outpoint, &network.to_string())
                     .map_err(|e| e.to_string())?;
             }
 
-            // Add new UTXOs
             for outpoint in added_outpoints {
                 let tx_out = &new_utxo_map[&outpoint];
                 let address = Address::from_script(&tx_out.script_pubkey, network)
@@ -202,8 +217,7 @@ impl Wallet {
             }
         }
 
-        // Return the new UTXO map
-        Ok(new_utxo_map)
+        Ok(changed)
     }
 
     /// Get all addresses with their total UTXO balances

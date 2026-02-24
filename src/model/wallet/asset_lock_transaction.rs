@@ -1,6 +1,7 @@
 use crate::context::AppContext;
 use crate::model::fee_estimation::{
-    AssetLockFeeResult, MIN_ASSET_LOCK_FEE, calculate_asset_lock_fee, estimate_asset_lock_tx_size,
+    AssetLockFeeResult, MIN_ASSET_LOCK_FEE, calculate_asset_lock_fee, calculate_relay_fee,
+    estimate_asset_lock_tx_size,
 };
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -52,7 +53,7 @@ impl Wallet {
                     // we can pick up any additional marginal UTXOs.
                     fee_estimate = std::cmp::max(
                         MIN_ASSET_LOCK_FEE,
-                        estimate_asset_lock_tx_size(num_inputs, 2) as u64,
+                        calculate_relay_fee(estimate_asset_lock_tx_size(num_inputs, 2)),
                     );
                     continue;
                 }

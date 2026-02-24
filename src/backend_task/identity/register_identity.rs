@@ -233,18 +233,12 @@ impl AppContext {
                     )
                     .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
-                // TODO: UTXO removal timing issue - see comment above for FundWithWallet case.
+                // Remove the spent UTXO using the consolidated method.
                 {
-                    let mut wallet = wallet.write().unwrap();
-                    wallet.utxos.retain(|_, utxo_map| {
-                        utxo_map.retain(|outpoint, _| outpoint != &utxo);
-                        !utxo_map.is_empty()
-                    });
-                    self.db
-                        .drop_utxo(&utxo, &self.network.to_string())
-                        .map_err(|e| e.to_string())?;
-
-                    wallet.recalculate_address_balance(&input_address, self)?;
+                    let mut wallet = wallet.write().map_err(|e| e.to_string())?;
+                    let mut selected = BTreeMap::new();
+                    selected.insert(utxo, (tx_out.clone(), input_address.clone()));
+                    wallet.remove_selected_utxos(&selected, &self.db, self.network)?;
                 }
 
                 let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;

@@ -53,9 +53,9 @@ fn allocate_platform_addresses_with_fee<F>(
     amount_credits: u64,
     destination: Option<&PlatformAddress>,
     fee_for_inputs: F,
-) -> Result<AddressAllocationResult, String>
+) -> AddressAllocationResult
 where
-    F: Fn(&BTreeMap<PlatformAddress, u64>) -> Result<u64, String>,
+    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
 {
     // Filter out the destination address if provided (protocol doesn't allow same address as input and output)
     let filtered: Vec<_> = addresses
@@ -70,19 +70,19 @@ where
 
     // Early return if no addresses available after filtering
     if sorted_addresses.is_empty() {
-        return Ok(AddressAllocationResult {
+        return AddressAllocationResult {
             inputs: BTreeMap::new(),
             fee_payer_index: 0,
-            estimated_fee: fee_for_inputs(&BTreeMap::new())?,
+            estimated_fee: fee_for_inputs(&BTreeMap::new()),
             shortfall: amount_credits,
             sorted_addresses: vec![],
-        });
+        };
     }
 
     // The highest-balance address (first in sorted order) will pay the fee
     let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
 
-    let mut estimated_fee = fee_for_inputs(&BTreeMap::new())?;
+    let mut estimated_fee = fee_for_inputs(&BTreeMap::new());
     let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
 
     // Iterate until fee estimate stabilizes (input count affects fee)
@@ -107,7 +107,7 @@ where
             }
         }
 
-        let new_fee = fee_for_inputs(&inputs)?;
+        let new_fee = fee_for_inputs(&inputs);
         if new_fee == estimated_fee {
             break;
         }
@@ -141,13 +141,13 @@ where
         })
         .unwrap_or(0);
 
-    Ok(AddressAllocationResult {
+    AddressAllocationResult {
         inputs,
         fee_payer_index,
         estimated_fee,
         shortfall,
         sorted_addresses,
-    })
+    }
 }
 
 /// Detected address type
@@ -751,14 +751,13 @@ impl WalletSendScreen {
             amount_credits,
             Some(&destination),
             |inputs| {
-                Ok(fee_estimator.estimate_platform_to_platform_fee(
+                fee_estimator.estimate_platform_to_platform_fee(
                     platform_version,
                     inputs,
                     &destination,
-                ))
+                )
             },
-        )
-        .map_err(|e| format!("Fee estimation failed: {}", e))?;
+        );
 
         if allocation.sorted_addresses.is_empty() {
             return Err(
@@ -891,13 +890,12 @@ impl WalletSendScreen {
         // Allocate addresses using state-transition-based fee estimation (no destination filter)
         let allocation =
             allocate_platform_addresses_with_fee(&addresses, amount_credits, None, |inputs| {
-                Ok(fee_estimator.estimate_platform_to_core_fee(
+                fee_estimator.estimate_platform_to_core_fee(
                     platform_version,
                     inputs,
                     &output_script,
-                ))
-            })
-            .map_err(|e| format!("Fee estimation failed: {}", e))?;
+                )
+            });
 
         if allocation.shortfall > 0 {
             // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
@@ -1536,11 +1534,11 @@ impl WalletSendScreen {
                     amount_credits,
                     destination.as_ref(),
                     |inputs| {
-                        Ok(fee_estimator.estimate_platform_to_platform_fee(
+                        fee_estimator.estimate_platform_to_platform_fee(
                             platform_version,
                             inputs,
                             dest,
-                        ))
+                        )
                     },
                 )
             } else {
@@ -1556,25 +1554,17 @@ impl WalletSendScreen {
                 .map(|addr| CoreScript::new(addr.script_pubkey()));
             if let Some(output_script) = output_script {
                 allocate_platform_addresses_with_fee(addresses, amount_credits, None, |inputs| {
-                    Ok(fee_estimator.estimate_platform_to_core_fee(
+                    fee_estimator.estimate_platform_to_core_fee(
                         platform_version,
                         inputs,
                         &output_script,
-                    ))
+                    )
                 })
             } else {
                 return;
             }
         } else {
             return;
-        };
-
-        let allocation = match allocation {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::warn!("Fee estimation failed for breakdown: {}", e);
-                return;
-            }
         };
 
         if allocation.inputs.is_empty() {

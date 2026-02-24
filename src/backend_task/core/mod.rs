@@ -409,7 +409,13 @@ impl AppContext {
                     // The first build already removed UTXOs, so reload the wallet
                     // state and rebuild.  In practice this rarely triggers because
                     // the initial 5-input estimate is usually sufficient.
-                    wallet_guard.reload_utxos(self)?;
+                    if !wallet_guard.reload_utxos(self)? {
+                        // SPV mode: reload is a no-op, cannot recover removed UTXOs.
+                        // This path should only be reached in RPC mode.
+                        return Err(
+                            "Fee re-estimation failed: cannot reload UTXOs in SPV mode".to_string()
+                        );
+                    }
                     tx = wallet_guard.build_multi_recipient_payment_transaction(
                         self.network,
                         &parsed_recipients,
@@ -426,7 +432,7 @@ impl AppContext {
         let txid = self
             .core_client
             .read()
-            .expect("Core client lock was poisoned")
+            .map_err(|e| format!("Core client lock was poisoned: {}", e))?
             .send_raw_transaction(&tx)
             .map_err(|e| format!("Failed to broadcast transaction: {e}"))?;
 

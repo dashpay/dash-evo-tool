@@ -118,7 +118,7 @@ pub fn calculate_asset_lock_fee(
     // First pass: assume 2 outputs (1 burn + 1 change).
     let fee_with_change = std::cmp::max(
         MIN_ASSET_LOCK_FEE,
-        estimate_asset_lock_tx_size(num_inputs, 2) as u64,
+        calculate_relay_fee(estimate_asset_lock_tx_size(num_inputs, 2)),
     );
 
     let required_with_change = requested_amount
@@ -141,7 +141,7 @@ pub fn calculate_asset_lock_fee(
     // Recompute with 1 output (no change).
     let fee_no_change = std::cmp::max(
         MIN_ASSET_LOCK_FEE,
-        estimate_asset_lock_tx_size(num_inputs, 1) as u64,
+        calculate_relay_fee(estimate_asset_lock_tx_size(num_inputs, 1)),
     );
 
     let required_no_change = requested_amount

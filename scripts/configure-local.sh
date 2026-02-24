@@ -4,10 +4,15 @@
 #
 # Usage: ./configure-local.sh [config_name]
 #   config_name: dashmate config name (default: local_seed)
+#
+# Environment variables:
+#   DASHMATE_CMD: dashmate command to use (default: dashmate)
+#                 e.g. DASHMATE_CMD="yarn dashmate" ./configure-local.sh
 
 set -euo pipefail
 
 CONFIG="${1:-local_seed}"
+DASHMATE="${DASHMATE_CMD:-dashmate}"
 
 # Detect .env path
 case "$(uname)" in
@@ -18,16 +23,16 @@ ENV_FILE="$ENV_DIR/.env"
 
 echo "Reading dashmate config (--config=$CONFIG)..."
 
-RPC_PASSWORD=$(dashmate config get core.rpc.users.dashmate.password --config="$CONFIG" 2>/dev/null) \
+RPC_PASSWORD=$($DASHMATE config get core.rpc.users.dashmate.password --config="$CONFIG" 2>/dev/null) \
   || { echo "Error: Could not read RPC password. Is dashmate installed and '$CONFIG' configured?"; exit 1; }
-RPC_PORT=$(dashmate config get core.rpc.port --config="$CONFIG")
-ZMQ_PORT=$(dashmate config get core.zmq.port --config="$CONFIG")
-DAPI_PORT=$(dashmate config get platform.gateway.listeners.dapiAndDrive.port --config="$CONFIG")
+RPC_PORT=$($DASHMATE config get core.rpc.port --config="$CONFIG")
+ZMQ_PORT=$($DASHMATE config get core.zmq.port --config="$CONFIG")
+DAPI_PORT=$($DASHMATE config get platform.gateway.listeners.dapiAndDrive.port --config="$CONFIG")
 
 HOST="127.0.0.1"
 
 echo ""
-echo "  RPC Password : $RPC_PASSWORD"
+echo "  RPC Password : (found)"
 echo "  RPC Port     : $RPC_PORT"
 echo "  DAPI Port    : $DAPI_PORT"
 echo "  ZMQ Port     : $ZMQ_PORT"

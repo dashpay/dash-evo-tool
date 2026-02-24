@@ -929,28 +929,21 @@ impl Database {
         );
         // Load platform address info for each wallet (using existing connection to avoid deadlock)
         let mut platform_stmt = conn.prepare(
-            "SELECT seed_hash, address, balance, nonce, last_full_sync_balance FROM platform_address_balances WHERE network = ?",
+            "SELECT seed_hash, address, balance, nonce FROM platform_address_balances WHERE network = ?",
         )?;
         let platform_rows = platform_stmt.query_map([network_str.clone()], |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let address_str: String = row.get(1)?;
             let balance: i64 = row.get(2)?;
             let nonce: i64 = row.get(3)?;
-            let last_full_sync_balance: Option<i64> = row.get(4)?;
             let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
                 rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
             })?;
-            Ok((
-                seed_hash_array,
-                address_str,
-                balance as u64,
-                nonce as u32,
-                last_full_sync_balance.map(|b| b as u64),
-            ))
+            Ok((seed_hash_array, address_str, balance as u64, nonce as u32))
         })?;
 
         for row in platform_rows {
-            if let Ok((seed_hash, address_str, balance, nonce, last_full_sync_balance)) = row
+            if let Ok((seed_hash, address_str, balance, nonce)) = row
                 && let Some(wallet) = wallets_map.get_mut(&seed_hash)
                 && let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str)
             {
@@ -966,13 +959,7 @@ impl Database {
 
                 wallet.platform_address_info.insert(
                     canonical_address,
-                    crate::model::wallet::PlatformAddressInfo {
-                        balance,
-                        nonce,
-                        // Use the stored last_full_sync_balance from the database
-                        // This is the balance from the last FULL sync checkpoint, not including terminal updates
-                        last_full_sync_balance,
-                    },
+                    crate::model::wallet::PlatformAddressInfo { balance, nonce },
                 );
             }
         }
@@ -982,11 +969,6 @@ impl Database {
     }
 
     /// Store or update Platform address balance and nonce.
-    ///
-    /// When `is_sync_operation` is true, also updates `last_full_sync_balance` to the current
-    /// balance. This should be true for sync operations (full or terminal) and false for
-    /// internal updates (e.g., after a transfer completes), so that subsequent terminal syncs
-    /// can correctly apply any pending AddToCredits.
     pub fn set_platform_address_info(
         &self,
         seed_hash: &[u8; 32],
@@ -994,7 +976,7 @@ impl Database {
         balance: u64,
         nonce: u32,
         network: &Network,
-        is_sync_operation: bool,
+        _is_sync_operation: bool,
     ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let canonical_address = Wallet::canonical_address(address, *network);
@@ -1004,49 +986,23 @@ impl Database {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        if is_sync_operation {
-            // Sync operation: update both balance and last_full_sync_balance
-            // last_full_sync_balance becomes the baseline for pre-population in the next sync
-            self.execute(
-                "INSERT INTO platform_address_balances
-                 (seed_hash, address, balance, nonce, network, updated_at, last_full_sync_balance)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(seed_hash, address, network) DO UPDATE SET
-                 balance = excluded.balance,
-                 nonce = excluded.nonce,
-                 updated_at = excluded.updated_at,
-                 last_full_sync_balance = excluded.last_full_sync_balance",
-                params![
-                    seed_hash,
-                    address_str,
-                    balance as i64,
-                    nonce as i64,
-                    network_str,
-                    updated_at,
-                    balance as i64
-                ],
-            )?;
-        } else {
-            // Internal update (e.g., after transfer): update balance but preserve last_full_sync_balance
-            // This ensures the next terminal sync correctly applies any pending AddToCredits
-            self.execute(
-                "INSERT INTO platform_address_balances
-                 (seed_hash, address, balance, nonce, network, updated_at, last_full_sync_balance)
-                 VALUES (?, ?, ?, ?, ?, ?, NULL)
-                 ON CONFLICT(seed_hash, address, network) DO UPDATE SET
-                 balance = excluded.balance,
-                 nonce = excluded.nonce,
-                 updated_at = excluded.updated_at",
-                params![
-                    seed_hash,
-                    address_str,
-                    balance as i64,
-                    nonce as i64,
-                    network_str,
-                    updated_at
-                ],
-            )?;
-        }
+        self.execute(
+            "INSERT INTO platform_address_balances
+             (seed_hash, address, balance, nonce, network, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(seed_hash, address, network) DO UPDATE SET
+             balance = excluded.balance,
+             nonce = excluded.nonce,
+             updated_at = excluded.updated_at",
+            params![
+                seed_hash,
+                address_str,
+                balance as i64,
+                nonce as i64,
+                network_str,
+                updated_at
+            ],
+        )?;
         Ok(())
     }
 
@@ -1167,49 +1123,31 @@ impl Database {
         Ok(deleted)
     }
 
-    /// Get the last platform full sync timestamp, checkpoint height, and last terminal block for a wallet
-    /// Returns (last_sync_timestamp, checkpoint_height, last_terminal_block) or (0, 0, 0) if not set
-    pub fn get_platform_sync_info(
-        &self,
-        seed_hash: &[u8; 32],
-    ) -> rusqlite::Result<(u64, u64, u64)> {
+    /// Get the last platform sync timestamp and sync height for a wallet.
+    /// Returns (last_sync_timestamp, last_sync_height) or (0, 0) if not set.
+    pub fn get_platform_sync_info(&self, seed_hash: &[u8; 32]) -> rusqlite::Result<(u64, u64)> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT last_platform_full_sync, last_platform_sync_checkpoint, COALESCE(last_terminal_block, 0) FROM wallet WHERE seed_hash = ?",
+            "SELECT last_platform_full_sync, last_platform_sync_checkpoint FROM wallet WHERE seed_hash = ?",
             params![seed_hash],
             |row| {
                 let last_sync: i64 = row.get(0)?;
-                let checkpoint: i64 = row.get(1)?;
-                let last_terminal: i64 = row.get(2)?;
-                Ok((last_sync as u64, checkpoint as u64, last_terminal as u64))
+                let sync_height: i64 = row.get(1)?;
+                Ok((last_sync as u64, sync_height as u64))
             },
         )
     }
 
-    /// Set the last platform full sync timestamp and checkpoint height for a wallet
-    /// Also resets last_terminal_block to 0 since a new full sync was performed
+    /// Set the platform sync timestamp and sync height for a wallet.
     pub fn set_platform_sync_info(
         &self,
         seed_hash: &[u8; 32],
         last_sync_timestamp: u64,
-        checkpoint_height: u64,
+        sync_height: u64,
     ) -> rusqlite::Result<()> {
         self.execute(
-            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ?, last_terminal_block = 0 WHERE seed_hash = ?",
-            params![last_sync_timestamp as i64, checkpoint_height as i64, seed_hash],
-        )?;
-        Ok(())
-    }
-
-    /// Update the last terminal block height after processing terminal balance updates
-    pub fn set_last_terminal_block(
-        &self,
-        seed_hash: &[u8; 32],
-        last_terminal_block: u64,
-    ) -> rusqlite::Result<()> {
-        self.execute(
-            "UPDATE wallet SET last_terminal_block = ? WHERE seed_hash = ?",
-            params![last_terminal_block as i64, seed_hash],
+            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ? WHERE seed_hash = ?",
+            params![last_sync_timestamp as i64, sync_height as i64, seed_hash],
         )?;
         Ok(())
     }
@@ -1674,12 +1612,11 @@ mod tests {
         }
 
         // Initial sync info should be zeros
-        let (last_sync, checkpoint, last_terminal) = db
+        let (last_sync, sync_height) = db
             .get_platform_sync_info(&seed_hash)
             .expect("Failed to get platform sync info");
         assert_eq!(last_sync, 0);
-        assert_eq!(checkpoint, 0);
-        assert_eq!(last_terminal, 0);
+        assert_eq!(sync_height, 0);
 
         // Set sync info
         let timestamp = 1700000000u64;
@@ -1687,21 +1624,11 @@ mod tests {
         db.set_platform_sync_info(&seed_hash, timestamp, height)
             .expect("Failed to set platform sync info");
 
-        let (last_sync, checkpoint, last_terminal) = db
+        let (last_sync, sync_height) = db
             .get_platform_sync_info(&seed_hash)
             .expect("Failed to get platform sync info");
         assert_eq!(last_sync, timestamp);
-        assert_eq!(checkpoint, height);
-        assert_eq!(last_terminal, 0); // Reset to 0 by set_platform_sync_info
-
-        // Set last terminal block
-        db.set_last_terminal_block(&seed_hash, 100500)
-            .expect("Failed to set last terminal block");
-
-        let (_, _, last_terminal) = db
-            .get_platform_sync_info(&seed_hash)
-            .expect("Failed to get platform sync info");
-        assert_eq!(last_terminal, 100500);
+        assert_eq!(sync_height, height);
     }
 
     #[test]

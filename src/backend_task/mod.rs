@@ -360,12 +360,8 @@ impl AppContext {
             WalletTask::GenerateReceiveAddress { seed_hash } => {
                 self.generate_receive_address(seed_hash).await
             }
-            WalletTask::FetchPlatformAddressBalances {
-                seed_hash,
-                sync_mode,
-            } => {
-                self.fetch_platform_address_balances(seed_hash, sync_mode)
-                    .await
+            WalletTask::FetchPlatformAddressBalances { seed_hash } => {
+                self.fetch_platform_address_balances(seed_hash).await
             }
             WalletTask::TransferPlatformCredits {
                 seed_hash,

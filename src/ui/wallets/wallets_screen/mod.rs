@@ -39,30 +39,21 @@ use dialogs::{
 /// Refresh mode for dev mode dropdown - controls what gets refreshed
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum RefreshMode {
-    /// Current behavior: Core wallet + Platform (auto decides full vs terminal)
+    /// Core wallet + Platform address sync
     #[default]
     All,
     /// Only refresh Core wallet balances
     CoreOnly,
-    /// Only Platform sync - force full sync
-    PlatformFull,
-    /// Only Platform sync - terminal only
-    PlatformTerminal,
-    /// Core wallet + Platform full sync
-    CoreAndPlatformFull,
-    /// Core wallet + Platform terminal sync
-    CoreAndPlatformTerminal,
+    /// Only Platform address sync
+    PlatformOnly,
 }
 
 impl RefreshMode {
     fn label(&self) -> &'static str {
         match self {
-            RefreshMode::All => "All (Auto)",
+            RefreshMode::All => "Core + Platform",
             RefreshMode::CoreOnly => "Core Only",
-            RefreshMode::PlatformFull => "Platform (Full)",
-            RefreshMode::PlatformTerminal => "Platform (Terminal)",
-            RefreshMode::CoreAndPlatformFull => "Core + Platform (Full)",
-            RefreshMode::CoreAndPlatformTerminal => "Core + Platform (Terminal)",
+            RefreshMode::PlatformOnly => "Platform Only",
         }
     }
 
@@ -70,10 +61,7 @@ impl RefreshMode {
         &[
             RefreshMode::All,
             RefreshMode::CoreOnly,
-            RefreshMode::PlatformFull,
-            RefreshMode::PlatformTerminal,
-            RefreshMode::CoreAndPlatformFull,
-            RefreshMode::CoreAndPlatformTerminal,
+            RefreshMode::PlatformOnly,
         ]
     }
 }
@@ -1255,8 +1243,6 @@ impl WalletsBalancesScreen {
         wallet_arc: &Arc<RwLock<Wallet>>,
         mode: RefreshMode,
     ) -> AppAction {
-        use crate::backend_task::wallet::PlatformSyncMode;
-
         let seed_hash = wallet_arc
             .read()
             .ok()
@@ -1265,50 +1251,26 @@ impl WalletsBalancesScreen {
 
         match mode {
             RefreshMode::All => {
-                // Default behavior: Core + Platform (Auto)
+                // Core + Platform
                 AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
                     wallet_arc.clone(),
-                    Some(PlatformSyncMode::Auto),
+                    true,
                 )))
             }
             RefreshMode::CoreOnly => {
                 // Core only, no Platform sync
                 AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
                     wallet_arc.clone(),
-                    None,
+                    false,
                 )))
             }
-            RefreshMode::PlatformFull => {
-                // Platform only with forced full sync
+            RefreshMode::PlatformOnly => {
+                // Platform only
                 AppAction::BackendTask(BackendTask::WalletTask(
                     crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
                         seed_hash,
-                        sync_mode: PlatformSyncMode::ForceFull,
                     },
                 ))
-            }
-            RefreshMode::PlatformTerminal => {
-                // Platform only with terminal sync
-                AppAction::BackendTask(BackendTask::WalletTask(
-                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
-                        seed_hash,
-                        sync_mode: PlatformSyncMode::TerminalOnly,
-                    },
-                ))
-            }
-            RefreshMode::CoreAndPlatformFull => {
-                // Core + Platform with forced full sync
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    Some(PlatformSyncMode::ForceFull),
-                )))
-            }
-            RefreshMode::CoreAndPlatformTerminal => {
-                // Core + Platform with terminal sync
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    Some(PlatformSyncMode::TerminalOnly),
-                )))
             }
         }
     }
@@ -1319,17 +1281,15 @@ impl ScreenLike for WalletsBalancesScreen {
         self.check_message_expiration();
 
         // Check for pending platform balance refresh (triggered after transfers)
-        let pending_refresh_action =
-            if let Some(seed_hash) = self.pending_platform_balance_refresh.take() {
-                AppAction::BackendTask(BackendTask::WalletTask(
-                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
-                        seed_hash,
-                        sync_mode: crate::backend_task::wallet::PlatformSyncMode::Auto,
-                    },
-                ))
-            } else {
-                AppAction::None
-            };
+        let pending_refresh_action = if let Some(seed_hash) =
+            self.pending_platform_balance_refresh.take()
+        {
+            AppAction::BackendTask(BackendTask::WalletTask(
+                crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances { seed_hash },
+            ))
+        } else {
+            AppAction::None
+        };
 
         let mut right_buttons = vec![
             (

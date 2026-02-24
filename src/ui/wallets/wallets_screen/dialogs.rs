@@ -1369,6 +1369,7 @@ impl WalletsBalancesScreen {
                             .hint_text("1")
                             .desired_width(100.0),
                     );
+                    self.mine_dialog.block_count_str.retain(|c| c.is_ascii_digit());
 
                     // Error display
                     if let Some(error) = &self.mine_dialog.error {

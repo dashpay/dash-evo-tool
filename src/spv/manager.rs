@@ -1081,15 +1081,18 @@ impl SpvManager {
                                 *status_guard = SpvStatus::Running;
                             } else if is_error {
                                 *status_guard = SpvStatus::Error;
-                                if let Ok(mut err_guard) = last_error.write()
-                                    && err_guard.is_none()
-                                {
-                                    *err_guard =
-                                        Some("Sync failed (reported by SPV library)".into());
-                                }
                             } else if !matches!(*status_guard, SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error) {
                                 *status_guard = SpvStatus::Syncing;
                             }
+                        }
+                        // Write last_error outside status lock to maintain
+                        // consistent lock ordering (status → release → last_error).
+                        if is_error
+                            && let Ok(mut err_guard) = last_error.write()
+                            && err_guard.is_none()
+                        {
+                            *err_guard =
+                                Some("Sync failed (reported by SPV library)".into());
                         }
                     }
                 }

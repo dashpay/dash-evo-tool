@@ -169,7 +169,7 @@ impl ConnectionStatus {
         if total == 0 {
             "No endpoints configured".to_string()
         } else if available > 0 {
-            format!("Available ({available}/{total} endpoints)")
+            format!("Available ({available} unbanned / {total} total endpoints)")
         } else {
             format!("All {total} endpoints banned")
         }
@@ -250,12 +250,12 @@ impl ConnectionStatus {
                 format!("{header}\n{rpc_status}\n{zmq_status}\n{dapi_status}")
             }
             CoreBackendMode::Spv => {
-                let spv_label = format!("SPV: {:?}", spv_status);
                 let header = match overall {
-                    OverallConnectionState::Synced => "SPV synced",
-                    OverallConnectionState::Syncing => "SPV syncing",
-                    OverallConnectionState::Disconnected => "SPV disconnected",
+                    OverallConnectionState::Synced => "Ready",
+                    OverallConnectionState::Syncing => "Syncing",
+                    OverallConnectionState::Disconnected => "Disconnected",
                 };
+                let spv_label = format!("SPV: {:?}", spv_status);
                 format!("{header}\n{spv_label}\n{dapi_status}")
             }
         }

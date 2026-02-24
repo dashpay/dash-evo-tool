@@ -152,7 +152,13 @@ impl Wallet {
 
         let (utxos, initial_change_option) = self
             .take_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
-            .ok_or("take_unspent_utxos_for() returned None".to_string())?;
+            .ok_or_else(|| {
+                format!(
+                    "Not enough spendable funds to create asset lock transaction: \
+                     requested amount {} plus estimated fee {}",
+                    amount, initial_fee_estimate
+                )
+            })?;
 
         // Calculate fee based on actual transaction size so we always meet the
         // min relay fee (1 duff/byte = 1000 duffs/kB).

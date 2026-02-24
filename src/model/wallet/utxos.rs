@@ -1,9 +1,10 @@
 use crate::context::AppContext;
+use crate::database::Database;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use crate::spv::CoreBackendMode;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::ListUnspentResultEntry;
-use dash_sdk::dpp::dashcore::{Address, OutPoint, TxOut};
+use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, TxOut};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 impl Wallet {
@@ -72,14 +73,13 @@ impl Wallet {
     ///
     /// Typically called with the result of [`Self::select_unspent_utxos_for`]
     /// after the transaction has been fully built and signed.
-    ///
-    /// When `context` is `None`, only the in-memory state is updated (useful
-    /// for tests or when no database persistence is needed).
     pub fn remove_selected_utxos(
         &mut self,
-        context: Option<&AppContext>,
         selected: &BTreeMap<OutPoint, (TxOut, Address)>,
+        db: &Database,
+        network: Network,
     ) -> Result<(), String> {
+        // Update in-memory UTXO map
         for (outpoint, (_, address)) in selected {
             if let Some(outpoints) = self.utxos.get_mut(address) {
                 outpoints.remove(outpoint);
@@ -95,40 +95,17 @@ impl Wallet {
             }
         }
 
-        if let Some(context) = context {
-            // Drop used UTXOs from database
-            for outpoint in selected.keys() {
-                context
-                    .db
-                    .drop_utxo(outpoint, &context.network.to_string())
-                    .map_err(|e| e.to_string())?;
-            }
-
-            // Recalculate balances for affected addresses
-            self.recalculate_affected_address_balances(selected, context)?;
+        // Persist UTXO removals to the database
+        let network_str = network.to_string();
+        for outpoint in selected.keys() {
+            db.drop_utxo(outpoint, &network_str)
+                .map_err(|e| e.to_string())?;
         }
 
-        Ok(())
-    }
+        // Recalculate and persist balances for affected addresses
+        self.recalculate_affected_address_balances_with_db(selected, db)?;
 
-    /// Convenience wrapper: selects and immediately removes UTXOs (in-memory only).
-    ///
-    /// Used in tests and contexts without database persistence.  Production code
-    /// should prefer [`Self::select_unspent_utxos_for`] followed by
-    /// [`Self::remove_selected_utxos`] with a context.
-    #[allow(clippy::type_complexity)]
-    pub fn take_unspent_utxos_for(
-        &mut self,
-        amount: u64,
-        fee: u64,
-        allow_take_fee_from_amount: bool,
-    ) -> Option<(BTreeMap<OutPoint, (TxOut, Address)>, Option<u64>)> {
-        let (selected, change_option) =
-            self.select_unspent_utxos_for(amount, fee, allow_take_fee_from_amount)?;
-        // In-memory only — no context for DB persistence.
-        self.remove_selected_utxos(None, &selected)
-            .expect("remove_selected_utxos without context cannot fail");
-        Some((selected, change_option))
+        Ok(())
     }
 
     /// Reload UTXOs from Core RPC, updating both in-memory state and database.

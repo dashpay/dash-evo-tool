@@ -498,17 +498,38 @@ fn render_banner(
         .corner_radius(Shape::RADIUS_SM as f32)
         .stroke(egui::Stroke::new(Shape::BORDER_WIDTH, fg_color))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // Icon
+            // First row: icon + wrapping text + right-aligned dismiss
+            let available_width = ui.available_width();
+
+            ui.horizontal_top(|ui| {
+                // Icon (fixed width)
                 ui.label(egui::RichText::new(icon).color(fg_color).strong());
                 ui.add_space(Spacing::XS);
 
-                // Message text
-                ui.label(egui::RichText::new(text).color(fg_color));
+                // Reserve space for dismiss button and annotation on the right
+                let dismiss_width = 40.0;
+                let text_width = (available_width - dismiss_width - 30.0).max(100.0);
+
+                // Message text with wrapping
+                ui.add_sized(
+                    egui::vec2(text_width, 0.0),
+                    egui::Label::new(egui::RichText::new(text).color(fg_color)).wrap(),
+                );
 
                 // Right-aligned: annotation + dismiss
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("x").clicked() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    let dismiss_response = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("\u{274C}")
+                                .color(fg_color)
+                                .font(Typography::body_small()),
+                        )
+                        .sense(egui::Sense::click()),
+                    );
+                    if dismiss_response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                    if dismiss_response.clicked() {
                         dismissed = true;
                     }
 
@@ -605,9 +626,9 @@ fn set_banners(ctx: &egui::Context, banners: Vec<BannerState>) {
 
 fn icon_for_type(message_type: MessageType) -> &'static str {
     match message_type {
-        MessageType::Error => "\u{274C}",   // cross mark
-        MessageType::Warning => "\u{26A0}", // warning sign
-        MessageType::Success => "\u{2713}", // check mark
-        MessageType::Info => "\u{2139}",    // info
+        MessageType::Error => "\u{26D4}",   // no entry (⛔)
+        MessageType::Warning => "\u{26A0}", // warning sign (⚠)
+        MessageType::Success => "\u{2705}", // white heavy check mark (✅)
+        MessageType::Info => "\u{1F4AC}",   // speech balloon (💬)
     }
 }

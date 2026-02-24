@@ -5,7 +5,9 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::wallet::Wallet;
+use crate::ui::MessageType;
 use crate::ui::ScreenLike;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -256,13 +258,12 @@ impl ScreenLike for KeyInfoScreen {
                                 ui.label(RichText::new(hash_hex).color(text_primary));
                             }
                             Err(e) => {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(format!("Error: {}", e))
-                                            .color(egui::Color32::RED),
-                                    )
-                                    .wrap(),
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    &format!("Error: {}", e),
+                                    MessageType::Error,
                                 );
+                                ui.label(RichText::new("Unavailable").color(text_primary));
                             }
                         }
 
@@ -287,13 +288,12 @@ impl ScreenLike for KeyInfoScreen {
                                     );
                                 }
                                 Err(e) => {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(format!("Error: {}", e))
-                                                .color(egui::Color32::RED),
-                                        )
-                                        .wrap(),
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        &format!("Error: {}", e),
+                                        MessageType::Error,
                                     );
+                                    ui.label(RichText::new("Unavailable").color(text_primary));
                                 }
                             }
                         }

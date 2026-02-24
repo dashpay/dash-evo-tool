@@ -6,6 +6,7 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -74,6 +75,23 @@ pub struct UpdateTokenConfigScreen {
 }
 
 impl UpdateTokenConfigScreen {
+    fn set_text_input_error(&mut self, ctx: &Context, message: impl Into<String>) {
+        let next_message = message.into();
+        if self.text_input_error == next_message {
+            return;
+        }
+
+        if !self.text_input_error.is_empty() {
+            MessageBanner::clear_global_message(ctx, &self.text_input_error);
+        }
+
+        self.text_input_error = next_message;
+
+        if !self.text_input_error.is_empty() {
+            MessageBanner::set_global(ctx, &self.text_input_error, MessageType::Error);
+        }
+    }
+
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let possible_key = identity_token_info
             .identity
@@ -275,7 +293,7 @@ impl UpdateTokenConfigScreen {
                         self.update_text =
                             serde_json::to_string_pretty(default_token_configuration.conventions())
                                 .unwrap_or_default();
-                        self.text_input_error = "".to_string();
+                        self.set_text_input_error(ui.ctx(), String::new());
                         self.update_group_based_on_change_item();
                     };
                     if ui
@@ -368,8 +386,10 @@ impl UpdateTokenConfigScreen {
                         .clicked()
                     {
                         self.update_text = "".to_string();
-                        self.text_input_error =
-                            "The perpetual distribution can not be modified".to_string();
+                        self.set_text_input_error(
+                            ui.ctx(),
+                            "The perpetual distribution can not be modified".to_string(),
+                        );
                         self.update_group_based_on_change_item();
                     };
                     if ui
@@ -566,6 +586,7 @@ impl UpdateTokenConfigScreen {
         ui.add_space(10.0);
 
         /* ========== PER‑VARIANT EDITING ========== */
+        let mut pending_text_input_error: Option<String> = None;
         match &mut self.change_item {
             TokenConfigurationChangeItem::Conventions(conv) => {
                 ui.label("Update the JSON formatted text below to change the token conventions.");
@@ -577,10 +598,10 @@ impl UpdateTokenConfigScreen {
                     match serde_json::from_str::<TokenConfigurationConvention>(&self.update_text) {
                         Ok(new_conv) => {
                             *conv = new_conv;
-                            self.text_input_error = "".to_string();
+                            pending_text_input_error = Some(String::new());
                         }
                         Err(e) => {
-                            self.text_input_error = format!("Invalid JSON: {}", e);
+                            pending_text_input_error = Some(format!("Invalid JSON: {}", e));
                         }
                     }
                 }
@@ -589,16 +610,7 @@ impl UpdateTokenConfigScreen {
                     if ui.button("Reset to Current").clicked() {
                         *conv = self.identity_token_info.token_config.conventions().clone();
                         self.update_text = serde_json::to_string_pretty(conv).unwrap_or_default(); // Update displayed text
-                        self.text_input_error = "".to_string();
-                    }
-
-                    if !self.text_input_error.is_empty() {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&self.text_input_error).color(Color32::RED),
-                            )
-                            .wrap(),
-                        );
+                        pending_text_input_error = Some(String::new());
                     }
                 });
             }
@@ -631,15 +643,6 @@ impl UpdateTokenConfigScreen {
                                 serde_json::to_string_pretty(opt_json).unwrap_or_default();
                             // Update displayed text
                         }
-
-                    if !self.text_input_error.is_empty() {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&self.text_input_error).color(Color32::RED),
-                            )
-                            .wrap(),
-                        );
-                    }
                 });
             }
             TokenConfigurationChangeItem::MainControlGroup(opt_grp) => {
@@ -688,6 +691,9 @@ impl UpdateTokenConfigScreen {
             TokenConfigurationChangeItem::MarketplaceTradeMode(_) => {
                 ui.label("Marketplace settings are not yet supported.");
             }
+        }
+        if let Some(message) = pending_text_input_error {
+            self.set_text_input_error(ui.ctx(), message);
         }
         });
         });

@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -296,6 +297,11 @@ impl RegisterDpnsNameScreen {
 impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         if let MessageType::Error = message_type {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                &format!("Error: {}", message),
+                MessageType::Error,
+            );
             self.register_dpns_name_status =
                 RegisterDpnsNameStatus::ErrorMessage(message.to_string());
         }
@@ -306,6 +312,12 @@ impl ScreenLike for RegisterDpnsNameScreen {
             backend_task_success_result
         {
             self.completed_fee_result = Some(fee_result);
+            if let RegisterDpnsNameStatus::ErrorMessage(msg) = &self.register_dpns_name_status {
+                MessageBanner::clear_global_message(
+                    self.app_context.egui_ctx(),
+                    &format!("Error: {}", msg),
+                );
+            }
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
     }
@@ -589,28 +601,13 @@ impl ScreenLike for RegisterDpnsNameScreen {
                     ));
                 }
                 RegisterDpnsNameStatus::ErrorMessage(msg) => {
-                    let error_color = DashColors::ERROR;
-                    let msg = msg.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        RichText::new(format!("Error: {}", msg))
-                                            .color(error_color),
-                                    )
-                                    .wrap(),
-                                );
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
-                                }
-                            });
-                        });
+                    let banner_text = format!("Error: {}", msg);
+                    ui.horizontal(|ui| {
+                        if ui.small_button("Dismiss").clicked() {
+                            MessageBanner::clear_global_message(ui.ctx(), &banner_text);
+                            self.register_dpns_name_status = RegisterDpnsNameStatus::NotStarted;
+                        }
+                    });
                 }
                 RegisterDpnsNameStatus::Complete => {}
             }

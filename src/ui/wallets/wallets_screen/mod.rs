@@ -10,6 +10,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::CoreBackendMode;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -1663,12 +1664,21 @@ impl ScreenLike for WalletsBalancesScreen {
 
                                 match unlock_result {
                                     Ok(_) => {
+                                        MessageBanner::clear_global_message(
+                                            ui.ctx(),
+                                            "Error: Incorrect Password",
+                                        );
                                         self.sk_error_message = None;
                                         close_dialog = true;
                                     }
                                     Err(_) => {
                                         self.sk_error_message =
                                             Some("Incorrect Password".to_string());
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
+                                            "Error: Incorrect Password",
+                                            MessageType::Error,
+                                        );
                                     }
                                 }
                             }
@@ -1678,27 +1688,11 @@ impl ScreenLike for WalletsBalancesScreen {
                         // Display error message if the password was incorrect
                         if let Some(error_message) = self.sk_error_message.clone() {
                             ui.add_space(5.0);
-                            let error_color = DashColors::ERROR;
-                            Frame::new()
-                                .fill(error_color.gamma_multiply(0.1))
-                                .inner_margin(Margin::symmetric(10, 8))
-                                .corner_radius(5.0)
-                                .stroke(egui::Stroke::new(1.0, error_color))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(format!("Error: {}", error_message))
-                                                    .color(error_color),
-                                            )
-                                            .wrap(),
-                                        );
-                                        ui.add_space(10.0);
-                                        if ui.small_button("Dismiss").clicked() {
-                                            self.sk_error_message = None;
-                                        }
-                                    });
-                                });
+                            let banner_text = format!("Error: {}", error_message);
+                            if ui.small_button("Dismiss").clicked() {
+                                MessageBanner::clear_global_message(ui.ctx(), &banner_text);
+                                self.sk_error_message = None;
+                            }
                         }
                     });
                 });
@@ -1706,6 +1700,7 @@ impl ScreenLike for WalletsBalancesScreen {
             if close_dialog {
                 self.show_sk_unlock_dialog = false;
                 self.sk_wallet_password.clear();
+                MessageBanner::clear_global_message(ctx, "Error: Incorrect Password");
                 self.sk_error_message = None;
 
                 // Check if we were trying to refresh the SK wallet

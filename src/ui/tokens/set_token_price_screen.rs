@@ -7,6 +7,7 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::Wallet;
 use crate::ui::components::ComponentResponse;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -113,6 +114,7 @@ pub struct SetTokenPriceScreen {
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    remove_pricing_warning_posted: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
 }
@@ -283,6 +285,7 @@ impl SetTokenPriceScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            remove_pricing_warning_posted: false,
             completed_fee_result: None,
         }
     }
@@ -340,6 +343,8 @@ impl SetTokenPriceScreen {
 
     /// Renders the pricing input UI
     fn render_pricing_input(&mut self, ui: &mut Ui) {
+        let previous_pricing_type = self.pricing_type.clone();
+
         // Radio buttons for pricing type
         ui.horizontal(|ui| {
             ui.radio_value(
@@ -358,6 +363,18 @@ impl SetTokenPriceScreen {
                 "Remove Pricing (Make Token Not For Sale)",
             );
         });
+
+        let remove_pricing_warning = "WARNING: This will remove the pricing schedule, making the token unavailable for direct purchase.";
+        if self.pricing_type != PricingType::RemovePricing && self.remove_pricing_warning_posted {
+            MessageBanner::clear_global_message(ui.ctx(), remove_pricing_warning);
+            self.remove_pricing_warning_posted = false;
+        }
+        if self.pricing_type == PricingType::RemovePricing
+            && (!self.remove_pricing_warning_posted || self.pricing_type != previous_pricing_type)
+        {
+            MessageBanner::set_global(ui.ctx(), remove_pricing_warning, MessageType::Warning);
+            self.remove_pricing_warning_posted = true;
+        }
 
         ui.add_space(10.0);
 
@@ -519,15 +536,6 @@ impl SetTokenPriceScreen {
                 self.render_tiered_pricing_preview(ui);
             }
             PricingType::RemovePricing => {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(
-                            "WARNING: This will remove the pricing schedule, making the token unavailable for direct purchase.",
-                        )
-                        .color(Color32::from_rgb(180, 100, 0)),
-                    )
-                    .wrap(),
-                );
                 ui.label("Users will no longer be able to buy this token directly.");
             }
         }
@@ -792,6 +800,13 @@ impl SetTokenPriceScreen {
     fn set_error_state(&mut self, error: String) {
         self.error_message = Some(error.clone());
         self.status = SetTokenPriceStatus::ErrorMessage(error);
+        if let SetTokenPriceStatus::ErrorMessage(ref msg) = self.status {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                &format!("Error: {}", msg),
+                MessageType::Error,
+            );
+        }
     }
 
     /// Renders a confirm popup with the final "Are you sure?" step
@@ -836,12 +851,23 @@ impl ScreenLike for SetTokenPriceScreen {
         if let MessageType::Error = message_type {
             self.status = SetTokenPriceStatus::ErrorMessage(message.to_string());
             self.error_message = Some(message.to_string());
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                &format!("Error: {}", message),
+                MessageType::Error,
+            );
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
             self.completed_fee_result = Some(fee_result);
+            if let SetTokenPriceStatus::ErrorMessage(msg) = &self.status {
+                MessageBanner::clear_global_message(
+                    self.app_context.egui_ctx(),
+                    &format!("Error: {}", msg),
+                );
+            }
             self.status = SetTokenPriceStatus::Complete;
         }
     }
@@ -1163,28 +1189,13 @@ impl ScreenLike for SetTokenPriceScreen {
                         ui.label(format!("Setting price... elapsed: {} seconds", elapsed));
                     }
                     SetTokenPriceStatus::ErrorMessage(msg) => {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            RichText::new(format!("Error: {}", msg))
-                                                .color(error_color),
-                                        )
-                                        .wrap(),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.status = SetTokenPriceStatus::NotStarted;
-                                    }
-                                });
-                            });
+                        let banner_text = format!("Error: {}", msg);
+                        ui.horizontal(|ui| {
+                            if ui.small_button("Dismiss").clicked() {
+                                MessageBanner::clear_global_message(ui.ctx(), &banner_text);
+                                self.status = SetTokenPriceStatus::NotStarted;
+                            }
+                        });
                     }
                     SetTokenPriceStatus::Complete => {
                         // handled above

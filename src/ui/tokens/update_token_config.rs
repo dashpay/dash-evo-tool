@@ -676,7 +676,7 @@ impl UpdateTokenConfigScreen {
                 ui.label("No parameters to edit for this entry.");
             }
             TokenConfigurationChangeItem::MarketplaceTradeMode(_) => {
-                unimplemented!("marketplace settings not implemented yet")
+                ui.label("Marketplace settings are not yet supported.");
             }
         }
         });
@@ -1101,7 +1101,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
                         MessageType::Success => {
                             ui.colored_label(Color32::DARK_GREEN, &msg);
                         }
-                        MessageType::Error => {
+                        MessageType::Error | MessageType::Warning => {
                             let dark_mode = ui.ctx().style().visuals.dark_mode;
                             let error_color = DashColors::error_color(dark_mode);
                             Frame::new()

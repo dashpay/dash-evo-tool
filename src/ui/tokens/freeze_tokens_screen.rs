@@ -250,36 +250,46 @@ impl FreezeTokensScreen {
 
     /// Handle confirmation OK action
     fn confirmation_ok(&mut self) -> AppAction {
+        let signing_key = match self.selected_key.clone() {
+            Some(key) => key,
+            None => {
+                self.error_message = Some("No signing key selected".into());
+                self.status = FreezeTokensStatus::ErrorMessage("No key selected".into());
+                return AppAction::None;
+            }
+        };
+
         // Validate user input
-        let parsed = Identifier::from_string_try_encodings(
+        let freeze_id = match Identifier::from_string_try_encodings(
             &self.freeze_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        );
-        if parsed.is_err() {
-            self.error_message = Some("Please enter a valid identity ID.".into());
-            self.status = FreezeTokensStatus::ErrorMessage("Invalid identity".into());
-            return AppAction::None;
-        }
-        let freeze_id = parsed.unwrap();
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                self.error_message = Some("Please enter a valid identity ID.".into());
+                self.status = FreezeTokensStatus::ErrorMessage("Invalid identity".into());
+                return AppAction::None;
+            }
+        };
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.status = FreezeTokensStatus::WaitingForResult(now);
 
         // Grab the data contract for this token from the app context
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
-        let group_info = if self.group_action_id.is_some() {
+        let group_info = if let Some(action_id) = self.group_action_id {
             self.group.as_ref().map(|(pos, _)| {
                 GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                     GroupStateTransitionInfo {
                         group_contract_position: *pos,
-                        action_id: self.group_action_id.unwrap(),
+                        action_id,
                         action_is_proposer: false,
                     },
                 )
@@ -295,7 +305,7 @@ impl FreezeTokensScreen {
             actor_identity: self.identity.clone(),
             data_contract,
             token_position: self.identity_token_info.token_position,
-            signing_key: self.selected_key.clone().expect("No key selected"),
+            signing_key,
             public_note: if self.group_action_id.is_some() {
                 None
             } else {
@@ -613,7 +623,7 @@ impl ScreenLike for FreezeTokensScreen {
                     FreezeTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Freezing... elapsed: {}s", elapsed));

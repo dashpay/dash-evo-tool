@@ -302,8 +302,13 @@ impl NetworkConfig {
     }
 
     /// List of DAPI addresses
-    pub fn dapi_address_list(&self) -> AddressList {
-        AddressList::from_str(&self.dapi_addresses).expect("Could not parse DAPI addresses")
+    pub fn dapi_address_list(&self) -> Result<AddressList, String> {
+        AddressList::from_str(&self.dapi_addresses).map_err(|e| {
+            format!(
+                "Could not parse DAPI addresses '{}': {}",
+                self.dapi_addresses, e
+            )
+        })
     }
 
     /// Update just the `core_rpc_password` in a builder-like manner.
@@ -371,7 +376,7 @@ mod tests {
     #[test]
     fn test_dapi_address_list_single_address() {
         let config = make_network_config("https://127.0.0.1:443", 9998);
-        let list = config.dapi_address_list();
+        let list = config.dapi_address_list().unwrap();
         assert_eq!(list.len(), 1);
     }
 
@@ -381,17 +386,21 @@ mod tests {
             "https://127.0.0.1:443,https://192.168.1.1:443,https://10.0.0.1:443",
             9998,
         );
-        let list = config.dapi_address_list();
+        let list = config.dapi_address_list().unwrap();
         assert_eq!(list.len(), 3);
     }
 
     #[test]
-    #[should_panic(expected = "Could not parse DAPI addresses")]
-    fn test_dapi_address_list_empty_panics() {
+    fn test_dapi_address_list_empty_returns_error() {
         let config = make_network_config("", 9998);
-        let _list = config.dapi_address_list();
+        let result = config.dapi_address_list();
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .contains("Could not parse DAPI addresses")
+        );
     }
-
     // ── NetworkConfig::update_core_rpc_password ─────────────────────
 
     #[test]

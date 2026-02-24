@@ -4,7 +4,7 @@ use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
 use crate::config::Config;
 use crate::context::AppContext;
-use crate::context::connection_status::ConnectionStatus;
+use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::component_trait::Component;
@@ -489,14 +489,14 @@ impl NetworkChooserScreen {
             } else {
                 None
             };
-            let overall_connected = status.overall_connected();
+            let overall_state = status.overall_state();
             let dapi_total = status.dapi_total_endpoints();
             let dapi_available = status.dapi_available();
             let dapi_label = status.dapi_status_label();
 
             // Button on the left with status
             ui.horizontal(|ui| {
-                if overall_connected {
+                if overall_state != OverallConnectionState::Disconnected {
                     if current_backend_mode == CoreBackendMode::Spv {
                         let is_stopping = spv_status == SpvStatus::Stopping;
                         let disconnect_button = egui::Button::new(
@@ -520,15 +520,16 @@ impl NetworkChooserScreen {
                         if let Some(snap) = &snapshot {
                             match snap.status {
                                 SpvStatus::Running => {
-                                    ui.colored_label(DashColors::SUCCESS, "Fully Synced - The SPV client can now be used for transacting and querying.");
+                                    ui.colored_label(DashColors::SUCCESS, "Synced - The SPV client can now be used for transacting and querying.");
                                 }
                                 SpvStatus::Syncing | SpvStatus::Starting => {
+                                    let warning_color = DashColors::warning_color(dark_mode);
                                     ui.style_mut().visuals.widgets.inactive.fg_stroke.color =
-                                        DashColors::DASH_BLUE;
+                                        warning_color;
                                     ui.style_mut().visuals.widgets.hovered.fg_stroke.color =
-                                        DashColors::DASH_BLUE;
+                                        warning_color;
                                     ui.style_mut().visuals.widgets.active.fg_stroke.color =
-                                        DashColors::DASH_BLUE;
+                                        warning_color;
                                     ui.spinner();
                                     ui.label(egui::RichText::new("Syncing..."));
                                 }
@@ -548,9 +549,9 @@ impl NetworkChooserScreen {
                     } else {
                         // For Core mode, just show status since it can switch networks freely
                         let label = if disable_zmq {
-                            "✅ Connected (RPC, ZMQ disabled)"
+                            "✅ Synced (RPC, ZMQ disabled)"
                         } else {
-                            "✅ Connected (RPC + ZMQ)"
+                            "✅ Synced (RPC + ZMQ)"
                         };
                         ui.colored_label(DashColors::DASH_BLUE, label);
                     }
@@ -2039,7 +2040,7 @@ impl ScreenLike for NetworkChooserScreen {
             if self.any_rpc_backend() {
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards");
+                    .unwrap_or_default();
                 if let Some(time) = self.recheck_time {
                     if current_time.as_millis() as u64 >= time {
                         action = AppAction::BackendTask(BackendTask::CoreTask(

@@ -17,7 +17,7 @@ use dash_sdk::platform::Identifier;
 use egui::{ColorImage, RichText, ScrollArea, TextureHandle, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::error;
+use tracing::warn;
 
 const PUBLIC_PROFILE_INFO_TEXT: &str = "About Public Profiles:\n\n\
     This is the contact's public DashPay profile.\n\n\
@@ -193,7 +193,7 @@ impl ContactProfileViewerScreen {
                     }
                 }
                 Err(e) => {
-                    error!("Failed to fetch contact avatar image: {}", e);
+                    warn!("Failed to fetch contact avatar image: {}", e);
                 }
             }
         });
@@ -230,6 +230,7 @@ impl ContactProfileViewerScreen {
             let color = match message_type {
                 MessageType::Success => DashColors::success_color(dark_mode),
                 MessageType::Error => DashColors::error_color(dark_mode),
+                MessageType::Warning => DashColors::warning_color(dark_mode),
                 MessageType::Info => DashColors::DASH_BLUE,
             };
             ui.colored_label(color, message);

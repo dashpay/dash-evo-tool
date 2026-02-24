@@ -240,13 +240,18 @@ impl AppContext {
                     self.network,
                 )?;
 
-                let first = payload
-                    .credit_outputs
-                    .first()
-                    .expect("Expected at least one credit output");
+                let first = payload.credit_outputs.first().ok_or_else(|| {
+                    rusqlite::Error::InvalidParameterName(
+                        "Asset lock transaction has no credit outputs".to_string(),
+                    )
+                })?;
 
-                let address = Address::from_script(&first.script_pubkey, self.network)
-                    .expect("expected an address");
+                let address =
+                    Address::from_script(&first.script_pubkey, self.network).map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!(
+                            "Failed to derive address from asset lock credit output script: {e}"
+                        ))
+                    })?;
 
                 // Add the asset lock to the wallet's unused_asset_locks
                 wallet

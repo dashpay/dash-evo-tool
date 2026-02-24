@@ -207,9 +207,19 @@ impl ResumeTokensScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
+
+                let signing_key = match self.selected_key.clone() {
+                    Some(key) => key,
+                    None => {
+                        self.error_message = Some("No signing key selected".into());
+                        self.status = ResumeTokensStatus::ErrorMessage("No key selected".into());
+                        return AppAction::None;
+                    }
+                };
+
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.status = ResumeTokensStatus::WaitingForResult(now);
 
@@ -217,12 +227,12 @@ impl ResumeTokensScreen {
                 let data_contract =
                     Arc::new(self.identity_token_info.data_contract.contract.clone());
 
-                let group_info = if self.group_action_id.is_some() {
+                let group_info = if let Some(action_id) = self.group_action_id {
                     self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                             GroupStateTransitionInfo {
                                 group_contract_position: *pos,
-                                action_id: self.group_action_id.unwrap(),
+                                action_id,
                                 action_is_proposer: false,
                             },
                         )
@@ -237,7 +247,7 @@ impl ResumeTokensScreen {
                     actor_identity: self.identity.clone(),
                     data_contract,
                     token_position: self.identity_token_info.token_position,
-                    signing_key: self.selected_key.clone().expect("No key selected"),
+                    signing_key,
                     public_note: if self.group_action_id.is_some() {
                         None
                     } else {
@@ -518,7 +528,7 @@ impl ScreenLike for ResumeTokensScreen {
                     ResumeTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Resuming... elapsed: {}s", elapsed));

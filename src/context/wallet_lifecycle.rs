@@ -76,7 +76,7 @@ impl AppContext {
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
-        self.connection_status.refresh_overall();
+        self.connection_status.refresh_state();
         Ok(())
     }
 
@@ -406,6 +406,14 @@ impl AppContext {
             }
         }
 
+        if derivation_path.is_bip32() {
+            return (DerivationPathReference::BIP32, default_type);
+        }
+
+        if derivation_path.is_bip44(self.network) {
+            return (DerivationPathReference::BIP44, default_type);
+        }
+
         (default_ref, default_type)
     }
 
@@ -712,9 +720,21 @@ impl AppContext {
                 // Update in-memory UTXOs map
                 w.utxos = new_utxos;
 
+                // Zero out balances for known addresses that no longer have any UTXOs.
+                // Without this, spent addresses retain stale non-zero balances because
+                // per_address_sum only contains addresses with current UTXOs.
+                for addr in &known_addresses {
+                    if !w.utxos.contains_key(addr)
+                        && let Err(e) = w.update_address_balance(addr, 0, self)
+                    {
+                        tracing::debug!(address = %addr, error = %e, "Failed to zero spent address balance");
+                    }
+                }
+
                 for (addr, sum) in per_address_sum.into_iter() {
-                    // Update wallet and DB through model helper
-                    let _ = w.update_address_balance(&addr, sum, self);
+                    if let Err(e) = w.update_address_balance(&addr, sum, self) {
+                        tracing::debug!(address = %addr, error = %e, "Failed to update address balance");
+                    }
                 }
             }
 
@@ -770,7 +790,7 @@ impl AppContext {
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
-        self.connection_status.refresh_overall();
+        self.connection_status.refresh_state();
         // Reset the throttle timer so trigger_refresh() starts polling
         // at 200ms intervals and picks up the Stopped transition quickly.
         self.connection_status.reset_timer();

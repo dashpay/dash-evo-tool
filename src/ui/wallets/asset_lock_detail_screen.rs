@@ -364,6 +364,7 @@ impl ScreenLike for AssetLockDetailScreen {
             if let Some((message, message_type, timestamp)) = &self.message {
                 let message_color = match message_type {
                     MessageType::Error => egui::Color32::DARK_RED,
+                    MessageType::Warning => DashColors::warning_color(dark_mode),
                     MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };

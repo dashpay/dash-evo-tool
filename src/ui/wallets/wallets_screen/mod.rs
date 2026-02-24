@@ -101,6 +101,7 @@ pub struct WalletsBalancesScreen {
     fund_platform_dialog: FundPlatformAddressDialogState,
     private_key_dialog: PrivateKeyDialogState,
     selected_account: Option<(AccountCategory, Option<u32>)>,
+    show_zero_balance_addresses: bool,
     /// Pending refresh of platform address balances (triggered after transfers)
     pending_platform_balance_refresh: Option<WalletSeedHash>,
     /// Whether we should refresh the wallet after it's unlocked
@@ -193,6 +194,7 @@ impl WalletsBalancesScreen {
             fund_platform_dialog: FundPlatformAddressDialogState::default(),
             private_key_dialog: PrivateKeyDialogState::default(),
             selected_account: None,
+            show_zero_balance_addresses: false,
             pending_platform_balance_refresh: None,
             pending_refresh_after_unlock: false,
             pending_refresh_mode: RefreshMode::default(),
@@ -596,7 +598,7 @@ impl WalletsBalancesScreen {
             .selected_account
             .as_ref()
             .is_some_and(|(category, index)| {
-                *category == AccountCategory::Bip44 && index.unwrap_or(0) == 0
+                *category == AccountCategory::Bip44 && *index == Some(0)
             });
 
         if wallet_is_open && is_main_account {
@@ -1133,7 +1135,7 @@ impl WalletsBalancesScreen {
                         let summaries = {
                             let wallet = wallet_arc.read().unwrap();
                             self.render_wallet_overview(ui, &wallet);
-                            collect_account_summaries(&wallet)
+                            collect_account_summaries(&wallet, self.app_context.network)
                         };
 
                         self.ensure_account_selection(&summaries);
@@ -1151,10 +1153,21 @@ impl WalletsBalancesScreen {
                                 format!("Addresses ({})", category.label(*index))
                             })
                             .unwrap_or_else(|| "Addresses".to_string());
-                        ui.heading(
-                            RichText::new(addresses_heading)
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.heading(
+                                RichText::new(addresses_heading)
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.checkbox(
+                                        &mut self.show_zero_balance_addresses,
+                                        "Show zero-balance addresses",
+                                    );
+                                },
+                            );
+                        });
                         ui.add_space(8.0);
                         action |= self.render_address_table(ui);
 
@@ -1372,6 +1385,7 @@ impl ScreenLike for WalletsBalancesScreen {
             if let Some((message, message_type, _timestamp)) = message {
                 let message_color = match message_type {
                     MessageType::Error => DashColors::ERROR,
+                    MessageType::Warning => DashColors::WARNING,
                     MessageType::Info => DashColors::text_primary(dark_mode),
                     MessageType::Success => egui::Color32::DARK_GREEN,
                 };

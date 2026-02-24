@@ -11,6 +11,7 @@ use crate::context::connection_status::ConnectionStatus;
 use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
+use crate::ui::components::MessageBanner;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -165,20 +166,15 @@ impl BitOrAssign for AppAction {
     }
 }
 impl AppState {
-    pub fn new(ctx: egui::Context) -> Self {
-        create_app_user_data_directory_if_not_exists()
-            .expect("Failed to create app user_data directory");
+    pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        create_app_user_data_directory_if_not_exists()?;
         copy_env_file_if_not_exists();
         initialize_logger();
-        let db_file_path = app_user_data_file_path("data.db").expect("should create db file path");
-        let db = Arc::new(Database::new(&db_file_path).unwrap());
-        db.initialize(&db_file_path).unwrap();
+        let db_file_path = app_user_data_file_path("data.db")?;
+        let db = Arc::new(Database::new(&db_file_path)?);
+        db.initialize(&db_file_path)?;
 
-        let settings = db
-            .get_settings()
-            .expect("expected to get settings")
-            .map(Settings::from)
-            .unwrap_or_default();
+        let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
         let password_info = settings.password_info;
         let theme_preference = settings.theme_mode;
         let overwrite_dash_conf = settings.overwrite_dash_conf;
@@ -186,27 +182,22 @@ impl AppState {
 
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
-        let mainnet_app_context = match AppContext::new(
+        let mainnet_app_context = AppContext::new(
             Network::Dash,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
             connection_status.clone(),
-        ) {
-            Some(context) => context,
-            None => {
-                tracing::error!(
-                    "Failed to create the AppContext. Expected Dash config for mainnet."
-                );
-                std::process::exit(1);
-            }
-        };
+            ctx.clone(),
+        )
+        .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
         let testnet_app_context = AppContext::new(
             Network::Testnet,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
             connection_status.clone(),
+            ctx.clone(),
         );
         let devnet_app_context = AppContext::new(
             Network::Devnet,
@@ -214,6 +205,7 @@ impl AppState {
             password_info.clone(),
             subtasks.clone(),
             connection_status.clone(),
+            ctx.clone(),
         );
         let local_app_context = AppContext::new(
             Network::Regtest,
@@ -221,6 +213,7 @@ impl AppState {
             password_info,
             subtasks.clone(),
             connection_status.clone(),
+            ctx.clone(),
         );
 
         // load fonts
@@ -279,7 +272,38 @@ impl AppState {
         let mut wallets_balances_screen = WalletsBalancesScreen::new(&mainnet_app_context);
 
         let selected_main_screen = settings.root_screen_type;
-        let chosen_network = settings.network;
+        // Validate that the saved network has an available context.
+        // We fail fast instead of silently routing user actions to a different network.
+        let chosen_network = match settings.network {
+            Network::Dash => Network::Dash,
+            Network::Testnet => {
+                assert!(
+                    testnet_app_context.is_some(),
+                    "Saved network is Testnet but no Testnet AppContext is configured"
+                );
+                Network::Testnet
+            }
+            Network::Devnet => {
+                assert!(
+                    devnet_app_context.is_some(),
+                    "Saved network is Devnet but no Devnet AppContext is configured"
+                );
+                Network::Devnet
+            }
+            Network::Regtest => {
+                assert!(
+                    local_app_context.is_some(),
+                    "Saved network is Regtest but no Regtest AppContext is configured"
+                );
+                Network::Regtest
+            }
+            unsupported_network => {
+                panic!(
+                    "Saved network {:?} is unsupported. Refusing automatic fallback.",
+                    unsupported_network
+                );
+            }
+        };
         network_chooser_screen.current_network = chosen_network;
 
         if let (Network::Testnet, Some(testnet_app_context)) =
@@ -411,15 +435,21 @@ impl AppState {
             .map(|s| s.disable_zmq)
             .unwrap_or(false);
         let mainnet_core_zmq_listener = if !mainnet_disable_zmq {
-            Some(
-                CoreZMQListener::spawn_listener(
-                    Network::Dash,
-                    &mainnet_core_zmq_endpoint,
-                    core_message_sender.clone(), // Clone the sender for each listener
-                    Some(mainnet_app_context.sx_zmq_status.clone()),
-                )
-                .expect("Failed to create mainnet InstantSend listener"),
-            )
+            match CoreZMQListener::spawn_listener(
+                Network::Dash,
+                &mainnet_core_zmq_endpoint,
+                core_message_sender.clone(),
+                Some(mainnet_app_context.sx_zmq_status.clone()),
+            ) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create mainnet ZMQ listener: {}. ZMQ features will be unavailable for mainnet.",
+                        e
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -438,15 +468,21 @@ impl AppState {
             .map(|s| s.disable_zmq)
             .unwrap_or(false);
         let testnet_core_zmq_listener = if !testnet_disable_zmq {
-            Some(
-                CoreZMQListener::spawn_listener(
-                    Network::Testnet,
-                    &testnet_core_zmq_endpoint,
-                    core_message_sender.clone(), // Use the original sender or create a new one if needed
-                    testnet_tx_zmq_status_option,
-                )
-                .expect("Failed to create testnet InstantSend listener"),
-            )
+            match CoreZMQListener::spawn_listener(
+                Network::Testnet,
+                &testnet_core_zmq_endpoint,
+                core_message_sender.clone(),
+                testnet_tx_zmq_status_option,
+            ) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create testnet ZMQ listener: {}. ZMQ features will be unavailable for testnet.",
+                        e
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -465,15 +501,21 @@ impl AppState {
             .map(|s| s.disable_zmq)
             .unwrap_or(false);
         let devnet_core_zmq_listener = if !devnet_disable_zmq {
-            Some(
-                CoreZMQListener::spawn_listener(
-                    Network::Devnet,
-                    &devnet_core_zmq_endpoint,
-                    core_message_sender.clone(),
-                    devnet_tx_zmq_status_option,
-                )
-                .expect("Failed to create devnet InstantSend listener"),
-            )
+            match CoreZMQListener::spawn_listener(
+                Network::Devnet,
+                &devnet_core_zmq_endpoint,
+                core_message_sender.clone(),
+                devnet_tx_zmq_status_option,
+            ) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create devnet ZMQ listener: {}. ZMQ features will be unavailable for devnet.",
+                        e
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -492,15 +534,21 @@ impl AppState {
             .map(|s| s.disable_zmq)
             .unwrap_or(false);
         let local_core_zmq_listener = if !local_disable_zmq {
-            Some(
-                CoreZMQListener::spawn_listener(
-                    Network::Regtest,
-                    &local_core_zmq_endpoint,
-                    core_message_sender,
-                    local_tx_zmq_status_option,
-                )
-                .expect("Failed to create local InstantSend listener"),
-            )
+            match CoreZMQListener::spawn_listener(
+                Network::Regtest,
+                &local_core_zmq_endpoint,
+                core_message_sender,
+                local_tx_zmq_status_option,
+            ) {
+                Ok(listener) => Some(listener),
+                Err(e) => {
+                    tracing::error!(
+                        "Failed to create local ZMQ listener: {}. ZMQ features will be unavailable for local/regtest.",
+                        e
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -662,7 +710,7 @@ impl AppState {
             }
         }
 
-        app_state
+        Ok(app_state)
     }
 
     /// Allows enabling or disabling animations globally for the app.
@@ -684,13 +732,51 @@ impl AppState {
     }
 
     pub fn current_app_context(&self) -> &Arc<AppContext> {
+        // Invariant: chosen_network must always have a corresponding context.
+        // Fail fast on violations to avoid silently routing operations to mainnet.
         match self.chosen_network {
             Network::Dash => &self.mainnet_app_context,
-            Network::Testnet => self.testnet_app_context.as_ref().expect("expected testnet"),
-            Network::Devnet => self.devnet_app_context.as_ref().expect("expected devnet"),
-            Network::Regtest => self.local_app_context.as_ref().expect("expected local"),
-            _ => todo!(),
+            Network::Testnet => self.testnet_app_context.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "BUG: chosen network is Testnet but testnet_app_context is missing; refusing silent mainnet fallback"
+                )
+            }),
+            Network::Devnet => self.devnet_app_context.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "BUG: chosen network is Devnet but devnet_app_context is missing; refusing silent mainnet fallback"
+                )
+            }),
+            Network::Regtest => self.local_app_context.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "BUG: chosen network is Regtest but local_app_context is missing; refusing silent mainnet fallback"
+                )
+            }),
+            unsupported_network => panic!(
+                "BUG: unsupported network variant {:?} in current_app_context; refusing silent mainnet fallback",
+                unsupported_network
+            ),
         }
+    }
+
+    fn context_available_for_network(&self, network: Network) -> bool {
+        match network {
+            Network::Dash => true, // Mainnet is always available
+            Network::Testnet => self.testnet_app_context.is_some(),
+            Network::Devnet => self.devnet_app_context.is_some(),
+            Network::Regtest => self.local_app_context.is_some(),
+            _ => false,
+        }
+    }
+
+    fn enforce_network_context_invariant(&mut self) {
+        if self.context_available_for_network(self.chosen_network) {
+            return;
+        }
+
+        panic!(
+            "BUG: selected network {:?} has no AppContext. Refusing to auto-switch networks.",
+            self.chosen_network
+        );
     }
 
     // Handle the backend task and send the result through the channel
@@ -742,6 +828,14 @@ impl AppState {
     }
 
     pub fn change_network(&mut self, network: Network) {
+        if !self.context_available_for_network(network) {
+            tracing::error!(
+                "Cannot switch to {:?}: network context not available. Staying on current network.",
+                network
+            );
+            return;
+        }
+
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
 
@@ -802,6 +896,7 @@ impl App for AppState {
         // Apply Dash theme with user preference
         crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
+        self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
 
         // Poll the receiver for any new task results
@@ -827,6 +922,11 @@ impl App for AppState {
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
+                            MessageBanner::set_global(
+                                ctx,
+                                "Theme preference updated successfully",
+                                MessageType::Success,
+                            );
                             self.visible_screen_mut().display_message(
                                 "Theme preference updated successfully",
                                 MessageType::Success,
@@ -837,6 +937,11 @@ impl App for AppState {
                                 vote.voter_id.as_slice(),
                                 vote.contested_name.clone(),
                             );
+                            MessageBanner::set_global(
+                                ctx,
+                                "Successfully cast scheduled vote",
+                                MessageType::Success,
+                            );
                             self.visible_screen_mut().display_message(
                                 "Successfully cast scheduled vote",
                                 MessageType::Success,
@@ -844,12 +949,15 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         _ => {
+                            // For all other success results, let the screen decide how to display
+                            // the outcome without showing a generic global success banner.
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
                     }
                 }
                 TaskResult::Error(message) => {
+                    MessageBanner::set_global(ctx, &message, MessageType::Error);
                     self.visible_screen_mut()
                         .display_message(&message, MessageType::Error);
                 }

@@ -10,9 +10,9 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
     config: &NetworkConfig,
     network: Network,
     context_provider: P,
-) -> Sdk {
+) -> Result<Sdk, String> {
     // Setup Platform SDK
-    let address_list = config.dapi_address_list();
+    let address_list = config.dapi_address_list()?;
     let request_settings = RequestSettings {
         connect_timeout: Some(Duration::from_secs(1)),
         timeout: Some(Duration::from_secs(10)),
@@ -28,7 +28,7 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         .with_context_provider(context_provider)
         .with_settings(request_settings)
         .build()
-        .expect("Failed to build SDK");
+        .map_err(|e| format!("Failed to build SDK: {e}"))?;
 
     info!(
         ?network,
@@ -36,5 +36,5 @@ pub fn initialize_sdk<P: ContextProvider + 'static>(
         "SDK initialized successfully"
     );
 
-    sdk
+    Ok(sdk)
 }

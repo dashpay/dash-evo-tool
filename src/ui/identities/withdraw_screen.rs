@@ -275,7 +275,7 @@ impl WithdrawalScreen {
                 self.confirmation_dialog = None;
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.withdraw_from_identity_status =
                     WithdrawFromIdentityStatus::WaitingForResult(now);
@@ -336,14 +336,16 @@ impl ScreenLike for WithdrawalScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        self.identity = self
+        if let Some(refreshed) = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap()
+            .unwrap_or_default()
             .into_iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
-            .unwrap();
-        self.max_amount = self.identity.identity.balance();
+        {
+            self.identity = refreshed;
+            self.max_amount = self.identity.identity.balance();
+        }
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -612,9 +614,9 @@ impl ScreenLike for WithdrawalScreen {
                     WithdrawFromIdentityStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
-                        let elapsed_seconds = now - start_time;
+                        let elapsed_seconds = now.saturating_sub(*start_time);
 
                         let display_time = if elapsed_seconds < 60 {
                             format!(

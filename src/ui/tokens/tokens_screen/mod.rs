@@ -2942,6 +2942,7 @@ impl ScreenLike for TokensScreen {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
                         let color = match msg_type {
                             MessageType::Error => Color32::DARK_RED,
+                            MessageType::Warning => DashColors::warning_color(dark_mode),
                             MessageType::Info => DashColors::text_primary(dark_mode),
                             MessageType::Success => Color32::DARK_GREEN,
                         };
@@ -3243,6 +3244,7 @@ mod tests {
             None,
             Default::default(),
             Default::default(),
+            egui::Context::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3555,6 +3557,7 @@ mod tests {
             None,
             Default::default(),
             Default::default(),
+            egui::Context::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3681,6 +3684,7 @@ mod tests {
             None,
             Default::default(),
             Default::default(),
+            egui::Context::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);

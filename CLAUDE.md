@@ -152,6 +152,10 @@ response.inner.update(&mut self.amount);
 
 **Anti-patterns:** public mutable fields, eager initialization, not clearing invalid data
 
+## Message Display
+
+User-facing messages use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.
+
 ## Database
 
 Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors are `Result<T, String>` — string errors display directly to users.

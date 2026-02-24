@@ -268,7 +268,7 @@ impl RegisterDataContractScreen {
                 // Show how long we've been broadcasting
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 let elapsed = now - start_time;
                 ui.label(format!(
@@ -279,7 +279,7 @@ impl RegisterDataContractScreen {
             BroadcastStatus::ProofError(start_time) => {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs();
                 let elapsed = now - start_time;
                 ui.label("Broadcasted but received proof error. ⚠");
@@ -299,7 +299,7 @@ impl RegisterDataContractScreen {
             self.broadcast_status = BroadcastStatus::Broadcasting(
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_secs(),
             );
         }
@@ -357,7 +357,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs(),
                 );
             }
@@ -369,7 +369,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 self.broadcast_status = BroadcastStatus::ProofError(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs(),
                 );
             }

@@ -82,7 +82,7 @@ impl AddContractsScreen {
                 self.add_contracts_status = AddContractsStatus::WaitingForResult(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
+                        .unwrap_or_default()
                         .as_secs(),
                 );
                 AppAction::BackendTask(BackendTask::ContractTask(Box::new(
@@ -271,15 +271,10 @@ impl AddContractsScreen {
 impl ScreenLike for AddContractsScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Success => {
-                // Not used
-            }
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.add_contracts_status = AddContractsStatus::ErrorMessage(message.to_string());
             }
-            MessageType::Info => {
-                // Not used
-            }
+            MessageType::Success | MessageType::Info => {}
         }
     }
 
@@ -369,7 +364,7 @@ impl ScreenLike for AddContractsScreen {
                 AddContractsStatus::WaitingForResult(start_time) => {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
+                        .unwrap_or_default()
                         .as_secs();
                     let elapsed_seconds = now - start_time;
 

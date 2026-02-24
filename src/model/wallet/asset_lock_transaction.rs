@@ -11,6 +11,92 @@ use dash_sdk::dpp::dashcore::{
 use dash_sdk::dpp::key_wallet::psbt::serialize::Serialize;
 use std::collections::BTreeMap;
 
+/// Result of asset lock fee calculation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AssetLockFeeResult {
+    /// Transaction fee in duffs.
+    pub fee: u64,
+    /// Actual amount for the asset lock output (may differ from requested if
+    /// `allow_take_fee_from_amount` is true).
+    pub actual_amount: u64,
+    /// Change to return, or `None` if no change output is needed.
+    pub change: Option<u64>,
+}
+
+/// Minimum fee for an asset lock transaction (duffs).
+const MIN_ASSET_LOCK_FEE: u64 = 3_000;
+
+/// Estimate the transaction size in bytes.
+///
+/// Assumes P2PKH inputs (~148 B each), standard outputs (~34 B each),
+/// a ~10 B header, and a ~60 B asset-lock payload.
+fn estimate_tx_size(num_inputs: usize, num_outputs: usize) -> usize {
+    10 + (num_inputs * 148) + (num_outputs * 34) + 60
+}
+
+/// Calculate fee, actual amount, and change for an asset lock transaction.
+///
+/// Uses an iterative approach: starts assuming a change output exists,
+/// then recomputes if the change disappears under the real fee.
+///
+/// # Errors
+///
+/// Returns an error string if there are insufficient funds.
+pub(crate) fn calculate_asset_lock_fee(
+    total_input_value: u64,
+    requested_amount: u64,
+    num_inputs: usize,
+    allow_take_fee_from_amount: bool,
+) -> Result<AssetLockFeeResult, String> {
+    // First pass: assume 2 outputs (1 burn + 1 change).
+    let fee_with_change = std::cmp::max(MIN_ASSET_LOCK_FEE, estimate_tx_size(num_inputs, 2) as u64);
+
+    let tentative_change = total_input_value.checked_sub(requested_amount + fee_with_change);
+
+    // If there is positive change, we are done.
+    if let Some(change) = tentative_change
+        && change > 0
+    {
+        return Ok(AssetLockFeeResult {
+            fee: fee_with_change,
+            actual_amount: requested_amount,
+            change: Some(change),
+        });
+    }
+
+    // Change is zero or negative under the 2-output fee.
+    // Recompute with 1 output (no change).
+    let fee_no_change = std::cmp::max(MIN_ASSET_LOCK_FEE, estimate_tx_size(num_inputs, 1) as u64);
+
+    if total_input_value >= requested_amount + fee_no_change {
+        // Enough funds without a change output. Any leftover becomes
+        // additional fee (it is too small for a viable change output).
+        return Ok(AssetLockFeeResult {
+            fee: total_input_value - requested_amount,
+            actual_amount: requested_amount,
+            change: None,
+        });
+    }
+
+    // Insufficient for the requested amount at the 1-output fee rate.
+    if allow_take_fee_from_amount {
+        let adjusted = total_input_value.saturating_sub(fee_no_change);
+        if adjusted == 0 {
+            return Err("Insufficient funds for transaction fee".to_string());
+        }
+        Ok(AssetLockFeeResult {
+            fee: fee_no_change,
+            actual_amount: adjusted,
+            change: None,
+        })
+    } else {
+        Err(format!(
+            "Insufficient funds: need {} + {} fee, have {}",
+            requested_amount, fee_no_change, total_input_value
+        ))
+    }
+}
+
 impl Wallet {
     #[allow(clippy::type_complexity)]
     pub fn registration_asset_lock_transaction(
@@ -150,7 +236,7 @@ impl Wallet {
         // below based on the actual number of inputs.
         let initial_fee_estimate = 3_000u64;
 
-        let (utxos, initial_change_option) = self
+        let (utxos, _initial_change_option) = self
             .take_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
             .ok_or_else(|| {
                 format!(
@@ -160,36 +246,19 @@ impl Wallet {
                 )
             })?;
 
-        // Calculate fee based on actual transaction size so we always meet the
-        // min relay fee (1 duff/byte = 1000 duffs/kB).
-        // Sizes: P2PKH input ~148 B, output ~34 B, header ~10 B, payload ~60 B.
-        let num_inputs = utxos.len();
-        let has_initial_change = initial_change_option.is_some();
-        let num_outputs = 1 + if has_initial_change { 1 } else { 0 };
-        let estimated_size = 10 + (num_inputs * 148) + (num_outputs * 34) + 60;
-        let fee = std::cmp::max(initial_fee_estimate, estimated_size as u64);
-
-        // Recalculate amount and change with the real fee
+        // Calculate fee, amount, and change using the extracted pure function.
         let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
+        let num_inputs = utxos.len();
 
-        let (actual_amount, change_option) = if total_input_value < amount + fee {
-            if allow_take_fee_from_amount {
-                // Deduct the fee shortfall from the output amount
-                let adjusted = total_input_value.saturating_sub(fee);
-                if adjusted == 0 {
-                    return Err("Insufficient funds for transaction fee".to_string());
-                }
-                (adjusted, None)
-            } else {
-                return Err(format!(
-                    "Insufficient funds: need {} + {} fee, have {}",
-                    amount, fee, total_input_value
-                ));
-            }
-        } else {
-            let change = total_input_value - amount - fee;
-            (amount, if change > 0 { Some(change) } else { None })
-        };
+        let fee_result = calculate_asset_lock_fee(
+            total_input_value,
+            amount,
+            num_inputs,
+            allow_take_fee_from_amount,
+        )?;
+
+        let actual_amount = fee_result.actual_amount;
+        let change_option = fee_result.change;
 
         let payload_output = TxOut {
             value: actual_amount,
@@ -463,3 +532,4 @@ impl Wallet {
         Ok((tx, private_key))
     }
 }
+

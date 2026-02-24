@@ -427,9 +427,9 @@ impl Wallet {
                 Ok::<(), String>(())
             })?;
 
-        // Transaction is fully built and signed; commit the UTXO removals now.
-        self.remove_selected_utxos(&utxos, &app_context.db, network)?;
-
+        // Transaction is fully built and signed. UTXOs are returned to the caller
+        // so they can be removed explicitly after successful broadcast. This avoids
+        // permanently losing UTXO tracking if broadcast fails.
         Ok((tx, private_key, change_address, utxos))
     }
 

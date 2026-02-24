@@ -15,6 +15,7 @@ use dash_sdk::dpp::state_transition::identity_topup_transition::IdentityTopUpTra
 use dash_sdk::dpp::state_transition::identity_topup_transition::methods::IdentityTopUpTransitionMethodsV0;
 use dash_sdk::platform::Fetch;
 use dash_sdk::platform::transition::top_up_identity::TopUpIdentity;
+use std::collections::BTreeMap;
 
 impl AppContext {
     pub(super) async fn top_up_identity(
@@ -44,7 +45,7 @@ impl AppContext {
 
                     // Scope the read guard so it's dropped before the async DAPI call below
                     let private_key = {
-                        let wallet = wallet.read().unwrap();
+                        let wallet = wallet.read().map_err(|e| e.to_string())?;
                         wallet
                             .private_key_for_address(&address, self.network)?
                             .ok_or("Asset Lock not valid for wallet")?
@@ -92,11 +93,12 @@ impl AppContext {
                     top_up_index,
                 ) => {
                     // Scope the write lock to avoid holding it across an await.
+                    // UTXOs are selected but NOT removed yet — removal happens after broadcast.
                     let (
                         asset_lock_transaction,
                         asset_lock_proof_private_key,
                         _,
-                        _used_utxos,
+                        used_utxos,
                         wallet_seed_hash,
                     ) = {
                         let mut wallet = wallet.write().map_err(|e| e.to_string())?;
@@ -135,28 +137,15 @@ impl AppContext {
                         )
                     };
 
-                    let tx_id = asset_lock_transaction.txid();
-
-                    {
-                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                        proofs.insert(tx_id, None);
-                    }
-
-                    self.broadcast_raw_transaction(&asset_lock_transaction)
-                        .await?;
-
-                    // Store the asset lock transaction in the database immediately after sending.
-                    // This ensures it's tracked even if the proof times out or top-up fails.
-                    // SPV will update the instant_lock_data when it detects the transaction.
-                    self.db
-                        .store_asset_lock_transaction(
+                    let tx_id = self
+                        .broadcast_and_commit_asset_lock(
                             &asset_lock_transaction,
                             amount,
-                            None, // No islock yet - SPV will update this
                             &wallet_seed_hash,
-                            self.network,
+                            &wallet,
+                            &used_utxos,
                         )
-                        .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+                        .await?;
 
                     let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
@@ -176,7 +165,7 @@ impl AppContext {
                 ) => {
                     // Scope the write lock to avoid holding it across an await.
                     let (asset_lock_transaction, asset_lock_proof_private_key, wallet_seed_hash) = {
-                        let mut wallet = wallet.write().unwrap();
+                        let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                         let seed_hash = wallet.seed_hash();
                         let tx_result = wallet.top_up_asset_lock_transaction_for_utxo(
                             self,
@@ -190,47 +179,18 @@ impl AppContext {
                         (tx_result.0, tx_result.1, seed_hash)
                     };
 
-                    let tx_id = asset_lock_transaction.txid();
-                    // todo: maybe one day we will want to use platform again, but for right now we use
-                    //  the local core as it is more stable
-                    // let asset_lock_proof = self
-                    //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
-                    //     .await
-                    //     .map_err(|e| e.to_string())?;
+                    let used_utxos =
+                        BTreeMap::from([(utxo, (tx_out.clone(), input_address.clone()))]);
 
-                    {
-                        let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                        proofs.insert(tx_id, None);
-                    }
-
-                    self.broadcast_raw_transaction(&asset_lock_transaction)
-                        .await?;
-
-                    // Store the asset lock transaction in the database immediately after sending.
-                    // This ensures it's tracked even if the proof times out or top-up fails.
-                    // SPV will update the instant_lock_data when it detects the transaction.
-                    self.db
-                        .store_asset_lock_transaction(
+                    let tx_id = self
+                        .broadcast_and_commit_asset_lock(
                             &asset_lock_transaction,
                             tx_out.value,
-                            None, // No islock yet - SPV will update this
                             &wallet_seed_hash,
-                            self.network,
+                            &wallet,
+                            &used_utxos,
                         )
-                        .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
-
-                    {
-                        let mut wallet = wallet.write().unwrap();
-                        wallet.utxos.retain(|_, utxo_map| {
-                            utxo_map.retain(|outpoint, _| outpoint != &utxo);
-                            !utxo_map.is_empty()
-                        });
-                        self.db
-                            .drop_utxo(&utxo, &self.network.to_string())
-                            .map_err(|e| e.to_string())?;
-
-                        wallet.recalculate_address_balance(&input_address, self)?;
-                    }
+                        .await?;
 
                     let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
@@ -463,7 +423,7 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
         {
-            let mut wallet = wallet.write().unwrap();
+            let mut wallet = wallet.write().map_err(|e| e.to_string())?;
             wallet
                 .unused_asset_locks
                 .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);

@@ -66,7 +66,7 @@ fee and now uses iterative size-based estimation.
 #### Expected Results
 - The transaction broadcasts successfully.
 - The fee deducted is based on the actual tx size (not a fixed 1,000 duffs).
-  With 1–2 inputs and 2 outputs: `8 + 148*n + 34*2 = ~224–372 bytes` → fee ~224–372 duffs.
+  With 1-2 inputs and 2 outputs: `8 + 148*n + 34*2 = ~224-372 bytes` -> fee ~224-372 duffs.
 - The wallet balance decreases by 50,000 + actual fee.
 - No "min relay fee not met" rejection from the network.
 
@@ -82,13 +82,13 @@ the fee is recalculated and the tx is rebuilt with the correct fee.
 - No single UTXO covers the full amount + fee alone.
 
 #### Steps
-1. Navigate to the Wallets screen → Send.
+1. Navigate to the Wallets screen -> Send.
 2. Enter a valid recipient address and an amount of 50,000 duffs.
 3. Confirm the transaction.
 
 #### Expected Results
 - The transaction consumes multiple UTXOs.
-- The fee reflects the actual input count (> 5 inputs → fee may be recalculated in the second
+- The fee reflects the actual input count (> 5 inputs -> fee may be recalculated in the second
   pass).
 - The transaction is accepted by the network without fee errors.
 - The success dialog shows a valid txid.
@@ -104,14 +104,14 @@ fee from the output, not a hardcoded value.
 - Core wallet has a single UTXO of 50,000 duffs.
 
 #### Steps
-1. Navigate to the Wallets screen → Send.
+1. Navigate to the Wallets screen -> Send.
 2. Enter a valid recipient address and 50,000 duffs.
 3. Check "subtract fee from amount".
 4. Confirm.
 
 #### Expected Results
 - The transaction broadcasts successfully.
-- The recipient receives 50,000 − (dynamic fee) duffs, not 50,000 − 1,000 duffs (old hardcoded).
+- The recipient receives 50,000 - (dynamic fee) duffs, not 50,000 - 1,000 duffs (old hardcoded).
 - The wallet balance drops to 0 (or near 0 if dust remains).
 
 ---
@@ -124,13 +124,13 @@ fee from the output, not a hardcoded value.
 - Core wallet has sufficient balance (100,000+ duffs).
 
 #### Steps
-1. Navigate to the Wallets screen → Send (advanced mode if available).
+1. Navigate to the Wallets screen -> Send (advanced mode if available).
 2. Add two distinct Testnet recipient addresses, each receiving 20,000 duffs.
 3. Confirm the transaction.
 
 #### Expected Results
 - The transaction has 3 outputs (2 recipients + 1 change).
-- Fee is estimated as: `estimate_p2pkh_tx_size(inputs, 3)` × rate.
+- Fee is estimated as: `estimate_p2pkh_tx_size(inputs, 3)` x rate.
 - Both recipients receive the exact amounts. Change is returned to wallet.
 - Transaction accepted by the network.
 
@@ -145,7 +145,7 @@ and generic platform address funding.
 
 **Purpose:** Verify a 1-input asset lock uses at least the 3,000 duff minimum fee.
 
-With 1 input and 2 outputs: `10 + 148 + 68 + 60 = 286 bytes` → relay fee ~286 duffs, but the
+With 1 input and 2 outputs: `10 + 148 + 68 + 60 = 286 bytes` -> relay fee ~286 duffs, but the
 minimum of 3,000 duffs applies.
 
 #### Preconditions
@@ -180,7 +180,7 @@ transaction is still accepted.
 
 #### Expected Results
 - Transaction consumes ~21+ UTXOs.
-- With ~21 inputs and 2 outputs: `10 + (21×148) + (2×34) + 60 = 3,246 bytes` → fee 3,246 duffs.
+- With ~21 inputs and 2 outputs: `10 + (21x148) + (2x34) + 60 = 3,246 bytes` -> fee 3,246 duffs.
 - Fee exceeds the 3,000 minimum; network accepts the transaction.
 - Wallet balance decreases by 100,000 + ~3,246 duffs.
 
@@ -193,7 +193,7 @@ estimate was too low for the actual input count.
 
 #### Preconditions
 - Wallet has many small UTXOs where the initial 3,000 duff fee estimate would require one fewer
-  UTXO than the real fee (edge case — requires careful setup, best confirmed via unit test or
+  UTXO than the real fee (edge case -- requires careful setup, best confirmed via unit test or
   with a wallet of ~30 UTXOs of just-over-100 duffs each).
 
 #### Steps
@@ -244,7 +244,7 @@ the fee calculation helper rather than a hardcoded value, and removes the UTXO c
 #### Expected Results
 - Asset lock is created and broadcast.
 - UTXO is removed from the wallet after confirmation.
-- Identity balance increases by (UTXO value − fee) × credits_per_duff.
+- Identity balance increases by (UTXO value - fee) x credits_per_duff.
 
 ---
 
@@ -262,7 +262,7 @@ output rather than failing, when the option is enabled.
 3. Confirm.
 
 #### Expected Results
-- Transaction succeeds; actual credited amount = 10,000 − 3,000 = 7,000 duffs.
+- Transaction succeeds; actual credited amount = 10,000 - 3,000 = 7,000 duffs.
 - No change output. Wallet balance drops to 0.
 
 ---
@@ -281,7 +281,7 @@ deduction is disabled.
 3. Confirm.
 
 #### Expected Results
-- Error message includes the specific amounts: `"Insufficient funds: need 10000 + 3000 fee, have 10000"` (or similar).
+- Error message includes the specific amounts: "Insufficient funds: need 10000 + 3000 fee, have 10000" (or similar).
 - No transaction broadcast. Wallet UTXOs unchanged.
 
 ---
@@ -301,7 +301,7 @@ a Platform-to-Platform transfer, using the unified estimator.
 - A second valid platform address is available as destination.
 
 #### Steps
-1. Navigate to Wallets → Send.
+1. Navigate to Wallets -> Send.
 2. Select "Platform Addresses" as the source.
 3. Enter a destination platform address and an amount of 200,000 credits.
 4. Observe the estimated fee shown in the UI before confirming.
@@ -309,7 +309,7 @@ a Platform-to-Platform transfer, using the unified estimator.
 
 #### Expected Results
 - The estimated fee is shown in the UI before submission.
-- The fee is computed as `max(legacy_estimate, transition_based_estimate)` — the higher of the
+- The fee is computed as `max(legacy_estimate, transition_based_estimate)` -- the higher of the
   two estimators is used.
 - After the transition completes, the source address balance decreases by amount + fee.
 - The destination address balance increases by the transferred amount.
@@ -326,7 +326,7 @@ a Platform-to-Platform transfer, using the unified estimator.
 - A valid Core wallet address is available for the destination.
 
 #### Steps
-1. Navigate to Wallets → Send (or the dedicated withdrawal screen).
+1. Navigate to Wallets -> Send (or the dedicated withdrawal screen).
 2. Select a Platform address as source and a Core wallet address as destination.
 3. Enter a withdrawal amount.
 4. Note the displayed fee estimate.
@@ -350,7 +350,7 @@ and includes the Platform fee in the asset lock amount.
 - A destination platform address is available.
 
 #### Steps
-1. Navigate to Wallets → Fund Platform Address (or the platform funding screen).
+1. Navigate to Wallets -> Fund Platform Address (or the platform funding screen).
 2. Enter a destination platform address and an amount of 50,000 duffs.
 3. Leave "deduct fee from amount" unchecked.
 4. Confirm.
@@ -373,13 +373,13 @@ than the nominal amount but the Core fee is correctly reflected.
 - Core wallet has at least 50,000 duffs.
 
 #### Steps
-1. Navigate to Wallets → Fund Platform Address.
+1. Navigate to Wallets -> Fund Platform Address.
 2. Enter a destination and 50,000 duffs with "deduct fee from amount" enabled.
 3. Confirm.
 
 #### Expected Results
 - The asset lock amount is 50,000 duffs (no Platform fee added to the lock).
-- The Core fee is deducted from the amount, so the recipient receives 50,000 − fee credits.
+- The Core fee is deducted from the amount, so the recipient receives 50,000 - fee credits.
 - Wallet balance drops by exactly 50,000 duffs.
 
 ---
@@ -390,7 +390,7 @@ than the nominal amount but the Core fee is correctly reflected.
 Platform fee estimator.
 
 #### Preconditions
-- Wallet has a platform address with sufficient balance (≥ 500,000 credits).
+- Wallet has a platform address with sufficient balance (>= 500,000 credits).
 
 #### Steps
 1. Navigate to the Identity registration screen.
@@ -439,7 +439,7 @@ and signed, and that the `remove_selected_utxos()` helper is used consistently.
 longer shown in the wallet, and that no duplicate or premature removal occurs.
 
 #### Preconditions
-- Wallet has 2–3 UTXOs of known values.
+- Wallet has 2-3 UTXOs of known values.
 - Record the UTXO list before the test.
 
 #### Steps
@@ -453,7 +453,7 @@ longer shown in the wallet, and that no duplicate or premature removal occurs.
 - Remaining UTXOs are intact.
 - If a change output was created, the new UTXO appears after the wallet refreshes.
 
-#### Expected Results (failure path — e.g., network error before broadcast)
+#### Expected Results (failure path -- e.g., network error before broadcast)
 - No UTXOs are removed from the wallet list.
 - The wallet state is unchanged.
 
@@ -465,10 +465,10 @@ longer shown in the wallet, and that no duplicate or premature removal occurs.
 
 #### Preconditions
 - An existing identity is in the wallet.
-- Wallet has 2–3 known UTXOs.
+- Wallet has 2-3 known UTXOs.
 
 #### Steps
-1. Navigate to the identity detail screen → Top Up.
+1. Navigate to the identity detail screen -> Top Up.
 2. Initiate top-up using the wallet's UTXOs.
 3. Wait for broadcast.
 4. Check the UTXO list.
@@ -491,7 +491,7 @@ not attempt to spend UTXOs already consumed by the first.
 - Wallet has exactly 2 UTXOs of similar value.
 
 #### Steps
-1. Initiate identity registration (operation A) — do not wait for confirmation.
+1. Initiate identity registration (operation A) -- do not wait for confirmation.
 2. Immediately initiate a wallet send (operation B) for a different amount.
 3. Observe both operations.
 
@@ -522,7 +522,7 @@ be reloaded, an error is returned rather than silently losing UTXOs or panicking
 - If the initial fee was sufficient, the payment succeeds normally.
 - If the initial fee was insufficient AND the UTXOs cannot be reloaded (SPV mode),
   the error message is:
-  `"Fee re-estimation failed: cannot reload UTXOs in SPV mode"`.
+  "Fee re-estimation failed: cannot reload UTXOs in SPV mode".
 - No UTXOs are lost from the wallet state.
 - The UI displays the error in the message banner.
 
@@ -570,8 +570,8 @@ consolidation.
 2. Confirm.
 
 #### Expected Results
-- With 100 inputs: estimated size ≈ `10 + (100×148) + (2×34) + 60 = 15,198 bytes`.
-  Fee ≈ 15,198 duffs. The transaction is accepted by the network.
+- With 100 inputs: estimated size ~= `10 + (100x148) + (2x34) + 60 = 15,198 bytes`.
+  Fee ~= 15,198 duffs. The transaction is accepted by the network.
 - No overflow or panic from large input count arithmetic.
 
 ---
@@ -586,7 +586,7 @@ no dust change output is created.
 
 #### Steps
 1. Attempt identity registration with 50,000 duffs.
-2. With 1 input: fee = 3,000 duffs, change = 53,500 − 50,000 − 3,000 = 500 duffs (below 546).
+2. With 1 input: fee = 3,000 duffs, change = 53,500 - 50,000 - 3,000 = 500 duffs (below 546).
 3. Confirm.
 
 #### Expected Results

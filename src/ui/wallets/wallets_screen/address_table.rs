@@ -157,12 +157,19 @@ impl WalletsBalancesScreen {
                         self.app_context.network,
                     );
 
-                    // Get Platform credits balance and nonce for Platform Payment addresses
-                    // Use canonical lookup to handle potential Address key mismatches
-                    let platform_info = wallet.get_platform_address_info(address);
-                    let platform_credits =
-                        platform_info.map(|info| info.balance).unwrap_or_default();
-                    let nonce = platform_info.map(|info| info.nonce).unwrap_or_default();
+                    // Get Platform credits balance and nonce for Platform Payment addresses only.
+                    // Skip the lookup for non-platform addresses to avoid unnecessary linear
+                    // scans in get_platform_address_info()'s fallback path.
+                    let (platform_credits, nonce) =
+                        if account_category == AccountCategory::PlatformPayment {
+                            let platform_info = wallet.get_platform_address_info(address);
+                            (
+                                platform_info.map(|info| info.balance).unwrap_or_default(),
+                                platform_info.map(|info| info.nonce).unwrap_or_default(),
+                            )
+                        } else {
+                            (Default::default(), Default::default())
+                        };
 
                     AddressData {
                         address: address.clone(),
@@ -221,6 +228,18 @@ impl WalletsBalancesScreen {
             .as_ref()
             .map(|(cat, _)| *cat == AccountCategory::PlatformPayment)
             .unwrap_or(false);
+
+        // Reset sort column if it refers to a column not visible for the current account type
+        if is_platform_account
+            && matches!(
+                self.sort_column,
+                SortColumn::UTXOs | SortColumn::TotalReceived
+            )
+        {
+            self.sort_column = SortColumn::Balance;
+            self.sort_order = SortOrder::Descending;
+        }
+
 
         // Render the table
         let mut builder = TableBuilder::new(ui)

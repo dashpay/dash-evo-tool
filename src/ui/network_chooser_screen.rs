@@ -7,6 +7,7 @@ use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{
@@ -14,7 +15,7 @@ use crate::ui::components::styled::{
 };
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, ThemeMode};
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
@@ -458,6 +459,7 @@ impl NetworkChooserScreen {
                             }
                             Err(e) => {
                                 tracing::error!("Auto update failed: {e}");
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                             }
                         }
                     }

@@ -279,18 +279,25 @@ impl AppContext {
                 address,
                 wallet,
             } => {
-                let mined = self
-                    .core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
-                    .generate_to_address(block_count, &address)
-                    .map_err(|e| e.to_string())?;
+                if !matches!(self.network, Network::Regtest | Network::Devnet) {
+                    return Err("Mining is only available on Regtest and Devnet".to_string());
+                }
+                let ctx = self.clone();
+                let mined = tokio::task::spawn_blocking(move || {
+                    ctx.core_client
+                        .read()
+                        .map_err(|e| format!("Core client lock was poisoned: {}", e))?
+                        .generate_to_address(block_count, &address)
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| format!("Task join error: {}", e))??;
 
-                let mined_count = mined.len();
+                let mined_count = mined.len() as u64;
 
                 // Refresh wallet balances via RPC so the UI reflects the new coins
-                let ctx = self.clone();
-                tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                let refresh_ctx = self.clone();
+                tokio::task::spawn_blocking(move || refresh_ctx.refresh_wallet_info(wallet))
                     .await
                     .map_err(|e| format!("Task join error: {}", e))?
                     .map_err(|e| format!("Error refreshing wallet after mining: {}", e))?;
@@ -368,11 +375,11 @@ impl AppContext {
                 return Err("Wallet must be unlocked".to_string());
             }
             wallet_guard.build_multi_recipient_payment_transaction(
+                self,
                 self.network,
                 &parsed_recipients,
                 DEFAULT_TX_FEE,
                 request.subtract_fee_from_amount,
-                Some(self),
             )?
         };
 

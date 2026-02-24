@@ -4,6 +4,7 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::backend_task::wallet::WalletTask;
 use crate::model::amount::Amount;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
+use crate::ui::MessageType;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -1128,19 +1129,14 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Load Core addresses into the receive dialog
-    fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
-        let wallet_guard = match wallet.read() {
-            Ok(guard) => guard,
-            Err(err) => {
-                self.receive_dialog.status = Some(err.to_string());
-                return;
-            }
-        };
-
-        // Collect all BIP44 external (receive) addresses with their balances
+    /// Load BIP44 external addresses with balances from a wallet.
+    fn load_bip44_external_addresses(
+        &self,
+        wallet: &Arc<RwLock<Wallet>>,
+    ) -> Result<Vec<(String, u64)>, String> {
+        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         let network = self.app_context.network;
-        let core_addresses: Vec<(String, u64)> = wallet_guard
+        let addresses: Vec<(String, u64)> = wallet_guard
             .watched_addresses
             .iter()
             .filter(|(path, _)| path.is_bip44_external(network))
@@ -1153,24 +1149,31 @@ impl WalletsBalancesScreen {
                 (info.address.to_string(), balance)
             })
             .collect();
+        Ok(addresses)
+    }
 
-        drop(wallet_guard);
-
-        if core_addresses.is_empty() {
-            // Generate a new Core address if none exists
-            match self.generate_new_core_receive_address(wallet) {
-                Ok((address, balance)) => {
-                    self.receive_dialog.core_addresses = vec![(address, balance)];
-                    self.receive_dialog.selected_core_index = 0;
-                }
-                Err(err) => {
-                    self.receive_dialog.status = Some(err);
-                    self.receive_dialog.core_addresses.clear();
+    /// Load Core addresses into the receive dialog
+    fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+        match self.load_bip44_external_addresses(wallet) {
+            Ok(addresses) if addresses.is_empty() => {
+                match self.generate_new_core_receive_address(wallet) {
+                    Ok((address, balance)) => {
+                        self.receive_dialog.core_addresses = vec![(address, balance)];
+                        self.receive_dialog.selected_core_index = 0;
+                    }
+                    Err(err) => {
+                        self.receive_dialog.status = Some(err);
+                        self.receive_dialog.core_addresses.clear();
+                    }
                 }
             }
-        } else {
-            self.receive_dialog.core_addresses = core_addresses;
-            self.receive_dialog.selected_core_index = 0;
+            Ok(addresses) => {
+                self.receive_dialog.core_addresses = addresses;
+                self.receive_dialog.selected_core_index = 0;
+            }
+            Err(err) => {
+                self.receive_dialog.status = Some(err);
+            }
         }
     }
 
@@ -1235,8 +1238,7 @@ impl WalletsBalancesScreen {
 
     pub(super) fn open_mine_dialog(&mut self) {
         let Some(wallet) = self.selected_wallet.clone() else {
-            self.mine_dialog.error = Some("Select a wallet first".to_string());
-            self.mine_dialog.is_open = true;
+            self.set_message("Select a wallet first".to_string(), MessageType::Error);
             return;
         };
 
@@ -1251,44 +1253,26 @@ impl WalletsBalancesScreen {
     }
 
     fn load_core_addresses_for_mine(&mut self, wallet: &Arc<RwLock<Wallet>>) {
-        let wallet_guard = match wallet.read() {
-            Ok(guard) => guard,
+        match self.load_bip44_external_addresses(wallet) {
+            Ok(addresses) if addresses.is_empty() => {
+                match self.generate_new_core_receive_address(wallet) {
+                    Ok((address, balance)) => {
+                        self.mine_dialog.core_addresses = vec![(address, balance)];
+                        self.mine_dialog.selected_address_index = 0;
+                    }
+                    Err(err) => {
+                        self.mine_dialog.error = Some(err);
+                        self.mine_dialog.core_addresses.clear();
+                    }
+                }
+            }
+            Ok(addresses) => {
+                self.mine_dialog.core_addresses = addresses;
+                self.mine_dialog.selected_address_index = 0;
+            }
             Err(err) => {
-                self.mine_dialog.error = Some(err.to_string());
-                return;
+                self.mine_dialog.error = Some(err);
             }
-        };
-
-        let network = self.app_context.network;
-        let core_addresses: Vec<(String, u64)> = wallet_guard
-            .watched_addresses
-            .iter()
-            .filter(|(path, _)| path.is_bip44_external(network))
-            .map(|(_, info)| {
-                let balance = wallet_guard
-                    .address_balances
-                    .get(&info.address)
-                    .copied()
-                    .unwrap_or(0);
-                (info.address.to_string(), balance)
-            })
-            .collect();
-
-        drop(wallet_guard);
-
-        if core_addresses.is_empty() {
-            match self.generate_new_core_receive_address(wallet) {
-                Ok((address, balance)) => {
-                    self.mine_dialog.core_addresses = vec![(address, balance)];
-                    self.mine_dialog.selected_address_index = 0;
-                }
-                Err(err) => {
-                    self.mine_dialog.error = Some(err);
-                }
-            }
-        } else {
-            self.mine_dialog.core_addresses = core_addresses;
-            self.mine_dialog.selected_address_index = 0;
         }
     }
 
@@ -1369,11 +1353,31 @@ impl WalletsBalancesScreen {
                             .hint_text("1")
                             .desired_width(100.0),
                     );
+                    self.mine_dialog
+                        .block_count_str
+                        .retain(|c| c.is_ascii_digit());
 
                     // Error display
-                    if let Some(error) = &self.mine_dialog.error {
+                    if let Some(error) = self.mine_dialog.error.clone() {
                         ui.add_space(8.0);
-                        ui.label(RichText::new(error).color(DashColors::error_color(dark_mode)));
+                        let error_color = DashColors::ERROR;
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", error))
+                                            .color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.mine_dialog.error = None;
+                                    }
+                                });
+                            });
                     }
 
                     ui.add_space(15.0);
@@ -1405,9 +1409,17 @@ impl WalletsBalancesScreen {
 
                         if ui.add(mine_button).clicked() {
                             // Validate and dispatch
+                            const MAX_MINE_BLOCKS: u64 = 1_000;
                             let block_count: u64 =
                                 match self.mine_dialog.block_count_str.trim().parse() {
-                                    Ok(n) if n > 0 => n,
+                                    Ok(n) if n > 0 && n <= MAX_MINE_BLOCKS => n,
+                                    Ok(n) if n > MAX_MINE_BLOCKS => {
+                                        self.mine_dialog.error = Some(format!(
+                                            "Maximum {} blocks at a time",
+                                            MAX_MINE_BLOCKS
+                                        ));
+                                        return;
+                                    }
                                     _ => {
                                         self.mine_dialog.error = Some(
                                             "Enter a valid number of blocks (> 0)".to_string(),
@@ -1425,8 +1437,11 @@ impl WalletsBalancesScreen {
                                 return;
                             };
 
-                            let address = match addr_str.parse::<Address<NetworkUnchecked>>() {
-                                Ok(addr) => addr.assume_checked(),
+                            let address = match addr_str
+                                .parse::<Address<NetworkUnchecked>>()
+                                .and_then(|a| a.require_network(self.app_context.network))
+                            {
+                                Ok(addr) => addr,
                                 Err(e) => {
                                     self.mine_dialog.error =
                                         Some(format!("Invalid address: {}", e));
@@ -1452,8 +1467,9 @@ impl WalletsBalancesScreen {
                 });
             });
 
-        self.mine_dialog.is_open = open;
-        if !self.mine_dialog.is_open {
+        // X button sets `open` to false; Cancel/Mine reset dialog state
+        // (which sets is_open to false) inside the closure.
+        if !open || !self.mine_dialog.is_open {
             self.mine_dialog = MineDialogState::default();
         }
         action

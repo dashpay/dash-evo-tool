@@ -261,7 +261,7 @@ pub enum BackendTaskSuccessResult {
         recovered_count: usize,
         total_amount: u64,
     },
-    MineBlocksSuccess(usize),
+    MineBlocksSuccess(u64),
 
     // DPNS operation results (replacing string messages)
     ScheduledVotes,

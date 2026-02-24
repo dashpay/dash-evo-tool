@@ -377,31 +377,24 @@ pub async fn shield_from_asset_lock(
 
         // Try to create the asset lock transaction, reload UTXOs if needed
         match wallet.generic_asset_lock_transaction(
+            app_context.as_ref(),
             app_context.network,
             asset_lock_duffs,
             false,
-            Some(app_context.as_ref()),
         ) {
             Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
             Err(_) => {
                 // Reload UTXOs and try again
                 wallet
-                    .reload_utxos(
-                        &app_context
-                            .core_client
-                            .read()
-                            .expect("Core client lock was poisoned"),
-                        app_context.network,
-                        Some(app_context.as_ref()),
-                    )
+                    .reload_utxos(app_context.as_ref())
                     .map_err(|e| e.to_string())?;
 
                 let (tx, private_key, address, _change, utxos) = wallet
                     .generic_asset_lock_transaction(
+                        app_context.as_ref(),
                         app_context.network,
                         asset_lock_duffs,
                         false,
-                        Some(app_context.as_ref()),
                     )?;
                 (tx, private_key, address, utxos)
             }

@@ -3,7 +3,6 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
-use crate::spv::CoreBackendMode;
 use dash_sdk::Error;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
@@ -97,41 +96,35 @@ impl AppContext {
                         asset_lock_transaction,
                         asset_lock_proof_private_key,
                         _,
-                        used_utxos,
+                        _used_utxos,
                         wallet_seed_hash,
                     ) = {
-                        let mut wallet = wallet.write().unwrap();
+                        let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                         let seed_hash = wallet.seed_hash();
                         let tx_result = match wallet.top_up_asset_lock_transaction(
+                            self,
                             sdk.network,
                             amount,
                             true,
                             identity_index,
                             top_up_index,
-                            Some(self),
                         ) {
                             Ok(transaction) => transaction,
-                            Err(e) => match self.core_backend_mode() {
-                                CoreBackendMode::Rpc => {
-                                    let core_client = self.core_client.read().map_err(|e| {
-                                        format!("Core client lock was poisoned: {}", e)
-                                    })?;
-                                    wallet
-                                        .reload_utxos(&core_client, self.network, Some(self))
-                                        .map_err(|e| e.to_string())?;
-                                    wallet.top_up_asset_lock_transaction(
-                                        sdk.network,
-                                        amount,
-                                        true,
-                                        identity_index,
-                                        top_up_index,
-                                        Some(self),
-                                    )?
-                                }
-                                CoreBackendMode::Spv => {
+                            Err(e) => {
+                                // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
+                                // Only retry if something actually changed.
+                                if !wallet.reload_utxos(self)? {
                                     return Err(e);
                                 }
-                            },
+                                wallet.top_up_asset_lock_transaction(
+                                    self,
+                                    sdk.network,
+                                    amount,
+                                    true,
+                                    identity_index,
+                                    top_up_index,
+                                )?
+                            }
                         };
                         (
                             tx_result.0,
@@ -143,12 +136,6 @@ impl AppContext {
                     };
 
                     let tx_id = asset_lock_transaction.txid();
-                    // todo: maybe one day we will want to use platform again, but for right now we use
-                    //  the local core as it is more stable
-                    // let asset_lock_proof = self
-                    //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
-                    //     .await
-                    //     .map_err(|e| e.to_string())?;
 
                     {
                         let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
@@ -171,21 +158,6 @@ impl AppContext {
                         )
                         .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
-                    {
-                        let mut wallet = wallet.write().unwrap();
-                        wallet.utxos.retain(|_, utxo_map| {
-                            utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                            !utxo_map.is_empty() // Keep addresses that still have UTXOs
-                        });
-                        for utxo in used_utxos.keys() {
-                            self.db
-                                .drop_utxo(utxo, &self.network.to_string())
-                                .map_err(|e| e.to_string())?;
-                        }
-
-                        wallet.recalculate_affected_address_balances(&used_utxos, self)?;
-                    }
-
                     let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
                     (
@@ -207,13 +179,13 @@ impl AppContext {
                         let mut wallet = wallet.write().unwrap();
                         let seed_hash = wallet.seed_hash();
                         let tx_result = wallet.top_up_asset_lock_transaction_for_utxo(
+                            self,
                             sdk.network,
                             utxo,
                             tx_out.clone(),
                             input_address.clone(),
                             identity_index,
                             top_up_index,
-                            Some(self),
                         )?;
                         (tx_result.0, tx_result.1, seed_hash)
                     };

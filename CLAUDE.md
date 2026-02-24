@@ -56,6 +56,17 @@ scripts/safe-cargo.sh +nightly fmt --all
 ```
 
 
+## Coding Conventions
+
+### Parameter ordering
+
+When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`. Example:
+
+```rust
+fn remove_selected_utxos(&mut self, context: Option<&AppContext>, selected: &BTreeMap<...>) -> Result<(), String>
+```
+
+
 ## Architecture Overview
 
 **Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.

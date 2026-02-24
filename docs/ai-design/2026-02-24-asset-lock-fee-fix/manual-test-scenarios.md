@@ -265,13 +265,8 @@ with "min relay fee not met" now succeed.
   causes a shortfall (total inputs < amount + real fee), the code should handle this via the
   `allow_take_fee_from_amount` path or return an error. Verify no panic or silent data loss occurs.
 
-### E3: Database Connection Change (secondary change in PR)
-- The PR also removes `Arc` wrapping from the `Database.conn` field and removes the
-  `shared_connection()` method. Verify that all database operations (wallet persistence, UTXO
-  tracking, identity storage) continue to work correctly after this change. This is a structural
-  refactor and should not affect behavior.
 
-### E4: Concurrent Asset Lock Creation
+### E3: Concurrent Asset Lock Creation
 - If two asset lock transactions are created in quick succession (e.g., rapid identity registration
   attempts), verify that UTXO double-spend is prevented and the second attempt either uses different
   UTXOs or fails gracefully.

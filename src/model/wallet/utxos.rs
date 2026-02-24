@@ -7,6 +7,109 @@ use dash_sdk::dpp::dashcore::{Address, OutPoint, TxOut};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 impl Wallet {
+    /// Selects UTXOs sufficient to cover `amount + fee` without removing them from the wallet.
+    ///
+    /// Returns the selected UTXOs and an optional change amount, or `None` if there are
+    /// insufficient funds.  The returned change value is computed from the caller-supplied
+    /// `fee` parameter; callers that recalculate fees afterward (e.g., based on the actual
+    /// number of inputs) should ignore the change value and recompute it.
+    ///
+    /// Use this when you need to inspect or validate the selection before
+    /// committing; call [`Self::remove_selected_utxos`] only once the operation
+    /// is guaranteed to succeed.
+    #[allow(clippy::type_complexity)]
+    pub fn select_unspent_utxos_for(
+        &self,
+        amount: u64,
+        fee: u64,
+        allow_take_fee_from_amount: bool,
+    ) -> Option<(BTreeMap<OutPoint, (TxOut, Address)>, Option<u64>)> {
+        let mut required: i64 = (amount + fee) as i64;
+        let mut selected_utxos = BTreeMap::new();
+
+        for (address, outpoints) in self.utxos.iter() {
+            for (outpoint, tx_out) in outpoints.iter() {
+                if required <= 0 {
+                    break;
+                }
+                selected_utxos.insert(*outpoint, (tx_out.clone(), address.clone()));
+                required -= tx_out.value as i64;
+            }
+        }
+
+        if required > 0 {
+            if allow_take_fee_from_amount {
+                let total_collected = (amount + fee) as i64 - required;
+                if total_collected >= amount as i64 {
+                    let missing_fee = required; // required > 0
+                    let adjusted_amount = amount as i64 - missing_fee;
+                    if adjusted_amount <= 0 {
+                        return None;
+                    }
+                    Some((selected_utxos, None))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            let total_input = (amount + fee) as i64 - required;
+            let change = total_input as u64 - amount - fee;
+            let change_option = if change > 0 { Some(change) } else { None };
+            Some((selected_utxos, change_option))
+        }
+    }
+
+    /// Removes the given UTXOs from the wallet's in-memory UTXO set, persists
+    /// the removal to the database, and recalculates affected address balances.
+    ///
+    /// Typically called with the result of [`Self::select_unspent_utxos_for`]
+    /// after the transaction has been fully built and signed.
+    ///
+    /// When `context` is `None`, only the in-memory state is updated (useful
+    /// for tests or when no database persistence is needed).
+    pub fn remove_selected_utxos(
+        &mut self,
+        context: Option<&AppContext>,
+        selected: &BTreeMap<OutPoint, (TxOut, Address)>,
+    ) -> Result<(), String> {
+        for (outpoint, (_, address)) in selected {
+            if let Some(outpoints) = self.utxos.get_mut(address) {
+                outpoints.remove(outpoint);
+                if outpoints.is_empty() {
+                    self.utxos.remove(address);
+                }
+            } else {
+                tracing::debug!(
+                    ?outpoint,
+                    %address,
+                    "remove_selected_utxos: outpoint not found in wallet, skipping"
+                );
+            }
+        }
+
+        if let Some(context) = context {
+            // Drop used UTXOs from database
+            for outpoint in selected.keys() {
+                context
+                    .db
+                    .drop_utxo(outpoint, &context.network.to_string())
+                    .map_err(|e| e.to_string())?;
+            }
+
+            // Recalculate balances for affected addresses
+            self.recalculate_affected_address_balances(selected, context)?;
+        }
+
+        Ok(())
+    }
+
+    /// Convenience wrapper: selects and immediately removes UTXOs (in-memory only).
+    ///
+    /// Used in tests and contexts without database persistence.  Production code
+    /// should prefer [`Self::select_unspent_utxos_for`] followed by
+    /// [`Self::remove_selected_utxos`] with a context.
     #[allow(clippy::type_complexity)]
     pub fn take_unspent_utxos_for(
         &mut self,
@@ -14,80 +117,12 @@ impl Wallet {
         fee: u64,
         allow_take_fee_from_amount: bool,
     ) -> Option<(BTreeMap<OutPoint, (TxOut, Address)>, Option<u64>)> {
-        // Ensure UTXOs exist
-        let utxos = &mut self.utxos;
-
-        let mut required: i64 = (amount + fee) as i64;
-        let mut taken_utxos = BTreeMap::new();
-        let mut utxos_to_remove = Vec::new();
-
-        // Iterate over the UTXOs to collect enough to cover the required amount
-        for (address, outpoints) in utxos.iter_mut() {
-            for (outpoint, tx_out) in outpoints.iter() {
-                if required <= 0 {
-                    break;
-                }
-
-                // Add the UTXO to the result
-                taken_utxos.insert(*outpoint, (tx_out.clone(), address.clone()));
-
-                required -= tx_out.value as i64;
-                utxos_to_remove.push((address.clone(), *outpoint));
-            }
-        }
-
-        // If not enough UTXOs were found, try to adjust if allowed
-        if required > 0 {
-            if allow_take_fee_from_amount {
-                let total_collected = (amount + fee) as i64 - required;
-                if total_collected >= amount as i64 {
-                    // We have enough to cover the amount, but not the fee
-                    // So we can reduce the amount by the missing fee
-                    let missing_fee = required; // required > 0
-                    let adjusted_amount = amount as i64 - missing_fee;
-                    if adjusted_amount <= 0 {
-                        // Cannot adjust amount to cover missing fee
-                        return None;
-                    }
-                    // Remove UTXOs from wallet
-                    for (address, outpoint) in utxos_to_remove {
-                        if let Some(outpoints) = utxos.get_mut(&address) {
-                            outpoints.remove(&outpoint);
-                            if outpoints.is_empty() {
-                                utxos.remove(&address);
-                            }
-                        }
-                    }
-                    // Return collected UTXOs and None for change
-                    Some((taken_utxos, None))
-                } else {
-                    // Not enough to cover amount even after adjusting
-                    None
-                }
-            } else {
-                // Not enough UTXOs and not allowed to take fee from amount
-                None
-            }
-        } else {
-            // Remove the collected UTXOs from the wallet's UTXO map
-            for (address, outpoint) in utxos_to_remove {
-                if let Some(outpoints) = utxos.get_mut(&address) {
-                    outpoints.remove(&outpoint);
-                    if outpoints.is_empty() {
-                        utxos.remove(&address);
-                    }
-                }
-            }
-            // Calculate change amount
-            let total_input = (amount + fee) as i64 - required; // total input collected
-            let change = total_input as u64 - amount - fee;
-
-            // If change is zero, return None
-            let change_option = if change > 0 { Some(change) } else { None };
-
-            // Return the collected UTXOs and the change amount
-            Some((taken_utxos, change_option))
-        }
+        let (selected, change_option) =
+            self.select_unspent_utxos_for(amount, fee, allow_take_fee_from_amount)?;
+        // In-memory only — no context for DB persistence.
+        self.remove_selected_utxos(None, &selected)
+            .expect("remove_selected_utxos without context cannot fail");
+        Some((selected, change_option))
     }
 
     /// Reload UTXOs from Core RPC, updating both in-memory state and database.

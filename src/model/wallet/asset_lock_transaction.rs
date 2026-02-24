@@ -248,8 +248,13 @@ impl Wallet {
         // below based on the actual number of inputs.
         let initial_fee_estimate = MIN_ASSET_LOCK_FEE;
 
+        // Select UTXOs without committing the removal yet.  UTXOs are only removed
+        // from the wallet after the transaction is fully built and signed, so that a
+        // failure at any later step (fee shortfall, missing private key, …) cannot
+        // permanently drop UTXOs from the wallet — especially important in SPV mode
+        // where there is no Core RPC reload fallback.
         let (utxos, _initial_change_option) = self
-            .take_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
+            .select_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
             .ok_or_else(|| {
                 format!(
                     "Not enough spendable funds to create asset lock transaction: \
@@ -262,24 +267,12 @@ impl Wallet {
         let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
         let num_inputs = utxos.len();
 
-        let fee_result = match calculate_asset_lock_fee(
+        let fee_result = calculate_asset_lock_fee(
             total_input_value,
             amount,
             num_inputs,
             allow_take_fee_from_amount,
-        ) {
-            Ok(result) => result,
-            Err(e) => {
-                // Roll back: restore selected UTXOs to the wallet if fee calculation fails.
-                for (outpoint, (tx_out, address)) in utxos {
-                    self.utxos
-                        .entry(address)
-                        .or_default()
-                        .insert(outpoint, tx_out);
-                }
-                return Err(e);
-            }
-        };
+        )?;
 
         let actual_amount = fee_result.actual_amount;
         let change_option = fee_result.change;
@@ -400,6 +393,9 @@ impl Wallet {
                 input.script_sig = ScriptBuf::from_bytes(sig_script);
                 Ok::<(), String>(())
             })?;
+
+        // Transaction is fully built and signed; commit the UTXO removals now.
+        self.remove_selected_utxos(register_addresses, &utxos)?;
 
         Ok((tx, private_key, change_address, utxos))
     }

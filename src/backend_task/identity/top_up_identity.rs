@@ -96,7 +96,7 @@ impl AppContext {
                         asset_lock_transaction,
                         asset_lock_proof_private_key,
                         _,
-                        used_utxos,
+                        _used_utxos,
                         wallet_seed_hash,
                     ) = {
                         let mut wallet = wallet.write().unwrap();
@@ -136,12 +136,6 @@ impl AppContext {
                     };
 
                     let tx_id = asset_lock_transaction.txid();
-                    // todo: maybe one day we will want to use platform again, but for right now we use
-                    //  the local core as it is more stable
-                    // let asset_lock_proof = self
-                    //     .broadcast_and_retrieve_asset_lock(&asset_lock_transaction, &change_address)
-                    //     .await
-                    //     .map_err(|e| e.to_string())?;
 
                     {
                         let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
@@ -163,21 +157,6 @@ impl AppContext {
                             self.network,
                         )
                         .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
-
-                    {
-                        let mut wallet = wallet.write().unwrap();
-                        wallet.utxos.retain(|_, utxo_map| {
-                            utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                            !utxo_map.is_empty() // Keep addresses that still have UTXOs
-                        });
-                        for utxo in used_utxos.keys() {
-                            self.db
-                                .drop_utxo(utxo, &self.network.to_string())
-                                .map_err(|e| e.to_string())?;
-                        }
-
-                        wallet.recalculate_affected_address_balances(&used_utxos, self)?;
-                    }
 
                     let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 

@@ -1557,8 +1557,11 @@ impl Wallet {
             ));
         }
 
+        // Select UTXOs without removing them yet — UTXOs are only removed after
+        // the transaction is fully built and signed, so that a failure at any later
+        // step cannot permanently drop UTXOs from the wallet.
         let (utxos, change_option) = self
-            .take_unspent_utxos_for(amount, fee, subtract_fee_from_amount)
+            .select_unspent_utxos_for(amount, fee, subtract_fee_from_amount)
             .ok_or_else(|| "Insufficient funds".to_string())?;
 
         let send_value = if change_option.is_none() && subtract_fee_from_amount {
@@ -1649,6 +1652,9 @@ impl Wallet {
                 Ok::<(), String>(())
             })?;
 
+        // Transaction is fully built and signed; commit the UTXO removals now.
+        self.remove_selected_utxos(register_addresses, &utxos)?;
+
         Ok(tx)
     }
 
@@ -1679,8 +1685,11 @@ impl Wallet {
         // Calculate total amount needed
         let total_amount: u64 = recipients.iter().map(|(_, amount)| *amount).sum();
 
+        // Select UTXOs without removing them yet — UTXOs are only removed after
+        // the transaction is fully built and signed, so that a failure at any later
+        // step cannot permanently drop UTXOs from the wallet.
         let (utxos, change_option) = self
-            .take_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount)
+            .select_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount)
             .ok_or_else(|| "Insufficient funds".to_string())?;
 
         // Build outputs for each recipient
@@ -1789,6 +1798,9 @@ impl Wallet {
                 input.script_sig = ScriptBuf::from_bytes(script_sig);
                 Ok::<(), String>(())
             })?;
+
+        // Transaction is fully built and signed; commit the UTXO removals now.
+        self.remove_selected_utxos(register_addresses, &utxos)?;
 
         Ok(tx)
     }

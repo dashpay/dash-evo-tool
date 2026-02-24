@@ -286,6 +286,9 @@ impl AppContext {
                 address,
                 wallet,
             } => {
+                if !matches!(self.network, Network::Regtest | Network::Devnet) {
+                    return Err("Mining is only available on Regtest and Devnet".to_string());
+                }
                 let ctx = self.clone();
                 let mined = tokio::task::spawn_blocking(move || {
                     ctx.core_client
@@ -300,8 +303,8 @@ impl AppContext {
                 let mined_count = mined.len();
 
                 // Refresh wallet balances via RPC so the UI reflects the new coins
-                let ctx = self.clone();
-                tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                let refresh_ctx = self.clone();
+                tokio::task::spawn_blocking(move || refresh_ctx.refresh_wallet_info(wallet))
                     .await
                     .map_err(|e| format!("Task join error: {}", e))?
                     .map_err(|e| format!("Error refreshing wallet after mining: {}", e))?;

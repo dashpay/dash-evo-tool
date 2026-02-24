@@ -150,9 +150,14 @@ impl Wallet {
         // below based on the actual number of inputs.
         let initial_fee_estimate = 3_000u64;
 
+        // Select UTXOs without committing the removal yet.  UTXOs are only removed
+        // from the wallet after the transaction is fully built and signed, so that a
+        // failure at any later step (fee shortfall, missing private key, …) cannot
+        // permanently drop UTXOs from the wallet — especially important in SPV mode
+        // where there is no Core RPC reload fallback.
         let (utxos, initial_change_option) = self
-            .take_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
-            .ok_or("take_unspent_utxos_for() returned None".to_string())?;
+            .select_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
+            .ok_or("Insufficient funds to cover amount and fee".to_string())?;
 
         // Calculate fee based on actual transaction size so we always meet the
         // min relay fee (1 duff/byte = 1000 duffs/kB).
@@ -301,6 +306,9 @@ impl Wallet {
                 input.script_sig = ScriptBuf::from_bytes(sig_script);
                 Ok::<(), String>(())
             })?;
+
+        // Transaction is fully built and signed; commit the UTXO removals now.
+        self.remove_selected_utxos(&utxos);
 
         Ok((tx, private_key, change_address, utxos))
     }

@@ -649,14 +649,18 @@ impl SpvManager {
                 )
                 .await
                 .map_err(|_| {
-                    let msg = format!(
+                    tracing::warn!(
                         "Quorum lookup timed out after 30s at height {} for llmq_type={} hash=0x{}",
                         core_chain_locked_height,
                         quorum_type,
                         hex::encode(quorum_hash),
                     );
-                    tracing::warn!("{}", msg);
-                    msg
+                    format!(
+                        "Quorum lookup timed out after 30s at height {} for llmq_type={} hash=0x{}",
+                        core_chain_locked_height,
+                        quorum_type,
+                        hex::encode(quorum_hash),
+                    )
                 })?
                 .map(|q| {
                     tracing::debug!(

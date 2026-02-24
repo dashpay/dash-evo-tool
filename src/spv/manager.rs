@@ -1081,7 +1081,9 @@ impl SpvManager {
                                 *status_guard = SpvStatus::Running;
                             } else if is_error {
                                 *status_guard = SpvStatus::Error;
-                                if let Ok(mut err_guard) = last_error.write() {
+                                if let Ok(mut err_guard) = last_error.write()
+                                    && err_guard.is_none()
+                                {
                                     *err_guard =
                                         Some("Sync failed (reported by SPV library)".into());
                                 }

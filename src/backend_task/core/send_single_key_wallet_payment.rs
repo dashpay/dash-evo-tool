@@ -3,13 +3,13 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::WalletPaymentRequest;
 use crate::context::AppContext;
+use crate::model::fee_estimation::{DUST_THRESHOLD, calculate_relay_fee, estimate_p2pkh_tx_size};
 use crate::model::wallet::single_key::SingleKeyWallet;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
 use dash_sdk::dpp::dashcore::{EcdsaSighashType, secp256k1::Secp256k1};
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
@@ -62,12 +62,10 @@ impl AppContext {
             // Select UTXOs to cover the amount + estimated fee
             // Start with an estimate assuming ~10 inputs, then refine
             let num_outputs = outputs.len() + 1; // +1 for change
-            let initial_fee_estimate = Self::estimate_p2pkh_tx_size(10, num_outputs);
-            let initial_fee = request.override_fee.unwrap_or_else(|| {
-                FeeLevel::Normal
-                    .fee_rate()
-                    .calculate_fee(initial_fee_estimate)
-            });
+            let initial_fee_estimate = estimate_p2pkh_tx_size(10, num_outputs);
+            let initial_fee = request
+                .override_fee
+                .unwrap_or_else(|| calculate_relay_fee(initial_fee_estimate));
 
             let _target_amount = total_output + initial_fee;
 
@@ -88,10 +86,10 @@ impl AppContext {
                 selected_total += tx_out.value;
 
                 // Recalculate fee with current input count
-                let current_size = Self::estimate_p2pkh_tx_size(selected.len(), num_outputs);
+                let current_size = estimate_p2pkh_tx_size(selected.len(), num_outputs);
                 let current_fee = request
                     .override_fee
-                    .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(current_size));
+                    .unwrap_or_else(|| calculate_relay_fee(current_size));
 
                 if selected_total >= total_output + current_fee {
                     break;
@@ -99,10 +97,10 @@ impl AppContext {
             }
 
             // Final check if we have enough
-            let final_size = Self::estimate_p2pkh_tx_size(selected.len(), num_outputs);
+            let final_size = estimate_p2pkh_tx_size(selected.len(), num_outputs);
             let final_fee = request
                 .override_fee
-                .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(final_size));
+                .unwrap_or_else(|| calculate_relay_fee(final_size));
 
             if selected_total < total_output + final_fee {
                 return Err(format!(
@@ -120,11 +118,10 @@ impl AppContext {
 
         // Calculate final fee with selected UTXOs
         let num_outputs_with_change = outputs.len() + 1;
-        let estimated_size =
-            Self::estimate_p2pkh_tx_size(selected_utxos.len(), num_outputs_with_change);
+        let estimated_size = estimate_p2pkh_tx_size(selected_utxos.len(), num_outputs_with_change);
         let fee = request
             .override_fee
-            .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(estimated_size));
+            .unwrap_or_else(|| calculate_relay_fee(estimated_size));
 
         let total_input: u64 = selected_utxos.iter().map(|(_, tx_out)| tx_out.value).sum();
 
@@ -144,7 +141,7 @@ impl AppContext {
         };
 
         // Add change output if significant (above dust threshold)
-        if change_amount > 546 {
+        if change_amount > DUST_THRESHOLD {
             outputs.push(TxOut {
                 value: change_amount,
                 script_pubkey: change_address.script_pubkey(),

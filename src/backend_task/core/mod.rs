@@ -372,22 +372,55 @@ impl AppContext {
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
     ) -> Result<BackendTaskSuccessResult, String> {
+        use crate::model::fee_estimation::{calculate_relay_fee, estimate_p2pkh_tx_size};
+
         let parsed_recipients = self.parse_recipients(&request)?;
 
-        const DEFAULT_TX_FEE: u64 = 1_000;
+        // Iterative fee estimation: estimate fee based on assumed input count,
+        // build the transaction, then verify the fee covers the actual tx size.
+        // If the caller supplied an override_fee (e.g. retry after a min-relay-
+        // fee rejection), use that directly and skip the iteration.
+        let num_recipient_outputs = parsed_recipients.len() + 1; // +1 for change
+        let initial_fee = request.override_fee.unwrap_or_else(|| {
+            calculate_relay_fee(estimate_p2pkh_tx_size(5, num_recipient_outputs))
+        });
 
         let tx = {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
             if !wallet_guard.is_open() {
                 return Err("Wallet must be unlocked".to_string());
             }
-            wallet_guard.build_multi_recipient_payment_transaction(
+
+            // First attempt with estimated fee.
+            let mut tx = wallet_guard.build_multi_recipient_payment_transaction(
                 self.network,
                 &parsed_recipients,
-                DEFAULT_TX_FEE,
+                initial_fee,
                 request.subtract_fee_from_amount,
                 Some(self),
-            )?
+            )?;
+
+            // If override_fee was supplied, trust it — skip recalculation.
+            if request.override_fee.is_none() {
+                let actual_fee =
+                    calculate_relay_fee(estimate_p2pkh_tx_size(tx.input.len(), tx.output.len()));
+                if actual_fee > initial_fee {
+                    // The real fee is higher; rebuild with the correct fee.
+                    // The first build already removed UTXOs, so reload the wallet
+                    // state and rebuild.  In practice this rarely triggers because
+                    // the initial 5-input estimate is usually sufficient.
+                    wallet_guard.reload_utxos(self)?;
+                    tx = wallet_guard.build_multi_recipient_payment_transaction(
+                        self.network,
+                        &parsed_recipients,
+                        actual_fee,
+                        request.subtract_fee_from_amount,
+                        Some(self),
+                    )?;
+                }
+            }
+
+            tx
         };
 
         let txid = self
@@ -613,8 +646,9 @@ impl AppContext {
             return Err("No spendable funds available".to_string());
         }
 
-        let estimated_size = Self::estimate_p2pkh_tx_size(spendable_inputs, 1);
-        let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
+        let estimated_size =
+            crate::model::fee_estimation::estimate_p2pkh_tx_size(spendable_inputs, 1);
+        let fee = crate::model::fee_estimation::calculate_relay_fee(estimated_size);
         Ok(spendable_total.saturating_sub(fee))
     }
 
@@ -698,23 +732,5 @@ impl AppContext {
             }
         }
         if total == 0 { None } else { Some(total) }
-    }
-
-    fn estimate_p2pkh_tx_size(inputs: usize, outputs: usize) -> usize {
-        fn varint_size(value: usize) -> usize {
-            match value {
-                0..=0xfc => 1,
-                0xfd..=0xffff => 3,
-                0x1_0000..=0xffff_ffff => 5,
-                _ => 9,
-            }
-        }
-
-        let mut size = 8; // version/type/lock_time
-        size += varint_size(inputs);
-        size += varint_size(outputs);
-        size += inputs * 148;
-        size += outputs * 34;
-        size
     }
 }

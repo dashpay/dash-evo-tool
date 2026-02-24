@@ -1,7 +1,16 @@
-//! Fee estimation utilities for Dash Platform state transitions.
+//! Fee estimation utilities for Dash transactions.
 //!
-//! This module provides fee estimation for various state transition types,
-//! using the fee structure from the platform version.
+//! ## Core (L1) transaction fees
+//!
+//! Size-based fee estimation for P2PKH and asset-lock transactions broadcast to
+//! the Dash Core network.  Provides [`estimate_p2pkh_tx_size`],
+//! [`estimate_asset_lock_tx_size`], [`calculate_relay_fee`], and the iterative
+//! [`calculate_asset_lock_fee`] helper used by the wallet.
+//!
+//! ## Platform (L2) state-transition fees
+//!
+//! Fee estimation for various state transition types using the fee structure
+//! from the platform version.
 //!
 //! Fee calculation is based on:
 //! - Storage fees: Bytes stored × storage_disk_usage_credit_per_byte (27,000)
@@ -12,7 +21,145 @@
 //! performed by Platform. For accurate fees, use Platform's EstimateStateTransitionFee
 //! endpoint (when available).
 
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
 use dash_sdk::dpp::version::PlatformVersion;
+
+// ── Core (L1) transaction fee estimation ────────────────────────────────────
+
+/// Dust threshold for P2PKH outputs (duffs). Outputs below this are
+/// rejected by the network as non-standard.
+pub const DUST_THRESHOLD: u64 = 546;
+
+/// Minimum fee for asset lock transactions (duffs).
+pub const MIN_ASSET_LOCK_FEE: u64 = 3_000;
+
+/// Size of the asset-lock special transaction payload (bytes).
+const ASSET_LOCK_PAYLOAD_SIZE: usize = 60;
+
+/// Estimate varint encoding size.
+fn varint_size(value: usize) -> usize {
+    match value {
+        0..=0xfc => 1,
+        0xfd..=0xffff => 3,
+        0x1_0000..=0xffff_ffff => 5,
+        _ => 9,
+    }
+}
+
+/// Estimate P2PKH transaction size in bytes.
+///
+/// Layout: 8-byte header (version + lock_time) + varint input/output counts
+/// + 148 bytes per P2PKH input + 34 bytes per output.
+pub fn estimate_p2pkh_tx_size(inputs: usize, outputs: usize) -> usize {
+    8 + varint_size(inputs) + varint_size(outputs) + inputs * 148 + outputs * 34
+}
+
+/// Estimate asset-lock transaction size (P2PKH inputs + special payload).
+pub fn estimate_asset_lock_tx_size(inputs: usize, outputs: usize) -> usize {
+    // Asset-lock txs use a 10-byte header variant (version/type/lock_time)
+    // instead of the standard 8-byte P2PKH header.
+    10 + varint_size(inputs)
+        + varint_size(outputs)
+        + inputs * 148
+        + outputs * 34
+        + ASSET_LOCK_PAYLOAD_SIZE
+}
+
+/// Calculate the relay fee for a given transaction size using the SDK's
+/// normal fee rate.
+pub fn calculate_relay_fee(tx_size: usize) -> u64 {
+    FeeLevel::Normal.fee_rate().calculate_fee(tx_size)
+}
+
+/// Result of asset lock fee calculation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetLockFeeResult {
+    /// Transaction fee in duffs.
+    pub fee: u64,
+    /// Actual amount for the asset lock output (may differ from requested if
+    /// `allow_take_fee_from_amount` is true).
+    pub actual_amount: u64,
+    /// Change to return, or `None` if no change output is needed.
+    pub change: Option<u64>,
+}
+
+/// Calculate fee, actual amount, and change for an asset lock transaction.
+///
+/// Uses an iterative approach: starts assuming a change output exists,
+/// then recomputes if the change disappears under the real fee.
+///
+/// # Errors
+///
+/// Returns an error string if there are insufficient funds.
+pub fn calculate_asset_lock_fee(
+    total_input_value: u64,
+    requested_amount: u64,
+    num_inputs: usize,
+    allow_take_fee_from_amount: bool,
+) -> Result<AssetLockFeeResult, String> {
+    // First pass: assume 2 outputs (1 burn + 1 change).
+    let fee_with_change = std::cmp::max(
+        MIN_ASSET_LOCK_FEE,
+        estimate_asset_lock_tx_size(num_inputs, 2) as u64,
+    );
+
+    let required_with_change = requested_amount
+        .checked_add(fee_with_change)
+        .ok_or("Overflow computing required amount + fee")?;
+    let tentative_change = total_input_value.checked_sub(required_with_change);
+
+    // If change exceeds dust threshold, include it as an output.
+    if let Some(change) = tentative_change
+        && change >= DUST_THRESHOLD
+    {
+        return Ok(AssetLockFeeResult {
+            fee: fee_with_change,
+            actual_amount: requested_amount,
+            change: Some(change),
+        });
+    }
+
+    // Change is zero or negative under the 2-output fee.
+    // Recompute with 1 output (no change).
+    let fee_no_change = std::cmp::max(
+        MIN_ASSET_LOCK_FEE,
+        estimate_asset_lock_tx_size(num_inputs, 1) as u64,
+    );
+
+    let required_no_change = requested_amount
+        .checked_add(fee_no_change)
+        .ok_or("Overflow computing required amount + fee")?;
+
+    if total_input_value >= required_no_change {
+        // Enough funds without a change output. Any leftover becomes
+        // additional fee (it is too small for a viable change output).
+        return Ok(AssetLockFeeResult {
+            fee: total_input_value - requested_amount,
+            actual_amount: requested_amount,
+            change: None,
+        });
+    }
+
+    // Insufficient for the requested amount at the 1-output fee rate.
+    if allow_take_fee_from_amount {
+        let adjusted = total_input_value.saturating_sub(fee_no_change);
+        if adjusted == 0 {
+            return Err("Insufficient funds for transaction fee".to_string());
+        }
+        Ok(AssetLockFeeResult {
+            fee: fee_no_change,
+            actual_amount: adjusted,
+            change: None,
+        })
+    } else {
+        Err(format!(
+            "Insufficient funds: need {} + {} fee, have {}",
+            requested_amount, fee_no_change, total_input_value
+        ))
+    }
+}
+
+// ── Platform (L2) state-transition fee estimation ───────────────────────────
 
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
 /// These determine the cost of storing and processing data on Platform.
@@ -654,6 +801,154 @@ pub fn format_credits(credits: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Core (L1) fee tests ─────────────────────────────────────────────
+
+    #[test]
+    fn p2pkh_tx_size_single_input() {
+        // 1 input, 2 outputs: 8 + 1 + 1 + 148 + 68 = 226
+        assert_eq!(estimate_p2pkh_tx_size(1, 2), 226);
+    }
+
+    #[test]
+    fn p2pkh_tx_size_many_inputs() {
+        // 10 inputs, 2 outputs: 8 + 1 + 1 + 1480 + 68 = 1558
+        assert_eq!(estimate_p2pkh_tx_size(10, 2), 1558);
+    }
+
+    #[test]
+    fn asset_lock_tx_size_single_input() {
+        // 1 input, 2 outputs: 10 + 1 + 1 + 148 + 68 + 60 = 288
+        assert_eq!(estimate_asset_lock_tx_size(1, 2), 288);
+    }
+
+    #[test]
+    fn relay_fee_exceeds_1000_for_large_tx() {
+        // Regression: the bug was a hardcoded 1000-duffs fee for any tx size.
+        // 10 inputs × 2 outputs → ~1558 bytes → relay fee must exceed 1000.
+        let size = estimate_p2pkh_tx_size(10, 2);
+        let fee = calculate_relay_fee(size);
+        assert!(
+            fee > 1_000,
+            "relay fee for 10-input tx should exceed 1000 duffs, got {fee}"
+        );
+    }
+
+    #[test]
+    fn asset_lock_fee_single_input_minimum() {
+        // 1 input, amount=10000, total=50000.
+        // With 2 outputs: size = 288 -> fee = max(3000, 288) = 3000.
+        // Change = 50000 - 10000 - 3000 = 37000.
+        let result = calculate_asset_lock_fee(50_000, 10_000, 1, false).expect("should succeed");
+        assert_eq!(result.fee, 3_000);
+        assert_eq!(result.actual_amount, 10_000);
+        assert_eq!(result.change, Some(37_000));
+    }
+
+    #[test]
+    fn asset_lock_fee_scales_with_inputs() {
+        // 21 inputs, amount=50000, total=200000.
+        // With 2 outputs: size = 10 + varint(21)+varint(2) + 21*148 + 2*34 + 60 = 3248.
+        // fee = max(3000, 3248) = 3248.
+        let result = calculate_asset_lock_fee(200_000, 50_000, 21, false).expect("should succeed");
+        assert!(
+            result.fee > MIN_ASSET_LOCK_FEE,
+            "fee should exceed minimum for many inputs"
+        );
+        assert_eq!(result.fee, 3_248);
+        assert_eq!(result.actual_amount, 50_000);
+        assert_eq!(result.change, Some(146_752));
+    }
+
+    #[test]
+    fn asset_lock_fee_exact_no_change() {
+        // 1 input, amount=47000, total=50000.
+        // With 2 outputs: fee = 3000. change = 50000 - 47000 - 3000 = 0 -> None.
+        // Re-check with 1 output: fee = 3000 (minimum).
+        // 50000 >= 47000 + 3000 -> actual fee = 50000 - 47000 = 3000.
+        let result = calculate_asset_lock_fee(50_000, 47_000, 1, false).expect("should succeed");
+        assert_eq!(result.actual_amount, 47_000);
+        assert_eq!(result.change, None);
+    }
+
+    #[test]
+    fn asset_lock_fee_take_from_amount() {
+        // 1 input, amount=50000, total=50000, allow_take_fee=true.
+        // Take from amount: actual = 50000 - 3000 = 47000.
+        let result = calculate_asset_lock_fee(50_000, 50_000, 1, true).expect("should succeed");
+        assert_eq!(result.actual_amount, 47_000);
+        assert_eq!(result.change, None);
+    }
+
+    #[test]
+    fn asset_lock_fee_insufficient_funds() {
+        let result = calculate_asset_lock_fee(50_000, 50_000, 1, false);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Insufficient funds"));
+    }
+
+    #[test]
+    fn asset_lock_fee_insufficient_for_fee_alone() {
+        // Fee = 3000 > total 2000 -> error.
+        let result = calculate_asset_lock_fee(2_000, 2_000, 1, true);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("Insufficient funds"),
+            "should error when total cannot even cover the fee"
+        );
+    }
+
+    #[test]
+    fn asset_lock_fee_change_eliminated_by_real_fee_should_succeed() {
+        // 21 inputs, amount=50000, total=53220.
+        // Correct code recalculates with 1 output when change disappears.
+        let result = calculate_asset_lock_fee(53_220, 50_000, 21, false);
+        assert!(
+            result.is_ok(),
+            "should NOT fail with insufficient funds; got: {:?}",
+            result
+        );
+        let result = result.unwrap();
+        assert_eq!(result.actual_amount, 50_000);
+        assert_eq!(result.change, None);
+        assert_eq!(result.fee, 3_220);
+    }
+
+    #[test]
+    fn asset_lock_fee_overestimate_when_change_disappears() {
+        // 21 inputs, amount=50000, total=53240.
+        // 1-output path succeeds; fee = 3240, no change.
+        let result = calculate_asset_lock_fee(53_240, 50_000, 21, false);
+        assert!(
+            result.is_ok(),
+            "should succeed when recalculated without change output; got: {:?}",
+            result
+        );
+        let result = result.unwrap();
+        assert_eq!(result.actual_amount, 50_000);
+        assert_eq!(result.change, None);
+        assert!(
+            result.fee < 3_246,
+            "fee should be less than the 2-output estimate of 3246, got {}",
+            result.fee
+        );
+        assert_eq!(result.fee, 3_240);
+    }
+
+    #[test]
+    fn asset_lock_fee_dust_change_absorbed_into_fee() {
+        // 1 input, amount=46500, total=50000.
+        // change = 500 < DUST_THRESHOLD → absorbed into fee.
+        let result = calculate_asset_lock_fee(50_000, 46_500, 1, false).expect("should succeed");
+        assert_eq!(result.actual_amount, 46_500);
+        assert_eq!(
+            result.change, None,
+            "dust change should not create an output"
+        );
+        assert_eq!(result.fee, 3_500, "dust should be absorbed into fee");
+    }
+
+    // ── Platform (L2) fee tests ─────────────────────────────────────────
 
     #[test]
     fn test_credit_transfer_estimate() {

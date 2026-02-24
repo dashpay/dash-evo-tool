@@ -7,6 +7,7 @@ use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{
@@ -14,7 +15,7 @@ use crate::ui::components::styled::{
 };
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, ThemeMode};
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
@@ -24,6 +25,28 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Reads the dashmate RPC password from `~/.dashmate/config.json`.
+fn read_dashmate_rpc_password(config_name: &str) -> Result<String, String> {
+    let home = directories::UserDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .ok_or("Could not determine home directory")?;
+    let config_path = home.join(".dashmate").join("config.json");
+    let contents = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read {}: {e}", config_path.display()))?;
+    let json: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| format!("Failed to parse dashmate config: {e}"))?;
+    json.get("configs")
+        .and_then(|c| c.get(config_name))
+        .and_then(|c| c.get("core"))
+        .and_then(|c| c.get("rpc"))
+        .and_then(|c| c.get("users"))
+        .and_then(|c| c.get("dashmate"))
+        .and_then(|c| c.get("password"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Password not found in dashmate config '{config_name}'"))
+}
 
 #[derive(Debug, Clone)]
 enum SpvClearMessage {
@@ -425,7 +448,23 @@ impl NetworkChooserScreen {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.local_network_dashmate_password);
 
-                    if ui.button("Save").clicked()
+                    let save_clicked = ui.button("Save").clicked();
+
+                    let mut auto_update_succeeded = false;
+                    if ui.button("Auto Update").clicked() {
+                        match read_dashmate_rpc_password("local_seed") {
+                            Ok(password) => {
+                                self.local_network_dashmate_password = password;
+                                auto_update_succeeded = true;
+                            }
+                            Err(e) => {
+                                tracing::error!("Auto update failed: {e}");
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            }
+                        }
+                    }
+
+                    if (save_clicked || auto_update_succeeded)
                         && let Ok(mut config) = Config::load()
                         && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
                     {

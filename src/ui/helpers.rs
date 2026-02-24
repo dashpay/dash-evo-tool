@@ -1133,3 +1133,67 @@ pub const PLATFORM_ADDRESS_HINT: &str = "dash1... or tdash1...";
 
 /// Example Platform address prefixes for error messages.
 pub const PLATFORM_ADDRESS_EXAMPLES: &str = "dash1.../tdash1...";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_platform_address_accepts_current_mainnet_prefix() {
+        assert!(is_platform_address("dash1qpq0sac8k"));
+    }
+
+    #[test]
+    fn is_platform_address_accepts_current_testnet_prefix() {
+        assert!(is_platform_address("tdash1qpq0sac8k"));
+    }
+
+    #[test]
+    fn is_platform_address_accepts_legacy_mainnet_prefix() {
+        assert!(is_platform_address("evo1qpq0sac8k"));
+    }
+
+    #[test]
+    fn is_platform_address_accepts_legacy_testnet_prefix() {
+        assert!(is_platform_address("tevo1qpq0sac8k"));
+    }
+
+    #[test]
+    fn is_platform_address_rejects_base58_address() {
+        assert!(!is_platform_address("XqLYPDTADW6EYuQmTcEAx81o8EHTKwqTK8"));
+    }
+
+    #[test]
+    fn is_platform_address_rejects_empty_string() {
+        assert!(!is_platform_address(""));
+    }
+
+    #[test]
+    fn is_platform_address_rejects_random_text() {
+        assert!(!is_platform_address("hello world"));
+    }
+
+    #[test]
+    fn is_platform_address_rejects_partial_prefix() {
+        assert!(!is_platform_address("das"));
+        assert!(!is_platform_address("tdas"));
+        assert!(!is_platform_address("ev"));
+        assert!(!is_platform_address("tev"));
+    }
+
+    #[test]
+    fn is_platform_address_accepts_prefix_only() {
+        // Bare prefix with no payload — the function is prefix-based,
+        // full Bech32m validation is done elsewhere.
+        assert!(is_platform_address("dash1"));
+        assert!(is_platform_address("tdash1"));
+        assert!(is_platform_address("evo1"));
+        assert!(is_platform_address("tevo1"));
+    }
+
+    #[test]
+    fn platform_address_constants_are_non_empty() {
+        assert!(!PLATFORM_ADDRESS_HINT.is_empty());
+        assert!(!PLATFORM_ADDRESS_EXAMPLES.is_empty());
+    }
+}

@@ -56,7 +56,8 @@ impl Database {
     ///
     /// Used by `ClientPersistentCommitmentTree` to share the same SQLite
     /// connection for the shielded commitment tree tables.
-    pub fn shared_connection(&self) -> Arc<Mutex<Connection>> {
+    #[allow(dead_code)] // Prepared for ClientPersistentCommitmentTree
+    pub(crate) fn shared_connection(&self) -> Arc<Mutex<Connection>> {
         self.conn.clone()
     }
 

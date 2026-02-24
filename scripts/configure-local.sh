@@ -43,7 +43,7 @@ LOCAL_BLOCK="LOCAL_dapi_addresses=http://${HOST}:${DAPI_PORT}
 LOCAL_core_host=${HOST}
 LOCAL_core_rpc_port=${RPC_PORT}
 LOCAL_core_rpc_user=dashmate
-LOCAL_core_rpc_password=${RPC_PASSWORD}
+LOCAL_core_rpc_password='${RPC_PASSWORD}'
 LOCAL_insight_api_url=http://localhost:3001/insight-api
 LOCAL_core_zmq_endpoint=tcp://${HOST}:${ZMQ_PORT}
 LOCAL_show_in_ui=true"

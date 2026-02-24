@@ -22,7 +22,6 @@ impl AppContext {
         destination: PlatformAddress,
         fee_deduct_from_output: bool,
     ) -> Result<BackendTaskSuccessResult, String> {
-        use dash_sdk::dashcore_rpc::RpcApi;
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
@@ -62,28 +61,36 @@ impl AppContext {
                 Some(self),
             ) {
                 Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
-                Err(_) => {
-                    // Reload UTXOs and try again
-                    wallet
-                        .reload_utxos(
-                            &self
-                                .core_client
-                                .read()
-                                .expect("Core client lock was poisoned"),
-                            self.network,
-                            Some(self),
-                        )
-                        .map_err(|e| e.to_string())?;
+                Err(e) => match self.core_backend_mode() {
+                    CoreBackendMode::Rpc => {
+                        // Reload UTXOs from Core RPC and try again
+                        wallet
+                            .reload_utxos(
+                                &self
+                                    .core_client
+                                    .read()
+                                    .expect("Core client lock was poisoned"),
+                                self.network,
+                                Some(self),
+                            )
+                            .map_err(|e| e.to_string())?;
 
-                    let (tx, private_key, address, _change, utxos) = wallet
-                        .generic_asset_lock_transaction(
-                            self.network,
-                            asset_lock_amount,
-                            allow_take_fee_from_amount,
-                            Some(self),
-                        )?;
-                    (tx, private_key, address, utxos)
-                }
+                        let (tx, private_key, address, _change, utxos) = wallet
+                            .generic_asset_lock_transaction(
+                                self.network,
+                                asset_lock_amount,
+                                allow_take_fee_from_amount,
+                                Some(self),
+                            )?;
+                        (tx, private_key, address, utxos)
+                    }
+                    CoreBackendMode::Spv => {
+                        // SPV wallet state is authoritative — UTXOs are synced
+                        // continuously via compact block filters. No Core RPC
+                        // fallback available.
+                        return Err(e);
+                    }
+                },
             }
         };
 
@@ -95,11 +102,9 @@ impl AppContext {
             proofs.insert(tx_id, None);
         }
 
-        // Step 3: Broadcast the transaction
-        self.core_client
-            .read()
-            .expect("Core client lock was poisoned")
-            .send_raw_transaction(&asset_lock_transaction)
+        // Step 3: Broadcast the transaction (mode-aware: RPC or SPV)
+        self.broadcast_raw_transaction(&asset_lock_transaction)
+            .await
             .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
 
         // Step 4: Remove used UTXOs from wallet

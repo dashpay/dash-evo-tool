@@ -71,6 +71,11 @@ pub enum CoreTask {
         request: WalletPaymentRequest,
     },
     RecoverAssetLocks(Arc<RwLock<Wallet>>),
+    MineBlocks {
+        block_count: u64,
+        address: Address,
+        wallet: Arc<RwLock<Wallet>>,
+    },
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -110,6 +115,7 @@ impl PartialEq for CoreTask {
                     CoreTask::RecoverAssetLocks(_),
                     CoreTask::RecoverAssetLocks(_),
                 )
+                | (CoreTask::MineBlocks { .. }, CoreTask::MineBlocks { .. })
         )
     }
 }
@@ -274,6 +280,29 @@ impl AppContext {
                 tokio::task::spawn_blocking(move || ctx.recover_asset_locks(wallet))
                     .await
                     .map_err(|e| format!("Task join error: {}", e))?
+            }
+            CoreTask::MineBlocks {
+                block_count,
+                address,
+                wallet,
+            } => {
+                let mined = self
+                    .core_client
+                    .read()
+                    .expect("Core client lock was poisoned")
+                    .generate_to_address(block_count, &address)
+                    .map_err(|e| e.to_string())?;
+
+                let mined_count = mined.len();
+
+                // Refresh wallet balances via RPC so the UI reflects the new coins
+                let ctx = self.clone();
+                tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                    .await
+                    .map_err(|e| format!("Task join error: {}", e))?
+                    .map_err(|e| format!("Error refreshing wallet after mining: {}", e))?;
+
+                Ok(BackendTaskSuccessResult::MineBlocksSuccess(mined_count))
             }
         }
     }

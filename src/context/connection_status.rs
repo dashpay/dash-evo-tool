@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 const REFRESH_CONNECTED: Duration = Duration::from_secs(10);
 const REFRESH_DISCONNECTED: Duration = Duration::from_secs(2);
 
-/// Three-state connection indicator matching the UI's red/orange/green circle.
+/// Connection indicator matching the UI's colored circle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OverallConnectionState {
@@ -23,6 +23,8 @@ pub enum OverallConnectionState {
     Syncing = 1,
     /// Fully connected and operational — green indicator.
     Synced = 2,
+    /// Connected but sync failed — magenta indicator with "!" glyph.
+    Error = 3,
 }
 
 impl From<u8> for OverallConnectionState {
@@ -30,6 +32,7 @@ impl From<u8> for OverallConnectionState {
         match v {
             1 => Self::Syncing,
             2 => Self::Synced,
+            3 => Self::Error,
             _ => Self::Disconnected,
         }
     }
@@ -47,6 +50,7 @@ pub struct ConnectionStatus {
     backend_mode: AtomicU8,
     disable_zmq: AtomicBool,
     overall_state: AtomicU8,
+    spv_last_error: Mutex<Option<String>>,
     last_update: Mutex<Instant>,
     dapi_total_endpoints: AtomicU16,
     dapi_available_endpoints: AtomicU16,
@@ -61,6 +65,7 @@ impl ConnectionStatus {
             backend_mode: AtomicU8::new(CoreBackendMode::Rpc.as_u8()),
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
+            spv_last_error: Mutex::new(None),
             last_update: Mutex::new(Instant::now()),
             dapi_total_endpoints: AtomicU16::new(0),
             dapi_available_endpoints: AtomicU16::new(0),
@@ -86,6 +91,9 @@ impl ConnectionStatus {
             OverallConnectionState::Disconnected as u8,
             Ordering::Relaxed,
         );
+        if let Ok(mut err) = self.spv_last_error.lock() {
+            *err = None;
+        }
         // Set last_update to epoch so the next trigger_refresh fires immediately
         if let Ok(mut last) = self.last_update.lock() {
             *last = Instant::now() - REFRESH_CONNECTED;
@@ -207,6 +215,7 @@ impl ConnectionStatus {
                         SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Stopping => {
                             OverallConnectionState::Syncing
                         }
+                        SpvStatus::Error => OverallConnectionState::Error,
                         _ => OverallConnectionState::Disconnected,
                     }
                 }
@@ -240,6 +249,7 @@ impl ConnectionStatus {
                     OverallConnectionState::Synced => "Connected to Dash Core Wallet",
                     // RPC mode doesn't currently produce Syncing, but kept for forward-compat.
                     OverallConnectionState::Syncing => "Syncing to Dash Core Wallet",
+                    OverallConnectionState::Error => "Connection error",
                     OverallConnectionState::Disconnected if self.rpc_online() => {
                         "Dash Core connection incomplete"
                     }
@@ -252,9 +262,18 @@ impl ConnectionStatus {
             CoreBackendMode::Spv => {
                 let spv_label = format!("SPV: {:?}", spv_status);
                 let header = match overall {
-                    OverallConnectionState::Synced => "SPV synced",
-                    OverallConnectionState::Syncing => "SPV syncing",
-                    OverallConnectionState::Disconnected => "SPV disconnected",
+                    OverallConnectionState::Synced => "SPV synced".to_string(),
+                    OverallConnectionState::Syncing => "SPV syncing".to_string(),
+                    OverallConnectionState::Error => {
+                        let detail = self
+                            .spv_last_error
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.clone())
+                            .unwrap_or_else(|| "unknown error".to_string());
+                        format!("SPV sync error: {detail}")
+                    }
+                    OverallConnectionState::Disconnected => "SPV disconnected".to_string(),
                 };
                 format!("{header}\n{spv_label}\n{dapi_status}")
             }
@@ -353,10 +372,15 @@ impl ConnectionStatus {
 
         match backend_mode {
             CoreBackendMode::Spv => {
-                // SPV status is updated elsewhere
-                let spv_status = app_context.spv_manager().status().status;
-                tracing::trace!("ConnectionStatus: polled SPV status = {:?}", spv_status);
-                self.set_spv_status(spv_status);
+                let snapshot = app_context.spv_manager().status();
+                tracing::trace!(
+                    "ConnectionStatus: polled SPV status = {:?}",
+                    snapshot.status
+                );
+                self.set_spv_status(snapshot.status);
+                if let Ok(mut err) = self.spv_last_error.lock() {
+                    *err = snapshot.last_error;
+                }
             }
             CoreBackendMode::Rpc => {
                 // Update ZMQ status if there's a new event

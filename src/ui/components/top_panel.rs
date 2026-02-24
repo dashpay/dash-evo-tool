@@ -6,7 +6,9 @@ use crate::context::connection_status::OverallConnectionState;
 use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
-use egui::{Context, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui};
+use egui::{
+    Align2, Context, FontId, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,
+};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 use tracing::error;
@@ -104,19 +106,21 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     let dark_mode = ui.ctx().style().visuals.dark_mode;
     let circle_size = 14.0;
 
-    // Three-state color: green (synced), orange (syncing), red (disconnected)
+    // Color per state: green (synced), orange (syncing), magenta (error), red (disconnected)
     let color = match overall {
         OverallConnectionState::Synced => DashColors::success_color(dark_mode),
         OverallConnectionState::Syncing => DashColors::warning_color(dark_mode),
+        OverallConnectionState::Error => DashColors::sync_error_color(dark_mode),
         OverallConnectionState::Disconnected => DashColors::error_color(dark_mode),
     };
 
-    // Pulsation: synced = normal pulse, syncing = slower pulse, disconnected = none
+    // Pulsation per state
     let time = ui.ctx().input(|i| i.time as f32);
 
     let pulse_scale = match overall {
         OverallConnectionState::Synced => 1.0 + 0.2 * (time * 2.0).sin(),
         OverallConnectionState::Syncing => 1.0 + 0.15 * (time * 1.2).sin(),
+        OverallConnectionState::Error => 1.0 + 0.25 * (time * 0.8).sin(),
         OverallConnectionState::Disconnected => 1.0, // No pulse when disconnected
     };
 
@@ -146,6 +150,17 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
 
                     // Draw the main circle
                     ui.painter().circle_filled(center, circle_size / 2.0, color);
+
+                    // Draw "!" glyph on error state
+                    if overall == OverallConnectionState::Error {
+                        ui.painter().text(
+                            center,
+                            Align2::CENTER_CENTER,
+                            "!",
+                            FontId::proportional(10.0),
+                            egui::Color32::WHITE,
+                        );
+                    }
 
                     // Request repaint for animation (only when not disconnected)
                     if overall != OverallConnectionState::Disconnected {

@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 27;
+pub const DEFAULT_DB_VERSION: u16 = 28;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            28 => {
+                self.drop_obsolete_sync_columns_and_rename_checkpoint(tx)?;
+            }
             27 => {
                 self.add_network_indexes(tx)?;
             }
@@ -315,8 +318,7 @@ impl Database {
                 unconfirmed_balance INTEGER DEFAULT 0,
                 total_balance INTEGER DEFAULT 0,
                 last_platform_full_sync INTEGER DEFAULT 0,
-                last_platform_sync_checkpoint INTEGER DEFAULT 0,
-                last_terminal_block INTEGER DEFAULT 0
+                last_platform_sync_height INTEGER DEFAULT 0
             )",
             [],
         )?;
@@ -355,7 +357,6 @@ impl Database {
                 nonce INTEGER NOT NULL DEFAULT 0,
                 network TEXT NOT NULL,
                 updated_at INTEGER NOT NULL DEFAULT 0,
-                last_full_sync_balance INTEGER DEFAULT NULL,
                 PRIMARY KEY (seed_hash, address, network),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
@@ -553,6 +554,7 @@ impl Database {
     /// Migration: Add platform sync columns to wallet table (version 20).
     /// - last_platform_full_sync: Unix timestamp of last full platform address sync
     /// - last_platform_sync_checkpoint: Block height checkpoint from last full sync
+    ///   (renamed to `last_platform_sync_height` in version 28)
     fn add_platform_sync_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
         conn.execute(
             "ALTER TABLE wallet ADD COLUMN last_platform_full_sync INTEGER DEFAULT 0",
@@ -833,6 +835,85 @@ impl Database {
                     [],
                 )?;
             }
+        }
+
+        Ok(())
+    }
+
+    /// Migration: Drop obsolete sync columns and rename checkpoint column (version 28).
+    ///
+    /// - Drops `last_terminal_block` from `wallet` (added in v23, no longer read/written)
+    /// - Drops `last_full_sync_balance` from `platform_address_balances` (added in v26, no longer read/written)
+    /// - Renames `last_platform_sync_checkpoint` → `last_platform_sync_height` in `wallet`
+    ///   to reflect its new semantics (SDK sync height, not a legacy checkpoint)
+    ///
+    /// Requires SQLite ≥ 3.35.0 for DROP COLUMN support.
+    fn drop_obsolete_sync_columns_and_rename_checkpoint(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        // Verify SQLite version supports DROP COLUMN (3.35.0+)
+        let version_str: String =
+            conn.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
+        let parts: Vec<u32> = version_str
+            .split('.')
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        let (major, minor, _patch) = (
+            parts.first().copied().unwrap_or(0),
+            parts.get(1).copied().unwrap_or(0),
+            parts.get(2).copied().unwrap_or(0),
+        );
+        if major < 3 || (major == 3 && minor < 35) {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1), // SQLITE_ERROR
+                Some(format!(
+                    "SQLite {} is too old for DROP COLUMN (need ≥ 3.35.0). \
+                     Please upgrade your system SQLite library.",
+                    version_str
+                )),
+            ));
+        }
+
+        // Drop obsolete columns (check existence first for idempotency)
+        let has_terminal_block: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='last_terminal_block'",
+                [],
+                |row| row.get::<_, i32>(0).map(|count| count > 0),
+            )
+            .unwrap_or(false);
+        if has_terminal_block {
+            conn.execute("ALTER TABLE wallet DROP COLUMN last_terminal_block", [])?;
+        }
+
+        let has_full_sync_balance: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('platform_address_balances') WHERE name='last_full_sync_balance'",
+                [],
+                |row| row.get::<_, i32>(0).map(|count| count > 0),
+            )
+            .unwrap_or(false);
+        if has_full_sync_balance {
+            conn.execute(
+                "ALTER TABLE platform_address_balances DROP COLUMN last_full_sync_balance",
+                [],
+            )?;
+        }
+
+        // Rename checkpoint → sync_height to match new semantics (check if rename is needed)
+        let has_checkpoint: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='last_platform_sync_checkpoint'",
+                [],
+                |row| row.get::<_, i32>(0).map(|count| count > 0),
+            )
+            .unwrap_or(false);
+        if has_checkpoint {
+            conn.execute(
+                "ALTER TABLE wallet RENAME COLUMN last_platform_sync_checkpoint TO last_platform_sync_height",
+                [],
+            )?;
         }
 
         Ok(())

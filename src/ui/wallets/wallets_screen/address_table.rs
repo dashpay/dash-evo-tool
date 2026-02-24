@@ -34,6 +34,8 @@ pub(super) struct AddressData {
     platform_credits: u64,
     utxo_count: usize,
     total_received: u64,
+    /// Platform address nonce (for Platform Payment addresses)
+    nonce: u32,
     address_type: String,
     index: u32,
     derivation_path: DerivationPath,
@@ -155,12 +157,19 @@ impl WalletsBalancesScreen {
                         self.app_context.network,
                     );
 
-                    // Get Platform credits balance for Platform Payment addresses
-                    // Use canonical lookup to handle potential Address key mismatches
-                    let platform_credits = wallet
-                        .get_platform_address_info(address)
-                        .map(|info| info.balance)
-                        .unwrap_or_default();
+                    // Get Platform credits balance and nonce for Platform Payment addresses only.
+                    // Skip the lookup for non-platform addresses to avoid unnecessary linear
+                    // scans in get_platform_address_info()'s fallback path.
+                    let (platform_credits, nonce) =
+                        if account_category == AccountCategory::PlatformPayment {
+                            let platform_info = wallet.get_platform_address_info(address);
+                            (
+                                platform_info.map(|info| info.balance).unwrap_or_default(),
+                                platform_info.map(|info| info.nonce).unwrap_or_default(),
+                            )
+                        } else {
+                            (Default::default(), Default::default())
+                        };
 
                     AddressData {
                         address: address.clone(),
@@ -172,6 +181,7 @@ impl WalletsBalancesScreen {
                         platform_credits,
                         utxo_count,
                         total_received,
+                        nonce,
                         address_type,
                         index,
                         derivation_path: derivation_path.clone(),
@@ -213,17 +223,43 @@ impl WalletsBalancesScreen {
 
         // Space allocation for UI elements is handled by the layout system
 
+        let is_platform_account = self
+            .selected_account
+            .as_ref()
+            .map(|(cat, _)| *cat == AccountCategory::PlatformPayment)
+            .unwrap_or(false);
+
+        // Reset sort column if it refers to a column not visible for the current account type
+        if is_platform_account
+            && matches!(
+                self.sort_column,
+                SortColumn::UTXOs | SortColumn::TotalReceived
+            )
+        {
+            self.sort_column = SortColumn::Balance;
+            self.sort_order = SortOrder::Descending;
+        }
+
         // Render the table
-        TableBuilder::new(ui)
+        let mut builder = TableBuilder::new(ui)
             .id_salt("addresses_table")
             .striped(false)
             .resizable(true)
             .vscroll(false)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .column(Column::auto()) // Address
-            .column(Column::initial(140.0)) // Balance
-            .column(Column::initial(70.0)) // UTXOs
-            .column(Column::initial(150.0)) // Total Received
+            .column(Column::initial(140.0)); // Balance
+
+        builder = if is_platform_account {
+            builder.column(Column::initial(80.0)) // Nonce (replaces UTXOs)
+        // Total Received column omitted
+        } else {
+            builder
+                .column(Column::initial(70.0)) // UTXOs
+                .column(Column::initial(150.0)) // Total Received
+        };
+
+        builder
             .column(Column::initial(100.0)) // Type
             .column(Column::initial(70.0)) // Index
             .column(Column::initial(120.0)) // Derivation Path
@@ -255,32 +291,38 @@ impl WalletsBalancesScreen {
                         self.toggle_sort(SortColumn::Balance);
                     }
                 });
-                header.col(|ui| {
-                    let label = if self.sort_column == SortColumn::UTXOs {
-                        match self.sort_order {
-                            SortOrder::Ascending => "UTXOs ^",
-                            SortOrder::Descending => "UTXOs v",
+                if is_platform_account {
+                    header.col(|ui| {
+                        ui.label("Nonce");
+                    });
+                } else {
+                    header.col(|ui| {
+                        let label = if self.sort_column == SortColumn::UTXOs {
+                            match self.sort_order {
+                                SortOrder::Ascending => "UTXOs ^",
+                                SortOrder::Descending => "UTXOs v",
+                            }
+                        } else {
+                            "UTXOs"
+                        };
+                        if ui.button(label).clicked() {
+                            self.toggle_sort(SortColumn::UTXOs);
                         }
-                    } else {
-                        "UTXOs"
-                    };
-                    if ui.button(label).clicked() {
-                        self.toggle_sort(SortColumn::UTXOs);
-                    }
-                });
-                header.col(|ui| {
-                    let label = if self.sort_column == SortColumn::TotalReceived {
-                        match self.sort_order {
-                            SortOrder::Ascending => "Total Received (DASH) ^",
-                            SortOrder::Descending => "Total Received (DASH) v",
+                    });
+                    header.col(|ui| {
+                        let label = if self.sort_column == SortColumn::TotalReceived {
+                            match self.sort_order {
+                                SortOrder::Ascending => "Total Received (DASH) ^",
+                                SortOrder::Descending => "Total Received (DASH) v",
+                            }
+                        } else {
+                            "Total Received (DASH)"
+                        };
+                        if ui.button(label).clicked() {
+                            self.toggle_sort(SortColumn::TotalReceived);
                         }
-                    } else {
-                        "Total Received (DASH)"
-                    };
-                    if ui.button(label).clicked() {
-                        self.toggle_sort(SortColumn::TotalReceived);
-                    }
-                });
+                    });
+                };
                 header.col(|ui| {
                     let label = if self.sort_column == SortColumn::Type {
                         match self.sort_order {
@@ -339,8 +381,6 @@ impl WalletsBalancesScreen {
                             if is_key_only {
                                 ui.label("N/A");
                             } else if is_platform_payment {
-                                // Platform credits: convert from credits to DASH
-                                // Credits are in duffs * 1000, so divide by 1000 then by 1e8
                                 let dash_balance =
                                     data.platform_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                                 ui.label(format!("{:.8}", dash_balance));
@@ -349,23 +389,27 @@ impl WalletsBalancesScreen {
                                 ui.label(format!("{:.8}", dash_balance));
                             }
                         });
-                        row.col(|ui| {
-                            // Key-only addresses and Platform addresses don't hold UTXOs
-                            if is_key_only || is_platform_payment {
-                                ui.label("N/A");
-                            } else {
-                                ui.label(format!("{}", data.utxo_count));
-                            }
-                        });
-                        row.col(|ui| {
-                            // These address types don't track historical received amounts
-                            if is_key_only || is_platform_payment {
-                                ui.label("N/A");
-                            } else {
-                                let dash_received = data.total_received as f64 * 1e-8;
-                                ui.label(format!("{:.8}", dash_received));
-                            }
-                        });
+                        if is_platform_account {
+                            row.col(|ui| {
+                                ui.label(format!("{}", data.nonce));
+                            });
+                        } else {
+                            row.col(|ui| {
+                                if is_key_only {
+                                    ui.label("N/A");
+                                } else {
+                                    ui.label(format!("{}", data.utxo_count));
+                                }
+                            });
+                            row.col(|ui| {
+                                if is_key_only {
+                                    ui.label("N/A");
+                                } else {
+                                    let dash_received = data.total_received as f64 * 1e-8;
+                                    ui.label(format!("{:.8}", dash_received));
+                                }
+                            });
+                        };
                         row.col(|ui| {
                             ui.label(&data.address_type);
                         });

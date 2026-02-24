@@ -4,6 +4,7 @@ use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use dash_sdk::dpp::dashcore::hashes::Hash;
 use std::sync::Arc;
 
 impl AppContext {
@@ -84,15 +85,11 @@ impl AppContext {
             proofs.insert(tx_id, None);
         }
 
-        // Step 3: Broadcast the transaction (mode-aware: RPC or SPV)
-        self.broadcast_raw_transaction(&asset_lock_transaction)
-            .await
-            .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
-
-        // Step 3.5: Store the asset lock transaction in the database immediately
-        // after broadcast. The SPV finality listener retrieves the transaction
-        // from the DB to process InstantLock/ChainLock events — without this
-        // store, the finality proof is never populated and the wait loop times out.
+        // Step 3: Store the asset lock transaction in the database *before*
+        // broadcast. The SPV finality listener retrieves the transaction from
+        // the DB to process InstantLock/ChainLock events — if the store happened
+        // after broadcast, a fast InstantSend could arrive before the DB row
+        // exists, causing the finality proof to be missed.
         self.db
             .store_asset_lock_transaction(
                 &asset_lock_transaction,
@@ -103,7 +100,24 @@ impl AppContext {
             )
             .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
 
-        // Step 4: Remove used UTXOs from wallet
+        // Step 4: Broadcast the transaction (mode-aware: RPC or SPV).
+        // On failure, clean up the finality tracking entry and pre-stored DB row.
+        // TODO: The broadcast may have reached the network before our connection
+        // dropped. Deleting the DB row could lose a valid tx. Consider adding a
+        // status column to asset_lock_transaction and marking it as "broadcast_failed"
+        // instead, so recovery logic can re-check and re-broadcast if needed.
+        if let Err(e) = self
+            .broadcast_raw_transaction(&asset_lock_transaction)
+            .await
+        {
+            if let Ok(mut proofs) = self.transactions_waiting_for_finality.try_lock() {
+                proofs.remove(&tx_id);
+            }
+            let _ = self.db.delete_asset_lock_transaction(tx_id.as_byte_array());
+            return Err(format!("Failed to broadcast asset lock transaction: {}", e));
+        }
+
+        // Step 5: Remove used UTXOs from wallet
         {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
@@ -128,7 +142,7 @@ impl AppContext {
             wallet.recalculate_affected_address_balances(&used_utxos, self)?;
         }
 
-        // Step 5: Wait for asset lock proof (InstantLock or ChainLock) via shared helper.
+        // Step 6: Wait for asset lock proof (InstantLock or ChainLock) via shared helper.
         // On timeout the helper cleans up the finality tracking entry.
         // Post-timeout recovery is mode-dependent:
         //   RPC  — fire-and-forget refresh_wallet_info to reconcile spent UTXOs

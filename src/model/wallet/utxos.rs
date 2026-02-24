@@ -191,30 +191,30 @@ impl Wallet {
                 .insert(*outpoint, tx_out.clone());
         }
 
-        // Always persist changes to the database
-        let db = &app_context.db;
+        // Persist changes to the database only when something actually changed
+        if changed {
+            let db = &app_context.db;
 
-        // Remove UTXOs that are no longer unspent
-        for outpoint in removed_outpoints {
-            db.drop_utxo(&outpoint, &network.to_string())
+            for outpoint in removed_outpoints {
+                db.drop_utxo(&outpoint, &network.to_string())
+                    .map_err(|e| e.to_string())?;
+            }
+
+            for outpoint in added_outpoints {
+                let tx_out = &new_utxo_map[&outpoint];
+                let address = Address::from_script(&tx_out.script_pubkey, network)
+                    .map_err(|e| e.to_string())?;
+
+                db.insert_utxo(
+                    outpoint.txid.as_ref(),
+                    outpoint.vout,
+                    &address,
+                    tx_out.value,
+                    tx_out.script_pubkey.as_bytes(),
+                    network,
+                )
                 .map_err(|e| e.to_string())?;
-        }
-
-        // Add new UTXOs
-        for outpoint in added_outpoints {
-            let tx_out = &new_utxo_map[&outpoint];
-            let address =
-                Address::from_script(&tx_out.script_pubkey, network).map_err(|e| e.to_string())?;
-
-            db.insert_utxo(
-                outpoint.txid.as_ref(),
-                outpoint.vout,
-                &address,
-                tx_out.value,
-                tx_out.script_pubkey.as_bytes(),
-                network,
-            )
-            .map_err(|e| e.to_string())?;
+            }
         }
 
         Ok(changed)

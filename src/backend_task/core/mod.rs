@@ -375,11 +375,11 @@ impl AppContext {
                 return Err("Wallet must be unlocked".to_string());
             }
             wallet_guard.build_multi_recipient_payment_transaction(
+                self,
                 self.network,
                 &parsed_recipients,
                 DEFAULT_TX_FEE,
                 request.subtract_fee_from_amount,
-                Some(self),
             )?
         };
 

@@ -755,7 +755,7 @@ impl AppContext {
                 "Fee mismatch: estimated {} vs actual {} (diff: {})",
                 estimated_fee,
                 actual_fee,
-                actual_fee as i64 - estimated_fee as i64
+                actual_fee as i128 - estimated_fee as i128
             );
         }
 

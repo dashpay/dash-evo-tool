@@ -717,14 +717,21 @@ impl PlatformFeeEstimator {
     // that is fixed, at which point the legacy paths can be removed.
 
     /// Estimate fee from an already-constructed state transition.
-    /// Returns 0 if estimation fails.
+    /// Returns 0 if estimation fails (masked by the `max(legacy, transition)` pattern).
     fn estimate_fee_from_transition<T: StateTransitionEstimatedFeeValidation>(
         transition: &T,
         platform_version: &PlatformVersion,
     ) -> u64 {
-        transition
-            .calculate_min_required_fee(platform_version)
-            .unwrap_or(0)
+        match transition.calculate_min_required_fee(platform_version) {
+            Ok(fee) => fee,
+            Err(e) => {
+                tracing::debug!(
+                    "Transition-based fee estimation failed for {}: {e}",
+                    std::any::type_name::<T>()
+                );
+                0
+            }
+        }
     }
 
     /// Legacy platform transfer/withdrawal fee estimate (base + storage + 20%
@@ -863,7 +870,10 @@ impl PlatformFeeEstimator {
 
         let public_keys = match IdentityPublicKeyInCreation::default_versioned(platform_version) {
             Ok(key) => std::iter::repeat_n(key, key_count).collect(),
-            Err(_) => Vec::new(),
+            Err(e) => {
+                tracing::debug!("Failed to create default key for fee estimation: {e}");
+                Vec::new()
+            }
         };
 
         let transition =
@@ -1283,6 +1293,25 @@ mod tests {
         assert!(
             unified_topup >= legacy_topup,
             "unified topup ({unified_topup}) must be >= legacy ({legacy_topup})"
+        );
+
+        // Platform → Core
+        let output_script = CoreScript::from_bytes(vec![0x76, 0xa9, 0x14]);
+        let legacy_withdrawal = estimator.legacy_platform_transfer_fee(1);
+        let unified_withdrawal =
+            estimator.estimate_platform_to_core_fee(pv, &inputs, &output_script);
+        assert!(
+            unified_withdrawal >= legacy_withdrawal,
+            "unified withdrawal ({unified_withdrawal}) must be >= legacy ({legacy_withdrawal})"
+        );
+
+        // Core → Platform
+        let legacy_funding = estimator.estimate_address_funding_from_asset_lock_duffs(1);
+        let unified_funding =
+            estimator.estimate_core_to_platform_fee(pv, &test_platform_address(1));
+        assert!(
+            unified_funding >= legacy_funding,
+            "unified funding ({unified_funding}) must be >= legacy ({legacy_funding})"
         );
     }
 

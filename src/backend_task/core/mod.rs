@@ -423,6 +423,18 @@ impl AppContext {
                         request.subtract_fee_from_amount,
                         Some(self),
                     )?;
+                    // Sanity check: rebuilt tx should not need a higher fee
+                    let rebuilt_fee = calculate_relay_fee(estimate_p2pkh_tx_size(
+                        tx.input.len(),
+                        tx.output.len(),
+                    ));
+                    if actual_fee < rebuilt_fee {
+                        tracing::warn!(
+                            "Fee still insufficient after rebuild: {} < {}",
+                            actual_fee,
+                            rebuilt_fee
+                        );
+                    }
                 }
             }
 

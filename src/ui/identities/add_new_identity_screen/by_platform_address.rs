@@ -8,7 +8,10 @@ use crate::ui::identities::add_new_identity_screen::{
 };
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::address_funds::PlatformAddress;
+use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::prelude::AddressNonce;
 use egui::{Color32, ComboBox, RichText, Ui};
+use std::collections::BTreeMap;
 
 /// Constants for credit/DASH conversion
 const CREDITS_PER_DUFF: u64 = 1000;
@@ -153,18 +156,10 @@ impl AddNewIdentityScreen {
 
         // Calculate estimated fee for identity creation (needed for max amount calculation)
         let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
-        let inputs: std::collections::BTreeMap<
-            PlatformAddress,
-            (
-                dash_sdk::dpp::prelude::AddressNonce,
-                dash_sdk::dpp::balances::credits::Credits,
-            ),
-        > = self
+        let inputs: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = self
             .selected_platform_address_for_funding
             .as_ref()
-            .map(|(platform_addr, amount)| {
-                std::collections::BTreeMap::from([(*platform_addr, (0, *amount))])
-            })
+            .map(|(platform_addr, amount)| BTreeMap::from([(*platform_addr, (0, *amount))]))
             .unwrap_or_default();
         let estimated_fee = self
             .app_context

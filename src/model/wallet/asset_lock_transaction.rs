@@ -271,7 +271,12 @@ impl Wallet {
             Ok(result) => result,
             Err(e) => {
                 // Roll back: restore selected UTXOs to the wallet if fee calculation fails.
-                self.utxos.extend(utxos.into_iter());
+                for (outpoint, (tx_out, address)) in utxos {
+                    self.utxos
+                        .entry(address)
+                        .or_default()
+                        .insert(outpoint, tx_out);
+                }
                 return Err(e);
             }
         };

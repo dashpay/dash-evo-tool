@@ -40,7 +40,7 @@ impl AppContext {
         };
 
         // Step 1: Create the asset lock transaction
-        let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
+        let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, _used_utxos) = {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
                 wallets
@@ -117,32 +117,7 @@ impl AppContext {
             return Err(format!("Failed to broadcast asset lock transaction: {}", e));
         }
 
-        // Step 5: Remove used UTXOs from wallet
-        {
-            let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
-            };
-
-            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
-            wallet.utxos.retain(|_, utxo_map| {
-                utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                !utxo_map.is_empty()
-            });
-
-            for utxo in used_utxos.keys() {
-                self.db
-                    .drop_utxo(utxo, &self.network.to_string())
-                    .map_err(|e| e.to_string())?;
-            }
-
-            wallet.recalculate_affected_address_balances(&used_utxos, self)?;
-        }
-
-        // Step 6: Wait for asset lock proof (InstantLock or ChainLock) via shared helper.
+        // Step 5: Wait for asset lock proof (InstantLock or ChainLock) via shared helper.
         // On timeout the helper cleans up the finality tracking entry.
         // Post-timeout recovery is mode-dependent:
         //   RPC  — fire-and-forget refresh_wallet_info to reconcile spent UTXOs

@@ -91,8 +91,8 @@ impl AppContext {
             }
             RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
                 // Scope the write lock to avoid holding it across an await.
-                let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
-                    let mut wallet = wallet.write().unwrap();
+                let (asset_lock_transaction, asset_lock_proof_private_key, _, _used_utxos) = {
+                    let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                     wallet_id = wallet.seed_hash();
                     match wallet.registration_asset_lock_transaction(
                         sdk.network,
@@ -141,26 +141,6 @@ impl AppContext {
                         self.network,
                     )
                     .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
-
-                // TODO: UTXO removal timing issue - UTXOs are removed here BEFORE the asset
-                // lock proof is confirmed below. If the transaction fails or times out after
-                // this point, the UTXOs will be "lost" from wallet tracking even though they
-                // weren't actually spent. This should be refactored to remove UTXOs only AFTER
-                // successful proof confirmation. See Phase 2.2 in PR review plan.
-                {
-                    let mut wallet = wallet.write().unwrap();
-                    wallet.utxos.retain(|_, utxo_map| {
-                        utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                        !utxo_map.is_empty() // Keep addresses that still have UTXOs
-                    });
-                    for utxo in used_utxos.keys() {
-                        self.db
-                            .drop_utxo(utxo, &self.network.to_string())
-                            .map_err(|e| e.to_string())?;
-                    }
-
-                    wallet.recalculate_affected_address_balances(&used_utxos, self)?;
-                }
 
                 let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 

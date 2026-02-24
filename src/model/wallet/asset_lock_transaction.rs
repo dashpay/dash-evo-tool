@@ -262,12 +262,19 @@ impl Wallet {
         let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
         let num_inputs = utxos.len();
 
-        let fee_result = calculate_asset_lock_fee(
+        let fee_result = match calculate_asset_lock_fee(
             total_input_value,
             amount,
             num_inputs,
             allow_take_fee_from_amount,
-        )?;
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                // Roll back: restore selected UTXOs to the wallet if fee calculation fails.
+                self.utxos.extend(utxos.into_iter());
+                return Err(e);
+            }
+        };
 
         let actual_amount = fee_result.actual_amount;
         let change_option = fee_result.change;

@@ -4,7 +4,6 @@ use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use crate::spv::CoreBackendMode;
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -104,33 +103,18 @@ impl AppContext {
                     ) {
                         Ok(transaction) => transaction,
                         Err(e) => {
-                            match self.core_backend_mode() {
-                                CoreBackendMode::Rpc => {
-                                    wallet
-                                        .reload_utxos(
-                                            &self
-                                                .core_client
-                                                .read()
-                                                .expect("Core client lock was poisoned"),
-                                            self.network,
-                                            Some(self),
-                                        )
-                                        .map_err(|e| e.to_string())?;
-                                    wallet.registration_asset_lock_transaction(
-                                        sdk.network,
-                                        amount,
-                                        true,
-                                        identity_index,
-                                        Some(self),
-                                    )?
-                                }
-                                CoreBackendMode::Spv => {
-                                    // SPV wallet state is authoritative — UTXOs are synced
-                                    // continuously via compact block filters. No Core RPC
-                                    // fallback available.
-                                    return Err(e);
-                                }
+                            // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
+                            // Only retry if something actually changed.
+                            if !wallet.reload_utxos(self)? {
+                                return Err(e);
                             }
+                            wallet.registration_asset_lock_transaction(
+                                sdk.network,
+                                amount,
+                                true,
+                                identity_index,
+                                Some(self),
+                            )?
                         }
                     }
                 };

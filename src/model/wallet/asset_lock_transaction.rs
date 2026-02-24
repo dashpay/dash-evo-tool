@@ -26,6 +26,11 @@ pub(crate) struct AssetLockFeeResult {
 /// Minimum fee for an asset lock transaction (duffs).
 const MIN_ASSET_LOCK_FEE: u64 = 3_000;
 
+/// Minimum value for a change output (duffs). Outputs below this
+/// threshold are considered dust and will be rejected by the network.
+/// For P2PKH outputs the Dash Core dust limit is 546 duffs.
+const DUST_THRESHOLD: u64 = 546;
+
 /// Estimate the transaction size in bytes.
 ///
 /// Assumes P2PKH inputs (~148 B each), standard outputs (~34 B each),
@@ -51,11 +56,14 @@ pub(crate) fn calculate_asset_lock_fee(
     // First pass: assume 2 outputs (1 burn + 1 change).
     let fee_with_change = std::cmp::max(MIN_ASSET_LOCK_FEE, estimate_tx_size(num_inputs, 2) as u64);
 
-    let tentative_change = total_input_value.checked_sub(requested_amount + fee_with_change);
+    let required_with_change = requested_amount
+        .checked_add(fee_with_change)
+        .ok_or("Overflow computing required amount + fee")?;
+    let tentative_change = total_input_value.checked_sub(required_with_change);
 
-    // If there is positive change, we are done.
+    // If change exceeds dust threshold, include it as an output.
     if let Some(change) = tentative_change
-        && change > 0
+        && change >= DUST_THRESHOLD
     {
         return Ok(AssetLockFeeResult {
             fee: fee_with_change,
@@ -68,7 +76,11 @@ pub(crate) fn calculate_asset_lock_fee(
     // Recompute with 1 output (no change).
     let fee_no_change = std::cmp::max(MIN_ASSET_LOCK_FEE, estimate_tx_size(num_inputs, 1) as u64);
 
-    if total_input_value >= requested_amount + fee_no_change {
+    let required_no_change = requested_amount
+        .checked_add(fee_no_change)
+        .ok_or("Overflow computing required amount + fee")?;
+
+    if total_input_value >= required_no_change {
         // Enough funds without a change output. Any leftover becomes
         // additional fee (it is too small for a viable change output).
         return Ok(AssetLockFeeResult {
@@ -234,7 +246,7 @@ impl Wallet {
 
         // Use a small initial estimate to select UTXOs; we recalculate the fee
         // below based on the actual number of inputs.
-        let initial_fee_estimate = 3_000u64;
+        let initial_fee_estimate = MIN_ASSET_LOCK_FEE;
 
         let (utxos, _initial_change_option) = self
             .take_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
@@ -656,5 +668,20 @@ mod tests {
             result.fee
         );
         assert_eq!(result.fee, 3_240);
+    }
+    #[test]
+    fn fee_dust_change_absorbed_into_fee() {
+        // 1 input, amount=46500, total=50000.
+        // With 2 outputs: fee = 3000. change = 50000 - 46500 - 3000 = 500.
+        // 500 < DUST_THRESHOLD (546) → change is dust, absorbed into fee.
+        // Falls through to 1-output path: fee = 3000.
+        // 50000 >= 46500 + 3000 → fee = 50000 - 46500 = 3500 (absorbs dust).
+        let result = calculate_asset_lock_fee(50_000, 46_500, 1, false).expect("should succeed");
+        assert_eq!(result.actual_amount, 46_500);
+        assert_eq!(
+            result.change, None,
+            "dust change should not create an output"
+        );
+        assert_eq!(result.fee, 3_500, "dust should be absorbed into fee");
     }
 }

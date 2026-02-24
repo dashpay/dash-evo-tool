@@ -601,10 +601,23 @@ impl AppContext {
         wallet_seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, String> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
+        use dash_sdk::dpp::prelude::AddressNonce;
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
         // Estimate fee for top-up from platform addresses
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
+        let inputs_with_nonce: std::collections::BTreeMap<
+            dash_sdk::dpp::address_funds::PlatformAddress,
+            (AddressNonce, Credits),
+        > = inputs
+            .iter()
+            .map(|(addr, credits)| (*addr, (0, *credits)))
+            .collect();
+        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup_from_addresses_fee(
+            sdk.version(),
+            &inputs_with_nonce,
+            None,
+            qualified_identity.identity.id(),
+        );
 
         tracing::info!(
             "top_up_identity_from_platform_addresses: identity={}, inputs={:?}",

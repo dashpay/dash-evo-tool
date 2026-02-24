@@ -18,18 +18,9 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::core_script::CoreScript;
-use dash_sdk::dpp::prelude::AddressNonce;
-use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
-use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
-use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
-use dash_sdk::dpp::withdrawal::Pooling;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::BTreeMap;
@@ -40,80 +31,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_PLATFORM_INPUTS: usize = 16;
 
 use crate::model::fee_estimation::PlatformFeeEstimator;
-
-/// Estimated serialized bytes per input (address + signature/witness data)
-const ESTIMATED_BYTES_PER_INPUT: usize = 225;
-
-/// Calculate the estimated fee for a platform address funds transfer.
-///
-/// Uses PlatformFeeEstimator for base costs (input/output fees) plus storage fees.
-fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
-    let inputs = input_count.max(1);
-
-    // Base fee from Platform's min fee structure
-    // - 500,000 credits per input (address_funds_transfer_input_cost)
-    // - 6,000,000 credits per output (address_funds_transfer_output_cost)
-    let base_fee = estimator.estimate_address_funds_transfer(inputs, 1);
-
-    // Add storage fees for serialized input bytes only
-    // (outputs don't add significant serialization overhead)
-    let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
-    let storage_fee = estimator.estimate_storage_based_fee(estimated_bytes, inputs);
-
-    // Total with 20% safety buffer
-    let total = base_fee.saturating_add(storage_fee);
-    total.saturating_add(total / 5)
-}
-
-/// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
-fn estimate_withdrawal_fee_from_transition(
-    platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    inputs: &BTreeMap<PlatformAddress, u64>,
-    output_script: &CoreScript,
-) -> u64 {
-    let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
-        .iter()
-        .map(|(addr, amount)| (*addr, (0, *amount)))
-        .collect();
-
-    let transition = AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
-        inputs: inputs_with_nonce,
-        output: None,
-        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
-        core_fee_per_byte: 1,
-        pooling: Pooling::Never,
-        output_script: output_script.clone(),
-        user_fee_increase: 0,
-        input_witnesses: Vec::new(),
-    });
-
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
-}
-
-/// Calculate the estimated fee for funding a Platform address from an asset lock.
-fn estimate_address_funding_fee_from_transition(
-    platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    destination: &PlatformAddress,
-) -> u64 {
-    let mut outputs = BTreeMap::new();
-    outputs.insert(*destination, None);
-
-    let transition =
-        AddressFundingFromAssetLockTransition::V0(AddressFundingFromAssetLockTransitionV0 {
-            asset_lock_proof: AssetLockProof::default(),
-            inputs: BTreeMap::new(),
-            outputs,
-            fee_strategy: vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
-            user_fee_increase: 0,
-            ..Default::default()
-        });
-
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
-}
 
 /// Result of allocating platform addresses for a transfer.
 #[derive(Debug, Clone)]
@@ -136,9 +53,9 @@ fn allocate_platform_addresses_with_fee<F>(
     amount_credits: u64,
     destination: Option<&PlatformAddress>,
     fee_for_inputs: F,
-) -> AddressAllocationResult
+) -> Result<AddressAllocationResult, String>
 where
-    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
+    F: Fn(&BTreeMap<PlatformAddress, u64>) -> Result<u64, String>,
 {
     // Filter out the destination address if provided (protocol doesn't allow same address as input and output)
     let filtered: Vec<_> = addresses
@@ -153,19 +70,19 @@ where
 
     // Early return if no addresses available after filtering
     if sorted_addresses.is_empty() {
-        return AddressAllocationResult {
+        return Ok(AddressAllocationResult {
             inputs: BTreeMap::new(),
             fee_payer_index: 0,
-            estimated_fee: fee_for_inputs(&BTreeMap::new()),
+            estimated_fee: fee_for_inputs(&BTreeMap::new())?,
             shortfall: amount_credits,
             sorted_addresses: vec![],
-        };
+        });
     }
 
     // The highest-balance address (first in sorted order) will pay the fee
     let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
 
-    let mut estimated_fee = fee_for_inputs(&BTreeMap::new());
+    let mut estimated_fee = fee_for_inputs(&BTreeMap::new())?;
     let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
 
     // Iterate until fee estimate stabilizes (input count affects fee)
@@ -190,7 +107,7 @@ where
             }
         }
 
-        let new_fee = fee_for_inputs(&inputs);
+        let new_fee = fee_for_inputs(&inputs)?;
         if new_fee == estimated_fee {
             break;
         }
@@ -224,41 +141,12 @@ where
         })
         .unwrap_or(0);
 
-    AddressAllocationResult {
+    Ok(AddressAllocationResult {
         inputs,
         fee_payer_index,
         estimated_fee,
         shortfall,
         sorted_addresses,
-    }
-}
-
-/// Allocates platform addresses for a transfer, selecting which addresses to use
-/// and how much from each.
-///
-/// Algorithm:
-/// 1. Filters out the destination address (can't be both input and output)
-/// 2. Sorts addresses by balance descending (largest first)
-/// 3. The highest-balance address pays the fee
-/// 4. Iteratively allocates until fee estimate converges
-/// 5. Fee payer is always included in inputs (even with 0 contribution) so fee can be deducted
-///
-/// Returns the allocation result with inputs, fee payer index, and any shortfall.
-fn allocate_platform_addresses(
-    estimator: &PlatformFeeEstimator,
-    addresses: &[(PlatformAddress, Address, u64)],
-    amount_credits: u64,
-    destination: Option<&PlatformAddress>,
-) -> AddressAllocationResult {
-    let max_inputs = addresses
-        .iter()
-        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
-        .count()
-        .min(MAX_PLATFORM_INPUTS);
-
-    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
-        // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
-        estimate_platform_fee(estimator, max_inputs.max(1))
     })
 }
 
@@ -427,7 +315,7 @@ impl WalletSendScreen {
         fee_estimator: &PlatformFeeEstimator,
         addresses: &[(PlatformAddress, Address, u64)],
         destination: Option<&PlatformAddress>,
-    ) -> u64 {
+    ) -> Result<u64, String> {
         let mut sorted_addresses: Vec<_> = addresses
             .iter()
             .filter(|(addr, _, _)| destination != Some(addr))
@@ -437,10 +325,12 @@ impl WalletSendScreen {
 
         let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
         if usable_count == 0 {
-            return estimate_platform_fee(fee_estimator, 1);
+            return Ok(fee_estimator.estimate_address_funds_transfer(1, 1));
         }
 
         let dest_type = Self::detect_address_type(&self.destination_address);
+        let platform_version = self.app_context.platform_version();
+
         if dest_type == AddressType::Core {
             let output_script = self
                 .destination_address
@@ -455,15 +345,29 @@ impl WalletSendScreen {
                     .take(usable_count)
                     .map(|(addr, _, _)| (*addr, 0))
                     .collect();
-                return estimate_withdrawal_fee_from_transition(
-                    self.app_context.platform_version(),
+                return Ok(fee_estimator.estimate_platform_to_core_fee(
+                    platform_version,
                     &max_fee_inputs,
                     &output_script,
-                );
+                ));
             }
+        } else if dest_type == AddressType::Platform
+            && let Some(destination) = destination
+        {
+            let max_fee_inputs: BTreeMap<PlatformAddress, u64> = sorted_addresses
+                .iter()
+                .take(usable_count)
+                .map(|(addr, _, _)| (*addr, 0))
+                .collect();
+            return Ok(fee_estimator.estimate_platform_to_platform_fee(
+                platform_version,
+                &max_fee_inputs,
+                destination,
+            ));
         }
 
-        estimate_platform_fee(fee_estimator, usable_count)
+        // Fallback: use legacy estimate based on address count
+        Ok(fee_estimator.estimate_address_funds_transfer(usable_count, 1))
     }
 
     fn reset_form(&mut self) {
@@ -841,12 +745,20 @@ impl WalletSendScreen {
             .map_err(|e| format!("Invalid platform address: {}", e))?;
 
         // Allocate addresses using the helper function
-        let allocation = allocate_platform_addresses(
-            &fee_estimator,
+        let platform_version = self.app_context.platform_version();
+        let allocation = allocate_platform_addresses_with_fee(
             &addresses,
             amount_credits,
             Some(&destination),
-        );
+            |inputs| {
+                Ok(fee_estimator.estimate_platform_to_platform_fee(
+                    platform_version,
+                    inputs,
+                    &destination,
+                ))
+            },
+        )
+        .map_err(|e| format!("Fee estimation failed: {}", e))?;
 
         if allocation.sorted_addresses.is_empty() {
             return Err(
@@ -874,11 +786,13 @@ impl WalletSendScreen {
                 .take(MAX_PLATFORM_INPUTS)
                 .map(|(_, _, b)| *b)
                 .sum();
-            let max_fee = self.estimate_max_fee_for_platform_send(
-                &fee_estimator,
-                &allocation.sorted_addresses,
-                Some(&destination),
-            );
+            let max_fee = self
+                .estimate_max_fee_for_platform_send(
+                    &fee_estimator,
+                    &allocation.sorted_addresses,
+                    Some(&destination),
+                )
+                .unwrap_or(allocation.estimated_fee);
             let max_sendable = max_balance.saturating_sub(max_fee);
 
             return Err(format!(
@@ -972,12 +886,18 @@ impl WalletSendScreen {
         let output_script = CoreScript::new(dest_address.script_pubkey());
 
         let platform_version = self.app_context.platform_version();
+        let fee_estimator = self.app_context.fee_estimator();
 
         // Allocate addresses using state-transition-based fee estimation (no destination filter)
         let allocation =
             allocate_platform_addresses_with_fee(&addresses, amount_credits, None, |inputs| {
-                estimate_withdrawal_fee_from_transition(platform_version, inputs, &output_script)
-            });
+                Ok(fee_estimator.estimate_platform_to_core_fee(
+                    platform_version,
+                    inputs,
+                    &output_script,
+                ))
+            })
+            .map_err(|e| format!("Fee estimation failed: {}", e))?;
 
         if allocation.shortfall > 0 {
             // Calculate the max we can send with MAX_PLATFORM_INPUTS addresses (minus fees)
@@ -994,7 +914,7 @@ impl WalletSendScreen {
                 .take(addresses_available)
                 .map(|(addr, _, _)| (*addr, 0))
                 .collect();
-            let max_fee = estimate_withdrawal_fee_from_transition(
+            let max_fee = fee_estimator.estimate_platform_to_core_fee(
                 platform_version,
                 &max_fee_inputs,
                 &output_script,
@@ -1435,11 +1355,10 @@ impl WalletSendScreen {
                             .map(|(addr, _)| addr)
                             .ok();
                     if let Some(destination) = destination {
-                        let estimated_fee = estimate_address_funding_fee_from_transition(
+                        let estimated_fee = fee_estimator.estimate_core_to_platform_fee(
                             self.app_context.platform_version(),
                             &destination,
                         );
-                        // max = max.map(|amount| amount.saturating_sub(estimated_fee));
                         Some(format!(
                             "Estimated platform fee ~{} (deducted from amount)",
                             Self::format_credits(estimated_fee)
@@ -1473,21 +1392,41 @@ impl WalletSendScreen {
                     .take(MAX_PLATFORM_INPUTS)
                     .map(|(_, _, balance)| *balance)
                     .sum();
-                let max_fee = self.estimate_max_fee_for_platform_send(
+                let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
+                let (max_fee, fee_error) = match self.estimate_max_fee_for_platform_send(
                     &fee_estimator,
                     &sorted_addresses,
                     destination.as_ref(),
-                );
+                ) {
+                    Ok(fee) => (fee, None),
+                    Err(e) => {
+                        tracing::warn!("Fee estimation failed for Max calculation: {}", e);
+                        (
+                            fee_estimator.estimate_address_funds_transfer(usable_count, 1),
+                            Some(e),
+                        )
+                    }
+                };
 
                 // Build hint explaining the limit
+                let fallback_note = if fee_error.is_some() {
+                    " (fallback estimate)"
+                } else {
+                    ""
+                };
                 let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
                     format!(
-                        "Limited to {} input addresses per transaction, ~{} reserved for fees",
+                        "Limited to {} input addresses per transaction, ~{} reserved for fees{}",
                         MAX_PLATFORM_INPUTS,
-                        Self::format_credits(max_fee)
+                        Self::format_credits(max_fee),
+                        fallback_note
                     )
                 } else {
-                    format!("~{} reserved for fees", Self::format_credits(max_fee))
+                    format!(
+                        "~{} reserved for fees{}",
+                        Self::format_credits(max_fee),
+                        fallback_note
+                    )
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
@@ -1587,12 +1526,56 @@ impl WalletSendScreen {
             .ok();
 
         // Use the same allocation algorithm as the send logic, filtering out the destination
-        let allocation = allocate_platform_addresses(
-            &fee_estimator,
-            addresses,
-            amount_credits,
-            destination.as_ref(),
-        );
+        let platform_version = self.app_context.platform_version();
+        let dest_type = Self::detect_address_type(&self.destination_address);
+
+        let allocation = if dest_type == AddressType::Platform {
+            if let Some(dest) = &destination {
+                allocate_platform_addresses_with_fee(
+                    addresses,
+                    amount_credits,
+                    destination.as_ref(),
+                    |inputs| {
+                        Ok(fee_estimator.estimate_platform_to_platform_fee(
+                            platform_version,
+                            inputs,
+                            dest,
+                        ))
+                    },
+                )
+            } else {
+                return;
+            }
+        } else if dest_type == AddressType::Core {
+            let output_script = self
+                .destination_address
+                .trim()
+                .parse::<Address<NetworkUnchecked>>()
+                .ok()
+                .and_then(|addr| addr.require_network(self.app_context.network).ok())
+                .map(|addr| CoreScript::new(addr.script_pubkey()));
+            if let Some(output_script) = output_script {
+                allocate_platform_addresses_with_fee(addresses, amount_credits, None, |inputs| {
+                    Ok(fee_estimator.estimate_platform_to_core_fee(
+                        platform_version,
+                        inputs,
+                        &output_script,
+                    ))
+                })
+            } else {
+                return;
+            }
+        } else {
+            return;
+        };
+
+        let allocation = match allocation {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!("Fee estimation failed for breakdown: {}", e);
+                return;
+            }
+        };
 
         if allocation.inputs.is_empty() {
             return;

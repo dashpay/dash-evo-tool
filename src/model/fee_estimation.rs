@@ -21,8 +21,26 @@
 //! performed by Platform. For accurate fees, use Platform's EstimateStateTransitionFee
 //! endpoint (when available).
 
+use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
+use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
+use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof, Identifier};
+use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
+use dash_sdk::dpp::state_transition::address_funds_transfer_transition::AddressFundsTransferTransition;
+use dash_sdk::dpp::state_transition::address_funds_transfer_transition::v0::AddressFundsTransferTransitionV0;
+use dash_sdk::dpp::state_transition::identity_create_from_addresses_transition::IdentityCreateFromAddressesTransition;
+use dash_sdk::dpp::state_transition::identity_create_from_addresses_transition::v0::IdentityCreateFromAddressesTransitionV0;
+use dash_sdk::dpp::state_transition::identity_topup_from_addresses_transition::IdentityTopUpFromAddressesTransition;
+use dash_sdk::dpp::state_transition::identity_topup_from_addresses_transition::v0::IdentityTopUpFromAddressesTransitionV0;
+use dash_sdk::dpp::state_transition::public_key_in_creation::IdentityPublicKeyInCreation;
 use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::withdrawal::Pooling;
+use std::collections::BTreeMap;
 
 // ── Core (L1) transaction fee estimation ────────────────────────────────────
 
@@ -343,18 +361,18 @@ impl PlatformFeeEstimator {
 
     /// Calculate storage fee for a given number of bytes.
     /// This is the main cost component for storing data on Platform.
-    pub fn calculate_storage_fee(&self, bytes: usize) -> u64 {
+    fn calculate_storage_fee(&self, bytes: usize) -> u64 {
         (bytes as u64).saturating_mul(self.storage_fees.storage_disk_usage_credit_per_byte)
     }
 
     /// Calculate processing fee for writing data.
-    pub fn calculate_processing_fee(&self, bytes: usize) -> u64 {
+    fn calculate_processing_fee(&self, bytes: usize) -> u64 {
         (bytes as u64).saturating_mul(self.storage_fees.storage_processing_credit_per_byte)
     }
 
     /// Calculate fee for tree seek operations.
     /// Contracts and documents require multiple seeks for tree traversal.
-    pub fn calculate_seek_fee(&self, seek_count: usize) -> u64 {
+    fn calculate_seek_fee(&self, seek_count: usize) -> u64 {
         (seek_count as u64).saturating_mul(self.storage_fees.storage_seek_cost)
     }
 
@@ -394,11 +412,6 @@ impl PlatformFeeEstimator {
         self.apply_multiplier(self.min_fees.credit_withdrawal)
     }
 
-    /// Estimate fee for address-based credit withdrawal
-    pub fn estimate_address_credit_withdrawal(&self) -> u64 {
-        self.apply_multiplier(self.min_fees.address_credit_withdrawal)
-    }
-
     /// Estimate fee for funding a platform address from an asset lock.
     /// This includes the asset lock processing cost and transfer costs.
     /// Returns fee in duffs (not credits).
@@ -433,10 +446,11 @@ impl PlatformFeeEstimator {
         self.apply_multiplier(base_fee)
     }
 
-    /// Estimate fee for identity creation from addresses (asset lock).
-    /// This includes base cost, asset lock cost, input/output costs, per-key costs,
-    /// storage-based fees, and a 20% safety buffer to account for fee variability.
-    pub fn estimate_identity_create_from_addresses(
+    /// Legacy fee estimate for identity creation from addresses.
+    ///
+    /// TODO(dashpay/platform#3040): Remove once transition-based estimation is
+    /// accurate.  Use [`Self::estimate_identity_create_from_addresses_fee`] instead.
+    fn estimate_identity_create_from_addresses(
         &self,
         input_count: usize,
         has_output: bool,
@@ -500,10 +514,11 @@ impl PlatformFeeEstimator {
         self.apply_multiplier(base_fee)
     }
 
-    /// Estimate fee for identity top-up from platform addresses.
-    /// This includes base cost, asset lock cost, input costs, storage-based fees,
-    /// and a 20% safety buffer to account for fee variability.
-    pub fn estimate_identity_topup_from_addresses(&self, input_count: usize) -> u64 {
+    /// Legacy fee estimate for identity top-up from platform addresses.
+    ///
+    /// TODO(dashpay/platform#3040): Remove once transition-based estimation is
+    /// accurate.  Use [`Self::estimate_identity_topup_from_addresses_fee`] instead.
+    fn estimate_identity_topup_from_addresses(&self, input_count: usize) -> u64 {
         // Estimated serialized bytes per input (address + signature/witness data)
         const ESTIMATED_BYTES_PER_INPUT: usize = 225;
         // Estimated bytes for top-up transaction structure
@@ -548,7 +563,7 @@ impl PlatformFeeEstimator {
     /// Estimate fee for document creation with known size.
     /// Documents are stored in the contract's document tree.
     /// Estimated seeks: ~10 for tree traversal and insertion.
-    pub fn estimate_document_create_with_size(&self, document_bytes: usize) -> u64 {
+    fn estimate_document_create_with_size(&self, document_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 10;
         let base_fee = self
             .min_fees
@@ -636,7 +651,7 @@ impl PlatformFeeEstimator {
     /// Estimate fee for data contract creation with known size.
     /// Includes base registration fee (0.1 DASH) plus storage costs.
     /// For contracts with tokens, document types, or indexes, use the detailed method.
-    pub fn estimate_contract_create_with_size(&self, contract_bytes: usize) -> u64 {
+    fn estimate_contract_create_with_size(&self, contract_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 20;
         let base_fee = self
             .registration_fees
@@ -646,89 +661,15 @@ impl PlatformFeeEstimator {
         self.apply_multiplier(base_fee)
     }
 
-    /// Estimate fee for data contract creation with detailed component counts.
-    /// This provides the most accurate estimate by accounting for all registration fees.
-    #[allow(clippy::too_many_arguments)]
-    pub fn estimate_contract_create_detailed(
-        &self,
-        contract_bytes: usize,
-        document_type_count: usize,
-        non_unique_index_count: usize,
-        unique_index_count: usize,
-        contested_index_count: usize,
-        has_token: bool,
-        has_perpetual_distribution: bool,
-        has_pre_programmed_distribution: bool,
-        search_keyword_count: usize,
-    ) -> u64 {
-        const ESTIMATED_SEEKS: usize = 20;
-
-        let mut base_fee = self.registration_fees.base_contract_registration_fee;
-
-        // Document type fees
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .document_type_registration_fee
-                .saturating_mul(document_type_count as u64),
-        );
-
-        // Index fees
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .document_type_base_non_unique_index_registration_fee
-                .saturating_mul(non_unique_index_count as u64),
-        );
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .document_type_base_unique_index_registration_fee
-                .saturating_mul(unique_index_count as u64),
-        );
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .document_type_base_contested_index_registration_fee
-                .saturating_mul(contested_index_count as u64),
-        );
-
-        // Token fees
-        if has_token {
-            base_fee = base_fee.saturating_add(self.registration_fees.token_registration_fee);
-        }
-        if has_perpetual_distribution {
-            base_fee = base_fee
-                .saturating_add(self.registration_fees.token_uses_perpetual_distribution_fee);
-        }
-        if has_pre_programmed_distribution {
-            base_fee = base_fee.saturating_add(
-                self.registration_fees
-                    .token_uses_pre_programmed_distribution_fee,
-            );
-        }
-
-        // Search keyword fees
-        base_fee = base_fee.saturating_add(
-            self.registration_fees
-                .search_keyword_fee
-                .saturating_mul(search_keyword_count as u64),
-        );
-
-        // Add state transition minimum and storage fees
-        base_fee = base_fee.saturating_add(self.min_fees.contract_create);
-        base_fee = base_fee
-            .saturating_add(self.calculate_storage_based_fee(contract_bytes, ESTIMATED_SEEKS));
-
-        self.apply_multiplier(base_fee)
-    }
-
     /// Estimate fee for data contract creation (uses base registration fee only).
-    /// For more accurate estimates, use estimate_contract_create_with_size or
-    /// estimate_contract_create_detailed.
+    /// For more accurate estimates, use estimate_contract_create_with_size.
     pub fn estimate_contract_create_base(&self) -> u64 {
         // Base registration fee (0.1 DASH) + minimal storage estimate
         self.estimate_contract_create_with_size(500)
     }
 
     /// Estimate fee for data contract update with known size of changes.
-    pub fn estimate_contract_update_with_size(&self, update_bytes: usize) -> u64 {
+    fn estimate_contract_update_with_size(&self, update_bytes: usize) -> u64 {
         const ESTIMATED_SEEKS: usize = 15;
         let base_fee = self
             .min_fees
@@ -745,11 +686,6 @@ impl PlatformFeeEstimator {
     /// Get the registration fees structure
     pub fn registration_fees(&self) -> &DataContractRegistrationFees {
         &self.registration_fees
-    }
-
-    /// Estimate fee for masternode vote
-    pub fn estimate_masternode_vote(&self) -> u64 {
-        self.apply_multiplier(self.min_fees.masternode_vote)
     }
 
     /// Estimate fee for address funds transfer.
@@ -772,9 +708,206 @@ impl PlatformFeeEstimator {
         &self.min_fees
     }
 
-    /// Get the storage fee constants
-    pub fn storage_fees(&self) -> &StorageFeeConstants {
-        &self.storage_fees
+    // ── Unified fee estimation (max of legacy + transition-based) ────────
+    //
+    // Each method below computes fees using both the legacy heuristic and a
+    // constructed state transition via `calculate_min_required_fee()`.  The
+    // transition-based approach is more accurate but currently underestimates
+    // (dashpay/platform#3040).  We return `max(legacy, transition)` until
+    // that is fixed, at which point the legacy paths can be removed.
+
+    /// Estimate fee from an already-constructed state transition.
+    /// Returns 0 if estimation fails.
+    fn estimate_fee_from_transition<T: StateTransitionEstimatedFeeValidation>(
+        transition: &T,
+        platform_version: &PlatformVersion,
+    ) -> u64 {
+        transition
+            .calculate_min_required_fee(platform_version)
+            .unwrap_or(0)
+    }
+
+    /// Legacy platform transfer/withdrawal fee estimate (base + storage + 20%
+    /// buffer).  Mirrors the old `estimate_platform_fee()` free function from
+    /// `send_screen.rs`.
+    ///
+    /// TODO(dashpay/platform#3040): Remove once transition-based estimation is
+    /// accurate and this fallback is no longer needed.
+    fn legacy_platform_transfer_fee(&self, input_count: usize) -> u64 {
+        /// Estimated serialized bytes per input (address + signature/witness data).
+        const ESTIMATED_BYTES_PER_INPUT: usize = 225;
+
+        let inputs = input_count.max(1);
+
+        // Base fee from Platform's min fee structure
+        let base_fee = self.estimate_address_funds_transfer(inputs, 1);
+
+        // Add storage fees for serialized input bytes
+        let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
+        let storage_fee = self.estimate_storage_based_fee(estimated_bytes, inputs);
+
+        // Total with 20% safety buffer
+        let total = base_fee.saturating_add(storage_fee);
+        total.saturating_add(total / 5)
+    }
+
+    /// Estimate fee for a Platform → Core withdrawal.
+    ///
+    /// Computes `max(legacy, transition)` internally.
+    pub fn estimate_platform_to_core_fee(
+        &self,
+        platform_version: &PlatformVersion,
+        inputs: &BTreeMap<PlatformAddress, u64>,
+        output_script: &CoreScript,
+    ) -> u64 {
+        let legacy = self.legacy_platform_transfer_fee(inputs.len());
+
+        let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
+            .iter()
+            .map(|(addr, amount)| (*addr, (0, *amount)))
+            .collect();
+
+        let transition =
+            AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
+                inputs: inputs_with_nonce,
+                output: None,
+                fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+                core_fee_per_byte: 1,
+                pooling: Pooling::Never,
+                output_script: output_script.clone(),
+                user_fee_increase: 0,
+                input_witnesses: Vec::new(),
+            });
+
+        let transition_fee = Self::estimate_fee_from_transition(&transition, platform_version);
+
+        // TODO(dashpay/platform#3040): Remove legacy estimation once transition-based is accurate.
+        legacy.max(transition_fee)
+    }
+
+    /// Estimate fee for a Platform → Platform transfer.
+    ///
+    /// Computes `max(legacy, transition)` internally.
+    pub fn estimate_platform_to_platform_fee(
+        &self,
+        platform_version: &PlatformVersion,
+        inputs: &BTreeMap<PlatformAddress, u64>,
+        destination: &PlatformAddress,
+    ) -> u64 {
+        let legacy = self.legacy_platform_transfer_fee(inputs.len());
+
+        let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
+            .iter()
+            .map(|(addr, amount)| (*addr, (0, *amount)))
+            .collect();
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(*destination, 1);
+
+        let transition = AddressFundsTransferTransition::V0(AddressFundsTransferTransitionV0 {
+            inputs: inputs_with_nonce,
+            outputs,
+            fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+            user_fee_increase: 0,
+            input_witnesses: Vec::new(),
+        });
+
+        let transition_fee = Self::estimate_fee_from_transition(&transition, platform_version);
+
+        // TODO(dashpay/platform#3040): Remove legacy estimation once transition-based is accurate.
+        legacy.max(transition_fee)
+    }
+
+    /// Estimate fee for a Core → Platform address funding (via asset lock).
+    ///
+    /// Computes `max(legacy, transition)` internally.
+    pub fn estimate_core_to_platform_fee(
+        &self,
+        platform_version: &PlatformVersion,
+        destination: &PlatformAddress,
+    ) -> u64 {
+        // Legacy estimate
+        let legacy = self.estimate_address_funding_from_asset_lock_duffs(1);
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert(*destination, None);
+
+        let transition =
+            AddressFundingFromAssetLockTransition::V0(AddressFundingFromAssetLockTransitionV0 {
+                asset_lock_proof: AssetLockProof::default(),
+                inputs: BTreeMap::new(),
+                outputs,
+                fee_strategy: vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
+                user_fee_increase: 0,
+                ..Default::default()
+            });
+
+        let transition_fee = Self::estimate_fee_from_transition(&transition, platform_version);
+
+        // TODO(dashpay/platform#3040): Remove legacy estimation once transition-based is accurate.
+        legacy.max(transition_fee)
+    }
+
+    /// Estimate fee for identity creation from Platform addresses.
+    ///
+    /// Computes `max(legacy, transition)` internally.
+    pub fn estimate_identity_create_from_addresses_fee(
+        &self,
+        platform_version: &PlatformVersion,
+        inputs: &BTreeMap<PlatformAddress, (AddressNonce, Credits)>,
+        output: Option<(PlatformAddress, Credits)>,
+        key_count: usize,
+    ) -> u64 {
+        let legacy =
+            self.estimate_identity_create_from_addresses(inputs.len(), output.is_some(), key_count);
+
+        let public_keys = match IdentityPublicKeyInCreation::default_versioned(platform_version) {
+            Ok(key) => std::iter::repeat_n(key, key_count).collect(),
+            Err(_) => Vec::new(),
+        };
+
+        let transition =
+            IdentityCreateFromAddressesTransition::V0(IdentityCreateFromAddressesTransitionV0 {
+                public_keys,
+                inputs: inputs.clone(),
+                output,
+                fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+                user_fee_increase: 0,
+                input_witnesses: Vec::new(),
+            });
+
+        let transition_fee = Self::estimate_fee_from_transition(&transition, platform_version);
+
+        // TODO(dashpay/platform#3040): Remove legacy estimation once transition-based is accurate.
+        legacy.max(transition_fee)
+    }
+
+    /// Estimate fee for identity top-up from Platform addresses.
+    ///
+    /// Computes `max(legacy, transition)` internally.
+    pub fn estimate_identity_topup_from_addresses_fee(
+        &self,
+        platform_version: &PlatformVersion,
+        inputs: &BTreeMap<PlatformAddress, (AddressNonce, Credits)>,
+        output: Option<(PlatformAddress, Credits)>,
+        identity_id: Identifier,
+    ) -> u64 {
+        let legacy = self.estimate_identity_topup_from_addresses(inputs.len());
+
+        let transition =
+            IdentityTopUpFromAddressesTransition::V0(IdentityTopUpFromAddressesTransitionV0 {
+                inputs: inputs.clone(),
+                output,
+                identity_id,
+                fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+                user_fee_increase: 0,
+                input_witnesses: Vec::new(),
+            });
+
+        let transition_fee = Self::estimate_fee_from_transition(&transition, platform_version);
+
+        // TODO(dashpay/platform#3040): Remove legacy estimation once transition-based is accurate.
+        legacy.max(transition_fee)
     }
 }
 
@@ -999,27 +1132,6 @@ mod tests {
         let expected = base_registration + min_fee + storage + processing + seeks;
         assert_eq!(fee, expected);
         // ~0.1 DASH for a simple contract (base registration fee dominates)
-    }
-
-    #[test]
-    fn test_contract_create_detailed_with_token() {
-        let estimator = PlatformFeeEstimator::new();
-        // Contract with a token
-        let fee = estimator.estimate_contract_create_detailed(
-            500,   // contract bytes
-            1,     // 1 document type
-            1,     // 1 non-unique index
-            0,     // 0 unique indexes
-            0,     // 0 contested indexes
-            true,  // has token
-            false, // no perpetual distribution
-            false, // no pre-programmed distribution
-            0,     // 0 search keywords
-        );
-        // Base: 0.1 DASH + Document type: 0.02 DASH + Index: 0.01 DASH + Token: 0.1 DASH
-        // = 0.23 DASH + storage fees
-        let expected_registration = 10_000_000_000 + 2_000_000_000 + 1_000_000_000 + 10_000_000_000;
-        assert!(fee >= expected_registration);
     }
 
     #[test]

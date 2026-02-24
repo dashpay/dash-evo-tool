@@ -99,7 +99,7 @@ impl AppContext {
                         _used_utxos,
                         wallet_seed_hash,
                     ) = {
-                        let mut wallet = wallet.write().unwrap();
+                        let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                         let seed_hash = wallet.seed_hash();
                         let tx_result = match wallet.top_up_asset_lock_transaction(
                             sdk.network,

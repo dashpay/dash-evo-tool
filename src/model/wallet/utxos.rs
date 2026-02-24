@@ -17,6 +17,11 @@ impl Wallet {
     /// Use this when you need to inspect or validate the selection before
     /// committing; call [`Self::remove_selected_utxos`] only once the operation
     /// is guaranteed to succeed.
+    ///
+    /// **Important:** The caller must hold the wallet write lock (`&mut self` on `Wallet`)
+    /// continuously from this call through the corresponding [`Self::remove_selected_utxos`]
+    /// call.  Dropping the lock between selection and removal would allow a concurrent
+    /// caller to select the same UTXOs, creating a double-spend.
     #[allow(clippy::type_complexity)]
     pub fn select_unspent_utxos_for(
         &self,
@@ -24,7 +29,8 @@ impl Wallet {
         fee: u64,
         allow_take_fee_from_amount: bool,
     ) -> Option<(BTreeMap<OutPoint, (TxOut, Address)>, Option<u64>)> {
-        let mut required: i64 = (amount + fee) as i64;
+        let target = amount.checked_add(fee)?;
+        let mut required: i64 = i64::try_from(target).ok()?;
         let mut selected_utxos = BTreeMap::new();
 
         for (address, outpoints) in self.utxos.iter() {
@@ -39,7 +45,7 @@ impl Wallet {
 
         if required > 0 {
             if allow_take_fee_from_amount {
-                let total_collected = (amount + fee) as i64 - required;
+                let total_collected = target as i64 - required;
                 if total_collected >= amount as i64 {
                     let missing_fee = required; // required > 0
                     let adjusted_amount = amount as i64 - missing_fee;
@@ -54,7 +60,7 @@ impl Wallet {
                 None
             }
         } else {
-            let total_input = (amount + fee) as i64 - required;
+            let total_input = target as i64 - required;
             let change = total_input as u64 - amount - fee;
             let change_option = if change > 0 { Some(change) } else { None };
             Some((selected_utxos, change_option))

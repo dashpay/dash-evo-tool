@@ -92,7 +92,7 @@ impl AppContext {
             RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key, _, _used_utxos) = {
-                    let mut wallet = wallet.write().unwrap();
+                    let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                     wallet_id = wallet.seed_hash();
                     match wallet.registration_asset_lock_transaction(
                         sdk.network,

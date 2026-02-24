@@ -222,6 +222,17 @@ impl WalletsBalancesScreen {
             .map(|(cat, _)| *cat == AccountCategory::PlatformPayment)
             .unwrap_or(false);
 
+        // Reset sort column if it refers to a column not visible for the current account type
+        if is_platform_account
+            && matches!(
+                self.sort_column,
+                SortColumn::UTXOs | SortColumn::TotalReceived
+            )
+        {
+            self.sort_column = SortColumn::Balance;
+            self.sort_order = SortOrder::Descending;
+        }
+
         // Render the table
         let mut builder = TableBuilder::new(ui)
             .id_salt("addresses_table")

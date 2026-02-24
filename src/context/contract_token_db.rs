@@ -8,21 +8,28 @@ use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use rusqlite::Result;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 impl AppContext {
-    /// Retrieves all contracts from the database plus the system contracts from app context.
+    /// Retrieves system contracts plus contracts from the database.
+    ///
+    /// System contracts are always returned first in fixed order:
+    /// `dpns`, `token_history`, `withdrawals`, `keyword_search`, `dashpay`.
+    /// DB contracts are appended after and deduplicated by contract id against system contracts.
+    ///
+    /// `limit` and `offset` are applied to the DB query only. If `offset` is provided
+    /// without a `limit`, an unbounded limit is used so offset semantics remain valid.
     pub fn get_contracts(
         &self,
         limit: Option<u32>,
         offset: Option<u32>,
     ) -> Result<Vec<QualifiedContract>> {
-        // Get contracts from the database
-        let mut contracts = self.db.get_contracts(self, limit, offset)?;
+        let db_limit = limit.or(offset.map(|_| u32::MAX));
+        let db_contracts = self.db.get_contracts(self, db_limit, offset)?;
 
-        // Build the list of system contracts to prepend
-        let system_contracts = vec![
+        let system_contracts = [
             QualifiedContract {
                 contract: Arc::clone(&self.dpns_contract).as_ref().clone(),
                 alias: Some("dpns".to_string()),
@@ -45,20 +52,18 @@ impl AppContext {
             },
         ];
 
-        // Collect system contract IDs in a map to deduplicate DB contracts that match.
-        let system_contracts_by_id: std::collections::BTreeMap<_, _> = system_contracts
-            .iter()
-            .map(|c| (c.contract.id(), ()))
-            .collect();
-
-        // Remove any DB contracts that duplicate a system contract
-        contracts.retain(|c| !system_contracts_by_id.contains_key(&c.contract.id()));
-
-        // Prepend system contracts in order
-        let mut result = system_contracts;
-        result.append(&mut contracts);
-
-        Ok(result)
+        let mut seen_contract_ids = BTreeMap::new();
+        Ok(system_contracts
+            .into_iter()
+            .chain(db_contracts)
+            .filter_map(|qualified_contract| {
+                let contract_id = qualified_contract.contract.id();
+                seen_contract_ids
+                    .insert(contract_id, ())
+                    .is_none()
+                    .then_some(qualified_contract)
+            })
+            .collect())
     }
 
     pub fn get_contract_by_id(

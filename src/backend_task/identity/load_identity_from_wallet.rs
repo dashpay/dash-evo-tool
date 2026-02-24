@@ -160,10 +160,11 @@ impl AppContext {
             let mut wallet = wallet_arc_ref.wallet.write().unwrap();
             wallet_seed_hash = wallet.seed_hash();
             wallet.identity_authentication_ecdsa_public_keys_data_map(
+                self,
+                true,
                 self.network,
                 identity_index,
                 0..top_bound,
-                Some(self),
             )?
         };
 

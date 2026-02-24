@@ -21,11 +21,11 @@ impl AppContext {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
 
             wallet_guard.registration_asset_lock_transaction(
+                self,
                 self.network,
                 amount_duffs,
                 allow_take_fee_from_amount,
                 identity_index,
-                Some(self),
             )?
         };
 
@@ -64,12 +64,12 @@ impl AppContext {
             let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
 
             wallet_guard.top_up_asset_lock_transaction(
+                self,
                 self.network,
                 amount_duffs,
                 allow_take_fee_from_amount,
                 identity_index,
                 top_up_index,
-                Some(self),
             )?
         };
 

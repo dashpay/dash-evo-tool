@@ -163,11 +163,11 @@ impl Wallet {
     #[allow(clippy::type_complexity)]
     pub fn registration_asset_lock_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
         identity_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
@@ -177,29 +177,26 @@ impl Wallet {
         ),
         String,
     > {
-        let private_key = self.identity_registration_ecdsa_private_key(
-            network,
-            identity_index,
-            register_addresses,
-        )?;
+        let private_key =
+            self.identity_registration_ecdsa_private_key(app_context, network, identity_index)?;
         self.asset_lock_transaction_from_private_key(
+            app_context,
             network,
             amount,
             allow_take_fee_from_amount,
             private_key,
-            register_addresses,
         )
     }
 
     #[allow(clippy::type_complexity)]
     pub fn top_up_asset_lock_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
         identity_index: u32,
         top_up_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
@@ -210,17 +207,17 @@ impl Wallet {
         String,
     > {
         let private_key = self.identity_top_up_ecdsa_private_key(
+            app_context,
             network,
             identity_index,
             top_up_index,
-            register_addresses,
         )?;
         self.asset_lock_transaction_from_private_key(
+            app_context,
             network,
             amount,
             allow_take_fee_from_amount,
             private_key,
-            register_addresses,
         )
     }
 
@@ -229,10 +226,10 @@ impl Wallet {
     #[allow(clippy::type_complexity)]
     pub fn generic_asset_lock_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
-        register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
@@ -256,11 +253,11 @@ impl Wallet {
 
         let (tx, returned_private_key, change_address, used_utxos) = self
             .asset_lock_transaction_from_private_key(
+                app_context,
                 network,
                 amount,
                 allow_take_fee_from_amount,
                 private_key,
-                register_addresses,
             )?;
 
         Ok((
@@ -275,11 +272,11 @@ impl Wallet {
     #[allow(clippy::type_complexity)]
     fn asset_lock_transaction_from_private_key(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
         private_key: PrivateKey,
-        register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
@@ -323,7 +320,7 @@ impl Wallet {
         };
 
         let (change_output, change_address) = if let Some(change) = change_option {
-            let change_address = self.change_address(network, register_addresses)?;
+            let change_address = self.change_address(network, Some(app_context))?;
             (
                 Some(TxOut {
                     value: change,
@@ -431,27 +428,22 @@ impl Wallet {
             })?;
 
         // Transaction is fully built and signed; commit the UTXO removals now.
-        if let Some(context) = register_addresses {
-            self.remove_selected_utxos(&utxos, &context.db, network)?;
-        }
+        self.remove_selected_utxos(&utxos, &app_context.db, network)?;
 
         Ok((tx, private_key, change_address, utxos))
     }
 
     pub fn registration_asset_lock_transaction_for_utxo(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         utxo: OutPoint,
         previous_tx_output: TxOut,
         input_address: Address,
         identity_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<(Transaction, PrivateKey), String> {
-        let private_key = self.identity_registration_ecdsa_private_key(
-            network,
-            identity_index,
-            register_addresses,
-        )?;
+        let private_key =
+            self.identity_registration_ecdsa_private_key(app_context, network, identity_index)?;
         self.asset_lock_transaction_for_utxo_from_private_key(
             network,
             utxo,
@@ -464,19 +456,19 @@ impl Wallet {
     #[allow(clippy::too_many_arguments)]
     pub fn top_up_asset_lock_transaction_for_utxo(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         utxo: OutPoint,
         previous_tx_output: TxOut,
         input_address: Address,
         identity_index: u32,
         top_up_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<(Transaction, PrivateKey), String> {
         let private_key = self.identity_top_up_ecdsa_private_key(
+            app_context,
             network,
             identity_index,
             top_up_index,
-            register_addresses,
         )?;
         self.asset_lock_transaction_for_utxo_from_private_key(
             network,

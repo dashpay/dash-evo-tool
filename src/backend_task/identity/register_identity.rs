@@ -95,11 +95,11 @@ impl AppContext {
                     let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                     wallet_id = wallet.seed_hash();
                     match wallet.registration_asset_lock_transaction(
+                        self,
                         sdk.network,
                         amount,
                         true,
                         identity_index,
-                        Some(self),
                     ) {
                         Ok(transaction) => transaction,
                         Err(e) => {
@@ -109,11 +109,11 @@ impl AppContext {
                                 return Err(e);
                             }
                             wallet.registration_asset_lock_transaction(
+                                self,
                                 sdk.network,
                                 amount,
                                 true,
                                 identity_index,
-                                Some(self),
                             )?
                         }
                     }
@@ -201,12 +201,12 @@ impl AppContext {
                     let mut wallet = wallet.write().unwrap();
                     wallet_id = wallet.seed_hash();
                     wallet.registration_asset_lock_transaction_for_utxo(
+                        self,
                         sdk.network,
                         utxo,
                         tx_out.clone(),
                         input_address.clone(),
                         identity_index,
-                        Some(self),
                     )?
                 };
 

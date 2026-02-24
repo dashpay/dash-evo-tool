@@ -1134,6 +1134,158 @@ mod tests {
         // ~0.1 DASH for a simple contract (base registration fee dominates)
     }
 
+    // ── Unified (max of legacy + transition) fee tests ─────────────────
+
+    /// Helper: create a dummy PlatformAddress for testing.
+    fn test_platform_address(byte: u8) -> PlatformAddress {
+        PlatformAddress::P2pkh([byte; 20])
+    }
+
+    fn test_platform_version() -> &'static PlatformVersion {
+        PlatformVersion::latest()
+    }
+
+    #[test]
+    fn test_platform_to_core_fee_is_positive() {
+        let estimator = PlatformFeeEstimator::new();
+        let pv = test_platform_version();
+        let addr = test_platform_address(1);
+        let mut inputs = BTreeMap::new();
+        inputs.insert(addr, 1_000_000_000u64);
+        let output_script = CoreScript::from_bytes(vec![0x76, 0xa9, 0x14]); // dummy P2PKH prefix
+        let fee = estimator.estimate_platform_to_core_fee(pv, &inputs, &output_script);
+        assert!(fee > 0, "platform-to-core fee must be positive, got {fee}");
+    }
+
+    #[test]
+    fn test_platform_to_core_fee_grows_with_inputs() {
+        let estimator = PlatformFeeEstimator::new();
+        let pv = test_platform_version();
+        let output_script = CoreScript::from_bytes(vec![0x76, 0xa9, 0x14]);
+
+        let mut inputs_1 = BTreeMap::new();
+        inputs_1.insert(test_platform_address(1), 1_000_000_000u64);
+        let fee_1 = estimator.estimate_platform_to_core_fee(pv, &inputs_1, &output_script);
+
+        let mut inputs_3 = BTreeMap::new();
+        for i in 0..3u8 {
+            inputs_3.insert(test_platform_address(i), 500_000_000u64);
+        }
+        let fee_3 = estimator.estimate_platform_to_core_fee(pv, &inputs_3, &output_script);
+        assert!(
+            fee_3 > fee_1,
+            "fee with 3 inputs ({fee_3}) should exceed fee with 1 input ({fee_1})"
+        );
+    }
+
+    #[test]
+    fn test_platform_to_platform_fee_is_positive() {
+        let estimator = PlatformFeeEstimator::new();
+        let pv = test_platform_version();
+        let mut inputs = BTreeMap::new();
+        inputs.insert(test_platform_address(1), 1_000_000_000u64);
+        let dest = test_platform_address(2);
+        let fee = estimator.estimate_platform_to_platform_fee(pv, &inputs, &dest);
+        assert!(
+            fee > 0,
+            "platform-to-platform fee must be positive, got {fee}"
+        );
+    }
+
+    #[test]
+    fn test_core_to_platform_fee_is_positive() {
+        let estimator = PlatformFeeEstimator::new();
+        let pv = test_platform_version();
+        let dest = test_platform_address(1);
+        let fee = estimator.estimate_core_to_platform_fee(pv, &dest);
+        assert!(fee > 0, "core-to-platform fee must be positive, got {fee}");
+    }
+
+    #[test]
+    fn test_identity_create_from_addresses_fee_is_positive() {
+        let estimator = PlatformFeeEstimator::new();
+        let pv = test_platform_version();
+        let mut inputs = BTreeMap::new();
+        inputs.insert(test_platform_address(1), (0u32, 5_000_000_000u64));
+        let fee = estimator.estimate_identity_create_from_addresses_fee(pv, &inputs, None, 2);
+        assert!(
+            fee > 0,
+            "identity-create-from-addresses fee must be positive, got {fee}"
+        );
+    }
+
+    #[test]
+    fn test_identity_create_from_addresses_fee_grows_with_keys() {
+        let estimator = PlatformFeeEstimator::new();
+        let pv = test_platform_version();
+        let mut inputs = BTreeMap::new();
+        inputs.insert(test_platform_address(1), (0u32, 5_000_000_000u64));
+        let fee_2 = estimator.estimate_identity_create_from_addresses_fee(pv, &inputs, None, 2);
+        let fee_5 = estimator.estimate_identity_create_from_addresses_fee(pv, &inputs, None, 5);
+        assert!(
+            fee_5 > fee_2,
+            "fee with 5 keys ({fee_5}) should exceed fee with 2 keys ({fee_2})"
+        );
+    }
+
+    #[test]
+    fn test_identity_topup_from_addresses_fee_is_positive() {
+        let estimator = PlatformFeeEstimator::new();
+        let pv = test_platform_version();
+        let mut inputs = BTreeMap::new();
+        inputs.insert(test_platform_address(1), (0u32, 1_000_000_000u64));
+        let identity_id = Identifier::default();
+        let fee =
+            estimator.estimate_identity_topup_from_addresses_fee(pv, &inputs, None, identity_id);
+        assert!(
+            fee > 0,
+            "identity-topup-from-addresses fee must be positive, got {fee}"
+        );
+    }
+
+    #[test]
+    fn test_unified_fees_at_least_as_high_as_legacy() {
+        // The unified methods return max(legacy, transition). Verify they are
+        // at least as high as the legacy estimate alone.
+        let estimator = PlatformFeeEstimator::new();
+        let pv = test_platform_version();
+
+        // Platform → Platform
+        let mut inputs = BTreeMap::new();
+        inputs.insert(test_platform_address(1), 1_000_000_000u64);
+        let legacy_transfer = estimator.legacy_platform_transfer_fee(1);
+        let unified_transfer =
+            estimator.estimate_platform_to_platform_fee(pv, &inputs, &test_platform_address(2));
+        assert!(
+            unified_transfer >= legacy_transfer,
+            "unified ({unified_transfer}) must be >= legacy ({legacy_transfer})"
+        );
+
+        // Identity create from addresses
+        let mut id_inputs = BTreeMap::new();
+        id_inputs.insert(test_platform_address(1), (0u32, 5_000_000_000u64));
+        let legacy_create = estimator.estimate_identity_create_from_addresses(1, false, 2);
+        let unified_create =
+            estimator.estimate_identity_create_from_addresses_fee(pv, &id_inputs, None, 2);
+        assert!(
+            unified_create >= legacy_create,
+            "unified create ({unified_create}) must be >= legacy ({legacy_create})"
+        );
+
+        // Identity topup from addresses
+        let legacy_topup = estimator.estimate_identity_topup_from_addresses(1);
+        let unified_topup = estimator.estimate_identity_topup_from_addresses_fee(
+            pv,
+            &id_inputs,
+            None,
+            Identifier::default(),
+        );
+        assert!(
+            unified_topup >= legacy_topup,
+            "unified topup ({unified_topup}) must be >= legacy ({legacy_topup})"
+        );
+    }
+
     #[test]
     fn test_format_credits() {
         // 1 DASH = 100,000,000,000 credits

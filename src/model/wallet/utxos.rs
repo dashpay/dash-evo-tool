@@ -10,9 +10,13 @@ impl Wallet {
     /// Selects UTXOs sufficient to cover `amount + fee` without removing them from the wallet.
     ///
     /// Returns the selected UTXOs and an optional change amount, or `None` if there are
-    /// insufficient funds. Use this when you need to inspect or validate the selection before
-    /// committing; call [`Self::take_unspent_utxos_for`] (or remove the UTXOs manually) only
-    /// once the operation is guaranteed to succeed.
+    /// insufficient funds.  The returned change value is computed from the caller-supplied
+    /// `fee` parameter; callers that recalculate fees afterward (e.g., based on the actual
+    /// number of inputs) should ignore the change value and recompute it.
+    ///
+    /// Use this when you need to inspect or validate the selection before
+    /// committing; call [`Self::remove_selected_utxos`] only once the operation
+    /// is guaranteed to succeed.
     #[allow(clippy::type_complexity)]
     pub fn select_unspent_utxos_for(
         &self,
@@ -57,21 +61,55 @@ impl Wallet {
         }
     }
 
-    /// Removes UTXOs previously returned by [`Self::select_unspent_utxos_for`] from the wallet.
+    /// Removes the given UTXOs from the wallet's in-memory UTXO set, persists
+    /// the removal to the database, and recalculates affected address balances.
+    ///
+    /// Typically called with the result of [`Self::select_unspent_utxos_for`]
+    /// after the transaction has been fully built and signed.
+    ///
+    /// When `context` is `None`, only the in-memory state is updated (useful
+    /// for tests or when no database persistence is needed).
     pub fn remove_selected_utxos(
         &mut self,
+        context: Option<&AppContext>,
         selected: &BTreeMap<OutPoint, (TxOut, Address)>,
-    ) {
+    ) -> Result<(), String> {
         for (outpoint, (_, address)) in selected {
             if let Some(outpoints) = self.utxos.get_mut(address) {
                 outpoints.remove(outpoint);
                 if outpoints.is_empty() {
                     self.utxos.remove(address);
                 }
+            } else {
+                tracing::debug!(
+                    ?outpoint,
+                    %address,
+                    "remove_selected_utxos: outpoint not found in wallet, skipping"
+                );
             }
         }
+
+        if let Some(context) = context {
+            // Drop used UTXOs from database
+            for outpoint in selected.keys() {
+                context
+                    .db
+                    .drop_utxo(outpoint, &context.network.to_string())
+                    .map_err(|e| e.to_string())?;
+            }
+
+            // Recalculate balances for affected addresses
+            self.recalculate_affected_address_balances(selected, context)?;
+        }
+
+        Ok(())
     }
 
+    /// Convenience wrapper: selects and immediately removes UTXOs (in-memory only).
+    ///
+    /// Used in tests and contexts without database persistence.  Production code
+    /// should prefer [`Self::select_unspent_utxos_for`] followed by
+    /// [`Self::remove_selected_utxos`] with a context.
     #[allow(clippy::type_complexity)]
     pub fn take_unspent_utxos_for(
         &mut self,
@@ -81,7 +119,9 @@ impl Wallet {
     ) -> Option<(BTreeMap<OutPoint, (TxOut, Address)>, Option<u64>)> {
         let (selected, change_option) =
             self.select_unspent_utxos_for(amount, fee, allow_take_fee_from_amount)?;
-        self.remove_selected_utxos(&selected);
+        // In-memory only — no context for DB persistence.
+        self.remove_selected_utxos(None, &selected)
+            .expect("remove_selected_utxos without context cannot fail");
         Some((selected, change_option))
     }
 

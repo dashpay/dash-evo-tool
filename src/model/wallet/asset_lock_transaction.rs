@@ -395,7 +395,7 @@ impl Wallet {
             })?;
 
         // Transaction is fully built and signed; commit the UTXO removals now.
-        self.remove_selected_utxos(&utxos);
+        self.remove_selected_utxos(register_addresses, &utxos)?;
 
         Ok((tx, private_key, change_address, utxos))
     }

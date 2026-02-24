@@ -510,11 +510,10 @@ fn render_banner(
                 let dismiss_width = 40.0;
                 let text_width = (available_width - dismiss_width - 30.0).max(100.0);
 
-                // Message text with wrapping
-                ui.add_sized(
-                    egui::vec2(text_width, 0.0),
-                    egui::Label::new(egui::RichText::new(text).color(fg_color)).wrap(),
-                );
+                // Message text with wrapping, left-aligned
+                ui.allocate_ui(egui::vec2(text_width, 0.0), |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(text).color(fg_color)).wrap());
+                });
 
                 // Right-aligned: annotation + dismiss
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {

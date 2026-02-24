@@ -95,10 +95,10 @@ the fee is recalculated and the tx is rebuilt with the correct fee.
 
 ---
 
-### A3: Subtract Fee from Amount
+### A3: Subtract Fee from Amount — Tight Balance (All Funds Sent)
 
 **Purpose:** Verify that "subtract fee from amount" correctly deducts the dynamically computed
-fee from the output, not a hardcoded value.
+fee from the output when the wallet only has enough to cover the amount, not amount + fee.
 
 #### Preconditions
 - Core wallet has a single UTXO of 50,000 duffs.
@@ -111,8 +111,34 @@ fee from the output, not a hardcoded value.
 
 #### Expected Results
 - The transaction broadcasts successfully.
-- The recipient receives 50,000 - (dynamic fee) duffs, not 50,000 - 1,000 duffs (old hardcoded).
-- The wallet balance drops to 0 (or near 0 if dust remains).
+- The recipient receives 50,000 - (dynamic fee) duffs.
+- The wallet balance drops to 0 (no change output).
+
+---
+
+### A3a: Subtract Fee from Amount — Normal Balance (Sufficient Funds)
+
+**Purpose:** Verify that "subtract fee from amount" works when the wallet has plenty of funds.
+Previously this was broken: the checkbox was only effective in edge cases where the wallet
+barely covered the amount. Now the fee is always deducted from the recipient's amount.
+
+#### Preconditions
+- Core wallet has at least 200,000 duffs in UTXOs (well above the send amount).
+
+#### Steps
+1. Navigate to the Wallets screen -> Send.
+2. Enter a valid recipient address and 100,000 duffs.
+3. Check "subtract fee from amount".
+4. Note the estimated fee displayed (e.g., ~300 duffs for a 1-input tx).
+5. Confirm.
+
+#### Expected Results
+- The transaction broadcasts successfully.
+- The recipient receives 100,000 - (dynamic fee) duffs (e.g., ~99,700 duffs).
+- The wallet balance decreases by exactly 100,000 duffs (not 100,000 + fee).
+  Change = total_input - 100,000.
+- Compare with a transaction WITHOUT the checkbox: in that case the recipient gets
+  the full 100,000 and the wallet balance drops by 100,000 + fee.
 
 ---
 

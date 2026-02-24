@@ -1691,19 +1691,25 @@ impl Wallet {
         // Select UTXOs without removing them yet — UTXOs are only removed after
         // the transaction is fully built and signed, so that a failure at any later
         // step cannot permanently drop UTXOs from the wallet.
-        let (utxos, change_option) = self
-            .select_unspent_utxos_for(total_amount, fee, subtract_fee_from_amount)
-            .ok_or_else(|| "Insufficient funds".to_string())?;
+        //
+        // When subtract_fee_from_amount is true the fee is taken from the
+        // recipient amount(s), so we only need UTXOs covering total_amount
+        // (not total_amount + fee).
+        let (utxos, change_option) = if subtract_fee_from_amount {
+            self.select_unspent_utxos_for(total_amount, 0, false)
+                .ok_or_else(|| "Insufficient funds".to_string())?
+        } else {
+            self.select_unspent_utxos_for(total_amount, fee, false)
+                .ok_or_else(|| "Insufficient funds".to_string())?
+        };
 
         // Build outputs for each recipient
-        let mut outputs: Vec<TxOut> = if change_option.is_none() && subtract_fee_from_amount {
-            // If we're subtracting fee and using all funds, we need to reduce recipient amounts proportionally
-            let total_input: u64 = utxos.values().map(|(tx_out, _)| tx_out.value).sum();
-            let available_after_fee = total_input
+        let mut outputs: Vec<TxOut> = if subtract_fee_from_amount {
+            // Distribute the fee reduction proportionally across recipients.
+            // Each recipient receives: amount - (amount / total_amount) * fee.
+            let available_after_fee = total_amount
                 .checked_sub(fee)
-                .ok_or_else(|| "Fee exceeds available amount".to_string())?;
-
-            // Distribute the reduction proportionally across recipients
+                .ok_or_else(|| "Fee exceeds send amount".to_string())?;
             let reduction_ratio = available_after_fee as f64 / total_amount as f64;
 
             recipients
@@ -2766,6 +2772,115 @@ mod tests {
         let (utxos, change) = result.unwrap();
         assert!(utxos.is_empty());
         assert!(change.is_none());
+    }
+
+    // ========================================================================
+    // build_multi_recipient_payment_transaction tests
+    // ========================================================================
+
+    /// Helper: create a test wallet with a BIP44-derived address and a single
+    /// UTXO of the given value.  The address is registered in `known_addresses`
+    /// so that `private_key_for_address` can sign for it.
+    fn test_wallet_with_bip44_utxo(value: u64) -> (Wallet, Address) {
+        let mut wallet = test_wallet();
+        let network = Network::Testnet;
+        let secp = Secp256k1::new();
+
+        // Derive the first BIP44 receive address: m/44'/1'/0'/0/0
+        let extension = DerivationPath::from(
+            [
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .as_slice(),
+        );
+        let pubkey = wallet
+            .master_bip44_ecdsa_extended_public_key
+            .derive_pub(&secp, &extension)
+            .expect("bip44 derivation")
+            .to_pub();
+        let address = Address::p2pkh(&pubkey, network);
+
+        let full_path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]);
+        wallet.known_addresses.insert(address.clone(), full_path);
+
+        add_utxo(&mut wallet, &address, 1, 0, value);
+        (wallet, address)
+    }
+
+    #[test]
+    fn test_subtract_fee_from_amount_with_sufficient_funds() {
+        let (mut wallet, _utxo_addr) = test_wallet_with_bip44_utxo(200_000);
+        let recipient = test_address(10);
+        let send_amount = 100_000u64;
+        let fee = 10_000u64;
+
+        // With subtract_fee_from_amount=true, recipient should receive
+        // send_amount - fee, and the fee comes from the recipient share.
+        let tx = wallet
+            .build_multi_recipient_payment_transaction(
+                Network::Testnet,
+                &[(recipient.clone(), send_amount)],
+                fee,
+                true, // subtract_fee_from_amount
+                None,
+            )
+            .expect("should build tx");
+
+        let recipient_output = tx
+            .output
+            .iter()
+            .find(|o| o.script_pubkey == recipient.script_pubkey())
+            .expect("should have recipient output");
+        assert_eq!(
+            recipient_output.value,
+            send_amount - fee,
+            "recipient should receive amount minus fee"
+        );
+
+        // Implied fee must equal the requested fee.
+        let total_input = 200_000u64;
+        let total_output: u64 = tx.output.iter().map(|o| o.value).sum();
+        assert_eq!(total_input - total_output, fee, "implied fee must match");
+    }
+
+    #[test]
+    fn test_no_subtract_fee_sends_full_amount() {
+        let (mut wallet, _utxo_addr) = test_wallet_with_bip44_utxo(200_000);
+        let recipient = test_address(10);
+        let send_amount = 100_000u64;
+        let fee = 10_000u64;
+
+        // With subtract_fee_from_amount=false, recipient gets the full amount.
+        let tx = wallet
+            .build_multi_recipient_payment_transaction(
+                Network::Testnet,
+                &[(recipient.clone(), send_amount)],
+                fee,
+                false, // subtract_fee_from_amount
+                None,
+            )
+            .expect("should build tx");
+
+        let recipient_output = tx
+            .output
+            .iter()
+            .find(|o| o.script_pubkey == recipient.script_pubkey())
+            .expect("should have recipient output");
+        assert_eq!(
+            recipient_output.value, send_amount,
+            "recipient should receive full amount"
+        );
+
+        let total_input = 200_000u64;
+        let total_output: u64 = tx.output.iter().map(|o| o.value).sum();
+        assert_eq!(total_input - total_output, fee, "implied fee must match");
     }
 
     /// Helper: register a wallet address in the test database so that

@@ -53,10 +53,10 @@ impl AppContext {
 
             // Try to create the asset lock transaction, reload UTXOs if needed
             match wallet.generic_asset_lock_transaction(
+                self,
                 self.network,
                 asset_lock_amount,
                 allow_take_fee_from_amount,
-                Some(self),
             ) {
                 Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
                 Err(e) => {
@@ -67,10 +67,10 @@ impl AppContext {
                     }
                     let (tx, private_key, address, _change, utxos) = wallet
                         .generic_asset_lock_transaction(
+                            self,
                             self.network,
                             asset_lock_amount,
                             allow_take_fee_from_amount,
-                            Some(self),
                         )?;
                     (tx, private_key, address, utxos)
                 }

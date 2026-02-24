@@ -102,12 +102,12 @@ impl AppContext {
                         let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                         let seed_hash = wallet.seed_hash();
                         let tx_result = match wallet.top_up_asset_lock_transaction(
+                            self,
                             sdk.network,
                             amount,
                             true,
                             identity_index,
                             top_up_index,
-                            Some(self),
                         ) {
                             Ok(transaction) => transaction,
                             Err(e) => {
@@ -117,12 +117,12 @@ impl AppContext {
                                     return Err(e);
                                 }
                                 wallet.top_up_asset_lock_transaction(
+                                    self,
                                     sdk.network,
                                     amount,
                                     true,
                                     identity_index,
                                     top_up_index,
-                                    Some(self),
                                 )?
                             }
                         };
@@ -179,13 +179,13 @@ impl AppContext {
                         let mut wallet = wallet.write().unwrap();
                         let seed_hash = wallet.seed_hash();
                         let tx_result = wallet.top_up_asset_lock_transaction_for_utxo(
+                            self,
                             sdk.network,
                             utxo,
                             tx_out.clone(),
                             input_address.clone(),
                             identity_index,
                             top_up_index,
-                            Some(self),
                         )?;
                         (tx_result.0, tx_result.1, seed_hash)
                     };

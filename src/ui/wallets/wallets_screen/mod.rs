@@ -34,7 +34,8 @@ use std::sync::{Arc, RwLock};
 use crate::model::wallet::single_key::SingleKeyWallet;
 use address_table::{SortColumn, SortOrder};
 use dialogs::{
-    FundPlatformAddressDialogState, PrivateKeyDialogState, ReceiveDialogState, SendDialogState,
+    FundPlatformAddressDialogState, MineDialogState, PrivateKeyDialogState, ReceiveDialogState,
+    SendDialogState,
 };
 
 /// Refresh mode for dev mode dropdown - controls what gets refreshed
@@ -101,6 +102,7 @@ pub struct WalletsBalancesScreen {
     receive_dialog: ReceiveDialogState,
     fund_platform_dialog: FundPlatformAddressDialogState,
     private_key_dialog: PrivateKeyDialogState,
+    mine_dialog: MineDialogState,
     selected_account: Option<(AccountCategory, Option<u32>)>,
     show_zero_balance_addresses: bool,
     /// Pending refresh of platform address balances (triggered after transfers)
@@ -203,6 +205,7 @@ impl WalletsBalancesScreen {
             receive_dialog: ReceiveDialogState::default(),
             fund_platform_dialog: FundPlatformAddressDialogState::default(),
             private_key_dialog: PrivateKeyDialogState::default(),
+            mine_dialog: MineDialogState::default(),
             selected_account: None,
             show_zero_balance_addresses: false,
             pending_platform_balance_refresh: None,
@@ -937,6 +940,23 @@ impl WalletsBalancesScreen {
                 .clicked()
             {
                 action |= self.open_receive_dialog(ctx);
+            }
+
+            if matches!(
+                self.app_context.network,
+                dash_sdk::dpp::dashcore::Network::Regtest
+                    | dash_sdk::dpp::dashcore::Network::Devnet
+            ) && self.app_context.is_developer_mode()
+                && self.app_context.core_backend_mode() == CoreBackendMode::Rpc
+                && ui
+                    .button(
+                        RichText::new("Mine")
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong(),
+                    )
+                    .clicked()
+            {
+                self.open_mine_dialog();
             }
         });
         action
@@ -1698,6 +1718,7 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= self.render_send_dialog(ctx);
         action |= self.render_receive_dialog(ctx);
         action |= self.render_fund_platform_dialog(ctx);
+        action |= self.render_mine_dialog(ctx);
         self.render_private_key_dialog(ctx);
 
         // Rename dialog
@@ -2167,6 +2188,10 @@ impl ScreenLike for WalletsBalancesScreen {
             crate::ui::BackendTaskSuccessResult::Message(msg) => {
                 self.refreshing = false;
                 self.display_message(&msg, MessageType::Success);
+            }
+            crate::ui::BackendTaskSuccessResult::MineBlocksSuccess(count) => {
+                self.refreshing = false;
+                self.display_message(&format!("Mined {} block(s)", count), MessageType::Success);
             }
             _ => {}
         }

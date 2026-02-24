@@ -7,6 +7,7 @@ use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{
@@ -14,7 +15,7 @@ use crate::ui::components::styled::{
 };
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, ThemeMode};
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
@@ -109,7 +110,6 @@ pub struct NetworkChooserScreen {
     use_local_spv_node: bool,
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
-    dashmate_auto_update_error: Option<String>,
 }
 
 impl NetworkChooserScreen {
@@ -209,7 +209,6 @@ impl NetworkChooserScreen {
             use_local_spv_node,
             auto_start_spv,
             close_dash_qt_on_exit,
-            dashmate_auto_update_error: None,
         }
     }
 
@@ -456,18 +455,13 @@ impl NetworkChooserScreen {
                         match read_dashmate_rpc_password("local_seed") {
                             Ok(password) => {
                                 self.local_network_dashmate_password = password;
-                                self.dashmate_auto_update_error = None;
                                 auto_update_succeeded = true;
                             }
                             Err(e) => {
                                 tracing::error!("Auto update failed: {e}");
-                                self.dashmate_auto_update_error = Some(e);
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                             }
                         }
-                    }
-
-                    if save_clicked {
-                        self.dashmate_auto_update_error = None;
                     }
 
                     if (save_clicked || auto_update_succeeded)
@@ -507,27 +501,6 @@ impl NetworkChooserScreen {
                         }
                     }
                 });
-
-                // Show error from dashmate auto-update
-                if let Some(ref error) = self.dashmate_auto_update_error {
-                    ui.add_space(4.0);
-                    let error_color = Color32::from_rgb(255, 100, 100);
-                    let error = error.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&error).color(error_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.dashmate_auto_update_error = None;
-                                }
-                            });
-                        });
-                }
             }
         });
 

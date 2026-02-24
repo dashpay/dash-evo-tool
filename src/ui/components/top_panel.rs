@@ -2,6 +2,7 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
+use crate::context::connection_status::OverallConnectionState;
 use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape};
@@ -98,22 +99,25 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     let mut action = AppAction::None;
     let status = app_context.connection_status();
     let backend_mode = status.backend_mode();
-    let connected = status.overall_connected();
-
-    // Get time for pulsating animation (only when connected)
-    let pulse_scale = if connected {
-        let time = ui.ctx().input(|i| i.time as f32);
-        1.0 + 0.2 * (time * 2.0).sin() // Pulsate between 1.0 and 1.2
-    } else {
-        1.0 // No pulsation when disconnected
-    };
+    let overall = status.overall_state();
 
     let dark_mode = ui.ctx().style().visuals.dark_mode;
     let circle_size = 14.0;
-    let color = if connected {
-        DashColors::success_color(dark_mode)
-    } else {
-        DashColors::error_color(dark_mode)
+
+    // Three-state color: green (synced), orange (syncing), red (disconnected)
+    let color = match overall {
+        OverallConnectionState::Synced => DashColors::success_color(dark_mode),
+        OverallConnectionState::Syncing => DashColors::warning_color(dark_mode),
+        OverallConnectionState::Disconnected => DashColors::error_color(dark_mode),
+    };
+
+    // Pulsation: synced = normal pulse, syncing = slower pulse, disconnected = none
+    let time = ui.ctx().input(|i| i.time as f32);
+
+    let pulse_scale = match overall {
+        OverallConnectionState::Synced => 1.0 + 0.2 * (time * 2.0).sin(),
+        OverallConnectionState::Syncing => 1.0 + 0.15 * (time * 1.2).sin(),
+        OverallConnectionState::Disconnected => 1.0, // No pulse when disconnected
     };
 
     // Wrap in a container that can be positioned vertically
@@ -132,7 +136,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     let center = rect.center();
 
                     // Draw the background circle with pulsating effect
-                    let bg_radius = if connected {
+                    let bg_radius = if overall != OverallConnectionState::Disconnected {
                         (circle_size / 2.0 + 3.0) * pulse_scale
                     } else {
                         circle_size / 2.0 // Same size as main circle when disconnected
@@ -143,14 +147,15 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     // Draw the main circle
                     ui.painter().circle_filled(center, circle_size / 2.0, color);
 
-                    // Request repaint for animation (only when connected and pulsating)
-                    if connected {
+                    // Request repaint for animation (only when not disconnected)
+                    if overall != OverallConnectionState::Disconnected {
                         app_context.repaint_animation(ui.ctx());
                     }
                     let tip = status.tooltip_text();
                     let resp = resp.on_hover_text(tip);
 
                     if resp.clicked()
+                        && overall == OverallConnectionState::Disconnected
                         && backend_mode == CoreBackendMode::Rpc
                         && !status.rpc_online()
                     {

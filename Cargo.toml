@@ -97,29 +97,6 @@ winres = "0.1"
 level = "warn"
 check-cfg = ["cfg(tokio_unstable)"]
 
-[patch."https://github.com/dashpay/platform"]
-dapi-grpc = { path = "../platform/packages/dapi-grpc" }
-dash-context-provider = { path = "../platform/packages/rs-context-provider" }
-dash-platform-macros = { path = "../platform/packages/rs-dash-platform-macros" }
-dash-sdk = { path = "../platform/packages/rs-sdk" }
-dashpay-contract = { path = "../platform/packages/dashpay-contract" }
-data-contracts = { path = "../platform/packages/data-contracts" }
-dpns-contract = { path = "../platform/packages/dpns-contract" }
-dpp = { path = "../platform/packages/rs-dpp" }
-drive = { path = "../platform/packages/rs-drive" }
-drive-proof-verifier = { path = "../platform/packages/rs-drive-proof-verifier" }
-feature-flags-contract = { path = "../platform/packages/feature-flags-contract" }
-keyword-search-contract = { path = "../platform/packages/keyword-search-contract" }
-masternode-reward-shares-contract = { path = "../platform/packages/masternode-reward-shares-contract" }
-platform-serialization = { path = "../platform/packages/rs-platform-serialization" }
-platform-serialization-derive = { path = "../platform/packages/rs-platform-serialization-derive" }
-platform-value = { path = "../platform/packages/rs-platform-value" }
-platform-version = { path = "../platform/packages/rs-platform-version" }
-platform-versioning = { path = "../platform/packages/rs-platform-versioning" }
-rs-dapi-client = { path = "../platform/packages/rs-dapi-client" }
-token-history-contract = { path = "../platform/packages/token-history-contract" }
-wallet-utils-contract = { path = "../platform/packages/wallet-utils-contract" }
-withdrawals-contract = { path = "../platform/packages/withdrawals-contract" }
 
 [lints.clippy]
 uninlined_format_args = "allow"

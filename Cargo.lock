@@ -1773,6 +1773,7 @@ dependencies = [
 [[package]]
 name = "dapi-grpc"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "dash-platform-macros",
  "futures-core",
@@ -1840,6 +1841,7 @@ dependencies = [
 [[package]]
 name = "dash-context-provider"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "dpp",
  "drive",
@@ -1929,6 +1931,7 @@ dependencies = [
 [[package]]
 name = "dash-platform-macros"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "heck",
  "quote",
@@ -1938,6 +1941,7 @@ dependencies = [
 [[package]]
 name = "dash-sdk"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2089,6 +2093,7 @@ dependencies = [
 [[package]]
 name = "dashpay-contract"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2099,6 +2104,7 @@ dependencies = [
 [[package]]
 name = "data-contracts"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "dashpay-contract",
  "dpns-contract",
@@ -2351,6 +2357,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "dpns-contract"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2361,6 +2368,7 @@ dependencies = [
 [[package]]
 name = "dpp"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2409,6 +2417,7 @@ dependencies = [
 [[package]]
 name = "drive"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "bincode 2.0.1",
  "byteorder",
@@ -2433,6 +2442,7 @@ dependencies = [
 [[package]]
 name = "drive-proof-verifier"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "bincode 2.0.1",
  "dapi-grpc",
@@ -3014,6 +3024,7 @@ dependencies = [
 [[package]]
 name = "feature-flags-contract"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -4758,6 +4769,7 @@ dependencies = [
 [[package]]
 name = "keyword-search-contract"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -4953,6 +4965,7 @@ dependencies = [
 [[package]]
 name = "masternode-reward-shares-contract"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -6082,6 +6095,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 [[package]]
 name = "platform-serialization"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "bincode 2.0.1",
  "platform-version",
@@ -6090,6 +6104,7 @@ dependencies = [
 [[package]]
 name = "platform-serialization-derive"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6100,6 +6115,7 @@ dependencies = [
 [[package]]
 name = "platform-value"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "base64 0.22.1",
  "bincode 2.0.1",
@@ -6119,6 +6135,7 @@ dependencies = [
 [[package]]
 name = "platform-version"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "bincode 2.0.1",
  "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=56120fb5d0f8abfa9038e018115cdb11c51cde18)",
@@ -6129,6 +6146,7 @@ dependencies = [
 [[package]]
 name = "platform-versioning"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6888,6 +6906,7 @@ dependencies = [
 [[package]]
 name = "rs-dapi-client"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "backon",
  "chrono",
@@ -8077,6 +8096,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 [[package]]
 name = "token-history-contract"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -8847,6 +8867,7 @@ dependencies = [
 [[package]]
 name = "wallet-utils-contract"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -10253,6 +10274,7 @@ dependencies = [
 [[package]]
 name = "withdrawals-contract"
 version = "3.1.0-dev.1"
+source = "git+https://github.com/dashpay/platform?branch=feat%2Fzk#4d7b9be50a3d07c56d72a2721a8307cf2713c833"
 dependencies = [
  "num_enum 0.5.11",
  "platform-value",

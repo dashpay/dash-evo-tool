@@ -240,7 +240,6 @@ impl WalletsBalancesScreen {
             self.sort_order = SortOrder::Descending;
         }
 
-
         // Render the table
         let mut builder = TableBuilder::new(ui)
             .id_salt("addresses_table")

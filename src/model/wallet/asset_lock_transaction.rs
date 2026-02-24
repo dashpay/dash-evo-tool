@@ -110,6 +110,56 @@ pub(crate) fn calculate_asset_lock_fee(
 }
 
 impl Wallet {
+    /// Select UTXOs and compute fee, retrying with the real fee if the initial
+    /// estimate was too low and additional UTXOs are available.
+    #[allow(clippy::type_complexity)]
+    fn select_utxos_with_fee_retry(
+        &self,
+        amount: u64,
+        allow_take_fee_from_amount: bool,
+    ) -> Result<(BTreeMap<OutPoint, (TxOut, Address)>, AssetLockFeeResult), String> {
+        let mut fee_estimate = MIN_ASSET_LOCK_FEE;
+
+        for _ in 0..2 {
+            let (utxos, _) = self
+                .select_unspent_utxos_for(amount, fee_estimate, allow_take_fee_from_amount)
+                .ok_or_else(|| {
+                    format!(
+                        "Not enough spendable funds to create asset lock transaction: \
+                         requested amount {} plus estimated fee {}",
+                        amount, fee_estimate
+                    )
+                })?;
+
+            let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
+            let num_inputs = utxos.len();
+
+            match calculate_asset_lock_fee(
+                total_input_value,
+                amount,
+                num_inputs,
+                allow_take_fee_from_amount,
+            ) {
+                Ok(fee_result) => return Ok((utxos, fee_result)),
+                Err(_) if fee_estimate == MIN_ASSET_LOCK_FEE => {
+                    // The real fee may exceed our initial estimate.  Recompute
+                    // with a 2-output size estimate and retry UTXO selection so
+                    // we can pick up any additional marginal UTXOs.
+                    fee_estimate =
+                        std::cmp::max(MIN_ASSET_LOCK_FEE, estimate_tx_size(num_inputs, 2) as u64);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(format!(
+            "Not enough spendable funds to create asset lock transaction: \
+             requested amount {} plus fee {}",
+            amount, fee_estimate
+        ))
+    }
+
     #[allow(clippy::type_complexity)]
     pub fn registration_asset_lock_transaction(
         &mut self,
@@ -244,35 +294,21 @@ impl Wallet {
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
 
-        // Use a small initial estimate to select UTXOs; we recalculate the fee
-        // below based on the actual number of inputs.
-        let initial_fee_estimate = MIN_ASSET_LOCK_FEE;
-
         // Select UTXOs without committing the removal yet.  UTXOs are only removed
         // from the wallet after the transaction is fully built and signed, so that a
         // failure at any later step (fee shortfall, missing private key, …) cannot
         // permanently drop UTXOs from the wallet — especially important in SPV mode
         // where there is no Core RPC reload fallback.
-        let (utxos, _initial_change_option) = self
-            .select_unspent_utxos_for(amount, initial_fee_estimate, allow_take_fee_from_amount)
-            .ok_or_else(|| {
-                format!(
-                    "Not enough spendable funds to create asset lock transaction: \
-                     requested amount {} plus estimated fee {}",
-                    amount, initial_fee_estimate
-                )
-            })?;
-
-        // Calculate fee, amount, and change using the extracted pure function.
-        let total_input_value: u64 = utxos.iter().map(|(_, (tx_out, _))| tx_out.value).sum();
-        let num_inputs = utxos.len();
-
-        let fee_result = calculate_asset_lock_fee(
-            total_input_value,
-            amount,
-            num_inputs,
-            allow_take_fee_from_amount,
-        )?;
+        //
+        // Note: `&mut self` ensures exclusive access during the entire select → build
+        // → sign → remove sequence, preventing concurrent UTXO double-selection.
+        //
+        // We use an initial fee estimate for UTXO selection, then recalculate the
+        // real fee based on input count.  If the real fee exceeds the estimate and
+        // the selected UTXOs are insufficient, we retry once with the computed fee
+        // so that marginal UTXOs are not missed.
+        let (utxos, fee_result) =
+            self.select_utxos_with_fee_retry(amount, allow_take_fee_from_amount)?;
 
         let actual_amount = fee_result.actual_amount;
         let change_option = fee_result.change;
@@ -395,7 +431,9 @@ impl Wallet {
             })?;
 
         // Transaction is fully built and signed; commit the UTXO removals now.
-        self.remove_selected_utxos(register_addresses, &utxos)?;
+        if let Some(context) = register_addresses {
+            self.remove_selected_utxos(&utxos, &context.db, network)?;
+        }
 
         Ok((tx, private_key, change_address, utxos))
     }
@@ -461,8 +499,16 @@ impl Wallet {
         let asset_lock_public_key = private_key.public_key(&secp);
 
         let one_time_key_hash = asset_lock_public_key.pubkey_hash();
-        let fee = 3_000;
-        let output_amount = previous_tx_output.value - fee;
+
+        // Single-UTXO path: use calculate_asset_lock_fee for consistency with
+        // the multi-input path, ensuring dust check and overflow safety.
+        let fee_result = calculate_asset_lock_fee(
+            previous_tx_output.value,
+            previous_tx_output.value.saturating_sub(MIN_ASSET_LOCK_FEE),
+            1,    // single input
+            true, // take fee from amount since the UTXO *is* the total
+        )?;
+        let output_amount = fee_result.actual_amount;
 
         let payload_output = TxOut {
             value: output_amount,

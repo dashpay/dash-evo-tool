@@ -798,10 +798,11 @@ impl Wallet {
     #[allow(clippy::type_complexity)]
     pub fn identity_authentication_ecdsa_public_keys_data_map(
         &mut self,
+        app_context: &AppContext,
+        register_addresses: bool,
         network: Network,
         identity_index: u32,
         key_index_range: Range<u32>,
-        register_addresses: Option<&AppContext>,
     ) -> Result<(BTreeMap<Vec<u8>, u32>, BTreeMap<[u8; 20], u32>), String> {
         let mut public_key_result_map = BTreeMap::new();
         let mut public_key_hash_result_map = BTreeMap::new();
@@ -822,7 +823,7 @@ impl Wallet {
                 key_index,
             );
             public_key_hash_result_map.insert(public_key.pubkey_hash().to_byte_array(), key_index);
-            if let Some(app_context) = register_addresses {
+            if register_addresses {
                 self.register_address_from_public_key(
                     &public_key,
                     &derivation_path,
@@ -838,10 +839,10 @@ impl Wallet {
 
     pub fn identity_authentication_ecdsa_private_key(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         identity_index: u32,
         key_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<(PrivateKey, DerivationPath), String> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
@@ -860,15 +861,13 @@ impl Wallet {
             .expect("derivation should not be able to fail");
 
         let private_key = extended_public_key.to_priv();
-        if let Some(app_context) = register_addresses {
-            self.register_address_from_private_key(
-                &private_key,
-                &derivation_path,
-                DerivationPathType::SINGLE_USER_AUTHENTICATION,
-                DerivationPathReference::BlockchainIdentities,
-                app_context,
-            )?;
-        }
+        self.register_address_from_private_key(
+            &private_key,
+            &derivation_path,
+            DerivationPathType::SINGLE_USER_AUTHENTICATION,
+            DerivationPathReference::BlockchainIdentities,
+            app_context,
+        )?;
 
         Ok((private_key, derivation_path))
     }
@@ -1327,10 +1326,10 @@ impl Wallet {
 
     pub fn identity_top_up_ecdsa_private_key(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         identity_index: u32,
         top_up_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<PrivateKey, String> {
         let derivation_path =
             DerivationPath::identity_top_up_path(network, identity_index, top_up_index);
@@ -1339,24 +1338,22 @@ impl Wallet {
             .expect("derivation should not be able to fail");
         let private_key = extended_private_key.to_priv();
 
-        if let Some(app_context) = register_addresses {
-            self.register_address_from_private_key(
-                &private_key,
-                &derivation_path,
-                DerivationPathType::CREDIT_FUNDING,
-                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                app_context,
-            )?;
-        }
+        self.register_address_from_private_key(
+            &private_key,
+            &derivation_path,
+            DerivationPathType::CREDIT_FUNDING,
+            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+            app_context,
+        )?;
         Ok(private_key)
     }
 
     /// Generate Core key for identity registration
     pub fn identity_registration_ecdsa_private_key(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<PrivateKey, String> {
         let derivation_path = DerivationPath::identity_registration_path(network, index);
         let extended_private_key = derivation_path
@@ -1364,15 +1361,13 @@ impl Wallet {
             .expect("derivation should not be able to fail");
         let private_key = extended_private_key.to_priv();
 
-        if let Some(app_context) = register_addresses {
-            self.register_address_from_private_key(
-                &private_key,
-                &derivation_path,
-                DerivationPathType::CREDIT_FUNDING,
-                DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-                app_context,
-            )?;
-        }
+        self.register_address_from_private_key(
+            &private_key,
+            &derivation_path,
+            DerivationPathType::CREDIT_FUNDING,
+            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
+            app_context,
+        )?;
         Ok(private_key)
     }
 
@@ -1543,12 +1538,12 @@ impl Wallet {
 
     pub fn build_standard_payment_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         recipient: &Address,
         amount: u64,
         fee: u64,
         subtract_fee_from_amount: bool,
-        register_addresses: Option<&AppContext>,
     ) -> Result<Transaction, String> {
         if !networks_address_compatible(recipient.network(), &network) {
             return Err(format!(
@@ -1584,7 +1579,7 @@ impl Wallet {
         }];
 
         if let Some(change) = change_option {
-            let change_address = self.change_address(network, register_addresses)?;
+            let change_address = self.change_address(network, Some(app_context))?;
             outputs.push(TxOut {
                 value: change,
                 script_pubkey: change_address.script_pubkey(),
@@ -1654,9 +1649,7 @@ impl Wallet {
             })?;
 
         // Transaction is fully built and signed; commit the UTXO removals now.
-        if let Some(context) = register_addresses {
-            self.remove_selected_utxos(&utxos, &context.db, network)?;
-        }
+        self.remove_selected_utxos(&utxos, &app_context.db, network)?;
 
         Ok(tx)
     }
@@ -1664,11 +1657,33 @@ impl Wallet {
     /// Build a transaction with multiple recipients
     pub fn build_multi_recipient_payment_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         recipients: &[(Address, u64)],
         fee: u64,
         subtract_fee_from_amount: bool,
-        register_addresses: Option<&AppContext>,
+    ) -> Result<Transaction, String> {
+        self.build_multi_recipient_payment_transaction_inner(
+            Some(app_context),
+            &app_context.db,
+            network,
+            recipients,
+            fee,
+            subtract_fee_from_amount,
+        )
+    }
+
+    /// Inner implementation that accepts an optional `AppContext` and a direct
+    /// `Database` reference.  The public API always passes both; unit tests can
+    /// call this with `None` for the context and a lightweight in-memory DB.
+    fn build_multi_recipient_payment_transaction_inner(
+        &mut self,
+        app_context: Option<&AppContext>,
+        db: &Database,
+        network: Network,
+        recipients: &[(Address, u64)],
+        fee: u64,
+        subtract_fee_from_amount: bool,
     ) -> Result<Transaction, String> {
         if recipients.is_empty() {
             return Err("No recipients specified".to_string());
@@ -1739,7 +1754,7 @@ impl Wallet {
 
         // Add change output if needed
         if let Some(change) = change_option {
-            let change_address = self.change_address(network, register_addresses)?;
+            let change_address = self.change_address(network, app_context)?;
             outputs.push(TxOut {
                 value: change,
                 script_pubkey: change_address.script_pubkey(),
@@ -1809,9 +1824,7 @@ impl Wallet {
             })?;
 
         // Transaction is fully built and signed; commit the UTXO removals now.
-        if let Some(context) = register_addresses {
-            self.remove_selected_utxos(&utxos, &context.db, network)?;
-        }
+        self.remove_selected_utxos(&utxos, db, network)?;
 
         Ok(tx)
     }
@@ -2816,7 +2829,10 @@ mod tests {
 
     #[test]
     fn test_subtract_fee_from_amount_with_sufficient_funds() {
-        let (mut wallet, _utxo_addr) = test_wallet_with_bip44_utxo(200_000);
+        use crate::database::test_helpers::create_test_database;
+        let (mut wallet, utxo_addr) = test_wallet_with_bip44_utxo(200_000);
+        let db = create_test_database().expect("test db");
+        register_test_address(&db, &wallet, &utxo_addr);
         let recipient = test_address(10);
         let send_amount = 100_000u64;
         let fee = 10_000u64;
@@ -2824,12 +2840,13 @@ mod tests {
         // With subtract_fee_from_amount=true, recipient should receive
         // send_amount - fee, and the fee comes from the recipient share.
         let tx = wallet
-            .build_multi_recipient_payment_transaction(
+            .build_multi_recipient_payment_transaction_inner(
+                None,
+                &db,
                 Network::Testnet,
                 &[(recipient.clone(), send_amount)],
                 fee,
                 true, // subtract_fee_from_amount
-                None,
             )
             .expect("should build tx");
 
@@ -2852,19 +2869,23 @@ mod tests {
 
     #[test]
     fn test_no_subtract_fee_sends_full_amount() {
-        let (mut wallet, _utxo_addr) = test_wallet_with_bip44_utxo(200_000);
+        use crate::database::test_helpers::create_test_database;
+        let (mut wallet, utxo_addr) = test_wallet_with_bip44_utxo(200_000);
+        let db = create_test_database().expect("test db");
+        register_test_address(&db, &wallet, &utxo_addr);
         let recipient = test_address(10);
         let send_amount = 100_000u64;
         let fee = 10_000u64;
 
         // With subtract_fee_from_amount=false, recipient gets the full amount.
         let tx = wallet
-            .build_multi_recipient_payment_transaction(
+            .build_multi_recipient_payment_transaction_inner(
+                None,
+                &db,
                 Network::Testnet,
                 &[(recipient.clone(), send_amount)],
                 fee,
                 false, // subtract_fee_from_amount
-                None,
             )
             .expect("should build tx");
 

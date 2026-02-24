@@ -393,11 +393,11 @@ impl AppContext {
 
             // First attempt with estimated fee.
             let mut tx = wallet_guard.build_multi_recipient_payment_transaction(
+                self,
                 self.network,
                 &parsed_recipients,
                 initial_fee,
                 request.subtract_fee_from_amount,
-                Some(self),
             )?;
 
             // If override_fee was supplied, trust it — skip recalculation.
@@ -417,11 +417,11 @@ impl AppContext {
                         );
                     }
                     tx = wallet_guard.build_multi_recipient_payment_transaction(
+                        self,
                         self.network,
                         &parsed_recipients,
                         actual_fee,
                         request.subtract_fee_from_amount,
-                        Some(self),
                     )?;
                     // Sanity check: rebuilt tx should not need a higher fee
                     let rebuilt_fee = calculate_relay_fee(estimate_p2pkh_tx_size(

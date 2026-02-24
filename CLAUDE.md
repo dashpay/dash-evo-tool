@@ -28,12 +28,21 @@ cargo test --test kittest --all-features           # UI integration tests (egui_
 cargo test --test e2e --all-features               # End-to-end tests
 ```
 
+
 Test locations:
 - Unit tests: inline in source files (`#[test]`)
 - UI integration: `tests/kittest/`
 - E2E: `tests/e2e/`
 
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
+
+
+### Manual test scenarios
+
+You MUST identify manual tests needed for the changes and write a manual test scenarios. Use the `claudius:qa-engineer` agent if available.
+Skip the manual test file only for non-functional changes (CI, docs, formatting, pure refactoring) — state why in the PR description.
+Put tests in docs directory, as described in "Documentation" section below. Reference the file in the PR description under "Test plan".
+Before creating a PR, re-review test scenarios and update them if needed.
 
 ## CI: Safe Cargo Wrapper
 
@@ -46,13 +55,14 @@ scripts/safe-cargo.sh clippy --all-features --all-targets -- -D warnings
 scripts/safe-cargo.sh +nightly fmt --all
 ```
 
+
 ## Architecture Overview
 
 **Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.
 
 ## Documentation
 
-- **docs/ai-design** should contain architecture and technical design files, grouped in subdirectories prefixed with ISO-formatted date
+- **docs/ai-design** should contain architecture, technical design and manual testing scenarios files, grouped in subdirectories prefixed with ISO-formatted date
 - end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
 ### Core Module Structure

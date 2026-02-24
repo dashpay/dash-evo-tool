@@ -1455,8 +1455,11 @@ impl TokensScreen {
                         match (&self.selected_identity, &self.selected_key) {
                             (Some(id), Some(key)) => (id.clone(), key.clone()),
                             _ => {
-                                self.token_creator_error_message =
-                                    Some("Please select an identity and signing key.".to_string());
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Please select an identity and signing key.",
+                                    MessageType::Error,
+                                );
                                 self.close_token_creator_confirmation_popup();
                                 return AppAction::None;
                             }

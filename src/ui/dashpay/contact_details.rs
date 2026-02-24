@@ -506,7 +506,6 @@ impl ContactDetailsScreen {
 
         action
     }
-
 }
 
 impl ScreenLike for ContactDetailsScreen {

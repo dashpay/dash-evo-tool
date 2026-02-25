@@ -87,6 +87,21 @@ impl AppContext {
     ///    and pre-stored DB row; UTXOs are **not** removed.
     /// 4. On success: remove spent UTXOs from the wallet and DB.
     ///
+    /// # UTXO selection race window
+    ///
+    /// Callers select UTXOs while holding the wallet write lock, then drop it
+    /// before calling this method (which re-acquires the lock in step 4). During
+    /// the gap — covering steps 1–3 and the network broadcast — another task
+    /// could theoretically select the same UTXOs via `select_unspent_utxos_for`,
+    /// leading to a double-spend attempt on-chain (which Core would reject).
+    ///
+    /// We cannot hold the `std::sync::RwLock` write guard across the async
+    /// broadcast because the guard is `!Send` and tokio tasks require `Send`
+    /// futures. Fixing this properly requires either migrating to
+    /// `tokio::sync::RwLock` (large refactor) or adding a UTXO reservation
+    /// mechanism. In practice the risk is negligible: users would have to
+    /// trigger two fund operations on the same wallet near-simultaneously.
+    ///
     /// Returns the [`Txid`] of the broadcast transaction.
     pub(crate) async fn broadcast_and_commit_asset_lock(
         &self,

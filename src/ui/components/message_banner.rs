@@ -502,13 +502,20 @@ fn render_banner(
             let available_width = ui.available_width();
 
             ui.horizontal_top(|ui| {
-                // Icon (fixed width)
+                // Icon
                 ui.label(egui::RichText::new(icon).color(fg_color).strong());
                 ui.add_space(Spacing::XS);
 
                 // Reserve space for dismiss button and annotation on the right
                 let dismiss_width = 40.0;
-                let annotation_width = if annotation.is_some() { 52.0 } else { 0.0 };
+                let annotation_width = if let Some(ann) = annotation {
+                    // Estimate width: ~7px per character at body_small size + item spacing
+                    let char_width = Typography::SCALE_SM * 0.55;
+                    let measured = ann.len() as f32 * char_width;
+                    measured + ui.spacing().item_spacing.x
+                } else {
+                    0.0
+                };
                 let text_width =
                     (available_width - dismiss_width - annotation_width - 30.0).max(0.0);
 

@@ -279,18 +279,26 @@ impl MessageBanner {
     // for another (e.g., replacing a generic "Success" with a specific one).
 
     /// Adds a global banner message if one with the same text does not already exist.
+    ///
+    /// **Idempotent**: if a banner with identical text is already displayed,
+    /// this is a no-op and the existing banner is returned unchanged
+    /// (timestamps, auto-dismiss timer, and `logged` flag are all preserved).
+    /// This makes it safe to call every frame without side-effects.
+    ///
+    /// To reset the auto-dismiss timer of an existing banner, use
+    /// [`replace_global`](Self::replace_global) with the same text for both
+    /// `old_text` and `new_text`, or store the returned [`BannerHandle`] and
+    /// call [`BannerHandle::with_auto_dismiss`].
+    ///
     /// Evicts the oldest message when the cap ([`MAX_BANNERS`]) is reached.
     ///
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
     pub fn set_global(ctx: &egui::Context, text: &str, message_type: MessageType) -> BannerHandle {
         let mut banners = get_banners(ctx);
-        if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
-            existing.reset_to(text.to_string(), message_type);
-            let key = existing.key;
-            set_banners(ctx, banners);
+        if let Some(existing) = banners.iter().find(|b| b.text == text) {
             return BannerHandle {
                 ctx: ctx.clone(),
-                key,
+                key: existing.key,
             };
         }
         let key = next_banner_key();

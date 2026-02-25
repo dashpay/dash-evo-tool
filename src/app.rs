@@ -7,11 +7,11 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
-use crate::spv::CoreBackendMode;
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
+use crate::spv::CoreBackendMode;
 use crate::ui::components::MessageBanner;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};

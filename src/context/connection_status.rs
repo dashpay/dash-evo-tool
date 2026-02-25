@@ -392,7 +392,10 @@ impl ConnectionStatus {
         match backend_mode {
             CoreBackendMode::Spv => {
                 let snapshot = app_context.spv_manager().status();
-                tracing::trace!("ConnectionStatus: polled SPV status = {:?}", snapshot.status);
+                tracing::trace!(
+                    "ConnectionStatus: polled SPV status = {:?}",
+                    snapshot.status
+                );
                 self.set_spv_status(snapshot.status);
                 let peers = snapshot.connected_peers as u16;
                 self.spv_connected_peers.store(peers, Ordering::Relaxed);

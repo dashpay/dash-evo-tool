@@ -193,7 +193,7 @@ impl ConnectionStatus {
     /// Returns `true` if SPV has been active with zero connected peers
     /// for longer than [`SPV_PEER_DEGRADED_TIMEOUT`].
     ///
-    /// Returns `false` if the mutex is poisoned (conservative default).
+    /// If the mutex is poisoned, recovers the inner value and evaluates it.
     pub fn spv_peer_degraded(&self) -> bool {
         self.spv_no_peers_since
             .lock()

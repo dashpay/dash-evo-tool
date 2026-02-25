@@ -60,9 +60,10 @@ These scenarios verify the reworked SPV peer connection lifecycle:
 ### Expected Results
 
 - **Step 3:** Orange indicator with fast pulse. Tooltip: "Connecting...\nSPV: Starting\nDAPI: Available (...)".
-- **Step 5:** After ~30s, tooltip adds: "\nHaving trouble finding peers...".
-- **Step 6:** SPV **remains running** (does NOT stop). Indicator stays orange. No error banner appears. SPV continues trying DNS lookups and peer discovery in the background.
+- **Step 5:** After ~30s, tooltip adds: "\nHaving trouble finding peers. Check your connection." A **warning banner** also appears with the same text.
+- **Step 6:** SPV **remains running** (does NOT stop). Indicator stays orange. SPV continues trying DNS lookups and peer discovery in the background.
 - **Critical:** Verify NO "SPV disconnected" error banner. Verify `stop_spv()` is NOT called (check logs -- no "stopping SPV" message).
+- **Recovery:** If you restore connectivity and peers connect, the warning banner **automatically clears** and the indicator transitions to Syncing/Synced.
 
 ---
 
@@ -170,6 +171,7 @@ These scenarios verify the reworked SPV peer connection lifecycle:
 | Syncing | >0 | Syncing | "Syncing" | "SPV: Headers: X / Y (Z%)" | Phase progress shown |
 | Syncing | 0 | Connecting | "Connecting..." | "SPV: <phase>" | After 30s: degraded warning |
 | Running | >0 | Synced | "Ready" | "SPV: Synced" | -- |
+| Running | 0 | Connecting | "Connecting..." | "SPV: Synced" | After 30s: degraded warning |
 | Stopping | 0 | Connecting | "Connecting..." | "SPV: Stopping" | -- |
 | Stopped | 0 | Disconnected | "Disconnected" | "SPV: Stopped" | -- |
 
@@ -187,10 +189,10 @@ These scenarios verify the reworked SPV peer connection lifecycle:
 
 ### Expected Results
 
-- Once peer count drops to 0, `refresh_state()` maps `Running` to `Synced` (Running always maps to Synced regardless of peer count -- it means sync is complete).
+- Once peer count drops to 0, `refresh_state()` maps active SPV with zero peers to `Connecting` (fast orange pulse).
 - **Wait** -- `Running` status means sync finished. The SPV library may transition to a different status internally if peers drop. Observe actual SpvStatus transitions.
-- If SPV stays `Running` with 0 peers: indicator stays **green** (Running = Synced in the state machine). The `spv_no_peers_since` timer starts but no stop_spv is called.
-- After 30s with 0 peers, degraded warning appears in tooltip.
+- If SPV stays `Running` with 0 peers: indicator should remain **orange** (`Connecting`), and the `spv_no_peers_since` timer continues without calling `stop_spv()`.
+- After 30s with 0 peers, degraded warning banner and tooltip appear.
 
 ---
 

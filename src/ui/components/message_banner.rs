@@ -361,6 +361,14 @@ impl MessageBanner {
         set_banners(ctx, banners);
     }
 
+    /// Clears all global banner messages.
+    ///
+    /// Use when the context changes significantly (e.g., network switch) and
+    /// stale messages from the previous context should not persist.
+    pub fn clear_all_global(ctx: &egui::Context) {
+        set_banners(ctx, vec![]);
+    }
+
     /// Returns whether any global banner messages exist.
     #[allow(dead_code)]
     pub fn has_global(ctx: &egui::Context) -> bool {

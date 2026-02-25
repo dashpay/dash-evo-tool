@@ -866,6 +866,10 @@ impl AppState {
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
 
+        // Clear stale banners from the previous network context so error/success
+        // messages don't leak across network boundaries.
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
         }

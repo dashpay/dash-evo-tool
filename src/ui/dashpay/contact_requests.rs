@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -1184,10 +1185,20 @@ impl ScreenLike for ContactRequests {
             BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
                 // Mark as accepted only after successful backend operation
                 self.accepted_requests.insert(request_id);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Contact request accepted successfully",
+                    MessageType::Success,
+                );
             }
             BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
                 // Mark as rejected only after successful backend operation
                 self.rejected_requests.insert(request_id);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Contact request rejected",
+                    MessageType::Success,
+                );
             }
             BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
                 // Message display is handled globally by AppState

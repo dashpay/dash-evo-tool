@@ -23,7 +23,7 @@ use crate::ui::wallets::account_summary::{
 };
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
-use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
+use crate::context::connection_status::spv_phase_summary;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self, ComboBox, Context, Ui};
@@ -1227,9 +1227,11 @@ impl WalletsBalancesScreen {
                                                     .size(12.0)
                                                     .color(DashColors::DASH_BLUE),
                                             );
-                                            let phase_text = Self::spv_active_phase_text(
-                                                &snapshot.sync_progress,
-                                            );
+                                            let phase_text = snapshot
+                                                .sync_progress
+                                                .as_ref()
+                                                .map(spv_phase_summary)
+                                                .unwrap_or_else(|| "starting...".to_string());
                                             ui.label(
                                                 RichText::new(format!("Syncing — {phase_text}"))
                                                     .size(12.0)
@@ -1312,58 +1314,6 @@ impl WalletsBalancesScreen {
                     });
             },
         );
-    }
-
-    /// Get a text summary of the active SPV sync phase.
-    fn spv_active_phase_text(sync_progress: &Option<SpvSyncProgress>) -> String {
-        let Some(progress) = sync_progress else {
-            return "starting...".to_string();
-        };
-
-        // Grab target height from headers (blocks doesn't expose target_height directly)
-        let target_height = progress
-            .headers()
-            .ok()
-            .map(|h| h.target_height())
-            .unwrap_or(0);
-
-        // Check phases in order of execution
-        if let Ok(headers) = progress.headers()
-            && headers.state() == SyncState::Syncing
-        {
-            let pct = Self::simple_progress_pct(headers.current_height(), headers.target_height());
-            return format!("Headers {pct}%");
-        }
-
-        if let Ok(fh) = progress.filter_headers()
-            && fh.state() == SyncState::Syncing
-        {
-            let pct = Self::simple_progress_pct(fh.current_height(), fh.target_height());
-            return format!("Filter Headers {pct}%");
-        }
-
-        if let Ok(filters) = progress.filters()
-            && filters.state() == SyncState::Syncing
-        {
-            let pct = Self::simple_progress_pct(filters.current_height(), filters.target_height());
-            return format!("Filters {pct}%");
-        }
-
-        if let Ok(blocks) = progress.blocks()
-            && blocks.state() == SyncState::Syncing
-        {
-            let pct = Self::simple_progress_pct(blocks.last_processed(), target_height);
-            return format!("Blocks {pct}%");
-        }
-
-        "syncing...".to_string()
-    }
-
-    fn simple_progress_pct(current: u32, target: u32) -> u32 {
-        if target == 0 {
-            return 0;
-        }
-        ((current as f64 / target as f64) * 100.0).clamp(0.0, 100.0) as u32
     }
 
     fn render_wallet_detail_panel(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {

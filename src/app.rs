@@ -1157,16 +1157,14 @@ impl App for AppState {
         );
 
         // Show a warning banner when SPV has been unable to find peers
-        // for an extended period. `set_global` deduplicates by text, so
-        // calling this every frame is safe — only one banner is shown.
-        if active_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
-            && active_context.connection_status().spv_peer_degraded()
-        {
-            MessageBanner::set_global(
-                ctx,
-                "Having trouble finding peers. Check your network connection.",
-                MessageType::Warning,
-            );
+        // for an extended period.  Cleared as soon as the condition resolves.
+        const SPV_DEGRADED_BANNER: &str = "Having trouble finding peers. Check your connection.";
+        if active_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+            if active_context.connection_status().spv_peer_degraded() {
+                MessageBanner::set_global(ctx, SPV_DEGRADED_BANNER, MessageType::Warning);
+            } else {
+                MessageBanner::clear_global_message(ctx, SPV_DEGRADED_BANNER);
+            }
         }
 
         for action in actions {

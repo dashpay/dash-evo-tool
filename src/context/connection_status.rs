@@ -95,18 +95,17 @@ impl ConnectionStatus {
             .store(backend_mode.as_u8(), Ordering::Relaxed);
         self.disable_zmq.store(false, Ordering::Relaxed);
         self.spv_connected_peers.store(0, Ordering::Relaxed);
-        if let Ok(mut since) = self.spv_no_peers_since.lock() {
-            *since = None;
-        }
-
+        *self
+            .spv_no_peers_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         self.overall_state.store(
             OverallConnectionState::Disconnected as u8,
             Ordering::Relaxed,
         );
         // Set last_update to epoch so the next trigger_refresh fires immediately
-        if let Ok(mut last) = self.last_update.lock() {
-            *last = Instant::now() - REFRESH_CONNECTED;
-        }
+        *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
+            Instant::now() - REFRESH_CONNECTED;
     }
 
     pub fn rpc_online(&self) -> bool {
@@ -156,9 +155,8 @@ impl ConnectionStatus {
 
     /// Reset the throttle timer so the next `trigger_refresh()` fires immediately.
     pub fn reset_timer(&self) {
-        if let Ok(mut last) = self.last_update.lock() {
-            *last = Instant::now() - REFRESH_CONNECTED;
-        }
+        *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
+            Instant::now() - REFRESH_CONNECTED;
     }
 
     pub fn dapi_total_endpoints(&self) -> u16 {
@@ -194,11 +192,12 @@ impl ConnectionStatus {
 
     /// Returns `true` if SPV has been active with zero connected peers
     /// for longer than [`SPV_PEER_DEGRADED_TIMEOUT`].
+    ///
+    /// Returns `false` if the mutex is poisoned (conservative default).
     pub fn spv_peer_degraded(&self) -> bool {
         self.spv_no_peers_since
             .lock()
-            .ok()
-            .and_then(|g| *g)
+            .unwrap_or_else(|e| e.into_inner())
             .is_some_and(|since| since.elapsed() >= SPV_PEER_DEGRADED_TIMEOUT)
     }
 
@@ -210,6 +209,14 @@ impl ConnectionStatus {
         self.overall_state.load(Ordering::Relaxed).into()
     }
 
+    /// Recompute the overall connection state from the individual subsystem
+    /// flags.
+    ///
+    /// Each field is read with `Ordering::Relaxed` — there is no cross-field
+    /// synchronisation, so a single call may observe a mix of "old" and "new"
+    /// values.  This is acceptable because the function runs on every UI
+    /// frame (1-4 s cadence) and any transient inconsistency self-corrects on
+    /// the next poll.
     pub fn refresh_state(&self) {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
@@ -231,8 +238,11 @@ impl ConnectionStatus {
                 } else {
                     let has_peers = self.spv_connected_peers.load(Ordering::Relaxed) > 0;
                     match spv_status {
-                        SpvStatus::Running => OverallConnectionState::Synced,
-                        SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Stopping => {
+                        SpvStatus::Running if has_peers => OverallConnectionState::Synced,
+                        SpvStatus::Running
+                        | SpvStatus::Starting
+                        | SpvStatus::Syncing
+                        | SpvStatus::Stopping => {
                             if has_peers {
                                 OverallConnectionState::Syncing
                             } else {
@@ -252,6 +262,8 @@ impl ConnectionStatus {
     /// In SPV mode, fetches sync progress from the [`SpvManager`] to display
     /// a detailed phase summary (e.g. `"SPV: Headers: 12345 / 27000 (45%)"`)
     /// instead of the bare `"SPV: Syncing"`.
+    // TODO: decouple from AppContext — accept a struct with the needed fields
+    // (spv_manager status, settings) instead of the full context reference.
     pub fn tooltip_text(&self, app_context: &crate::context::AppContext) -> String {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
@@ -307,7 +319,7 @@ impl ConnectionStatus {
                         .unwrap_or_else(|| format!("SPV: {:?}", spv_status))
                 };
                 let degraded_warning = if self.spv_peer_degraded() {
-                    "\nHaving trouble finding peers..."
+                    "\nHaving trouble finding peers. Check your connection."
                 } else {
                     ""
                 };
@@ -414,16 +426,18 @@ impl ConnectionStatus {
                     snapshot.status
                 );
                 self.set_spv_status(snapshot.status);
-                let peers = snapshot.connected_peers as u16;
+                let peers = (snapshot.connected_peers).min(u16::MAX as usize) as u16;
                 self.spv_connected_peers.store(peers, Ordering::Relaxed);
 
                 // Track how long we've been active with zero peers.
-                if let Ok(mut since) = self.spv_no_peers_since.lock() {
-                    if peers > 0 || !snapshot.status.is_active() {
-                        *since = None;
-                    } else if since.is_none() {
-                        *since = Some(Instant::now());
-                    }
+                let mut since = self
+                    .spv_no_peers_since
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if peers > 0 || !snapshot.status.is_active() {
+                    *since = None;
+                } else if since.is_none() {
+                    *since = Some(Instant::now());
                 }
             }
             CoreBackendMode::Rpc => {

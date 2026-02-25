@@ -1,5 +1,6 @@
 mod asset_lock_transaction;
 pub mod encryption;
+pub mod shielded;
 pub mod single_key;
 mod utxos;
 

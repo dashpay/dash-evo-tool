@@ -1989,6 +1989,16 @@ impl Wallet {
             .insert(address, PlatformAddressInfo { balance, nonce });
     }
 
+    /// Set platform address info from a sync operation (same as `set_platform_address_info`).
+    pub fn set_platform_address_info_from_sync(
+        &mut self,
+        address: Address,
+        balance: Credits,
+        nonce: AddressNonce,
+    ) {
+        self.set_platform_address_info(address, balance, nonce);
+    }
+
     /// Get the private key for a Platform address
     #[allow(clippy::result_large_err)]
     pub fn get_platform_address_private_key(
@@ -2263,7 +2273,11 @@ impl WalletAddressProvider {
             let canonical_address = Wallet::canonical_address(address, self.network);
 
             // Update wallet with synced balances
-            wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
+            wallet.set_platform_address_info_from_sync(
+                canonical_address.clone(),
+                funds.balance,
+                funds.nonce,
+            );
 
             // Also register in known_addresses and watched_addresses if not already present
             if !wallet.known_addresses.contains_key(&canonical_address)
@@ -2845,11 +2859,11 @@ mod tests {
     }
 
     #[test]
-    fn test_set_platform_address_info() {
+    fn test_set_platform_address_info_from_sync() {
         let mut wallet = test_wallet();
         let addr = test_address(1);
 
-        wallet.set_platform_address_info(addr.clone(), 500_000, 3);
+        wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
 
         let info = wallet.platform_address_info.get(&addr).unwrap();
         assert_eq!(info.balance, 500_000);
@@ -2861,7 +2875,7 @@ mod tests {
         let mut wallet = test_wallet();
         let addr = test_address(1);
 
-        wallet.set_platform_address_info(addr.clone(), 500_000, 3);
+        wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
 
         wallet.set_platform_address_info(addr.clone(), 600_000, 4);
 

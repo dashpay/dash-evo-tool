@@ -32,7 +32,7 @@ impl AppContext {
             self.db.get_platform_sync_info(&seed_hash).unwrap_or((0, 0));
 
         // Create provider (requires wallet to be open for address derivation)
-        let mut provider = {
+        let provider = {
             let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
             match WalletAddressProvider::new(&wallet, self.network) {
                 Ok(provider) => provider.with_stored_state(&wallet, self.network, last_sync_height),
@@ -42,6 +42,7 @@ impl AppContext {
                 Err(e) => return Err(e),
             }
         };
+        let mut provider = provider;
 
         // Sync using SDK's privacy-preserving method (handles both full and incremental)
         let sdk = self.sdk.load().as_ref().clone();
@@ -147,6 +148,7 @@ impl AppContext {
                     funds.balance,
                     funds.nonce,
                     &self.network,
+                    true,
                 ) {
                     tracing::warn!("Failed to persist Platform address info: {}", e);
                 }

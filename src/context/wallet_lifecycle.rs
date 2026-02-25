@@ -251,6 +251,7 @@ impl AppContext {
                     info.balance,
                     info.nonce,
                     &self.network,
+                    false, // Not a sync operation
                 ) {
                     tracing::warn!("Failed to store Platform address info in database: {}", e);
                 }

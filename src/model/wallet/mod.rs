@@ -2263,11 +2263,7 @@ impl WalletAddressProvider {
             let canonical_address = Wallet::canonical_address(address, self.network);
 
             // Update wallet with synced balances
-            wallet.set_platform_address_info(
-                canonical_address.clone(),
-                funds.balance,
-                funds.nonce,
-            );
+            wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
 
             // Also register in known_addresses and watched_addresses if not already present
             if !wallet.known_addresses.contains_key(&canonical_address)

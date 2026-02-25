@@ -14,25 +14,28 @@ use std::time::{Duration, Instant};
 const REFRESH_CONNECTED: Duration = Duration::from_secs(4);
 const REFRESH_DISCONNECTED: Duration = Duration::from_secs(1);
 
-const SPV_PEER_TIMEOUT: Duration = Duration::from_secs(10);
+const SPV_PEER_DEGRADED_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Three-state connection indicator matching the UI's red/orange/green circle.
+/// Four-state connection indicator matching the UI's red/orange/green circle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OverallConnectionState {
     /// No connection at all — red indicator.
     Disconnected = 0,
+    /// SPV active but no peers connected yet — orange indicator (faster pulse).
+    Connecting = 1,
     /// All subsystems connected but still syncing data — orange indicator.
-    Syncing = 1,
+    Syncing = 2,
     /// Fully connected and operational — green indicator.
-    Synced = 2,
+    Synced = 3,
 }
 
 impl From<u8> for OverallConnectionState {
     fn from(v: u8) -> Self {
         match v {
-            1 => Self::Syncing,
-            2 => Self::Synced,
+            1 => Self::Connecting,
+            2 => Self::Syncing,
+            3 => Self::Synced,
             _ => Self::Disconnected,
         }
     }
@@ -189,13 +192,13 @@ impl ConnectionStatus {
     }
 
     /// Returns `true` if SPV has been active with zero connected peers
-    /// for longer than [`SPV_PEER_TIMEOUT`].
-    pub fn spv_peer_timed_out(&self) -> bool {
+    /// for longer than [`SPV_PEER_DEGRADED_TIMEOUT`].
+    pub fn spv_peer_degraded(&self) -> bool {
         self.spv_no_peers_since
             .lock()
             .ok()
             .and_then(|g| *g)
-            .is_some_and(|since| since.elapsed() >= SPV_PEER_TIMEOUT)
+            .is_some_and(|since| since.elapsed() >= SPV_PEER_DEGRADED_TIMEOUT)
     }
 
     pub fn spv_connected(status: SpvStatus) -> bool {
@@ -225,10 +228,15 @@ impl ConnectionStatus {
                 if !dapi_available {
                     OverallConnectionState::Disconnected
                 } else {
+                    let has_peers = self.spv_connected_peers.load(Ordering::Relaxed) > 0;
                     match spv_status {
                         SpvStatus::Running => OverallConnectionState::Synced,
                         SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Stopping => {
-                            OverallConnectionState::Syncing
+                            if has_peers {
+                                OverallConnectionState::Syncing
+                            } else {
+                                OverallConnectionState::Connecting
+                            }
                         }
                         _ => OverallConnectionState::Disconnected,
                     }
@@ -266,8 +274,10 @@ impl ConnectionStatus {
 
                 let header = match overall {
                     OverallConnectionState::Synced => "Connected to Dash Core Wallet",
-                    // RPC mode doesn't currently produce Syncing, but kept for forward-compat.
-                    OverallConnectionState::Syncing => "Syncing to Dash Core Wallet",
+                    // RPC mode doesn't currently produce Connecting/Syncing, but kept for forward-compat.
+                    OverallConnectionState::Connecting | OverallConnectionState::Syncing => {
+                        "Syncing to Dash Core Wallet"
+                    }
                     OverallConnectionState::Disconnected if self.rpc_online() => {
                         "Dash Core connection incomplete"
                     }
@@ -280,6 +290,7 @@ impl ConnectionStatus {
             CoreBackendMode::Spv => {
                 let header = match overall {
                     OverallConnectionState::Synced => "Ready",
+                    OverallConnectionState::Connecting => "Connecting...",
                     OverallConnectionState::Syncing => "Syncing",
                     OverallConnectionState::Disconnected => "Disconnected",
                 };
@@ -294,7 +305,12 @@ impl ConnectionStatus {
                         .map(|p| format!("SPV: {}", spv_phase_summary(p)))
                         .unwrap_or_else(|| format!("SPV: {:?}", spv_status))
                 };
-                format!("{header}\n{spv_label}\n{dapi_status}")
+                let degraded_warning = if self.spv_peer_degraded() {
+                    "\nHaving trouble finding peers..."
+                } else {
+                    ""
+                };
+                format!("{header}\n{spv_label}{degraded_warning}\n{dapi_status}")
             }
         }
     }
@@ -513,39 +529,39 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn spv_peer_timed_out_returns_false_when_none() {
+    fn spv_peer_degraded_returns_false_when_none() {
         let status = ConnectionStatus::new();
         // Default state: spv_no_peers_since is None.
-        assert!(!status.spv_peer_timed_out());
+        assert!(!status.spv_peer_degraded());
     }
 
     #[test]
-    fn spv_peer_timed_out_returns_false_before_threshold() {
+    fn spv_peer_degraded_returns_false_before_threshold() {
         let status = ConnectionStatus::new();
-        // Set to "just now" — well within the timeout window.
+        // Set to "just now" — well within the degraded window.
         *status.spv_no_peers_since.lock().unwrap() = Some(Instant::now());
-        assert!(!status.spv_peer_timed_out());
+        assert!(!status.spv_peer_degraded());
     }
 
     #[test]
-    fn spv_peer_timed_out_returns_true_after_threshold() {
+    fn spv_peer_degraded_returns_true_after_threshold() {
         let status = ConnectionStatus::new();
-        // Set to a point beyond the timeout threshold.
+        // Set to a point beyond the degraded threshold.
         *status.spv_no_peers_since.lock().unwrap() =
-            Some(Instant::now() - SPV_PEER_TIMEOUT - Duration::from_millis(1));
-        assert!(status.spv_peer_timed_out());
+            Some(Instant::now() - SPV_PEER_DEGRADED_TIMEOUT - Duration::from_millis(1));
+        assert!(status.spv_peer_degraded());
     }
 
     #[test]
-    fn spv_peer_timed_out_clears_on_reset() {
+    fn spv_peer_degraded_clears_on_reset() {
         let status = ConnectionStatus::new();
-        // Set to a point beyond the timeout threshold so it would fire.
+        // Set to a point beyond the degraded threshold so it would fire.
         *status.spv_no_peers_since.lock().unwrap() =
-            Some(Instant::now() - SPV_PEER_TIMEOUT - Duration::from_millis(1));
-        assert!(status.spv_peer_timed_out());
+            Some(Instant::now() - SPV_PEER_DEGRADED_TIMEOUT - Duration::from_millis(1));
+        assert!(status.spv_peer_degraded());
 
         // After reset the timestamp should be cleared.
         status.reset(CoreBackendMode::Spv);
-        assert!(!status.spv_peer_timed_out());
+        assert!(!status.spv_peer_degraded());
     }
 }

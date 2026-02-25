@@ -104,10 +104,12 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     let dark_mode = ui.ctx().style().visuals.dark_mode;
     let circle_size = 14.0;
 
-    // Three-state color: green (synced), orange (syncing), red (disconnected)
+    // Four-state color: green (synced), orange (syncing/connecting), red (disconnected)
     let color = match overall {
         OverallConnectionState::Synced => DashColors::success_color(dark_mode),
-        OverallConnectionState::Syncing => DashColors::warning_color(dark_mode),
+        OverallConnectionState::Connecting | OverallConnectionState::Syncing => {
+            DashColors::warning_color(dark_mode)
+        }
         OverallConnectionState::Disconnected => DashColors::error_color(dark_mode),
     };
 
@@ -116,6 +118,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
 
     let pulse_scale = match overall {
         OverallConnectionState::Synced => 1.0 + 0.2 * (time * 2.0).sin(),
+        OverallConnectionState::Connecting => 1.0 + 0.2 * (time * 2.5).sin(),
         OverallConnectionState::Syncing => 1.0 + 0.15 * (time * 1.2).sin(),
         OverallConnectionState::Disconnected => 1.0, // No pulse when disconnected
     };

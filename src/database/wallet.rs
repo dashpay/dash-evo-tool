@@ -976,7 +976,6 @@ impl Database {
         balance: u64,
         nonce: u32,
         network: &Network,
-        _is_sync_operation: bool,
     ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let canonical_address = Wallet::canonical_address(address, *network);
@@ -1139,6 +1138,11 @@ impl Database {
     }
 
     /// Set the platform sync timestamp and sync height for a wallet.
+    ///
+    /// Note: The `sync_height` value (SDK's `new_sync_height`) is stored in the
+    /// `last_platform_sync_checkpoint` SQL column. The column was not renamed to
+    /// avoid an extra DB migration, but it now represents a block height rather
+    /// than the old checkpoint concept.
     pub fn set_platform_sync_info(
         &self,
         seed_hash: &[u8; 32],
@@ -1420,7 +1424,7 @@ mod tests {
         assert!(info.is_none());
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
             .expect("Failed to set platform address info");
 
         // Retrieve it
@@ -1433,7 +1437,7 @@ mod tests {
         assert_eq!(info.1, 5); // nonce
 
         // Update it
-        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network)
             .expect("Failed to update platform address info");
 
         let info = db
@@ -1531,7 +1535,7 @@ mod tests {
 
         // Add a single valid platform address using the helper function
         let address = create_test_address(network);
-        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network)
             .expect("Failed to set platform address info");
 
         // Get all addresses
@@ -1569,7 +1573,7 @@ mod tests {
         }
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
             .expect("Failed to set platform address info");
 
         // Verify it exists

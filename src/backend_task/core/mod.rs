@@ -52,7 +52,7 @@ pub enum CoreTask {
     GetBestChainLock,
     GetBestChainLocks,
     /// Refresh wallet info from Core. The bool controls whether to also sync
-    /// Platform address balances (true) or skip Platform sync (false, Core only).
+    /// Platform address balances (true = sync Platform, false = Core only).
     RefreshWalletInfo(Arc<RwLock<Wallet>>, bool),
     RefreshSingleKeyWalletInfo(Arc<RwLock<SingleKeyWallet>>),
     StartDashQT(Network, PathBuf, bool),

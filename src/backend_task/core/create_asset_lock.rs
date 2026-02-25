@@ -33,14 +33,32 @@ impl AppContext {
 
         // Insert the transaction into waiting for finality
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self
+                .transactions_waiting_for_finality
+                .lock()
+                .map_err(|e| e.to_string())?;
             proofs.insert(tx_id, None);
         }
 
-        // Broadcast the transaction
-        self.broadcast_raw_transaction(&asset_lock_transaction)
+        // Broadcast the transaction.  If broadcast fails, the UTXOs have already
+        // been removed from the wallet (inside the transaction builder) but were
+        // never actually spent on-chain.  The caller should handle refreshing
+        // the wallet so the next UTXO reload reconciles in-memory state with
+        // the chain.  See also: https://github.com/dashpay/dash-evo-tool/issues/657
+        if let Err(e) = self
+            .broadcast_raw_transaction(&asset_lock_transaction)
             .await
-            .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
+        {
+            // Clean up the finality tracking entry
+            if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
+                proofs.remove(&tx_id);
+            } else {
+                tracing::warn!(
+                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
+                );
+            }
+            return Err(format!("Failed to broadcast asset lock transaction: {}", e));
+        }
 
         Ok(BackendTaskSuccessResult::Message(format!(
             "Asset lock transaction broadcast successfully. TX ID: {}",
@@ -77,14 +95,27 @@ impl AppContext {
 
         // Insert the transaction into waiting for finality
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self
+                .transactions_waiting_for_finality
+                .lock()
+                .map_err(|e| e.to_string())?;
             proofs.insert(tx_id, None);
         }
 
-        // Broadcast the transaction
-        self.broadcast_raw_transaction(&asset_lock_transaction)
+        // Broadcast the transaction (see registration path above for cleanup rationale)
+        if let Err(e) = self
+            .broadcast_raw_transaction(&asset_lock_transaction)
             .await
-            .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
+        {
+            if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
+                proofs.remove(&tx_id);
+            } else {
+                tracing::warn!(
+                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
+                );
+            }
+            return Err(format!("Failed to broadcast asset lock transaction: {}", e));
+        }
 
         Ok(BackendTaskSuccessResult::Message(format!(
             "Asset lock transaction broadcast successfully. TX ID: {}",

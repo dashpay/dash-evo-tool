@@ -1,6 +1,5 @@
 mod asset_lock_transaction;
 pub mod encryption;
-pub mod shielded;
 pub mod single_key;
 mod utxos;
 
@@ -1990,16 +1989,6 @@ impl Wallet {
             .insert(address, PlatformAddressInfo { balance, nonce });
     }
 
-    /// Set platform address info from a sync operation (same as `set_platform_address_info`).
-    pub fn set_platform_address_info_from_sync(
-        &mut self,
-        address: Address,
-        balance: Credits,
-        nonce: AddressNonce,
-    ) {
-        self.set_platform_address_info(address, balance, nonce);
-    }
-
     /// Get the private key for a Platform address
     #[allow(clippy::result_large_err)]
     pub fn get_platform_address_private_key(
@@ -2134,7 +2123,7 @@ const DEFAULT_GAP_LIMIT: AddressIndex = 20;
 /// # Usage
 /// ```ignore
 /// let mut provider = WalletAddressProvider::new(&wallet, network)?;
-/// let result = sdk.sync_address_balances(&mut provider, None).await?;
+/// let result = sdk.sync_address_balances(&mut provider, None, None).await?;
 /// provider.apply_results_to_wallet(&mut wallet);
 /// ```
 pub struct WalletAddressProvider {
@@ -2273,12 +2262,8 @@ impl WalletAddressProvider {
         for (address, funds) in &self.found_balances {
             let canonical_address = Wallet::canonical_address(address, self.network);
 
-            // Update wallet with synced balance (also updates last_full_sync_balance for next sync)
-            wallet.set_platform_address_info_from_sync(
-                canonical_address.clone(),
-                funds.balance,
-                funds.nonce,
-            );
+            // Update wallet with synced balances
+            wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
 
             // Also register in known_addresses and watched_addresses if not already present
             if !wallet.known_addresses.contains_key(&canonical_address)
@@ -2794,8 +2779,6 @@ mod tests {
         assert_eq!(wallet.max_balance(), 300_000);
 
         let db = create_test_database().expect("test db");
-        db.store_wallet(&wallet, &Network::Testnet)
-            .expect("store test wallet");
         register_test_address(&db, &wallet, &addr);
         let (selected, _) = wallet
             .select_unspent_utxos_for(90_000, 10_000, false)
@@ -2816,8 +2799,6 @@ mod tests {
         add_utxo(&mut wallet, &addr, 1, 0, 100_000);
 
         let db = create_test_database().expect("test db");
-        db.store_wallet(&wallet, &Network::Testnet)
-            .expect("store test wallet");
         register_test_address(&db, &wallet, &addr);
         let (selected, _) = wallet
             .select_unspent_utxos_for(90_000, 10_000, false)
@@ -2864,23 +2845,12 @@ mod tests {
     }
 
     #[test]
-    fn test_set_platform_address_info_from_sync() {
-        let mut wallet = test_wallet();
-        let addr = test_address(1);
-
-        wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
-
-        let info = wallet.platform_address_info.get(&addr).unwrap();
-        assert_eq!(info.balance, 500_000);
-        assert_eq!(info.nonce, 3);
-    }
-
-    #[test]
     fn test_set_platform_address_info_update() {
         let mut wallet = test_wallet();
         let addr = test_address(1);
 
-        wallet.set_platform_address_info_from_sync(addr.clone(), 500_000, 3);
+        wallet.set_platform_address_info(addr.clone(), 500_000, 3);
+
         wallet.set_platform_address_info(addr.clone(), 600_000, 4);
 
         let info = wallet.platform_address_info.get(&addr).unwrap();

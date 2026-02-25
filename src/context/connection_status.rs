@@ -98,6 +98,7 @@ impl ConnectionStatus {
         if let Ok(mut since) = self.spv_no_peers_since.lock() {
             *since = None;
         }
+
         self.overall_state.store(
             OverallConnectionState::Disconnected as u8,
             Ordering::Relaxed,

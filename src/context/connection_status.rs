@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 const REFRESH_CONNECTED: Duration = Duration::from_secs(10);
 const REFRESH_DISCONNECTED: Duration = Duration::from_secs(2);
 
+const SPV_PEER_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Three-state connection indicator matching the UI's red/orange/green circle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -48,6 +50,10 @@ pub struct ConnectionStatus {
     disable_zmq: AtomicBool,
     overall_state: AtomicU8,
     last_update: Mutex<Instant>,
+    spv_connected_peers: AtomicU16,
+    /// When SPV first entered an active state (`Starting`/`Syncing`) with zero
+    /// peers.  Reset to `None` once peers connect or SPV stops.
+    spv_no_peers_since: Mutex<Option<Instant>>,
     dapi_total_endpoints: AtomicU16,
     dapi_available_endpoints: AtomicU16,
 }
@@ -62,6 +68,8 @@ impl ConnectionStatus {
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             last_update: Mutex::new(Instant::now()),
+            spv_connected_peers: AtomicU16::new(0),
+            spv_no_peers_since: Mutex::new(None),
             dapi_total_endpoints: AtomicU16::new(0),
             dapi_available_endpoints: AtomicU16::new(0),
         }
@@ -82,6 +90,10 @@ impl ConnectionStatus {
         self.backend_mode
             .store(backend_mode.as_u8(), Ordering::Relaxed);
         self.disable_zmq.store(false, Ordering::Relaxed);
+        self.spv_connected_peers.store(0, Ordering::Relaxed);
+        if let Ok(mut since) = self.spv_no_peers_since.lock() {
+            *since = None;
+        }
         self.overall_state.store(
             OverallConnectionState::Disconnected as u8,
             Ordering::Relaxed,
@@ -173,6 +185,16 @@ impl ConnectionStatus {
         } else {
             format!("All {total} endpoints banned")
         }
+    }
+
+    /// Returns `true` if SPV has been active with zero connected peers
+    /// for longer than [`SPV_PEER_TIMEOUT`].
+    pub fn spv_peer_timed_out(&self) -> bool {
+        self.spv_no_peers_since
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .is_some_and(|since| since.elapsed() >= SPV_PEER_TIMEOUT)
     }
 
     pub fn spv_connected(status: SpvStatus) -> bool {
@@ -353,10 +375,20 @@ impl ConnectionStatus {
 
         match backend_mode {
             CoreBackendMode::Spv => {
-                // SPV status is updated elsewhere
-                let spv_status = app_context.spv_manager().status().status;
-                tracing::trace!("ConnectionStatus: polled SPV status = {:?}", spv_status);
-                self.set_spv_status(spv_status);
+                let snapshot = app_context.spv_manager().status();
+                tracing::trace!("ConnectionStatus: polled SPV status = {:?}", snapshot.status);
+                self.set_spv_status(snapshot.status);
+                let peers = snapshot.connected_peers as u16;
+                self.spv_connected_peers.store(peers, Ordering::Relaxed);
+
+                // Track how long we've been active with zero peers.
+                if let Ok(mut since) = self.spv_no_peers_since.lock() {
+                    if peers > 0 || !snapshot.status.is_active() {
+                        *since = None;
+                    } else if since.is_none() {
+                        *since = Some(Instant::now());
+                    }
+                }
             }
             CoreBackendMode::Rpc => {
                 // Update ZMQ status if there's a new event

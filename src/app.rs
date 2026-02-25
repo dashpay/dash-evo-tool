@@ -8,6 +8,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
+use crate::spv::CoreBackendMode;
 use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
@@ -1128,6 +1129,19 @@ impl App for AppState {
                 .connection_status()
                 .trigger_refresh(active_context.as_ref()),
         );
+
+        // Auto-stop SPV if no peers connect within the timeout.
+        if active_context.core_backend_mode() == CoreBackendMode::Spv
+            && active_context.connection_status().spv_peer_timed_out()
+        {
+            tracing::warn!("SPV peer timeout: no peers connected, stopping SPV");
+            active_context.stop_spv();
+            MessageBanner::set_global(
+                ctx,
+                "SPV disconnected: no peers found. Check your network connection.",
+                MessageType::Error,
+            );
+        }
 
         for action in actions {
             match action {

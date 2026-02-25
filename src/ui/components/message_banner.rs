@@ -508,7 +508,9 @@ fn render_banner(
 
                 // Reserve space for dismiss button and annotation on the right
                 let dismiss_width = 40.0;
-                let text_width = (available_width - dismiss_width - 30.0).max(0.0);
+                let annotation_width = if annotation.is_some() { 52.0 } else { 0.0 };
+                let text_width =
+                    (available_width - dismiss_width - annotation_width - 30.0).max(0.0);
 
                 // Message text with wrapping, left-aligned
                 ui.allocate_ui(egui::vec2(text_width, 0.0), |ui| {

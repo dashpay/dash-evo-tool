@@ -2180,6 +2180,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         wallet.set_platform_address_info(addr, balance, nonce);
                     }
                 }
+                self.refresh_platform_sync_info_cache(&seed_hash);
                 self.set_message(
                     "Successfully synced Platform balances".to_string(),
                     MessageType::Success,

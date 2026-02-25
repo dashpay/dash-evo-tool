@@ -407,23 +407,6 @@
 
 ---
 
-## TS-25: Database refactor -- shared_connection removal
-
-### Preconditions
-- This is a code-level verification, not a UI test.
-
-### Steps
-1. Verify the application compiles without errors (`cargo build`).
-2. Run the full test suite (`cargo test --all-features --workspace`).
-3. Search the codebase for any remaining calls to `Database::shared_connection()`.
-
-### Expected Results
-- The application compiles successfully.
-- All tests pass.
-- No remaining references to `shared_connection()` exist in the codebase (the method was removed and `Database.conn` changed from `Arc<Mutex<Connection>>` to `Mutex<Connection>`).
-
----
-
 ## Edge Cases
 
 | # | Scenario | Expected Behavior |

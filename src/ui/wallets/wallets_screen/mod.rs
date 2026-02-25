@@ -249,15 +249,29 @@ impl WalletsBalancesScreen {
             .filter(|(ts, _)| *ts > 0);
     }
 
-    fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
-        self.selected_wallet = Some(wallet.clone());
+    /// Set the selected HD wallet and update all associated state (persisted
+    /// hash, platform sync info cache).  All code paths that change
+    /// `selected_wallet` should go through this helper to keep the sync
+    /// status panel consistent.
+    fn set_selected_hd_wallet(&mut self, wallet: Option<Arc<RwLock<Wallet>>>) {
+        let seed_hash = wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+        self.selected_wallet = wallet;
         self.selected_single_key_wallet = None;
         self.selected_account = None;
 
-        if let Ok(hash) = wallet.read().map(|g| g.seed_hash()) {
+        if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
             self.refresh_platform_sync_info_cache(&hash);
+        } else {
+            self.persist_selected_wallet_hash(None);
+            self.platform_sync_info = None;
         }
+    }
+
+    fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
+        self.set_selected_hd_wallet(Some(wallet));
         self.persist_selected_single_key_hash(None);
     }
 
@@ -265,6 +279,7 @@ impl WalletsBalancesScreen {
         self.selected_single_key_wallet = Some(wallet.clone());
         self.selected_wallet = None;
         self.selected_account = None;
+        self.platform_sync_info = None;
         self.utxo_page = 0;
 
         if let Ok(hash) = wallet.read().map(|g| g.key_hash) {
@@ -285,7 +300,7 @@ impl WalletsBalancesScreen {
                 return;
             }
             // HD wallet no longer valid
-            self.selected_wallet = None;
+            self.set_selected_hd_wallet(None);
         }
 
         // Check if single key wallet selection is still valid
@@ -303,12 +318,14 @@ impl WalletsBalancesScreen {
         }
 
         // No valid selection, pick a new one (HD wallet first, then single key)
-        if let Ok(wallets) = self.app_context.wallets.read()
-            && let Some(wallet) = wallets.values().next().cloned()
-        {
-            self.selected_wallet = Some(wallet);
-            self.selected_single_key_wallet = None;
-            self.selected_account = None;
+        let next_hd = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|w| w.values().next().cloned());
+        if let Some(wallet) = next_hd {
+            self.set_selected_hd_wallet(Some(wallet));
             return;
         }
 
@@ -318,10 +335,12 @@ impl WalletsBalancesScreen {
             self.selected_single_key_wallet = Some(wallet);
             self.selected_wallet = None;
             self.selected_account = None;
+            self.platform_sync_info = None;
             return;
         }
 
         self.selected_account = None;
+        self.platform_sync_info = None;
     }
 
     fn add_receiving_address(&mut self) {
@@ -713,13 +732,7 @@ impl WalletsBalancesScreen {
                     .ok()
                     .and_then(|wallets| wallets.values().next().cloned());
 
-                self.selected_wallet = next_wallet.clone();
-
-                // Update persisted selection in AppContext and database
-                let new_hash = next_wallet
-                    .as_ref()
-                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                self.persist_selected_wallet_hash(new_hash);
+                self.set_selected_hd_wallet(next_wallet);
 
                 self.show_rename_dialog = false;
                 self.rename_input.clear();
@@ -2233,10 +2246,14 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // If no wallet of either type is selected but wallets exist, select the first HD wallet
         if self.selected_wallet.is_none() && self.selected_single_key_wallet.is_none() {
-            if let Ok(wallets) = self.app_context.wallets.read()
-                && let Some(wallet) = wallets.values().next().cloned()
-            {
-                self.selected_wallet = Some(wallet);
+            let next_hd = self
+                .app_context
+                .wallets
+                .read()
+                .ok()
+                .and_then(|w| w.values().next().cloned());
+            if let Some(wallet) = next_hd {
+                self.set_selected_hd_wallet(Some(wallet));
                 return;
             }
             // If no HD wallets, try single key wallets

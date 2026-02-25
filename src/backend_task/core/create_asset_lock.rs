@@ -42,8 +42,9 @@ impl AppContext {
 
         // Broadcast the transaction.  If broadcast fails, the UTXOs have already
         // been removed from the wallet (inside the transaction builder) but were
-        // never actually spent on-chain.  We trigger a wallet refresh so the next
-        // UTXO reload reconciles the in-memory state with the chain.
+        // never actually spent on-chain.  The caller should handle refreshing
+        // the wallet so the next UTXO reload reconciles in-memory state with
+        // the chain.  See also: https://github.com/dashpay/dash-evo-tool/issues/657
         if let Err(e) = self
             .broadcast_raw_transaction(&asset_lock_transaction)
             .await
@@ -51,6 +52,8 @@ impl AppContext {
             // Clean up the finality tracking entry
             if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
                 proofs.remove(&tx_id);
+            } else {
+                tracing::warn!("Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned");
             }
             return Err(format!("Failed to broadcast asset lock transaction: {}", e));
         }
@@ -104,6 +107,8 @@ impl AppContext {
         {
             if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
                 proofs.remove(&tx_id);
+            } else {
+                tracing::warn!("Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned");
             }
             return Err(format!("Failed to broadcast asset lock transaction: {}", e));
         }

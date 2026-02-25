@@ -10,7 +10,7 @@ mod scheduled_votes;
 mod settings;
 pub mod shielded;
 mod single_key_wallet;
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub mod test_helpers;
 mod tokens;
 mod top_ups;

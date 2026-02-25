@@ -85,6 +85,9 @@ pub struct AddNewIdentityScreen {
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
+    error_message: Option<String>,
+    /// Tracks the last error pushed to the global banner to avoid re-sending each frame.
+    last_global_error: Option<String>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
@@ -150,6 +153,8 @@ impl AddNewIdentityScreen {
                 master_private_key_type: KeyType::ECDSA_HASH160,
                 keys_input: vec![],
             },
+            error_message: None,
+            last_global_error: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
@@ -211,10 +216,10 @@ impl AddNewIdentityScreen {
 
             let mut wallet = wallet_lock.write().expect("wallet lock failed");
             let master_key = wallet.identity_authentication_ecdsa_private_key(
+                app_context,
                 app_context.network,
                 identity_id_number,
                 0,
-                Some(app_context),
             )?;
 
             let other_keys = default_keys
@@ -224,10 +229,10 @@ impl AddNewIdentityScreen {
                     |(i, (key_type, purpose, security_level, contract_bounds))| {
                         Ok((
                             wallet.identity_authentication_ecdsa_private_key(
+                                app_context,
                                 app_context.network,
                                 identity_id_number,
                                 (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
-                                Some(app_context),
                             )?,
                             key_type,
                             purpose,
@@ -954,10 +959,10 @@ impl AddNewIdentityScreen {
             // Update the master private key and keys input from the wallet
             self.identity_keys.master_private_key =
                 Some(wallet.identity_authentication_ecdsa_private_key(
+                    &self.app_context,
                     self.app_context.network,
                     identity_index,
                     0,
-                    Some(&self.app_context),
                 )?);
 
             // Update the additional keys input (preserving contract bounds)
@@ -970,10 +975,10 @@ impl AddNewIdentityScreen {
                     |(key_index, (_, key_type, purpose, security_level, contract_bounds))| {
                         Ok((
                             wallet.identity_authentication_ecdsa_private_key(
+                                &self.app_context,
                                 self.app_context.network,
                                 identity_index,
                                 key_index as u32 + 1,
-                                Some(&self.app_context),
                             )?,
                             *key_type,
                             *purpose,
@@ -1004,10 +1009,10 @@ impl AddNewIdentityScreen {
             self.identity_keys.keys_input.push((
                 wallet
                     .identity_authentication_ecdsa_private_key(
+                        &self.app_context,
                         self.app_context.network,
                         self.identity_id_number,
                         new_key_index,
-                        Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
                 key_type,
@@ -1021,9 +1026,9 @@ impl AddNewIdentityScreen {
 
 impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Error/success display is handled by the global MessageBanner.
-        // Side-effect only: reset step on error so we stop showing "Waiting for Platform acknowledgement".
         if message_type == MessageType::Error {
+            // Reset step so we stop showing "Waiting for Platform acknowledgement".
+            // The error itself is displayed by the global MessageBanner.
             let mut step = self.step.write().unwrap();
             *step = WalletFundedScreenStep::ReadyToCreate;
         }
@@ -1106,7 +1111,17 @@ impl ScreenLike for AddNewIdentityScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
-            // Error display is handled by the global MessageBanner
+            // Display local validation errors via the global MessageBanner.
+            // Only push when the message changes to avoid resetting the banner each frame
+            // (e.g. try_open_wallet_no_password can re-set error_message every render pass).
+            if self.error_message != self.last_global_error {
+                if let Some(error_message) = self.error_message.as_ref() {
+                    MessageBanner::set_global(ui.ctx(), error_message, MessageType::Error);
+                } else if let Some(old) = self.last_global_error.as_ref() {
+                    MessageBanner::clear_global_message(ui.ctx(), old);
+                }
+                self.last_global_error = self.error_message.clone();
+            }
 
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {*self.step.read().unwrap()};

@@ -4,6 +4,8 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::backend_task::wallet::WalletTask;
 use crate::model::amount::Amount;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -78,6 +80,16 @@ pub(super) struct FundPlatformAddressDialogState {
     pub is_processing: bool,
     /// Whether we should continue funding after the wallet is unlocked
     pub pending_fund_after_unlock: bool,
+}
+
+/// State for the Mine Blocks dialog (dev mode, Regtest/Devnet only)
+#[derive(Default)]
+pub(super) struct MineDialogState {
+    pub is_open: bool,
+    pub core_addresses: Vec<(String, u64)>,
+    pub selected_address_index: usize,
+    pub block_count_str: String,
+    pub error: Option<String>,
 }
 
 /// State for the Private Key dialog
@@ -1118,19 +1130,14 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Load Core addresses into the receive dialog
-    fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
-        let wallet_guard = match wallet.read() {
-            Ok(guard) => guard,
-            Err(err) => {
-                self.receive_dialog.status = Some(err.to_string());
-                return;
-            }
-        };
-
-        // Collect all BIP44 external (receive) addresses with their balances
+    /// Load BIP44 external addresses with balances from a wallet.
+    fn load_bip44_external_addresses(
+        &self,
+        wallet: &Arc<RwLock<Wallet>>,
+    ) -> Result<Vec<(String, u64)>, String> {
+        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         let network = self.app_context.network;
-        let core_addresses: Vec<(String, u64)> = wallet_guard
+        let addresses: Vec<(String, u64)> = wallet_guard
             .watched_addresses
             .iter()
             .filter(|(path, _)| path.is_bip44_external(network))
@@ -1143,24 +1150,31 @@ impl WalletsBalancesScreen {
                 (info.address.to_string(), balance)
             })
             .collect();
+        Ok(addresses)
+    }
 
-        drop(wallet_guard);
-
-        if core_addresses.is_empty() {
-            // Generate a new Core address if none exists
-            match self.generate_new_core_receive_address(wallet) {
-                Ok((address, balance)) => {
-                    self.receive_dialog.core_addresses = vec![(address, balance)];
-                    self.receive_dialog.selected_core_index = 0;
-                }
-                Err(err) => {
-                    self.receive_dialog.status = Some(err);
-                    self.receive_dialog.core_addresses.clear();
+    /// Load Core addresses into the receive dialog
+    fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+        match self.load_bip44_external_addresses(wallet) {
+            Ok(addresses) if addresses.is_empty() => {
+                match self.generate_new_core_receive_address(wallet) {
+                    Ok((address, balance)) => {
+                        self.receive_dialog.core_addresses = vec![(address, balance)];
+                        self.receive_dialog.selected_core_index = 0;
+                    }
+                    Err(err) => {
+                        self.receive_dialog.status = Some(err);
+                        self.receive_dialog.core_addresses.clear();
+                    }
                 }
             }
-        } else {
-            self.receive_dialog.core_addresses = core_addresses;
-            self.receive_dialog.selected_core_index = 0;
+            Ok(addresses) => {
+                self.receive_dialog.core_addresses = addresses;
+                self.receive_dialog.selected_core_index = 0;
+            }
+            Err(err) => {
+                self.receive_dialog.status = Some(err);
+            }
         }
     }
 
@@ -1221,5 +1235,248 @@ impl WalletsBalancesScreen {
         }
         let private_key = wallet.private_key_at_derivation_path(path, self.app_context.network)?;
         Ok(private_key.to_wif())
+    }
+
+    pub(super) fn open_mine_dialog(&mut self) {
+        let Some(wallet) = self.selected_wallet.clone() else {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Select a wallet first",
+                MessageType::Error,
+            );
+            return;
+        };
+
+        self.mine_dialog = MineDialogState {
+            is_open: true,
+            block_count_str: "1".to_string(),
+            ..Default::default()
+        };
+
+        // Reuse the same address loading pattern as receive dialog
+        self.load_core_addresses_for_mine(&wallet);
+    }
+
+    fn load_core_addresses_for_mine(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+        match self.load_bip44_external_addresses(wallet) {
+            Ok(addresses) if addresses.is_empty() => {
+                match self.generate_new_core_receive_address(wallet) {
+                    Ok((address, balance)) => {
+                        self.mine_dialog.core_addresses = vec![(address, balance)];
+                        self.mine_dialog.selected_address_index = 0;
+                    }
+                    Err(err) => {
+                        self.mine_dialog.error = Some(err);
+                        self.mine_dialog.core_addresses.clear();
+                    }
+                }
+            }
+            Ok(addresses) => {
+                self.mine_dialog.core_addresses = addresses;
+                self.mine_dialog.selected_address_index = 0;
+            }
+            Err(err) => {
+                self.mine_dialog.error = Some(err);
+            }
+        }
+    }
+
+    pub(super) fn render_mine_dialog(&mut self, ctx: &Context) -> AppAction {
+        if !self.mine_dialog.is_open {
+            return AppAction::None;
+        }
+
+        let mut action = AppAction::None;
+        let mut open = self.mine_dialog.is_open;
+        let dark_mode = ctx.style().visuals.dark_mode;
+
+        Self::draw_modal_overlay(ctx, "mine_dialog_overlay");
+
+        egui::Window::new("Mine Blocks")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .frame(Self::modal_frame(ctx))
+            .show(ctx, |ui| {
+                ui.set_min_width(350.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new("Mine blocks to a wallet address:")
+                            .color(DashColors::text_primary(dark_mode)),
+                    );
+                    ui.add_space(10.0);
+
+                    // Address selector
+                    if !self.mine_dialog.core_addresses.is_empty() {
+                        ui.label("Address:");
+                        ComboBox::from_id_salt("mine_addr_selector")
+                            .selected_text(
+                                self.mine_dialog
+                                    .core_addresses
+                                    .get(self.mine_dialog.selected_address_index)
+                                    .map(|(addr, balance)| {
+                                        let balance_dash = *balance as f64 / 1e8;
+                                        format!(
+                                            "{}... ({:.4} DASH)",
+                                            &addr[..12.min(addr.len())],
+                                            balance_dash
+                                        )
+                                    })
+                                    .unwrap_or_default(),
+                            )
+                            .width(ui.available_width() - 16.0)
+                            .show_ui(ui, |ui| {
+                                for (idx, (addr, balance)) in
+                                    self.mine_dialog.core_addresses.iter().enumerate()
+                                {
+                                    let balance_dash = *balance as f64 / 1e8;
+                                    let label = format!(
+                                        "{}... ({:.4} DASH)",
+                                        &addr[..12.min(addr.len())],
+                                        balance_dash
+                                    );
+                                    if ui
+                                        .selectable_label(
+                                            idx == self.mine_dialog.selected_address_index,
+                                            label,
+                                        )
+                                        .clicked()
+                                    {
+                                        self.mine_dialog.selected_address_index = idx;
+                                    }
+                                }
+                            });
+                    }
+
+                    ui.add_space(10.0);
+
+                    // Block count input
+                    ui.label("Number of blocks:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.mine_dialog.block_count_str)
+                            .hint_text("1")
+                            .desired_width(100.0),
+                    );
+                    self.mine_dialog
+                        .block_count_str
+                        .retain(|c| c.is_ascii_digit());
+
+                    // Error display
+                    if let Some(error) = self.mine_dialog.error.clone() {
+                        ui.add_space(8.0);
+                        let error_color = DashColors::ERROR;
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", error))
+                                            .color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.mine_dialog.error = None;
+                                    }
+                                });
+                            });
+                    }
+
+                    ui.add_space(15.0);
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        let cancel_button = egui::Button::new(
+                            RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            DashColors::text_secondary(dark_mode),
+                        ))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .min_size(egui::Vec2::new(80.0, 32.0));
+
+                        if ui.add(cancel_button).clicked() {
+                            self.mine_dialog = MineDialogState::default();
+                        }
+
+                        ui.add_space(8.0);
+
+                        let mine_button =
+                            egui::Button::new(RichText::new("Mine").color(egui::Color32::WHITE))
+                                .fill(DashColors::DASH_BLUE)
+                                .corner_radius(egui::CornerRadius::same(4))
+                                .min_size(egui::Vec2::new(80.0, 32.0));
+
+                        if ui.add(mine_button).clicked() {
+                            // Validate and dispatch
+                            const MAX_MINE_BLOCKS: u64 = 1_000;
+                            let block_count: u64 =
+                                match self.mine_dialog.block_count_str.trim().parse() {
+                                    Ok(n) if n > 0 && n <= MAX_MINE_BLOCKS => n,
+                                    Ok(n) if n > MAX_MINE_BLOCKS => {
+                                        self.mine_dialog.error = Some(format!(
+                                            "Maximum {} blocks at a time",
+                                            MAX_MINE_BLOCKS
+                                        ));
+                                        return;
+                                    }
+                                    _ => {
+                                        self.mine_dialog.error = Some(
+                                            "Enter a valid number of blocks (> 0)".to_string(),
+                                        );
+                                        return;
+                                    }
+                                };
+
+                            let Some((addr_str, _)) = self
+                                .mine_dialog
+                                .core_addresses
+                                .get(self.mine_dialog.selected_address_index)
+                            else {
+                                self.mine_dialog.error = Some("No address selected".to_string());
+                                return;
+                            };
+
+                            let address = match addr_str
+                                .parse::<Address<NetworkUnchecked>>()
+                                .and_then(|a| a.require_network(self.app_context.network))
+                            {
+                                Ok(addr) => addr,
+                                Err(e) => {
+                                    self.mine_dialog.error =
+                                        Some(format!("Invalid address: {}", e));
+                                    return;
+                                }
+                            };
+
+                            let Some(wallet) = self.selected_wallet.clone() else {
+                                self.mine_dialog.error = Some("No wallet selected".to_string());
+                                return;
+                            };
+
+                            action = AppAction::BackendTask(BackendTask::CoreTask(
+                                CoreTask::MineBlocks {
+                                    block_count,
+                                    address,
+                                    wallet,
+                                },
+                            ));
+                            self.mine_dialog = MineDialogState::default();
+                        }
+                    });
+                });
+            });
+
+        // X button sets `open` to false; Cancel/Mine reset dialog state
+        // (which sets is_open to false) inside the closure.
+        if !open || !self.mine_dialog.is_open {
+            self.mine_dialog = MineDialogState::default();
+        }
+        action
     }
 }

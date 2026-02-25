@@ -5,13 +5,37 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::spv::{CoreBackendMode, SpvStatus};
+use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
-const REFRESH_CONNECTED: Duration = Duration::from_secs(10);
-const REFRESH_DISCONNECTED: Duration = Duration::from_secs(2);
+const REFRESH_CONNECTED: Duration = Duration::from_secs(4);
+const REFRESH_DISCONNECTED: Duration = Duration::from_secs(1);
+
+/// Three-state connection indicator matching the UI's red/orange/green circle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum OverallConnectionState {
+    /// No connection at all — red indicator.
+    Disconnected = 0,
+    /// All subsystems connected but still syncing data — orange indicator.
+    Syncing = 1,
+    /// Fully connected and operational — green indicator.
+    Synced = 2,
+}
+
+impl From<u8> for OverallConnectionState {
+    fn from(v: u8) -> Self {
+        match v {
+            1 => Self::Syncing,
+            2 => Self::Synced,
+            _ => Self::Disconnected,
+        }
+    }
+}
+
 /// Tracks the connection status to currently active network, and provides helper methods
 /// to determine overall connectivity status.
 ///
@@ -23,7 +47,7 @@ pub struct ConnectionStatus {
     spv_status: AtomicU8,
     backend_mode: AtomicU8,
     disable_zmq: AtomicBool,
-    overall_connected: AtomicBool,
+    overall_state: AtomicU8,
     last_update: Mutex<Instant>,
     dapi_total_endpoints: AtomicU16,
     dapi_available_endpoints: AtomicU16,
@@ -37,7 +61,7 @@ impl ConnectionStatus {
             spv_status: AtomicU8::new(SpvStatus::Idle as u8),
             backend_mode: AtomicU8::new(CoreBackendMode::Rpc.as_u8()),
             disable_zmq: AtomicBool::new(false),
-            overall_connected: AtomicBool::new(false),
+            overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             last_update: Mutex::new(Instant::now()),
             dapi_total_endpoints: AtomicU16::new(0),
             dapi_available_endpoints: AtomicU16::new(0),
@@ -48,7 +72,7 @@ impl ConnectionStatus {
     /// so the status reflects the new network from a clean slate.
     ///
     /// `backend_mode` should be the new network's current backend mode so that
-    /// `overall_connected()` and `tooltip_text()` read the correct mode immediately.
+    /// `overall_state()` and `tooltip_text()` read the correct mode immediately.
     pub fn reset(&self, backend_mode: CoreBackendMode) {
         self.rpc_online.store(false, Ordering::Relaxed);
         if let Ok(mut status) = self.zmq_status.lock() {
@@ -59,7 +83,10 @@ impl ConnectionStatus {
         self.backend_mode
             .store(backend_mode.as_u8(), Ordering::Relaxed);
         self.disable_zmq.store(false, Ordering::Relaxed);
-        self.overall_connected.store(false, Ordering::Relaxed);
+        self.overall_state.store(
+            OverallConnectionState::Disconnected as u8,
+            Ordering::Relaxed,
+        );
         // Set last_update to epoch so the next trigger_refresh fires immediately
         if let Ok(mut last) = self.last_update.lock() {
             *last = Instant::now() - REFRESH_CONNECTED;
@@ -143,7 +170,7 @@ impl ConnectionStatus {
         if total == 0 {
             "No endpoints configured".to_string()
         } else if available > 0 {
-            format!("Available ({available}/{total} endpoints)")
+            format!("Available ({available} unbanned / {total} total endpoints)")
         } else {
             format!("All {total} endpoints banned")
         }
@@ -153,28 +180,52 @@ impl ConnectionStatus {
         status.is_active()
     }
 
-    pub fn overall_connected(&self) -> bool {
-        self.overall_connected.load(Ordering::Relaxed)
+    pub fn overall_state(&self) -> OverallConnectionState {
+        self.overall_state.load(Ordering::Relaxed).into()
     }
 
-    pub fn refresh_overall(&self) {
+    pub fn refresh_state(&self) {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
         let spv_status = self.spv_status();
         let dapi_available = self.dapi_available();
-        let connected = match backend_mode {
+
+        let state = match backend_mode {
             CoreBackendMode::Rpc => {
-                self.rpc_online() && (disable_zmq || self.zmq_connected()) && dapi_available
+                // RPC mode: no intermediate syncing state exposed, so red or green only.
+                if self.rpc_online() && (disable_zmq || self.zmq_connected()) && dapi_available {
+                    OverallConnectionState::Synced
+                } else {
+                    OverallConnectionState::Disconnected
+                }
             }
-            CoreBackendMode::Spv => Self::spv_connected(spv_status) && dapi_available,
+            CoreBackendMode::Spv => {
+                if !dapi_available {
+                    OverallConnectionState::Disconnected
+                } else {
+                    match spv_status {
+                        SpvStatus::Running => OverallConnectionState::Synced,
+                        SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Stopping => {
+                            OverallConnectionState::Syncing
+                        }
+                        _ => OverallConnectionState::Disconnected,
+                    }
+                }
+            }
         };
-        self.overall_connected.store(connected, Ordering::Relaxed);
+        self.overall_state.store(state as u8, Ordering::Relaxed);
     }
 
-    pub fn tooltip_text(&self) -> String {
+    /// Build the tooltip string for the connection indicator.
+    ///
+    /// In SPV mode, fetches sync progress from the [`SpvManager`] to display
+    /// a detailed phase summary (e.g. `"SPV: Headers: 12345 / 27000 (45%)"`)
+    /// instead of the bare `"SPV: Syncing"`.
+    pub fn tooltip_text(&self, app_context: &crate::context::AppContext) -> String {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
         let spv_status = self.spv_status();
+        let overall = self.overall_state();
         let dapi_status = format!("DAPI: {}", self.dapi_status_label());
         match backend_mode {
             CoreBackendMode::Rpc => {
@@ -191,27 +242,37 @@ impl ConnectionStatus {
                     "ZMQ: Disconnected"
                 };
 
-                if self.overall_connected() {
-                    format!(
-                        "Connected to Dash Core Wallet\n{rpc_status}\n{zmq_status}\n{dapi_status}"
-                    )
-                } else if self.rpc_online() {
-                    format!(
-                        "Dash Core connection incomplete\n{rpc_status}\n{zmq_status}\n{dapi_status}"
-                    )
-                } else {
-                    format!(
-                        "Disconnected from Dash Core Wallet. Click to start it.\n{rpc_status}\n{zmq_status}\n{dapi_status}"
-                    )
-                }
+                let header = match overall {
+                    OverallConnectionState::Synced => "Connected to Dash Core Wallet",
+                    // RPC mode doesn't currently produce Syncing, but kept for forward-compat.
+                    OverallConnectionState::Syncing => "Syncing to Dash Core Wallet",
+                    OverallConnectionState::Disconnected if self.rpc_online() => {
+                        "Dash Core connection incomplete"
+                    }
+                    OverallConnectionState::Disconnected => {
+                        "Disconnected from Dash Core Wallet. Click to start it."
+                    }
+                };
+                format!("{header}\n{rpc_status}\n{zmq_status}\n{dapi_status}")
             }
             CoreBackendMode::Spv => {
-                let spv_label = format!("SPV: {:?}", spv_status);
-                if self.overall_connected() {
-                    format!("SPV connected\n{spv_label}\n{dapi_status}")
+                let header = match overall {
+                    OverallConnectionState::Synced => "Ready",
+                    OverallConnectionState::Syncing => "Syncing",
+                    OverallConnectionState::Disconnected => "Disconnected",
+                };
+                let spv_label = if spv_status == SpvStatus::Running {
+                    "SPV: Synced".to_string()
                 } else {
-                    format!("SPV disconnected\n{spv_label}\n{dapi_status}")
-                }
+                    app_context
+                        .spv_manager()
+                        .status()
+                        .sync_progress
+                        .as_ref()
+                        .map(|p| format!("SPV: {}", spv_phase_summary(p)))
+                        .unwrap_or_else(|| format!("SPV: {:?}", spv_status))
+                };
+                format!("{header}\n{spv_label}\n{dapi_status}")
             }
         }
     }
@@ -250,12 +311,12 @@ impl ConnectionStatus {
                         devnet_chainlock,
                         local_chainlock,
                     );
-                    self.refresh_overall();
+                    self.refresh_state();
                 }
                 BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) => {
                     if *network == active_network {
                         self.set_rpc_online(true);
-                        self.refresh_overall();
+                        self.refresh_state();
                     }
                 }
                 _ => {}
@@ -265,7 +326,7 @@ impl ConnectionStatus {
                     "Failed to get best chain lock for mainnet, testnet, devnet, and local",
                 ) {
                     self.set_rpc_online(false);
-                    self.refresh_overall();
+                    self.refresh_state();
                 }
             }
             _ => {}
@@ -273,7 +334,7 @@ impl ConnectionStatus {
     }
 
     pub fn trigger_refresh(&self, app_context: &crate::context::AppContext) -> AppAction {
-        // throttle updates to once every 2 seconds
+        // throttle updates based on connection state (1s disconnected, 4s connected)
         let mut last_update = match self.last_update.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -283,7 +344,7 @@ impl ConnectionStatus {
             // Poll frequently during SPV shutdown so the UI updates
             // within ~200ms of the Stopping → Stopped transition.
             Duration::from_millis(200)
-        } else if self.overall_connected() {
+        } else if self.overall_state() == OverallConnectionState::Synced {
             REFRESH_CONNECTED
         } else {
             REFRESH_DISCONNECTED
@@ -334,19 +395,74 @@ impl ConnectionStatus {
             let sdk = app_context.sdk.load();
             let address_list = sdk.address_list();
             let total = address_list.len() as u16;
-            // get_live_address() returns Option<&Uri>, so count it as 1 if available, 0 if not
-            // TODO: once Dash Platform SDK supports rust-dashcore v0.42,
-            // update platform and use get_live_addresses() which returns all available addresses
-            //for more accurate status
-            let available = if address_list.get_live_address().is_some() {
-                1
-            } else {
-                0
-            };
+            let available = address_list.get_live_addresses().len() as u16;
             self.set_dapi_status(total, available);
         }
 
-        self.refresh_overall();
+        self.refresh_state();
+    }
+}
+
+/// Compact text summary of the active SPV sync phase.
+///
+/// Returns e.g. `"Headers: 12345 / 27000 (45%)"`, `"Masternodes: 800 / 2000 (40%)"`,
+/// or `"syncing..."` if no phase is actively syncing.
+///
+/// Phases are checked in pipeline execution order (early → late) so the user
+/// sees progression from headers through to blocks.
+pub fn spv_phase_summary(progress: &SpvSyncProgress) -> String {
+    // Check phases in order of execution
+    if let Ok(headers) = progress.headers()
+        && headers.state() == SyncState::Syncing
+    {
+        let (cur, tgt) = (headers.current_height(), headers.target_height());
+        return format!("Headers: {} / {} ({}%)", cur, tgt, pct(cur, tgt));
+    }
+
+    if let Ok(mn) = progress.masternodes()
+        && mn.state() == SyncState::Syncing
+    {
+        let (cur, tgt) = (mn.current_height(), mn.target_height());
+        return format!("Masternodes: {} / {} ({}%)", cur, tgt, pct(cur, tgt));
+    }
+
+    if let Ok(fh) = progress.filter_headers()
+        && fh.state() == SyncState::Syncing
+    {
+        let (cur, tgt) = (fh.current_height(), fh.target_height());
+        return format!("Filter Headers: {} / {} ({}%)", cur, tgt, pct(cur, tgt));
+    }
+
+    if let Ok(filters) = progress.filters()
+        && filters.state() == SyncState::Syncing
+    {
+        let (cur, tgt) = (filters.current_height(), filters.target_height());
+        return format!("Filters: {} / {} ({}%)", cur, tgt, pct(cur, tgt));
+    }
+
+    if let Ok(blocks) = progress.blocks()
+        && blocks.state() == SyncState::Syncing
+    {
+        // Blocks doesn't expose its own target_height; use the best available
+        // approximation: max of headers target and blocks last_processed.
+        let target = progress
+            .headers()
+            .ok()
+            .map(|h| h.target_height())
+            .unwrap_or(0)
+            .max(blocks.last_processed());
+        let cur = blocks.last_processed();
+        return format!("Blocks: {} / {} ({}%)", cur, target, pct(cur, target));
+    }
+
+    "syncing...".to_string()
+}
+
+fn pct(current: u32, target: u32) -> u32 {
+    if target == 0 {
+        0
+    } else {
+        ((current as f64 / target as f64) * 100.0).clamp(0.0, 100.0) as u32
     }
 }
 

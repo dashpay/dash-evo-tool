@@ -1,13 +1,9 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
-use crate::spv::CoreBackendMode;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::prelude::AssetLockProof;
 use std::sync::Arc;
-use std::time::Duration;
 
 impl AppContext {
     /// Fund a platform address directly from wallet UTXOs.
@@ -22,7 +18,6 @@ impl AppContext {
         destination: PlatformAddress,
         fee_deduct_from_output: bool,
     ) -> Result<BackendTaskSuccessResult, String> {
-        use dash_sdk::dashcore_rpc::RpcApi;
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
@@ -42,7 +37,7 @@ impl AppContext {
             (asset_lock_amount, false)
         };
 
-        // Step 1: Create the asset lock transaction
+        // Step 1: Create the asset lock transaction (UTXOs are selected but NOT yet removed)
         let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
@@ -56,128 +51,94 @@ impl AppContext {
 
             // Try to create the asset lock transaction, reload UTXOs if needed
             match wallet.generic_asset_lock_transaction(
+                self,
                 self.network,
                 asset_lock_amount,
                 allow_take_fee_from_amount,
-                Some(self),
             ) {
                 Ok((tx, private_key, address, _change, utxos)) => (tx, private_key, address, utxos),
-                Err(_) => {
-                    // Reload UTXOs and try again
-                    wallet
-                        .reload_utxos(
-                            &self
-                                .core_client
-                                .read()
-                                .expect("Core client lock was poisoned"),
-                            self.network,
-                            Some(self),
-                        )
-                        .map_err(|e| e.to_string())?;
-
+                Err(e) => {
+                    // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
+                    // Only retry if something actually changed.
+                    if !wallet.reload_utxos(self)? {
+                        return Err(e);
+                    }
                     let (tx, private_key, address, _change, utxos) = wallet
                         .generic_asset_lock_transaction(
+                            self,
                             self.network,
                             asset_lock_amount,
                             allow_take_fee_from_amount,
-                            Some(self),
                         )?;
                     (tx, private_key, address, utxos)
                 }
             }
         };
 
-        let tx_id = asset_lock_transaction.txid();
+        // Step 2–4: Store → broadcast → remove UTXOs (atomic pattern).
+        let wallet_arc = {
+            let wallets = self.wallets.read().map_err(|e| e.to_string())?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or_else(|| "Wallet not found".to_string())?
+        };
 
-        // Step 2: Register this transaction as waiting for finality
-        {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-            proofs.insert(tx_id, None);
-        }
+        let tx_id = self
+            .broadcast_and_commit_asset_lock(
+                &asset_lock_transaction,
+                asset_lock_amount,
+                &seed_hash,
+                &wallet_arc,
+                &used_utxos,
+            )
+            .await?;
 
-        // Step 3: Broadcast the transaction
-        self.core_client
-            .read()
-            .expect("Core client lock was poisoned")
-            .send_raw_transaction(&asset_lock_transaction)
-            .map_err(|e| format!("Failed to broadcast asset lock transaction: {}", e))?;
+        // Step 5: Wait for asset lock proof (InstantLock or ChainLock) via shared helper.
+        // On timeout the helper cleans up the finality tracking entry.
+        // Post-timeout recovery is mode-dependent:
+        //   RPC  — fire-and-forget refresh_wallet_info to reconcile spent UTXOs
+        //   SPV  — spent UTXOs are reconciled automatically on the next sync cycle
+        let asset_lock_proof = match self.wait_for_asset_lock_proof(tx_id).await {
+            Ok(proof) => proof,
+            Err(timeout_err) => {
+                use crate::spv::CoreBackendMode;
 
-        // Step 4: Remove used UTXOs from wallet
-        {
-            let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
-            };
-
-            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
-            wallet.utxos.retain(|_, utxo_map| {
-                utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                !utxo_map.is_empty()
-            });
-
-            for utxo in used_utxos.keys() {
-                self.db
-                    .drop_utxo(utxo, &self.network.to_string())
-                    .map_err(|e| e.to_string())?;
-            }
-
-            wallet.recalculate_affected_address_balances(&used_utxos, self)?;
-        }
-
-        // Step 5: Wait for asset lock proof (InstantLock or ChainLock) with timeout
-        let asset_lock_proof: AssetLockProof;
-        let timeout = tokio::time::sleep(Duration::from_secs(300)); // 5 minute timeout
-        tokio::pin!(timeout);
-
-        loop {
-            tokio::select! {
-                _ = &mut timeout => {
-                    // Best-effort cleanup: use try_lock to avoid blocking the
-                    // async runtime if another thread holds the mutex.
-                    if let Ok(mut proofs) = self.transactions_waiting_for_finality.try_lock() {
-                        proofs.remove(&tx_id);
-                    }
-
-                    // Auto-refresh wallet UTXOs in RPC mode so the broadcast tx's
-                    // spent inputs are reconciled (the tx was already broadcast and
-                    // may confirm later). SPV handles its own reconciliation.
-                    if self.core_backend_mode() == CoreBackendMode::Rpc
-                        && let Some(wallet_arc) = self.wallets.read().ok()
+                match self.core_backend_mode() {
+                    CoreBackendMode::Rpc => {
+                        if let Some(wallet_arc) = self
+                            .wallets
+                            .read()
+                            .ok()
                             .and_then(|w| w.get(&seed_hash).cloned())
-                    {
-                        let ctx = Arc::clone(self);
-                        // Fire-and-forget — don't block the error return on refresh
-                        tokio::task::spawn_blocking(move || {
-                            if let Err(e) = ctx.refresh_wallet_info(wallet_arc) {
-                                tracing::warn!("Failed to auto-refresh wallet after timeout: {}", e);
-                            }
-                        });
+                        {
+                            let ctx = Arc::clone(self);
+                            // Fire-and-forget — don't block the error return on refresh
+                            tokio::task::spawn_blocking(move || {
+                                if let Err(e) = ctx.refresh_wallet_info(wallet_arc) {
+                                    tracing::warn!(
+                                        "Failed to auto-refresh wallet after timeout: {}",
+                                        e
+                                    );
+                                }
+                            });
+                        }
                     }
+                    CoreBackendMode::Spv => {
+                        tracing::warn!(
+                            "Asset lock proof timed out in SPV mode (tx {}). \
+                             Spent UTXOs will be reconciled automatically during \
+                             the next SPV sync cycle when a new block arrives.",
+                            tx_id
+                        );
+                    }
+                }
 
-                    return Err("Timeout waiting for asset lock proof — no InstantLock or ChainLock received within 5 minutes".to_string());
-                }
-                _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                    // Brief lock to check for proof — acquired and released quickly
-                    // so contention is minimal.
-                    let proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                    if let Some(Some(proof)) = proofs.get(&tx_id) {
-                        asset_lock_proof = proof.clone();
-                        break;
-                    }
-                }
+                return Err(timeout_err);
             }
-        }
+        };
 
-        // Step 6: Clean up the finality tracking
-        {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-            proofs.remove(&tx_id);
-        }
-
-        // Step 7: Get wallet, SDK, and derive a fresh change address if needed
+        // Step 6: Get wallet, SDK, and derive a fresh change address if needed
         let (wallet, sdk, change_platform_address) = {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
@@ -207,7 +168,7 @@ impl AppContext {
             (wallet, sdk, change_platform_address)
         };
 
-        // Step 8: Fund the destination platform address
+        // Step 7: Fund the destination platform address
         let mut outputs = std::collections::BTreeMap::new();
 
         let fee_strategy = if fee_deduct_from_output {
@@ -256,8 +217,7 @@ impl AppContext {
             .map_err(|e| format!("Failed to fund platform address: {}", e))?;
 
         // Step 9: Refresh platform address balances
-        self.fetch_platform_address_balances(seed_hash, PlatformSyncMode::Auto)
-            .await?;
+        self.fetch_platform_address_balances(seed_hash).await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
     }

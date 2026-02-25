@@ -9,7 +9,7 @@ mod proof_log;
 mod scheduled_votes;
 mod settings;
 mod single_key_wallet;
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub mod test_helpers;
 mod tokens;
 mod top_ups;
@@ -18,7 +18,7 @@ mod wallet;
 
 use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{Connection, Params};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Error indicating a corrupted data blob in the database.
 ///
@@ -41,15 +41,24 @@ impl From<CorruptedBlobError> for rusqlite::Error {
 
 #[derive(Debug)]
 pub struct Database {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
     pub fn new<P: AsRef<std::path::Path>>(path: P) -> rusqlite::Result<Self> {
         let conn = Connection::open(path)?;
         Ok(Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Get a shared reference to the underlying connection.
+    ///
+    /// Used by `ClientPersistentCommitmentTree` to share the same SQLite
+    /// connection for the shielded commitment tree tables.
+    #[allow(dead_code)] // Prepared for ClientPersistentCommitmentTree
+    pub(crate) fn shared_connection(&self) -> Arc<Mutex<Connection>> {
+        self.conn.clone()
     }
 
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {

@@ -76,7 +76,7 @@ impl AppContext {
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
-        self.connection_status.refresh_overall();
+        self.connection_status.refresh_state();
         Ok(())
     }
 
@@ -244,15 +244,13 @@ impl AppContext {
                 // Update in-memory wallet state
                 wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
 
-                // Update database (not a sync operation - preserve last_full_sync_balance
-                // so the next terminal sync can correctly apply any pending AddToCredits)
+                // Update database
                 if let Err(e) = self.db.set_platform_address_info(
                     &seed_hash,
                     &core_addr,
                     info.balance,
                     info.nonce,
                     &self.network,
-                    false, // Not a sync operation
                 ) {
                     tracing::warn!("Failed to store Platform address info in database: {}", e);
                 }
@@ -720,9 +718,21 @@ impl AppContext {
                 // Update in-memory UTXOs map
                 w.utxos = new_utxos;
 
+                // Zero out balances for known addresses that no longer have any UTXOs.
+                // Without this, spent addresses retain stale non-zero balances because
+                // per_address_sum only contains addresses with current UTXOs.
+                for addr in &known_addresses {
+                    if !w.utxos.contains_key(addr)
+                        && let Err(e) = w.update_address_balance(addr, 0, self)
+                    {
+                        tracing::debug!(address = %addr, error = %e, "Failed to zero spent address balance");
+                    }
+                }
+
                 for (addr, sum) in per_address_sum.into_iter() {
-                    // Update wallet and DB through model helper
-                    let _ = w.update_address_balance(&addr, sum, self);
+                    if let Err(e) = w.update_address_balance(&addr, sum, self) {
+                        tracing::debug!(address = %addr, error = %e, "Failed to update address balance");
+                    }
                 }
             }
 
@@ -778,7 +788,7 @@ impl AppContext {
         // next throttled trigger_refresh() cycle (2-10 seconds).
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
-        self.connection_status.refresh_overall();
+        self.connection_status.refresh_state();
         // Reset the throttle timer so trigger_refresh() starts polling
         // at 200ms intervals and picks up the Stopped transition quickly.
         self.connection_status.reset_timer();

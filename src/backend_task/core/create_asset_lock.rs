@@ -53,7 +53,9 @@ impl AppContext {
             if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
                 proofs.remove(&tx_id);
             } else {
-                tracing::warn!("Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned");
+                tracing::warn!(
+                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
+                );
             }
             return Err(format!("Failed to broadcast asset lock transaction: {}", e));
         }
@@ -108,7 +110,9 @@ impl AppContext {
             if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
                 proofs.remove(&tx_id);
             } else {
-                tracing::warn!("Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned");
+                tracing::warn!(
+                    "Failed to clean up finality tracking for tx {tx_id}: Mutex poisoned"
+                );
             }
             return Err(format!("Failed to broadcast asset lock transaction: {}", e));
         }

@@ -15,7 +15,7 @@ fn test_banner_renders_nothing_when_empty() {
         });
     harness.run();
     // No labels should be present (empty banner renders nothing)
-    assert!(harness.query_by_label("x").is_none());
+    assert!(harness.query_by_label("\u{274C}").is_none());
 }
 
 /// Test the global set/has/clear cycle using a standalone egui::Context.
@@ -70,7 +70,7 @@ fn test_banner_renders_error_message() {
     harness.run();
     // The message text and dismiss button should be present
     assert!(harness.query_by_label(message_text).is_some());
-    assert!(harness.query_by_label("x").is_some());
+    assert!(harness.query_by_label("\u{274C}").is_some());
     // Error banners have no auto-dismiss countdown
     assert!(harness.query_by_label_contains("s)").is_none());
 }
@@ -79,10 +79,10 @@ fn test_banner_renders_error_message() {
 #[test]
 fn test_banner_renders_all_types() {
     let variants = [
-        (MessageType::Error, "Error message", "\u{274C}"),
+        (MessageType::Error, "Error message", "\u{26D4}"),
         (MessageType::Warning, "Warning message", "\u{26A0}"),
-        (MessageType::Success, "Success message", "\u{2713}"),
-        (MessageType::Info, "Info message", "\u{2139}"),
+        (MessageType::Success, "Success message", "\u{2705}"),
+        (MessageType::Info, "Info message", "\u{1F4AC}"),
     ];
 
     for (msg_type, text, icon) in variants {
@@ -105,7 +105,7 @@ fn test_banner_renders_all_types() {
             msg_type
         );
         assert!(
-            harness.query_by_label("x").is_some(),
+            harness.query_by_label("\u{274C}").is_some(),
             "Missing dismiss button for {:?}",
             msg_type
         );
@@ -267,7 +267,7 @@ fn test_instance_banner_rendering() {
         });
     harness.run();
     assert!(harness.query_by_label("Instance error").is_some());
-    assert!(harness.query_by_label("x").is_some());
+    assert!(harness.query_by_label("\u{274C}").is_some());
 }
 
 /// Test that Component::show() returns None status when no message is set.
@@ -286,7 +286,7 @@ fn test_instance_banner_empty_status() {
         });
     harness.run();
     // Empty banner renders nothing
-    assert!(harness.query_by_label("x").is_none());
+    assert!(harness.query_by_label("\u{274C}").is_none());
 }
 
 /// Test that current_value() returns Visible when message is set, None otherwise.
@@ -319,7 +319,7 @@ fn test_multiple_banners_render() {
     assert!(harness.query_by_label("Warning one").is_some());
     assert!(harness.query_by_label("Success one").is_some());
     // Each banner has its own dismiss button
-    assert_eq!(harness.get_all_by_label("x").count(), 3);
+    assert_eq!(harness.get_all_by_label("\u{274C}").count(), 3);
 }
 
 /// Test BannerHandle::clear() removes the banner.

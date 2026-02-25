@@ -1154,142 +1154,151 @@ impl WalletsBalancesScreen {
     fn render_sync_status(&self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-        Frame::group(ui.style())
-            .fill(DashColors::surface(dark_mode))
-            .inner_margin(Margin::symmetric(16, 8))
-            .show(ui, |ui| {
-                // Line 1 -- Core sync status
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Core:")
-                            .size(12.0)
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
+        ui.collapsing(
+            RichText::new("Sync Status")
+                .size(12.0)
+                .color(DashColors::text_secondary(dark_mode)),
+            |ui| {
+                Frame::group(ui.style())
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(16, 8))
+                    .show(ui, |ui| {
+                        // Line 1 -- Core sync status
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Core:")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
 
-                    match self.app_context.core_backend_mode() {
-                        CoreBackendMode::Rpc => {
-                            if self.app_context.connection_status().rpc_online() {
-                                ui.colored_label(
-                                    Color32::DARK_GREEN,
-                                    RichText::new("Connected").size(12.0),
-                                );
-                            } else {
-                                ui.colored_label(
-                                    DashColors::ERROR,
-                                    RichText::new("Disconnected").size(12.0),
+                            match self.app_context.core_backend_mode() {
+                                CoreBackendMode::Rpc => {
+                                    if self.app_context.connection_status().rpc_online() {
+                                        ui.colored_label(
+                                            Color32::DARK_GREEN,
+                                            RichText::new("Connected").size(12.0),
+                                        );
+                                    } else {
+                                        ui.colored_label(
+                                            DashColors::ERROR,
+                                            RichText::new("Disconnected").size(12.0),
+                                        );
+                                    }
+                                }
+                                CoreBackendMode::Spv => {
+                                    let snapshot = self.app_context.spv_manager().status();
+                                    match snapshot.status {
+                                        SpvStatus::Idle | SpvStatus::Stopped => {
+                                            ui.label(
+                                                RichText::new("Disconnected")
+                                                    .size(12.0)
+                                                    .color(DashColors::text_secondary(dark_mode)),
+                                            );
+                                        }
+                                        SpvStatus::Starting => {
+                                            ui.add(
+                                                egui::Spinner::new()
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                            ui.label(
+                                                RichText::new("Connecting...")
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                        }
+                                        SpvStatus::Syncing => {
+                                            ui.add(
+                                                egui::Spinner::new()
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                            let phase_text = Self::spv_active_phase_text(
+                                                &snapshot.sync_progress,
+                                            );
+                                            ui.label(
+                                                RichText::new(format!("Syncing — {phase_text}"))
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                        }
+                                        SpvStatus::Running => {
+                                            ui.colored_label(
+                                                Color32::DARK_GREEN,
+                                                RichText::new(format!(
+                                                    "Synced — {} peers",
+                                                    snapshot.connected_peers
+                                                ))
+                                                .size(12.0),
+                                            );
+                                        }
+                                        SpvStatus::Stopping => {
+                                            ui.add(
+                                                egui::Spinner::new()
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                            ui.label(
+                                                RichText::new("Disconnecting...")
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                        }
+                                        SpvStatus::Error => {
+                                            ui.colored_label(
+                                                DashColors::ERROR,
+                                                RichText::new("Error").size(12.0),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
+                        // Line 2 -- Platform sync status
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Platform:")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+
+                            // Addresses
+                            let addr_count = self
+                                .selected_wallet
+                                .as_ref()
+                                .and_then(|w| w.read().ok())
+                                .map(|w| w.platform_address_info.len())
+                                .unwrap_or(0);
+                            if self.refreshing {
+                                ui.add(
+                                    egui::Spinner::new().size(12.0).color(DashColors::DASH_BLUE),
                                 );
                             }
-                        }
-                        CoreBackendMode::Spv => {
-                            let snapshot = self.app_context.spv_manager().status();
-                            match snapshot.status {
-                                SpvStatus::Idle | SpvStatus::Stopped => {
-                                    ui.label(
-                                        RichText::new("Disconnected")
-                                            .size(12.0)
-                                            .color(DashColors::text_secondary(dark_mode)),
-                                    );
-                                }
-                                SpvStatus::Starting => {
-                                    ui.add(
-                                        egui::Spinner::new()
-                                            .size(12.0)
-                                            .color(DashColors::DASH_BLUE),
-                                    );
-                                    ui.label(
-                                        RichText::new("Connecting...")
-                                            .size(12.0)
-                                            .color(DashColors::DASH_BLUE),
-                                    );
-                                }
-                                SpvStatus::Syncing => {
-                                    ui.add(
-                                        egui::Spinner::new()
-                                            .size(12.0)
-                                            .color(DashColors::DASH_BLUE),
-                                    );
-                                    let phase_text =
-                                        Self::spv_active_phase_text(&snapshot.sync_progress);
-                                    ui.label(
-                                        RichText::new(format!("Syncing — {phase_text}"))
-                                            .size(12.0)
-                                            .color(DashColors::DASH_BLUE),
-                                    );
-                                }
-                                SpvStatus::Running => {
-                                    ui.colored_label(
-                                        Color32::DARK_GREEN,
-                                        RichText::new(format!(
-                                            "Synced — {} peers",
-                                            snapshot.connected_peers
-                                        ))
-                                        .size(12.0),
-                                    );
-                                }
-                                SpvStatus::Stopping => {
-                                    ui.add(
-                                        egui::Spinner::new()
-                                            .size(12.0)
-                                            .color(DashColors::DASH_BLUE),
-                                    );
-                                    ui.label(
-                                        RichText::new("Disconnecting...")
-                                            .size(12.0)
-                                            .color(DashColors::DASH_BLUE),
-                                    );
-                                }
-                                SpvStatus::Error => {
-                                    ui.colored_label(
-                                        DashColors::ERROR,
-                                        RichText::new("Error").size(12.0),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                });
-
-                // Line 2 -- Platform sync status
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Platform:")
-                            .size(12.0)
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-
-                    // Addresses
-                    let addr_count = self
-                        .selected_wallet
-                        .as_ref()
-                        .and_then(|w| w.read().ok())
-                        .map(|w| w.platform_address_info.len())
-                        .unwrap_or(0);
-                    if self.refreshing {
-                        ui.add(egui::Spinner::new().size(12.0).color(DashColors::DASH_BLUE));
-                    }
-                    let addr_text =
-                        if let Some((last_sync_ts, sync_height)) = self.platform_sync_info {
-                            let ago = Self::format_unix_time_ago(last_sync_ts);
-                            format!(
-                                "Addresses: {} synced (blk {}, {})",
-                                addr_count, sync_height, ago
-                            )
-                        } else {
-                            "Addresses: never synced".to_string()
-                        };
-                    ui.label(
-                        RichText::new(addr_text)
-                            .size(12.0)
-                            .color(if self.refreshing {
-                                DashColors::DASH_BLUE
+                            let addr_text = if let Some((last_sync_ts, sync_height)) =
+                                self.platform_sync_info
+                            {
+                                let ago = Self::format_unix_time_ago(last_sync_ts);
+                                format!(
+                                    "Addresses: {} synced (blk {}, {})",
+                                    addr_count, sync_height, ago
+                                )
                             } else {
-                                DashColors::text_secondary(dark_mode)
-                            }),
-                    );
-                });
-            });
+                                "Addresses: never synced".to_string()
+                            };
+                            ui.label(RichText::new(addr_text).size(12.0).color(
+                                if self.refreshing {
+                                    DashColors::DASH_BLUE
+                                } else {
+                                    DashColors::text_secondary(dark_mode)
+                                },
+                            ));
+                        });
+                    });
+            },
+        );
     }
 
     /// Get a text summary of the active SPV sync phase.
@@ -1698,8 +1707,8 @@ impl ScreenLike for WalletsBalancesScreen {
 
                     ui.add_space(10.0);
 
-                    // Sync status panel (only for HD wallets)
-                    if self.selected_wallet.is_some() {
+                    // Sync status panel (only for HD wallets, dev mode only)
+                    if self.selected_wallet.is_some() && self.app_context.is_developer_mode() {
                         self.render_sync_status(ui);
                         ui.add_space(6.0);
                     }

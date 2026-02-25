@@ -509,10 +509,10 @@ fn render_banner(
                 // Reserve space for dismiss button and annotation on the right
                 let dismiss_width = 40.0;
                 let annotation_width = if let Some(ann) = annotation {
-                    // Estimate width: ~7px per character at body_small size + item spacing
-                    let char_width = Typography::SCALE_SM * 0.55;
-                    let measured = ann.len() as f32 * char_width;
-                    measured + ui.spacing().item_spacing.x
+                    // Annotations are short digit strings like "(5s)", "(30s)".
+                    // Average character width ~0.4× font size for digits/parens.
+                    let char_width = Typography::SCALE_SM * 0.4;
+                    ann.len() as f32 * char_width + ui.spacing().item_spacing.x
                 } else {
                     0.0
                 };

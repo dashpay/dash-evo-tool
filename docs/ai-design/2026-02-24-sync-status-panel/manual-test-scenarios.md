@@ -10,6 +10,7 @@
 
 ### Preconditions
 - Application launched and on the Wallets screen.
+- Developer mode is enabled.
 - No HD wallet is selected (either no wallets exist or the user has not yet clicked one).
 
 ### Steps
@@ -26,6 +27,7 @@
 
 ### Preconditions
 - At least one HD wallet is loaded in the application.
+- Developer mode is enabled.
 
 ### Steps
 1. Navigate to the Wallets screen.
@@ -118,8 +120,8 @@
 
 ### Expected Results
 - A blue spinner is visible.
-- Text reads: **Core: Syncing -- Headers NN%** where NN is a whole number 0-100.
-- The percentage increases over time as headers are downloaded.
+- Text reads: **Core: Syncing — Headers: C / T (NN%)** where C is the current height, T is the target height, and NN is a whole number 0-100.
+- The numbers increase over time as headers are downloaded.
 
 ---
 
@@ -135,8 +137,8 @@
 
 ### Expected Results
 - A blue spinner is visible.
-- Text reads: **Core: Syncing -- Filter Headers NN%**
-- Percentage reflects progress of filter header download.
+- Text reads: **Core: Syncing — Filter Headers: C / T (NN%)**
+- Numbers reflect progress of filter header download.
 
 ---
 
@@ -152,7 +154,7 @@
 
 ### Expected Results
 - A blue spinner is visible.
-- Text reads: **Core: Syncing -- Filters NN%**
+- Text reads: **Core: Syncing — Filters: C / T (NN%)**
 
 ---
 
@@ -168,7 +170,7 @@
 
 ### Expected Results
 - A blue spinner is visible.
-- Text reads: **Core: Syncing -- Blocks NN%**
+- Text reads: **Core: Syncing — Blocks: C / T (NN%)**
 
 ---
 
@@ -372,8 +374,9 @@
 
 ### Preconditions
 - Application configured in SPV mode.
-- Starting from a fresh state (no previously synced data) so that all four sync phases are traversed.
+- Starting from a fresh state (no previously synced data) so that all five sync phases are traversed.
 - An HD wallet is selected.
+- Developer mode is enabled.
 
 ### Steps
 1. Start the application and let SPV sync begin.
@@ -382,12 +385,13 @@
 ### Expected Results
 - The Core line progresses through these states in order:
   1. "Connecting..."
-  2. "Syncing -- Headers NN%" (percentage climbs from low to 100)
-  3. "Syncing -- Filter Headers NN%"
-  4. "Syncing -- Filters NN%"
-  5. "Syncing -- Blocks NN%"
-  6. "Synced -- N peers"
-- Each phase percentage starts low and progresses upward.
+  2. "Syncing — Headers: C / T (NN%)" (numbers climb toward target)
+  3. "Syncing — Masternodes: C / T (NN%)"
+  4. "Syncing — Filter Headers: C / T (NN%)"
+  5. "Syncing — Filters: C / T (NN%)"
+  6. "Syncing — Blocks: C / T (NN%)"
+  7. "Synced -- N peers"
+- Each phase shows current/target heights and a percentage that progresses upward.
 - A spinner is visible during all syncing phases and disappears when fully synced.
 
 ---

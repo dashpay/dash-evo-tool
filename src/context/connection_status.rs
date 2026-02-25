@@ -261,13 +261,17 @@ impl ConnectionStatus {
                     OverallConnectionState::Syncing => "Syncing",
                     OverallConnectionState::Disconnected => "Disconnected",
                 };
-                let spv_label = app_context
-                    .spv_manager()
-                    .status()
-                    .sync_progress
-                    .as_ref()
-                    .map(|p| format!("SPV: {}", spv_phase_summary(p)))
-                    .unwrap_or_else(|| format!("SPV: {:?}", spv_status));
+                let spv_label = if spv_status == SpvStatus::Running {
+                    "SPV: Synced".to_string()
+                } else {
+                    app_context
+                        .spv_manager()
+                        .status()
+                        .sync_progress
+                        .as_ref()
+                        .map(|p| format!("SPV: {}", spv_phase_summary(p)))
+                        .unwrap_or_else(|| format!("SPV: {:?}", spv_status))
+                };
                 format!("{header}\n{spv_label}\n{dapi_status}")
             }
         }
@@ -330,7 +334,7 @@ impl ConnectionStatus {
     }
 
     pub fn trigger_refresh(&self, app_context: &crate::context::AppContext) -> AppAction {
-        // throttle updates to once every 2 seconds
+        // throttle updates based on connection state (1s disconnected, 4s connected)
         let mut last_update = match self.last_update.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),

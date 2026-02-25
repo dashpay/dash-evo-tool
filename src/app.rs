@@ -1,7 +1,6 @@
-use crate::app_dir::{
-    app_user_data_file_path, copy_env_file_if_not_exists,
-    create_app_user_data_directory_if_not_exists,
-};
+#[cfg(not(feature = "testing"))]
+use crate::app_dir::app_user_data_file_path;
+use crate::app_dir::{copy_env_file_if_not_exists, create_app_user_data_directory_if_not_exists};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -10,6 +9,7 @@ use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
 use crate::spv::CoreBackendMode;
 use crate::database::Database;
+#[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::ui::components::MessageBanner;
@@ -167,6 +167,12 @@ impl BitOrAssign for AppAction {
     }
 }
 impl AppState {
+    /// Creates a new `AppState` using the production database.
+    ///
+    /// This constructor is hidden when the `testing` feature is active to prevent
+    /// tests from accidentally using the production database. Use the `testing`
+    /// feature-gated `new()` variant instead.
+    #[cfg(not(feature = "testing"))]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         create_app_user_data_directory_if_not_exists()?;
         copy_env_file_if_not_exists();
@@ -174,7 +180,28 @@ impl AppState {
         let db_file_path = app_user_data_file_path("data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
+        Self::new_inner(ctx, db)
+    }
 
+    /// Creates a new `AppState` using an in-memory database for testing.
+    ///
+    /// Available only when the `testing` feature is active. This prevents tests
+    /// from reading or writing the production database.
+    #[cfg(feature = "testing")]
+    pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        create_app_user_data_directory_if_not_exists()?;
+        copy_env_file_if_not_exists();
+        let db = Arc::new(
+            crate::database::test_helpers::create_test_database()
+                .map_err(|e| format!("Failed to create test database: {}", e))?,
+        );
+        Self::new_inner(ctx, db)
+    }
+
+    fn new_inner(
+        ctx: egui::Context,
+        db: Arc<Database>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
         let password_info = settings.password_info;
         let theme_preference = settings.theme_mode;

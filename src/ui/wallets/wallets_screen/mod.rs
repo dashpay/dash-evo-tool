@@ -7,9 +7,10 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::context::AppContext;
+use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
 use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
-use crate::spv::CoreBackendMode;
+use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -40,30 +41,21 @@ use dialogs::{
 /// Refresh mode for dev mode dropdown - controls what gets refreshed
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum RefreshMode {
-    /// Current behavior: Core wallet + Platform (auto decides full vs terminal)
+    /// Core wallet + Platform address sync
     #[default]
     All,
     /// Only refresh Core wallet balances
     CoreOnly,
-    /// Only Platform sync - force full sync
-    PlatformFull,
-    /// Only Platform sync - terminal only
-    PlatformTerminal,
-    /// Core wallet + Platform full sync
-    CoreAndPlatformFull,
-    /// Core wallet + Platform terminal sync
-    CoreAndPlatformTerminal,
+    /// Only Platform address sync
+    PlatformOnly,
 }
 
 impl RefreshMode {
     fn label(&self) -> &'static str {
         match self {
-            RefreshMode::All => "All (Auto)",
+            RefreshMode::All => "Core + Platform",
             RefreshMode::CoreOnly => "Core Only",
-            RefreshMode::PlatformFull => "Platform (Full)",
-            RefreshMode::PlatformTerminal => "Platform (Terminal)",
-            RefreshMode::CoreAndPlatformFull => "Core + Platform (Full)",
-            RefreshMode::CoreAndPlatformTerminal => "Core + Platform (Terminal)",
+            RefreshMode::PlatformOnly => "Platform Only",
         }
     }
 
@@ -71,10 +63,7 @@ impl RefreshMode {
         &[
             RefreshMode::All,
             RefreshMode::CoreOnly,
-            RefreshMode::PlatformFull,
-            RefreshMode::PlatformTerminal,
-            RefreshMode::CoreAndPlatformFull,
-            RefreshMode::CoreAndPlatformTerminal,
+            RefreshMode::PlatformOnly,
         ]
     }
 }
@@ -116,6 +105,8 @@ pub struct WalletsBalancesScreen {
     utxo_page: usize,
     /// Selected refresh mode (only shown in dev mode)
     refresh_mode: RefreshMode,
+    /// Cached platform sync info: (last_sync_timestamp, last_sync_height)
+    platform_sync_info: Option<(u64, u64)>,
 }
 
 impl WalletsBalancesScreen {
@@ -173,6 +164,12 @@ impl WalletsBalancesScreen {
         selected_wallet: Option<Arc<RwLock<Wallet>>>,
         selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
     ) -> Self {
+        let platform_sync_info = selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+            .and_then(|hash| app_context.db.get_platform_sync_info(&hash).ok())
+            .filter(|(ts, _)| *ts > 0);
+
         Self {
             selected_wallet,
             selected_single_key_wallet,
@@ -204,6 +201,7 @@ impl WalletsBalancesScreen {
             pending_asset_lock_search_after_unlock: false,
             utxo_page: 0,
             refresh_mode: RefreshMode::default(),
+            platform_sync_info,
         }
     }
 
@@ -227,14 +225,39 @@ impl WalletsBalancesScreen {
             .update_selected_single_key_hash(hash.as_ref());
     }
 
-    fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
-        self.selected_wallet = Some(wallet.clone());
+    /// Refresh the cached platform sync info from the database.
+    fn refresh_platform_sync_info_cache(&mut self, seed_hash: &WalletSeedHash) {
+        self.platform_sync_info = self
+            .app_context
+            .db
+            .get_platform_sync_info(seed_hash)
+            .ok()
+            .filter(|(ts, _)| *ts > 0);
+    }
+
+    /// Set the selected HD wallet and update all associated state (persisted
+    /// hash, platform sync info cache).  All code paths that change
+    /// `selected_wallet` should go through this helper to keep the sync
+    /// status panel consistent.
+    fn set_selected_hd_wallet(&mut self, wallet: Option<Arc<RwLock<Wallet>>>) {
+        let seed_hash = wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+        self.selected_wallet = wallet;
         self.selected_single_key_wallet = None;
         self.selected_account = None;
 
-        if let Ok(hash) = wallet.read().map(|g| g.seed_hash()) {
+        if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
+            self.refresh_platform_sync_info_cache(&hash);
+        } else {
+            self.persist_selected_wallet_hash(None);
+            self.platform_sync_info = None;
         }
+    }
+
+    fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
+        self.set_selected_hd_wallet(Some(wallet));
         self.persist_selected_single_key_hash(None);
     }
 
@@ -242,6 +265,7 @@ impl WalletsBalancesScreen {
         self.selected_single_key_wallet = Some(wallet.clone());
         self.selected_wallet = None;
         self.selected_account = None;
+        self.platform_sync_info = None;
         self.utxo_page = 0;
 
         if let Ok(hash) = wallet.read().map(|g| g.key_hash) {
@@ -262,7 +286,7 @@ impl WalletsBalancesScreen {
                 return;
             }
             // HD wallet no longer valid
-            self.selected_wallet = None;
+            self.set_selected_hd_wallet(None);
         }
 
         // Check if single key wallet selection is still valid
@@ -280,12 +304,14 @@ impl WalletsBalancesScreen {
         }
 
         // No valid selection, pick a new one (HD wallet first, then single key)
-        if let Ok(wallets) = self.app_context.wallets.read()
-            && let Some(wallet) = wallets.values().next().cloned()
-        {
-            self.selected_wallet = Some(wallet);
-            self.selected_single_key_wallet = None;
-            self.selected_account = None;
+        let next_hd = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|w| w.values().next().cloned());
+        if let Some(wallet) = next_hd {
+            self.set_selected_hd_wallet(Some(wallet));
             return;
         }
 
@@ -295,10 +321,12 @@ impl WalletsBalancesScreen {
             self.selected_single_key_wallet = Some(wallet);
             self.selected_wallet = None;
             self.selected_account = None;
+            self.platform_sync_info = None;
             return;
         }
 
         self.selected_account = None;
+        self.platform_sync_info = None;
     }
 
     fn add_receiving_address(&mut self) {
@@ -690,13 +718,7 @@ impl WalletsBalancesScreen {
                     .ok()
                     .and_then(|wallets| wallets.values().next().cloned());
 
-                self.selected_wallet = next_wallet.clone();
-
-                // Update persisted selection in AppContext and database
-                let new_hash = next_wallet
-                    .as_ref()
-                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                self.persist_selected_wallet_hash(new_hash);
+                self.set_selected_hd_wallet(next_wallet);
 
                 self.show_rename_dialog = false;
                 self.rename_input.clear();
@@ -795,6 +817,29 @@ impl WalletsBalancesScreen {
 
     fn format_dash(amount_duffs: u64) -> String {
         Amount::dash_from_duffs(amount_duffs).to_string()
+    }
+
+    /// Format a Unix timestamp (seconds since epoch) as a relative "time ago" string.
+    fn format_unix_time_ago(unix_ts: u64) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let elapsed_secs = now.saturating_sub(unix_ts);
+        Self::format_duration_ago(std::time::Duration::from_secs(elapsed_secs))
+    }
+
+    fn format_duration_ago(duration: std::time::Duration) -> String {
+        let secs = duration.as_secs();
+        if secs < 60 {
+            format!("{}s ago", secs)
+        } else if secs < 3600 {
+            format!("{}m ago", secs / 60)
+        } else if secs < 86400 {
+            format!("{}h ago", secs / 3600)
+        } else {
+            format!("{}d ago", secs / 86400)
+        }
     }
 
     fn transaction_direction_label(tx: &WalletTransaction) -> &'static str {
@@ -1105,6 +1150,158 @@ impl WalletsBalancesScreen {
             });
     }
 
+    fn render_sync_status(&self, ui: &mut Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        ui.collapsing(
+            RichText::new("Sync Status")
+                .size(12.0)
+                .color(DashColors::text_secondary(dark_mode)),
+            |ui| {
+                Frame::group(ui.style())
+                    .fill(DashColors::surface(dark_mode))
+                    .inner_margin(Margin::symmetric(16, 8))
+                    .show(ui, |ui| {
+                        // Line 1 -- Core sync status
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Core:")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+
+                            match self.app_context.core_backend_mode() {
+                                CoreBackendMode::Rpc => {
+                                    if self.app_context.connection_status().rpc_online() {
+                                        ui.colored_label(
+                                            Color32::DARK_GREEN,
+                                            RichText::new("Connected").size(12.0),
+                                        );
+                                    } else {
+                                        ui.colored_label(
+                                            DashColors::ERROR,
+                                            RichText::new("Disconnected").size(12.0),
+                                        );
+                                    }
+                                }
+                                CoreBackendMode::Spv => {
+                                    let snapshot = self.app_context.spv_manager().status();
+                                    match snapshot.status {
+                                        SpvStatus::Idle | SpvStatus::Stopped => {
+                                            ui.label(
+                                                RichText::new("Disconnected")
+                                                    .size(12.0)
+                                                    .color(DashColors::text_secondary(dark_mode)),
+                                            );
+                                        }
+                                        SpvStatus::Starting => {
+                                            ui.add(
+                                                egui::Spinner::new()
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                            ui.label(
+                                                RichText::new("Connecting...")
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                        }
+                                        SpvStatus::Syncing => {
+                                            ui.add(
+                                                egui::Spinner::new()
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                            let phase_text = snapshot
+                                                .sync_progress
+                                                .as_ref()
+                                                .map(spv_phase_summary)
+                                                .unwrap_or_else(|| "starting...".to_string());
+                                            ui.label(
+                                                RichText::new(format!("Syncing — {phase_text}"))
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                        }
+                                        SpvStatus::Running => {
+                                            ui.colored_label(
+                                                Color32::DARK_GREEN,
+                                                RichText::new(format!(
+                                                    "Synced — {} peers",
+                                                    snapshot.connected_peers
+                                                ))
+                                                .size(12.0),
+                                            );
+                                        }
+                                        SpvStatus::Stopping => {
+                                            ui.add(
+                                                egui::Spinner::new()
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                            ui.label(
+                                                RichText::new("Disconnecting...")
+                                                    .size(12.0)
+                                                    .color(DashColors::DASH_BLUE),
+                                            );
+                                        }
+                                        SpvStatus::Error => {
+                                            ui.colored_label(
+                                                DashColors::ERROR,
+                                                RichText::new("Error").size(12.0),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        });
+
+                        // Line 2 -- Platform sync status
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Platform:")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            );
+
+                            // Addresses
+                            let addr_count = self
+                                .selected_wallet
+                                .as_ref()
+                                .and_then(|w| w.read().ok())
+                                .map(|w| w.platform_address_info.len())
+                                .unwrap_or(0);
+                            if self.refreshing {
+                                ui.add(
+                                    egui::Spinner::new().size(12.0).color(DashColors::DASH_BLUE),
+                                );
+                            }
+                            let addr_text = if let Some((last_sync_ts, sync_height)) =
+                                self.platform_sync_info
+                            {
+                                let ago = Self::format_unix_time_ago(last_sync_ts);
+                                format!(
+                                    "Addresses: {} synced (blk {}, {})",
+                                    addr_count, sync_height, ago
+                                )
+                            } else {
+                                "Addresses: never synced".to_string()
+                            };
+                            ui.label(RichText::new(addr_text).size(12.0).color(
+                                if self.refreshing {
+                                    DashColors::DASH_BLUE
+                                } else {
+                                    DashColors::text_secondary(dark_mode)
+                                },
+                            ));
+                        });
+                    });
+            },
+        );
+    }
+
     fn render_wallet_detail_panel(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let Some(wallet_arc) = self.selected_wallet.clone() else {
             self.render_no_wallets_view(ui);
@@ -1275,8 +1472,6 @@ impl WalletsBalancesScreen {
         wallet_arc: &Arc<RwLock<Wallet>>,
         mode: RefreshMode,
     ) -> AppAction {
-        use crate::backend_task::wallet::PlatformSyncMode;
-
         let seed_hash = wallet_arc
             .read()
             .ok()
@@ -1285,50 +1480,26 @@ impl WalletsBalancesScreen {
 
         match mode {
             RefreshMode::All => {
-                // Default behavior: Core + Platform (Auto)
+                // Core + Platform
                 AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
                     wallet_arc.clone(),
-                    Some(PlatformSyncMode::Auto),
+                    true,
                 )))
             }
             RefreshMode::CoreOnly => {
                 // Core only, no Platform sync
                 AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
                     wallet_arc.clone(),
-                    None,
+                    false,
                 )))
             }
-            RefreshMode::PlatformFull => {
-                // Platform only with forced full sync
+            RefreshMode::PlatformOnly => {
+                // Platform only
                 AppAction::BackendTask(BackendTask::WalletTask(
                     crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
                         seed_hash,
-                        sync_mode: PlatformSyncMode::ForceFull,
                     },
                 ))
-            }
-            RefreshMode::PlatformTerminal => {
-                // Platform only with terminal sync
-                AppAction::BackendTask(BackendTask::WalletTask(
-                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
-                        seed_hash,
-                        sync_mode: PlatformSyncMode::TerminalOnly,
-                    },
-                ))
-            }
-            RefreshMode::CoreAndPlatformFull => {
-                // Core + Platform with forced full sync
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    Some(PlatformSyncMode::ForceFull),
-                )))
-            }
-            RefreshMode::CoreAndPlatformTerminal => {
-                // Core + Platform with terminal sync
-                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::RefreshWalletInfo(
-                    wallet_arc.clone(),
-                    Some(PlatformSyncMode::TerminalOnly),
-                )))
             }
         }
     }
@@ -1339,17 +1510,15 @@ impl ScreenLike for WalletsBalancesScreen {
         self.check_message_expiration();
 
         // Check for pending platform balance refresh (triggered after transfers)
-        let pending_refresh_action =
-            if let Some(seed_hash) = self.pending_platform_balance_refresh.take() {
-                AppAction::BackendTask(BackendTask::WalletTask(
-                    crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances {
-                        seed_hash,
-                        sync_mode: crate::backend_task::wallet::PlatformSyncMode::Auto,
-                    },
-                ))
-            } else {
-                AppAction::None
-            };
+        let pending_refresh_action = if let Some(seed_hash) =
+            self.pending_platform_balance_refresh.take()
+        {
+            AppAction::BackendTask(BackendTask::WalletTask(
+                crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances { seed_hash },
+            ))
+        } else {
+            AppAction::None
+        };
 
         let mut right_buttons = vec![
             (
@@ -1458,6 +1627,12 @@ impl ScreenLike for WalletsBalancesScreen {
                         });
 
                     ui.add_space(10.0);
+
+                    // Sync status panel (only for HD wallets, dev mode only)
+                    if self.selected_wallet.is_some() && self.app_context.is_developer_mode() {
+                        self.render_sync_status(ui);
+                        ui.add_space(6.0);
+                    }
 
                     // Render the appropriate detail view based on selection
                     if self.selected_wallet.is_some() {
@@ -1821,6 +1996,15 @@ impl ScreenLike for WalletsBalancesScreen {
         match backend_task_success_result {
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
+                // Refresh the cached platform sync info so the panel shows
+                // updated timestamps and block heights after a wallet sync.
+                let seed_hash = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
+                if let Some(hash) = seed_hash {
+                    self.refresh_platform_sync_info_cache(&hash);
+                }
                 if let Some(warn_msg) = warning {
                     self.set_message(
                         format!("Wallet refreshed with warning: {}", warn_msg),
@@ -1926,6 +2110,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         wallet.set_platform_address_info(addr, balance, nonce);
                     }
                 }
+                self.refresh_platform_sync_info_cache(&seed_hash);
                 self.set_message(
                     "Successfully synced Platform balances".to_string(),
                     MessageType::Success,
@@ -1969,10 +2154,14 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // If no wallet of either type is selected but wallets exist, select the first HD wallet
         if self.selected_wallet.is_none() && self.selected_single_key_wallet.is_none() {
-            if let Ok(wallets) = self.app_context.wallets.read()
-                && let Some(wallet) = wallets.values().next().cloned()
-            {
-                self.selected_wallet = Some(wallet);
+            let next_hd = self
+                .app_context
+                .wallets
+                .read()
+                .ok()
+                .and_then(|w| w.values().next().cloned());
+            if let Some(wallet) = next_hd {
+                self.set_selected_hd_wallet(Some(wallet));
                 return;
             }
             // If no HD wallets, try single key wallets

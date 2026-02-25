@@ -366,22 +366,28 @@ impl Wallet {
 
         // Next, collect the sighashes for each input since that's what we need from the
         // cache
-        let sighashes: Vec<_> = tx
+        let sighashes: Result<Vec<_>, String> = tx
             .input
             .iter()
             .enumerate()
             .map(|(i, input)| {
                 let script_pubkey = utxos
                     .get(&input.previous_output)
-                    .expect("expected a txout")
+                    .ok_or_else(|| {
+                        format!(
+                            "UTXO not found in selected set for input {}",
+                            input.previous_output
+                        )
+                    })?
                     .0
                     .script_pubkey
                     .clone();
                 cache
                     .legacy_signature_hash(i, &script_pubkey, sighash_u32)
-                    .expect("expected sighash")
+                    .map_err(|e| format!("Failed to compute sighash for input {}: {}", i, e))
             })
             .collect();
+        let sighashes = sighashes?;
 
         // Now we can drop the cache to end the immutable borrow
         #[allow(clippy::drop_non_drop)]
@@ -394,9 +400,13 @@ impl Wallet {
             .zip(sighashes.into_iter())
             .try_for_each(|(input, sighash)| {
                 // You need to provide the actual script_pubkey of the UTXO being spent
-                let (_, input_address) = check_utxos
-                    .remove(&input.previous_output)
-                    .expect("expected a txout");
+                let (_, input_address) =
+                    check_utxos.remove(&input.previous_output).ok_or_else(|| {
+                        format!(
+                            "UTXO not found in selected set for input {}",
+                            input.previous_output
+                        )
+                    })?;
                 let message = Message::from_digest(sighash.into());
 
                 let private_key = self
@@ -427,9 +437,9 @@ impl Wallet {
                 Ok::<(), String>(())
             })?;
 
-        // Transaction is fully built and signed; commit the UTXO removals now.
-        self.remove_selected_utxos(&utxos, &app_context.db, network)?;
-
+        // Transaction is fully built and signed. UTXOs are returned to the caller
+        // so they can be removed explicitly after successful broadcast. This avoids
+        // permanently losing UTXO tracking if broadcast fails.
         Ok((tx, private_key, change_address, utxos))
     }
 
@@ -537,16 +547,17 @@ impl Wallet {
 
         // Next, collect the sighashes for each input since that's what we need from the
         // cache
-        let sighashes: Vec<_> = tx
+        let sighashes: Result<Vec<_>, String> = tx
             .input
             .iter()
             .enumerate()
             .map(|(i, _)| {
                 cache
                     .legacy_signature_hash(i, &previous_tx_output.script_pubkey, sighash_u32)
-                    .expect("expected sighash")
+                    .map_err(|e| format!("Failed to compute sighash for input {}: {}", i, e))
             })
             .collect();
+        let sighashes = sighashes?;
 
         // Now we can drop the cache to end the immutable borrow
         #[allow(clippy::drop_non_drop)]

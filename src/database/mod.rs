@@ -9,7 +9,7 @@ mod proof_log;
 mod scheduled_votes;
 mod settings;
 mod single_key_wallet;
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub mod test_helpers;
 mod tokens;
 mod top_ups;

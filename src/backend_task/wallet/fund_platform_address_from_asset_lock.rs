@@ -1,5 +1,4 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -137,8 +136,7 @@ impl AppContext {
         }
 
         // Trigger a balance refresh
-        self.fetch_platform_address_balances(seed_hash, PlatformSyncMode::Auto)
-            .await?;
+        self.fetch_platform_address_balances(seed_hash).await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
     }

@@ -5,13 +5,14 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::{CoreItem, CoreTask};
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::spv::{CoreBackendMode, SpvStatus};
+use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
-const REFRESH_CONNECTED: Duration = Duration::from_secs(10);
-const REFRESH_DISCONNECTED: Duration = Duration::from_secs(2);
+const REFRESH_CONNECTED: Duration = Duration::from_secs(4);
+const REFRESH_DISCONNECTED: Duration = Duration::from_secs(1);
 
 const SPV_PEER_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -181,7 +182,7 @@ impl ConnectionStatus {
         if total == 0 {
             "No endpoints configured".to_string()
         } else if available > 0 {
-            format!("Available ({available}/{total} endpoints)")
+            format!("Available ({available} unbanned / {total} total endpoints)")
         } else {
             format!("All {total} endpoints banned")
         }
@@ -237,7 +238,12 @@ impl ConnectionStatus {
         self.overall_state.store(state as u8, Ordering::Relaxed);
     }
 
-    pub fn tooltip_text(&self) -> String {
+    /// Build the tooltip string for the connection indicator.
+    ///
+    /// In SPV mode, fetches sync progress from the [`SpvManager`] to display
+    /// a detailed phase summary (e.g. `"SPV: Headers: 12345 / 27000 (45%)"`)
+    /// instead of the bare `"SPV: Syncing"`.
+    pub fn tooltip_text(&self, app_context: &crate::context::AppContext) -> String {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
         let spv_status = self.spv_status();
@@ -272,11 +278,21 @@ impl ConnectionStatus {
                 format!("{header}\n{rpc_status}\n{zmq_status}\n{dapi_status}")
             }
             CoreBackendMode::Spv => {
-                let spv_label = format!("SPV: {:?}", spv_status);
                 let header = match overall {
-                    OverallConnectionState::Synced => "SPV synced",
-                    OverallConnectionState::Syncing => "SPV syncing",
-                    OverallConnectionState::Disconnected => "SPV disconnected",
+                    OverallConnectionState::Synced => "Ready",
+                    OverallConnectionState::Syncing => "Syncing",
+                    OverallConnectionState::Disconnected => "Disconnected",
+                };
+                let spv_label = if spv_status == SpvStatus::Running {
+                    "SPV: Synced".to_string()
+                } else {
+                    app_context
+                        .spv_manager()
+                        .status()
+                        .sync_progress
+                        .as_ref()
+                        .map(|p| format!("SPV: {}", spv_phase_summary(p)))
+                        .unwrap_or_else(|| format!("SPV: {:?}", spv_status))
                 };
                 format!("{header}\n{spv_label}\n{dapi_status}")
             }
@@ -340,7 +356,7 @@ impl ConnectionStatus {
     }
 
     pub fn trigger_refresh(&self, app_context: &crate::context::AppContext) -> AppAction {
-        // throttle updates to once every 2 seconds
+        // throttle updates based on connection state (1s disconnected, 4s connected)
         let mut last_update = match self.last_update.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -416,6 +432,69 @@ impl ConnectionStatus {
         }
 
         self.refresh_state();
+    }
+}
+
+/// Compact text summary of the active SPV sync phase.
+///
+/// Returns e.g. `"Headers: 12345 / 27000 (45%)"`, `"Masternodes: 800 / 2000 (40%)"`,
+/// or `"syncing..."` if no phase is actively syncing.
+///
+/// Phases are checked in pipeline execution order (early → late) so the user
+/// sees progression from headers through to blocks.
+pub fn spv_phase_summary(progress: &SpvSyncProgress) -> String {
+    // Check phases in order of execution
+    if let Ok(headers) = progress.headers()
+        && headers.state() == SyncState::Syncing
+    {
+        let (cur, tgt) = (headers.current_height(), headers.target_height());
+        return format!("Headers: {} / {} ({}%)", cur, tgt, pct(cur, tgt));
+    }
+
+    if let Ok(mn) = progress.masternodes()
+        && mn.state() == SyncState::Syncing
+    {
+        let (cur, tgt) = (mn.current_height(), mn.target_height());
+        return format!("Masternodes: {} / {} ({}%)", cur, tgt, pct(cur, tgt));
+    }
+
+    if let Ok(fh) = progress.filter_headers()
+        && fh.state() == SyncState::Syncing
+    {
+        let (cur, tgt) = (fh.current_height(), fh.target_height());
+        return format!("Filter Headers: {} / {} ({}%)", cur, tgt, pct(cur, tgt));
+    }
+
+    if let Ok(filters) = progress.filters()
+        && filters.state() == SyncState::Syncing
+    {
+        let (cur, tgt) = (filters.current_height(), filters.target_height());
+        return format!("Filters: {} / {} ({}%)", cur, tgt, pct(cur, tgt));
+    }
+
+    if let Ok(blocks) = progress.blocks()
+        && blocks.state() == SyncState::Syncing
+    {
+        // Blocks doesn't expose its own target_height; use the best available
+        // approximation: max of headers target and blocks last_processed.
+        let target = progress
+            .headers()
+            .ok()
+            .map(|h| h.target_height())
+            .unwrap_or(0)
+            .max(blocks.last_processed());
+        let cur = blocks.last_processed();
+        return format!("Blocks: {} / {} ({}%)", cur, target, pct(cur, target));
+    }
+
+    "syncing...".to_string()
+}
+
+fn pct(current: u32, target: u32) -> u32 {
+    if target == 0 {
+        0
+    } else {
+        ((current as f64 / target as f64) * 100.0).clamp(0.0, 100.0) as u32
     }
 }
 

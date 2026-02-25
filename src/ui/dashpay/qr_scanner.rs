@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
@@ -50,7 +51,7 @@ impl QRScannerScreen {
     fn parse_qr_code(&mut self) {
         if self.qr_data_input.is_empty() {
             self.parsed_qr_data = None;
-            crate::ui::components::MessageBanner::set_global(
+            MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Please enter QR code data",
                 MessageType::Error,
@@ -61,7 +62,7 @@ impl QRScannerScreen {
         match AutoAcceptProofData::from_qr_string(&self.qr_data_input) {
             Ok(data) => {
                 self.parsed_qr_data = Some(data);
-                crate::ui::components::MessageBanner::set_global(
+                MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "QR code parsed successfully",
                     MessageType::Success,
@@ -69,7 +70,7 @@ impl QRScannerScreen {
             }
             Err(e) => {
                 self.parsed_qr_data = None;
-                crate::ui::components::MessageBanner::set_global(
+                MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     &format!("Invalid QR code: {}", e),
                     MessageType::Error,
@@ -94,7 +95,7 @@ impl QRScannerScreen {
                 ) {
                     Some(key) => key,
                     None => {
-                        crate::ui::components::MessageBanner::set_global(
+                        MessageBanner::set_global(
                             self.app_context.egui_ctx(),
                             "No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.",
                             MessageType::Error,
@@ -120,14 +121,14 @@ impl QRScannerScreen {
 
                 return AppAction::BackendTask(task);
             } else {
-                crate::ui::components::MessageBanner::set_global(
+                MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Please parse a QR code first",
                     MessageType::Error,
                 );
             }
         } else {
-            crate::ui::components::MessageBanner::set_global(
+            MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Please select an identity",
                 MessageType::Error,
@@ -256,7 +257,7 @@ impl QRScannerScreen {
                     // Check wallet lock status before showing send button
                     let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                         if let Err(e) = try_open_wallet_no_password(wallet) {
-                            crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                         }
                         wallet_needs_unlock(wallet)
                     } else {

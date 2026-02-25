@@ -4,6 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -233,7 +234,7 @@ impl ContactInfoEditorScreen {
                 // Check wallet lock status before showing save button
                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     wallet_needs_unlock(wallet)
                 } else {

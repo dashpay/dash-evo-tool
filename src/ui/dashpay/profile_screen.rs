@@ -6,6 +6,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -865,7 +866,7 @@ impl ProfileScreen {
                                 // Check wallet lock status before showing save button
                                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                                        crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                                     }
                                     wallet_needs_unlock(wallet)
                                 } else {
@@ -1328,7 +1329,7 @@ impl ProfileScreen {
                             ui.horizontal(|ui| {
                                 if ui.button("Copy URL").clicked() {
                                     ui.ctx().copy_text(avatar_url.clone());
-                                    crate::ui::components::MessageBanner::set_global(
+                                    MessageBanner::set_global(
                                         ui.ctx(),
                                         "Avatar URL copied to clipboard",
                                         MessageType::Info,

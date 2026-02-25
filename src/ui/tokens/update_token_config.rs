@@ -750,12 +750,12 @@ impl UpdateTokenConfigScreen {
         {
             ui.add_space(20.0);
             if ui.add(button).clicked() {
-                let group_info = if self.group_action_id.is_some() {
+                let group_info = if let Some(action_id) = self.group_action_id {
                     self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                             GroupStateTransitionInfo {
                                 group_contract_position: *pos,
-                                action_id: self.group_action_id.unwrap(),
+                                action_id,
                                 action_is_proposer: false,
                             },
                         )
@@ -766,20 +766,28 @@ impl UpdateTokenConfigScreen {
                     })
                 };
 
-                self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
-                action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
-                    TokenTask::UpdateTokenConfig {
-                        identity_token_info: Box::new(self.identity_token_info.clone()),
-                        change_item: self.change_item.clone(),
-                        signing_key: self.signing_key.clone().expect("Signing key must be set"),
-                        public_note: if self.group_action_id.is_some() {
-                            None
-                        } else {
-                            self.public_note.clone()
+                if let Some(signing_key) = self.signing_key.clone() {
+                    self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
+                    action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                        TokenTask::UpdateTokenConfig {
+                            identity_token_info: Box::new(self.identity_token_info.clone()),
+                            change_item: self.change_item.clone(),
+                            signing_key,
+                            public_note: if self.group_action_id.is_some() {
+                                None
+                            } else {
+                                self.public_note.clone()
+                            },
+                            group_info,
                         },
-                        group_info,
-                    },
-                )));
+                    )));
+                } else {
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "No signing key selected",
+                        MessageType::Error,
+                    );
+                }
             }
         }
 

@@ -3,6 +3,7 @@ use crate::backend_task::dashpay::auto_accept_proof::generate_auto_accept_proof;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
@@ -88,7 +89,7 @@ impl QRCodeGeneratorScreen {
             let account_idx = match self.account_index.parse::<u32>() {
                 Ok(v) => v,
                 Err(_) => {
-                    crate::ui::components::MessageBanner::set_global(
+                    MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         "Invalid account index number",
                         MessageType::Error,
@@ -100,7 +101,7 @@ impl QRCodeGeneratorScreen {
             let validity = match self.validity_hours.parse::<u32>() {
                 Ok(v) if v > 0 && v <= 720 => v, // Max 30 days
                 _ => {
-                    crate::ui::components::MessageBanner::set_global(
+                    MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         "Validity hours must be between 1 and 720",
                         MessageType::Error,
@@ -113,14 +114,14 @@ impl QRCodeGeneratorScreen {
                 Ok(proof_data) => {
                     let qr_string = proof_data.to_qr_string();
                     self.generated_qr_data = Some(qr_string);
-                    crate::ui::components::MessageBanner::set_global(
+                    MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         "QR code generated successfully",
                         MessageType::Success,
                     );
                 }
                 Err(e) => {
-                    crate::ui::components::MessageBanner::set_global(
+                    MessageBanner::set_global(
                         self.app_context.egui_ctx(),
                         &format!("Failed to generate QR code: {}", e),
                         MessageType::Error,
@@ -128,7 +129,7 @@ impl QRCodeGeneratorScreen {
                 }
             }
         } else {
-            crate::ui::components::MessageBanner::set_global(
+            MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Please select an identity first",
                 MessageType::Error,
@@ -264,7 +265,7 @@ impl QRCodeGeneratorScreen {
                 // Check wallet lock status before showing generate button
                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     wallet_needs_unlock(wallet)
                 } else {
@@ -366,7 +367,7 @@ impl QRCodeGeneratorScreen {
             }
 
             if show_copied_message {
-                crate::ui::components::MessageBanner::set_global(ui.ctx(), "Copied to clipboard", MessageType::Success);
+                MessageBanner::set_global(ui.ctx(), "Copied to clipboard", MessageType::Success);
             }
         });
 

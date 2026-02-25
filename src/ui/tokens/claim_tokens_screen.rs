@@ -216,6 +216,18 @@ impl ClaimTokensScreen {
                 handle.with_elapsed();
                 self.refresh_banner = Some(handle);
 
+                let signing_key = match self.selected_key.clone() {
+                    Some(key) => key,
+                    None => {
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "No signing key selected",
+                            MessageType::Error,
+                        );
+                        return AppAction::None;
+                    }
+                };
+
                 AppAction::BackendTasks(
                     vec![
                         BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
@@ -223,7 +235,7 @@ impl ClaimTokensScreen {
                             token_position: self.identity_token_basic_info.token_position,
                             actor_identity: self.identity.clone(),
                             distribution_type,
-                            signing_key: self.selected_key.clone().expect("No key selected"),
+                            signing_key,
                             public_note: self.public_note.clone(),
                         })),
                         BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),

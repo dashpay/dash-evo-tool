@@ -243,6 +243,18 @@ impl TransferTokensScreen {
                 .expect("Data contract not found"),
         );
 
+        let signing_key = match self.selected_key.clone() {
+            Some(key) => key,
+            None => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "No signing key selected",
+                    MessageType::Error,
+                );
+                return AppAction::None;
+            }
+        };
+
         AppAction::BackendTask(BackendTask::TokenTask(Box::new(
             TokenTask::TransferTokens {
                 sending_identity: self.identity.clone(),
@@ -250,7 +262,7 @@ impl TransferTokensScreen {
                 amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
                 data_contract,
                 token_position: self.identity_token_balance.token_position,
-                signing_key: self.selected_key.clone().expect("No key selected"),
+                signing_key,
                 public_note: self.public_note.clone(),
             },
         )))

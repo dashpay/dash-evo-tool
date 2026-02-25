@@ -322,12 +322,12 @@ impl MintTokensScreen {
 
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
-        let group_info = if self.group_action_id.is_some() {
+        let group_info = if let Some(action_id) = self.group_action_id {
             self.group.as_ref().map(|(pos, _)| {
                 GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                     GroupStateTransitionInfo {
                         group_contract_position: *pos,
-                        action_id: self.group_action_id.unwrap(),
+                        action_id,
                         action_is_proposer: false,
                     },
                 )
@@ -338,11 +338,23 @@ impl MintTokensScreen {
             })
         };
 
+        let signing_key = match self.selected_key.clone() {
+            Some(key) => key,
+            None => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "No signing key selected",
+                    MessageType::Error,
+                );
+                return AppAction::None;
+            }
+        };
+
         AppAction::BackendTask(BackendTask::TokenTask(Box::new(TokenTask::MintTokens {
             sending_identity: self.identity_token_info.identity.clone(),
             data_contract,
             token_position: self.identity_token_info.token_position,
-            signing_key: self.selected_key.clone().expect("No key selected"),
+            signing_key,
             public_note: if self.group_action_id.is_some() {
                 None
             } else {

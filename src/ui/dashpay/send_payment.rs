@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -86,7 +87,7 @@ impl SendPaymentScreen {
     fn send_payment(&mut self) -> AppAction {
         // Validate amount
         if self.amount.value() == 0 {
-            crate::ui::components::MessageBanner::set_global(
+            MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Please enter an amount",
                 MessageType::Error,
@@ -111,11 +112,7 @@ impl SendPaymentScreen {
         };
 
         if let Err(e) = wallet_check {
-            crate::ui::components::MessageBanner::set_global(
-                self.app_context.egui_ctx(),
-                &e,
-                MessageType::Error,
-            );
+            MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
             return AppAction::None;
         }
 
@@ -123,7 +120,7 @@ impl SendPaymentScreen {
         let amount_dash = match self.amount.dash_to_duffs() {
             Ok(duffs) => duffs as f64 / 100_000_000.0,
             Err(e) => {
-                crate::ui::components::MessageBanner::set_global(
+                MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     &format!("Invalid amount: {}", e),
                     MessageType::Error,
@@ -200,7 +197,7 @@ impl SendPaymentScreen {
         };
 
         if let Some(e) = wallet_open_error {
-            crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
         }
 
         if needs_unlock {
@@ -350,7 +347,7 @@ impl SendPaymentScreen {
 
                         if ui.add_enabled(send_enabled, send_button).clicked() {
                             if self.memo.len() > 100 {
-                                crate::ui::components::MessageBanner::set_global(
+                                MessageBanner::set_global(
                                     ui.ctx(),
                                     "Memo must be 100 characters or less",
                                     MessageType::Error,

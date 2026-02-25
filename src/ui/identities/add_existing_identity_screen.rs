@@ -107,7 +107,6 @@ pub struct AddExistingIdentityScreen {
     pub app_context: Arc<AppContext>,
     show_pop_up_info: Option<String>,
     mode: LoadIdentityMode,
-    backend_message: Option<String>,
     wallet_search_mode: WalletIdentitySearchMode,
     success_message: Option<String>,
     dpns_name_input: String,
@@ -147,7 +146,6 @@ impl AddExistingIdentityScreen {
             app_context: app_context.clone(),
             show_pop_up_info: None,
             mode: LoadIdentityMode::IdentityId,
-            backend_message: None,
             wallet_search_mode: WalletIdentitySearchMode::SpecificIndex,
             success_message: None,
             dpns_name_input: String::new(),
@@ -620,7 +618,6 @@ impl AddExistingIdentityScreen {
             });
             if wallet_mode_changed {
                 self.add_identity_status = AddIdentityStatus::NotStarted;
-                self.backend_message = None;
                 self.success_message = None;
             }
             ui.add_space(6.0);
@@ -672,7 +669,6 @@ impl AddExistingIdentityScreen {
 
         if ui.add(button).clicked() {
             self.add_identity_status = AddIdentityStatus::WaitingForResult;
-            self.backend_message = None;
             self.success_message = None;
             let handle = MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -836,7 +832,6 @@ impl AddExistingIdentityScreen {
 
         if ui.add_enabled(is_valid, button).clicked() {
             self.add_identity_status = AddIdentityStatus::WaitingForResult;
-            self.backend_message = None;
             self.success_message = None;
             let handle = MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -960,7 +955,6 @@ impl AddExistingIdentityScreen {
             self.dpns_name_input.clear();
             self.show_pop_up_info = None;
             self.add_identity_status = AddIdentityStatus::NotStarted;
-            self.backend_message = None;
             self.success_message = None;
             return AppAction::None;
         }
@@ -990,10 +984,8 @@ impl ScreenLike for AddExistingIdentityScreen {
                     }
                     self.success_message = Some(message.to_string());
                     self.add_identity_status = AddIdentityStatus::Complete;
-                    self.backend_message = None;
                 } else {
                     // This is a progress update - update the banner text
-                    self.backend_message = Some(message.to_string());
                     if let Some(ref handle) = self.refresh_banner {
                         handle.set_message(message);
                     }
@@ -1011,7 +1003,6 @@ impl ScreenLike for AddExistingIdentityScreen {
                 }
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;
-                self.backend_message = None;
             }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is a final success message or a progress update
@@ -1021,10 +1012,8 @@ impl ScreenLike for AddExistingIdentityScreen {
                     }
                     self.success_message = Some(msg);
                     self.add_identity_status = AddIdentityStatus::Complete;
-                    self.backend_message = None;
                 } else {
                     // This is a progress update - update the banner text
-                    self.backend_message = Some(msg.clone());
                     if let Some(ref handle) = self.refresh_banner {
                         handle.set_message(&msg);
                     }
@@ -1104,7 +1093,6 @@ impl ScreenLike for AddExistingIdentityScreen {
 
                     if mode_changed {
                         self.add_identity_status = AddIdentityStatus::NotStarted;
-                        self.backend_message = None;
                         self.success_message = None;
                     }
 

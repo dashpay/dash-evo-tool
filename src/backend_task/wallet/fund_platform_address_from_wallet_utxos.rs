@@ -138,7 +138,7 @@ impl AppContext {
             }
         };
 
-        // Step 7: Get wallet, SDK, and derive a fresh change address if needed
+        // Step 6: Get wallet, SDK, and derive a fresh change address if needed
         let (wallet, sdk, change_platform_address) = {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
@@ -168,7 +168,7 @@ impl AppContext {
             (wallet, sdk, change_platform_address)
         };
 
-        // Step 8: Fund the destination platform address
+        // Step 7: Fund the destination platform address
         let mut outputs = std::collections::BTreeMap::new();
 
         let fee_strategy = if fee_deduct_from_output {

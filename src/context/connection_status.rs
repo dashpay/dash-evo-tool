@@ -506,3 +506,46 @@ impl Default for ConnectionStatus {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn spv_peer_timed_out_returns_false_when_none() {
+        let status = ConnectionStatus::new();
+        // Default state: spv_no_peers_since is None.
+        assert!(!status.spv_peer_timed_out());
+    }
+
+    #[test]
+    fn spv_peer_timed_out_returns_false_before_threshold() {
+        let status = ConnectionStatus::new();
+        // Set to "just now" — well within the timeout window.
+        *status.spv_no_peers_since.lock().unwrap() = Some(Instant::now());
+        assert!(!status.spv_peer_timed_out());
+    }
+
+    #[test]
+    fn spv_peer_timed_out_returns_true_after_threshold() {
+        let status = ConnectionStatus::new();
+        // Set to a point beyond the timeout threshold.
+        *status.spv_no_peers_since.lock().unwrap() =
+            Some(Instant::now() - SPV_PEER_TIMEOUT - Duration::from_millis(1));
+        assert!(status.spv_peer_timed_out());
+    }
+
+    #[test]
+    fn spv_peer_timed_out_clears_on_reset() {
+        let status = ConnectionStatus::new();
+        // Set to a point beyond the timeout threshold so it would fire.
+        *status.spv_no_peers_since.lock().unwrap() =
+            Some(Instant::now() - SPV_PEER_TIMEOUT - Duration::from_millis(1));
+        assert!(status.spv_peer_timed_out());
+
+        // After reset the timestamp should be cleared.
+        status.reset(CoreBackendMode::Spv);
+        assert!(!status.spv_peer_timed_out());
+    }
+}

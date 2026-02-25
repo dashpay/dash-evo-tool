@@ -11,7 +11,7 @@ use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
-use crate::spv::CoreBackendMode;
+use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::MessageBanner;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
@@ -1158,8 +1158,16 @@ impl App for AppState {
         );
 
         // Auto-stop SPV if no peers connect within the timeout.
+        // Guard against repeated calls: once stop_spv() sets the status to
+        // Stopping, `is_active()` still returns true so `spv_no_peers_since`
+        // wouldn't be cleared, and the timeout check would fire again each
+        // frame until the manager finishes shutting down.
         if active_context.core_backend_mode() == CoreBackendMode::Spv
             && active_context.connection_status().spv_peer_timed_out()
+            && !matches!(
+                active_context.connection_status().spv_status(),
+                SpvStatus::Stopping | SpvStatus::Stopped
+            )
         {
             tracing::warn!("SPV peer timeout: no peers connected, stopping SPV");
             active_context.stop_spv();

@@ -13,24 +13,28 @@ pub enum TaskError {
     #[error("{0}")]
     Generic(String),
 
+    /// Boxed error — catch-all for errors without a dedicated variant.
+    #[error(transparent)]
+    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
+
     /// SPV subsystem errors.
-    #[error("{0}")]
+    #[error(transparent)]
     Spv(#[from] crate::spv::SpvError),
 
     /// DashPay domain errors.
-    #[error("{0}")]
+    #[error(transparent)]
     DashPay(#[from] crate::backend_task::dashpay::errors::DashPayError),
 
     /// Configuration errors.
-    #[error("{0}")]
+    #[error(transparent)]
     Config(#[from] crate::config::ConfigError),
 
     /// GroveSTARK prover errors.
-    #[error("{0}")]
+    #[error(transparent)]
     GroveStark(#[from] crate::model::grovestark_prover::GroveSTARKError),
 
     /// Wallet errors.
-    #[error("{0}")]
+    #[error(transparent)]
     Wallet(#[from] crate::database::WalletError),
 }
 

@@ -185,19 +185,7 @@ impl AppContext {
                 let devnet_chainlock = devnet_result.ok();
                 let local_chainlock = local_result.ok();
 
-                // If all three failed, bail out with an error
-                if mainnet_chainlock.is_none()
-                    && testnet_chainlock.is_none()
-                    && devnet_chainlock.is_none()
-                    && local_chainlock.is_none()
-                {
-                    return Err(
-                        "Failed to get best chain lock for mainnet, testnet, devnet, and local network"
-                            .to_string(),
-                    );
-                }
-
-                // Otherwise, return the successes we have
+                // Return whatever we have — even all-None is valid.
                 Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
                     mainnet_chainlock,
                     testnet_chainlock,

@@ -163,11 +163,11 @@ impl Wallet {
     #[allow(clippy::type_complexity)]
     pub fn registration_asset_lock_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
         identity_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
@@ -177,29 +177,26 @@ impl Wallet {
         ),
         String,
     > {
-        let private_key = self.identity_registration_ecdsa_private_key(
-            network,
-            identity_index,
-            register_addresses,
-        )?;
+        let private_key =
+            self.identity_registration_ecdsa_private_key(app_context, network, identity_index)?;
         self.asset_lock_transaction_from_private_key(
+            app_context,
             network,
             amount,
             allow_take_fee_from_amount,
             private_key,
-            register_addresses,
         )
     }
 
     #[allow(clippy::type_complexity)]
     pub fn top_up_asset_lock_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
         identity_index: u32,
         top_up_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
@@ -210,17 +207,17 @@ impl Wallet {
         String,
     > {
         let private_key = self.identity_top_up_ecdsa_private_key(
+            app_context,
             network,
             identity_index,
             top_up_index,
-            register_addresses,
         )?;
         self.asset_lock_transaction_from_private_key(
+            app_context,
             network,
             amount,
             allow_take_fee_from_amount,
             private_key,
-            register_addresses,
         )
     }
 
@@ -229,10 +226,10 @@ impl Wallet {
     #[allow(clippy::type_complexity)]
     pub fn generic_asset_lock_transaction(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
-        register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
@@ -256,11 +253,11 @@ impl Wallet {
 
         let (tx, returned_private_key, change_address, used_utxos) = self
             .asset_lock_transaction_from_private_key(
+                app_context,
                 network,
                 amount,
                 allow_take_fee_from_amount,
                 private_key,
-                register_addresses,
             )?;
 
         Ok((
@@ -275,11 +272,11 @@ impl Wallet {
     #[allow(clippy::type_complexity)]
     fn asset_lock_transaction_from_private_key(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         amount: u64,
         allow_take_fee_from_amount: bool,
         private_key: PrivateKey,
-        register_addresses: Option<&AppContext>,
     ) -> Result<
         (
             Transaction,
@@ -323,7 +320,7 @@ impl Wallet {
         };
 
         let (change_output, change_address) = if let Some(change) = change_option {
-            let change_address = self.change_address(network, register_addresses)?;
+            let change_address = self.change_address(network, Some(app_context))?;
             (
                 Some(TxOut {
                     value: change,
@@ -369,22 +366,28 @@ impl Wallet {
 
         // Next, collect the sighashes for each input since that's what we need from the
         // cache
-        let sighashes: Vec<_> = tx
+        let sighashes: Result<Vec<_>, String> = tx
             .input
             .iter()
             .enumerate()
             .map(|(i, input)| {
                 let script_pubkey = utxos
                     .get(&input.previous_output)
-                    .expect("expected a txout")
+                    .ok_or_else(|| {
+                        format!(
+                            "UTXO not found in selected set for input {}",
+                            input.previous_output
+                        )
+                    })?
                     .0
                     .script_pubkey
                     .clone();
                 cache
                     .legacy_signature_hash(i, &script_pubkey, sighash_u32)
-                    .expect("expected sighash")
+                    .map_err(|e| format!("Failed to compute sighash for input {}: {}", i, e))
             })
             .collect();
+        let sighashes = sighashes?;
 
         // Now we can drop the cache to end the immutable borrow
         #[allow(clippy::drop_non_drop)]
@@ -397,9 +400,13 @@ impl Wallet {
             .zip(sighashes.into_iter())
             .try_for_each(|(input, sighash)| {
                 // You need to provide the actual script_pubkey of the UTXO being spent
-                let (_, input_address) = check_utxos
-                    .remove(&input.previous_output)
-                    .expect("expected a txout");
+                let (_, input_address) =
+                    check_utxos.remove(&input.previous_output).ok_or_else(|| {
+                        format!(
+                            "UTXO not found in selected set for input {}",
+                            input.previous_output
+                        )
+                    })?;
                 let message = Message::from_digest(sighash.into());
 
                 let private_key = self
@@ -430,28 +437,23 @@ impl Wallet {
                 Ok::<(), String>(())
             })?;
 
-        // Transaction is fully built and signed; commit the UTXO removals now.
-        if let Some(context) = register_addresses {
-            self.remove_selected_utxos(&utxos, &context.db, network)?;
-        }
-
+        // Transaction is fully built and signed. UTXOs are returned to the caller
+        // so they can be removed explicitly after successful broadcast. This avoids
+        // permanently losing UTXO tracking if broadcast fails.
         Ok((tx, private_key, change_address, utxos))
     }
 
     pub fn registration_asset_lock_transaction_for_utxo(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         utxo: OutPoint,
         previous_tx_output: TxOut,
         input_address: Address,
         identity_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<(Transaction, PrivateKey), String> {
-        let private_key = self.identity_registration_ecdsa_private_key(
-            network,
-            identity_index,
-            register_addresses,
-        )?;
+        let private_key =
+            self.identity_registration_ecdsa_private_key(app_context, network, identity_index)?;
         self.asset_lock_transaction_for_utxo_from_private_key(
             network,
             utxo,
@@ -464,19 +466,19 @@ impl Wallet {
     #[allow(clippy::too_many_arguments)]
     pub fn top_up_asset_lock_transaction_for_utxo(
         &mut self,
+        app_context: &AppContext,
         network: Network,
         utxo: OutPoint,
         previous_tx_output: TxOut,
         input_address: Address,
         identity_index: u32,
         top_up_index: u32,
-        register_addresses: Option<&AppContext>,
     ) -> Result<(Transaction, PrivateKey), String> {
         let private_key = self.identity_top_up_ecdsa_private_key(
+            app_context,
             network,
             identity_index,
             top_up_index,
-            register_addresses,
         )?;
         self.asset_lock_transaction_for_utxo_from_private_key(
             network,
@@ -545,16 +547,17 @@ impl Wallet {
 
         // Next, collect the sighashes for each input since that's what we need from the
         // cache
-        let sighashes: Vec<_> = tx
+        let sighashes: Result<Vec<_>, String> = tx
             .input
             .iter()
             .enumerate()
             .map(|(i, _)| {
                 cache
                     .legacy_signature_hash(i, &previous_tx_output.script_pubkey, sighash_u32)
-                    .expect("expected sighash")
+                    .map_err(|e| format!("Failed to compute sighash for input {}: {}", i, e))
             })
             .collect();
+        let sighashes = sighashes?;
 
         // Now we can drop the cache to end the immutable borrow
         #[allow(clippy::drop_non_drop)]

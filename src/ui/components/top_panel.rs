@@ -166,7 +166,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                     if overall != OverallConnectionState::Disconnected {
                         app_context.repaint_animation(ui.ctx());
                     }
-                    let tip = status.tooltip_text();
+                    let tip = status.tooltip_text(app_context);
                     let resp = resp.on_hover_text(tip);
 
                     if resp.clicked()

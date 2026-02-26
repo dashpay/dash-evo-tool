@@ -985,12 +985,13 @@ impl App for AppState {
                     }
                 }
                 TaskResult::Error(err) => {
-                    let handle = MessageBanner::set_global(ctx, &err, MessageType::Error);
+                    let msg = err.to_string();
+                    let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                     if self.current_app_context().is_developer_mode() {
-                        handle.with_details(&err);
+                        handle.with_details(&format!("{err:?}"));
                     }
                     self.visible_screen_mut()
-                        .display_message(&err.to_string(), MessageType::Error);
+                        .display_message(&msg, MessageType::Error);
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();

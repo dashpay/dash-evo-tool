@@ -55,9 +55,8 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)
             .with_app_id("org.dash.DashEvoTool"),
-        // Use wgpu instead of glow (OpenGL) on macOS to avoid NSOpenGLContext
-        // idle/sleep crashes (#629). Other platforms keep the default glow renderer.
-        #[cfg(target_os = "macos")]
+        // Use wgpu instead of glow (OpenGL) to avoid platform-specific rendering
+        // issues, e.g. NSOpenGLContext idle/sleep crashes on macOS (#629)
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };

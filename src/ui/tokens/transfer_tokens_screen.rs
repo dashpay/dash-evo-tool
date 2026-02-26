@@ -74,12 +74,19 @@ impl TransferTokensScreen {
     ) -> Self {
         let known_identities = app_context
             .load_local_qualified_identities()
-            .expect("Identities not loaded");
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    &format!("Failed to load identities: {e}"),
+                    MessageType::Error,
+                );
+                vec![]
+            });
 
         let identity = known_identities
             .iter()
             .find(|identity| identity.identity.id() == identity_token_balance.identity_id)
-            .expect("Identity not found")
+            .expect("Identity must exist in local store after successful navigation")
             .clone();
         let max_amount = Amount::from(&identity_token_balance);
         let identity_clone = identity.identity.clone();
@@ -236,12 +243,20 @@ impl TransferTokensScreen {
         handle.with_elapsed();
         self.refresh_banner = Some(handle);
 
-        let data_contract = Arc::new(
-            self.app_context
-                .get_unqualified_contract_by_id(&self.identity_token_balance.data_contract_id)
-                .expect("Failed to get data contract")
-                .expect("Data contract not found"),
-        );
+        let data_contract = match self
+            .app_context
+            .get_unqualified_contract_by_id(&self.identity_token_balance.data_contract_id)
+        {
+            Ok(Some(contract)) => Arc::new(contract),
+            _ => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Data contract not found",
+                    MessageType::Error,
+                );
+                return AppAction::None;
+            }
+        };
 
         let signing_key = match self.selected_key.clone() {
             Some(key) => key,
@@ -301,23 +316,42 @@ impl ScreenLike for TransferTokensScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        self.identity = self
+        if let Some(refreshed) = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap()
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    &format!("Failed to load local identities: {e}"),
+                    MessageType::Error,
+                );
+                vec![]
+            })
             .into_iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
-            .unwrap();
-        let token_balances = self
+        {
+            self.identity = refreshed;
+        }
+        match self
             .app_context
             .db
             .get_identity_token_balances(&self.app_context)
-            .expect("Token balances not loaded");
-        self.max_amount = token_balances
-            .values()
-            .find(|balance| balance.identity_id == self.identity.identity.id())
-            .map(Amount::from)
-            .unwrap_or_default();
+        {
+            Ok(token_balances) => {
+                self.max_amount = token_balances
+                    .values()
+                    .find(|balance| balance.identity_id == self.identity.identity.id())
+                    .map(Amount::from)
+                    .unwrap_or_default();
+            }
+            Err(e) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    &format!("Failed to load token balances: {e}"),
+                    MessageType::Error,
+                );
+            }
+        }
     }
 
     /// Renders the UI components for the withdrawal screen

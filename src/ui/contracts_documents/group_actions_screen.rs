@@ -364,7 +364,6 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, _identifier, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.group_action_id = Some(action_id);
-                // Convert amount to Amount struct using the token configuration
                 mint_screen.amount = Some(Amount::from_token(
                     &mint_screen.identity_token_info,
                     *amount,

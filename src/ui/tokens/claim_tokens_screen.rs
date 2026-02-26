@@ -78,10 +78,17 @@ impl ClaimTokensScreen {
     ) -> Self {
         let identity = app_context
             .load_local_qualified_identities()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    &format!("Failed to load identities: {e}"),
+                    MessageType::Error,
+                );
+                vec![]
+            })
             .into_iter()
             .find(|id| id.identity.id() == identity_token_basic_info.identity_id)
-            .expect("No local qualified identity found for this token’s identity.");
+            .expect("Identity must exist in local store after successful navigation");
 
         let identity_clone = identity.identity.clone();
         let mut possible_key = identity_clone.get_first_public_key_matching(

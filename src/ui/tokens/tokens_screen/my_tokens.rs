@@ -693,12 +693,7 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
-                                Screen::MintTokensScreen(
-                                    MintTokensScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
+                                Screen::MintTokensScreen(MintTokensScreen::new(info, &self.app_context)),
                             );
                         }
                         Err(e) => {
@@ -736,12 +731,7 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
-                                Screen::FreezeTokensScreen(
-                                    FreezeTokensScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
+                                Screen::FreezeTokensScreen(FreezeTokensScreen::new(info, &self.app_context)),
                             );
                         }
                         Err(e) => {
@@ -757,12 +747,7 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
-                                Screen::DestroyFrozenFundsScreen(
-                                    DestroyFrozenFundsScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
+                                Screen::DestroyFrozenFundsScreen(DestroyFrozenFundsScreen::new(info, &self.app_context)),
                             );
                         }
                         Err(e) => {
@@ -778,12 +763,7 @@ impl TokensScreen {
                 match IdentityTokenInfo::try_from_identity_token_maybe_balance_with_actions_with_lookup(itb, &self.app_context) {
                         Ok(info) => {
                             action = AppAction::AddScreen(
-                                Screen::UnfreezeTokensScreen(
-                                    UnfreezeTokensScreen::new(
-                                        info,
-                                        &self.app_context,
-                                    ),
-                                ),
+                                Screen::UnfreezeTokensScreen(UnfreezeTokensScreen::new(info, &self.app_context)),
                             );
                         }
                         Err(e) => {

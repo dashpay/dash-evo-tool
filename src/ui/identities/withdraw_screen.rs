@@ -355,7 +355,14 @@ impl ScreenLike for WithdrawalScreen {
         if let Some(refreshed) = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    &format!("Failed to load local identities: {e}"),
+                    MessageType::Error,
+                );
+                vec![]
+            })
             .into_iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
         {

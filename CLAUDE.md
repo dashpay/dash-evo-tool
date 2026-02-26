@@ -61,8 +61,7 @@ scripts/safe-cargo.sh +nightly fmt --all
 ### General rules
 
 * When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`.
-* Constructors SHOULD return `Result<Self, ...>` when they can fail.
-* Handle errors using `MessageBanner`; see **Message Display** section below.
+* Screen constructors handle errors internally via `MessageBanner` and return `Self` with degraded state. Keep `create_screen()` clean — no error handling at callsites.
 
 ## Architecture Overview
 

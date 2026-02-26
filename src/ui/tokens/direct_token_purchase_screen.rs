@@ -297,6 +297,18 @@ impl PurchaseTokenScreen {
 
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
+                let signing_key = match self.selected_key.clone() {
+                    Some(key) => key,
+                    None => {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "No signing key selected",
+                            MessageType::Error,
+                        );
+                        return AppAction::None;
+                    }
+                };
+
                 self.confirmation_dialog = None;
                 self.status = PurchaseTokensStatus::WaitingForResult;
                 let handle = MessageBanner::set_global(
@@ -315,7 +327,7 @@ impl PurchaseTokenScreen {
                                 self.identity_token_info.data_contract.contract.clone(),
                             ),
                             token_position: self.identity_token_info.token_position,
-                            signing_key: self.selected_key.clone().expect("Expected a key"),
+                            signing_key,
                             amount: amount.value(),
                             total_agreed_price: total_price_credits,
                         })),

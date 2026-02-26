@@ -87,7 +87,14 @@ impl MintTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
         let known_identities = app_context
             .load_local_qualified_identities()
-            .expect("Identities not loaded");
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    &format!("Failed to load identities: {e}"),
+                    MessageType::Error,
+                );
+                vec![]
+            });
 
         let possible_key = identity_token_info
             .identity

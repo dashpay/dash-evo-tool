@@ -201,7 +201,14 @@ impl DestroyFrozenFundsScreen {
 
         let all_identities = app_context
             .load_local_qualified_identities()
-            .expect("Identities not loaded");
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    &format!("Failed to load identities: {e}"),
+                    MessageType::Error,
+                );
+                vec![]
+            });
 
         Self {
             identity: identity_token_info.identity.clone(),

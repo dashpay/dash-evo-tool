@@ -51,6 +51,8 @@ pub struct ConnectionStatus {
     backend_mode: AtomicU8,
     disable_zmq: AtomicBool,
     overall_state: AtomicU8,
+    // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
+    // single writer (poll cycle), minimal contention. RwLock overhead not justified.
     spv_last_error: Mutex<Option<String>>,
     last_update: Mutex<Instant>,
     dapi_total_endpoints: AtomicU16,
@@ -266,9 +268,9 @@ impl ConnectionStatus {
                 format!("{header}\n{rpc_status}\n{zmq_status}\n{dapi_status}")
             }
             CoreBackendMode::Spv => {
-                let header = match overall {
-                    OverallConnectionState::Synced => "Ready".to_string(),
-                    OverallConnectionState::Syncing => "Syncing".to_string(),
+                let header: std::borrow::Cow<'_, str> = match overall {
+                    OverallConnectionState::Synced => "Ready".into(),
+                    OverallConnectionState::Syncing => "Syncing".into(),
                     OverallConnectionState::Error => {
                         let detail = self
                             .spv_last_error
@@ -276,9 +278,9 @@ impl ConnectionStatus {
                             .ok()
                             .and_then(|g| g.clone())
                             .unwrap_or_else(|| "unknown error".to_string());
-                        format!("SPV sync error: {detail}")
+                        format!("SPV sync error: {detail}").into()
                     }
-                    OverallConnectionState::Disconnected => "Disconnected".to_string(),
+                    OverallConnectionState::Disconnected => "Disconnected".into(),
                 };
                 let spv_label = if spv_status == SpvStatus::Running {
                     "SPV: Synced".to_string()

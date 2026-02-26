@@ -162,7 +162,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                         );
                     }
 
-                    // Request repaint for animation (only when not disconnected)
+                    // Request repaint for animation (Synced, Syncing, and Error states pulse)
                     if overall != OverallConnectionState::Disconnected {
                         app_context.repaint_animation(ui.ctx());
                     }

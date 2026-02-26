@@ -1045,6 +1045,26 @@ impl SpvManager {
         });
     }
 
+    /// Identify which sync manager phase is in Error state, if any.
+    fn failed_manager_name(progress: &SpvSyncProgress) -> &'static str {
+        if progress.masternodes().is_ok_and(|p| p.state() == SyncState::Error) {
+            return "Masternodes";
+        }
+        if progress.headers().is_ok_and(|p| p.state() == SyncState::Error) {
+            return "Headers";
+        }
+        if progress.filter_headers().is_ok_and(|p| p.state() == SyncState::Error) {
+            return "Filter headers";
+        }
+        if progress.filters().is_ok_and(|p| p.state() == SyncState::Error) {
+            return "Filters";
+        }
+        if progress.blocks().is_ok_and(|p| p.state() == SyncState::Error) {
+            return "Blocks";
+        }
+        "unknown phase"
+    }
+
     fn spawn_progress_watcher(
         &self,
         mut progress_rx: tokio::sync::watch::Receiver<SpvSyncProgress>,
@@ -1066,6 +1086,11 @@ impl SpvManager {
                         let watch_progress = progress_rx.borrow().clone();
                         let is_synced = watch_progress.is_synced();
                         let is_error = watch_progress.state() == SyncState::Error;
+                        let failed_phase = if is_error {
+                            Some(Self::failed_manager_name(&watch_progress))
+                        } else {
+                            None
+                        };
 
                         // Update sync progress state
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
@@ -1091,8 +1116,14 @@ impl SpvManager {
                             && let Ok(mut err_guard) = last_error.write()
                             && err_guard.is_none()
                         {
-                            *err_guard =
-                                Some("Sync failed (reported by SPV library)".into());
+                            // Note: this path is currently unreachable due to upstream
+                            // bug dashpay/rust-dashcore#469 (progress channel never
+                            // receives SyncState::Error). Once fixed, this will fire.
+                            let phase = failed_phase.unwrap_or("unknown phase");
+                            *err_guard = Some(format!(
+                                "Sync failed: {} (reported by SPV progress channel)",
+                                phase
+                            ));
                         }
                     }
                 }
@@ -1159,9 +1190,17 @@ impl SpvManager {
                                     tracing::error!("SPV manager {:?} reported error: {}", manager, error);
                                     if let Ok(mut guard) = status.write() {
                                         *guard = SpvStatus::Error;
+                                        drop(guard); // Maintain lock ordering: status → release → last_error
                                     }
+                                    // TODO: truncate error string to ~512 chars to prevent
+                                    // unbounded memory from adversarial peer errors (CWE-400).
+                                    let msg = format!("Sync manager {} failed: {}", manager, error);
                                     if let Ok(mut err_guard) = last_error.write() {
-                                        *err_guard = Some(format!("Sync manager {} failed: {}", manager, error));
+                                        if err_guard.is_none() {
+                                            *err_guard = Some(msg);
+                                        } else {
+                                            tracing::warn!("SPV last_error already set, ignoring subsequent: {}", msg);
+                                        }
                                     }
                                 }
 

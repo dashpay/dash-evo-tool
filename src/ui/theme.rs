@@ -324,6 +324,66 @@ impl DashColors {
         }
     }
 
+    pub fn info_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(100, 180, 255) // Lighter blue for dark mode
+        } else {
+            Self::DEEP_BLUE
+        }
+    }
+
+    /// Returns the foreground (text/border) color for a message severity level.
+    pub fn message_color(message_type: crate::ui::MessageType, dark_mode: bool) -> Color32 {
+        match message_type {
+            crate::ui::MessageType::Error => Self::error_color(dark_mode),
+            crate::ui::MessageType::Warning => Self::warning_color(dark_mode),
+            crate::ui::MessageType::Success => Self::success_color(dark_mode),
+            crate::ui::MessageType::Info => Self::info_color(dark_mode),
+        }
+    }
+
+    /// Returns the tinted background color for a message severity level.
+    pub fn message_background_color(
+        message_type: crate::ui::MessageType,
+        dark_mode: bool,
+    ) -> Color32 {
+        let alpha = if dark_mode { 30 } else { 20 };
+        match message_type {
+            crate::ui::MessageType::Error => {
+                let c = if dark_mode {
+                    (255, 100, 100)
+                } else {
+                    (235, 87, 87)
+                };
+                Color32::from_rgba_unmultiplied(c.0, c.1, c.2, alpha)
+            }
+            crate::ui::MessageType::Warning => {
+                let c = if dark_mode {
+                    (255, 200, 100)
+                } else {
+                    (241, 196, 15)
+                };
+                Color32::from_rgba_unmultiplied(c.0, c.1, c.2, alpha)
+            }
+            crate::ui::MessageType::Success => {
+                let c = if dark_mode {
+                    (80, 200, 120)
+                } else {
+                    (39, 174, 96)
+                };
+                Color32::from_rgba_unmultiplied(c.0, c.1, c.2, alpha)
+            }
+            crate::ui::MessageType::Info => {
+                let c = if dark_mode {
+                    (100, 180, 255)
+                } else {
+                    (52, 152, 219)
+                };
+                Color32::from_rgba_unmultiplied(c.0, c.1, c.2, alpha)
+            }
+        }
+    }
+
     pub fn muted_color(dark_mode: bool) -> Color32 {
         if dark_mode {
             Color32::from_rgb(150, 150, 150) // Lighter gray for dark mode
@@ -808,34 +868,4 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
 
     ctx.set_style(style);
     ctx.set_fonts(configure_fonts());
-}
-
-/// Message type styling
-#[allow(dead_code)]
-pub enum MessageType {
-    Success,
-    Error,
-    Warning,
-    Info,
-}
-
-#[allow(dead_code)]
-impl MessageType {
-    pub fn color(&self) -> Color32 {
-        match self {
-            MessageType::Success => DashColors::SUCCESS,
-            MessageType::Error => DashColors::ERROR,
-            MessageType::Warning => DashColors::WARNING,
-            MessageType::Info => DashColors::INFO,
-        }
-    }
-
-    pub fn background_color(&self) -> Color32 {
-        match self {
-            MessageType::Success => Color32::from_rgba_unmultiplied(39, 174, 96, 20),
-            MessageType::Error => Color32::from_rgba_unmultiplied(235, 87, 87, 20),
-            MessageType::Warning => Color32::from_rgba_unmultiplied(241, 196, 15, 20),
-            MessageType::Info => Color32::from_rgba_unmultiplied(52, 152, 219, 20),
-        }
-    }
 }

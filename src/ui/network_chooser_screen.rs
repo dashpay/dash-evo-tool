@@ -4,9 +4,10 @@ use crate::backend_task::core::CoreTask;
 use crate::backend_task::system_task::SystemTask;
 use crate::config::Config;
 use crate::context::AppContext;
-use crate::context::connection_status::ConnectionStatus;
+use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::model::wallet::DerivationPathHelpers;
 use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{
@@ -14,7 +15,7 @@ use crate::ui::components::styled::{
 };
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shape, ThemeMode};
-use crate::ui::{RootScreenType, ScreenLike};
+use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
@@ -24,6 +25,28 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Reads the dashmate RPC password from `~/.dashmate/config.json`.
+fn read_dashmate_rpc_password(config_name: &str) -> Result<String, String> {
+    let home = directories::UserDirs::new()
+        .map(|dirs| dirs.home_dir().to_path_buf())
+        .ok_or("Could not determine home directory")?;
+    let config_path = home.join(".dashmate").join("config.json");
+    let contents = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("Failed to read {}: {e}", config_path.display()))?;
+    let json: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| format!("Failed to parse dashmate config: {e}"))?;
+    json.get("configs")
+        .and_then(|c| c.get(config_name))
+        .and_then(|c| c.get("core"))
+        .and_then(|c| c.get("rpc"))
+        .and_then(|c| c.get("users"))
+        .and_then(|c| c.get("dashmate"))
+        .and_then(|c| c.get("password"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("Password not found in dashmate config '{config_name}'"))
+}
 
 #[derive(Debug, Clone)]
 enum SpvClearMessage {
@@ -425,7 +448,23 @@ impl NetworkChooserScreen {
                 ui.horizontal(|ui| {
                     ui.text_edit_singleline(&mut self.local_network_dashmate_password);
 
-                    if ui.button("Save").clicked()
+                    let save_clicked = ui.button("Save").clicked();
+
+                    let mut auto_update_succeeded = false;
+                    if ui.button("Auto Update").clicked() {
+                        match read_dashmate_rpc_password("local_seed") {
+                            Ok(password) => {
+                                self.local_network_dashmate_password = password;
+                                auto_update_succeeded = true;
+                            }
+                            Err(e) => {
+                                tracing::error!("Auto update failed: {e}");
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            }
+                        }
+                    }
+
+                    if (save_clicked || auto_update_succeeded)
                         && let Ok(mut config) = Config::load()
                         && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
                     {
@@ -489,14 +528,14 @@ impl NetworkChooserScreen {
             } else {
                 None
             };
-            let overall_connected = status.overall_connected();
+            let overall_state = status.overall_state();
             let dapi_total = status.dapi_total_endpoints();
             let dapi_available = status.dapi_available();
             let dapi_label = status.dapi_status_label();
 
             // Button on the left with status
             ui.horizontal(|ui| {
-                if overall_connected {
+                if overall_state != OverallConnectionState::Disconnected {
                     if current_backend_mode == CoreBackendMode::Spv {
                         let is_stopping = spv_status == SpvStatus::Stopping;
                         let disconnect_button = egui::Button::new(
@@ -520,15 +559,16 @@ impl NetworkChooserScreen {
                         if let Some(snap) = &snapshot {
                             match snap.status {
                                 SpvStatus::Running => {
-                                    ui.colored_label(DashColors::SUCCESS, "Fully Synced - The SPV client can now be used for transacting and querying.");
+                                    ui.colored_label(DashColors::SUCCESS, "Synced - The SPV client can now be used for transacting and querying.");
                                 }
                                 SpvStatus::Syncing | SpvStatus::Starting => {
+                                    let warning_color = DashColors::warning_color(dark_mode);
                                     ui.style_mut().visuals.widgets.inactive.fg_stroke.color =
-                                        DashColors::DASH_BLUE;
+                                        warning_color;
                                     ui.style_mut().visuals.widgets.hovered.fg_stroke.color =
-                                        DashColors::DASH_BLUE;
+                                        warning_color;
                                     ui.style_mut().visuals.widgets.active.fg_stroke.color =
-                                        DashColors::DASH_BLUE;
+                                        warning_color;
                                     ui.spinner();
                                     ui.label(egui::RichText::new("Syncing..."));
                                 }
@@ -548,9 +588,9 @@ impl NetworkChooserScreen {
                     } else {
                         // For Core mode, just show status since it can switch networks freely
                         let label = if disable_zmq {
-                            "✅ Connected (RPC, ZMQ disabled)"
+                            "✅ Synced (RPC, ZMQ disabled)"
                         } else {
-                            "✅ Connected (RPC + ZMQ)"
+                            "✅ Synced (RPC + ZMQ)"
                         };
                         ui.colored_label(DashColors::DASH_BLUE, label);
                     }
@@ -858,9 +898,9 @@ impl NetworkChooserScreen {
                     if ui.button("Select File").clicked()
                         && let Some(path) = rfd::FileDialog::new().pick_file()
                     {
+                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
                         let file_name = path.file_name().and_then(|f| f.to_str());
                         if let Some(file_name) = file_name {
-                            self.custom_dash_qt_path = None;
                             self.custom_dash_qt_error_message = None;
 
                             // Handle macOS .app bundles
@@ -886,7 +926,14 @@ impl NetworkChooserScreen {
                             if is_valid {
                                 self.custom_dash_qt_path = Some(resolved_path);
                                 self.custom_dash_qt_error_message = None;
-                                self.save().expect("Expected to save db settings");
+                                if let Err(e) = self.save() {
+                                    tracing::warn!("Failed to save Dash-Qt path setting: {}", e);
+                                    self.custom_dash_qt_error_message = Some(
+                                        "Failed to save Dash-Qt path setting. Please try again."
+                                            .to_string(),
+                                    );
+                                    self.custom_dash_qt_path = previous_custom_dash_qt_path;
+                                }
                             } else {
                                 let required_file_name = if cfg!(target_os = "windows") {
                                     "dash-qt.exe"
@@ -904,24 +951,33 @@ impl NetworkChooserScreen {
                     }
 
                     if self.custom_dash_qt_path.is_some() && ui.button("Clear").clicked() {
+                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
                         self.custom_dash_qt_path = Some(PathBuf::new());
                         self.custom_dash_qt_error_message = None;
-                        self.save().expect("Expected to save db settings");
+                        if let Err(e) = self.save() {
+                            tracing::warn!("Failed to save cleared Dash-Qt path setting: {}", e);
+                            self.custom_dash_qt_error_message = Some(
+                                "Failed to clear Dash-Qt path setting. Please try again."
+                                    .to_string(),
+                            );
+                            self.custom_dash_qt_path = previous_custom_dash_qt_path;
+                        }
                     }
                 });
 
-                if let Some(ref file) = self.custom_dash_qt_path {
-                    if !file.as_os_str().is_empty() {
-                        ui.horizontal(|ui| {
-                            ui.label("Path:");
-                            ui.label(
-                                egui::RichText::new(format_path_for_display(file))
-                                    .color(DashColors::SUCCESS)
-                                    .italics(),
-                            );
-                        });
-                    }
-                } else if let Some(ref error) = self.custom_dash_qt_error_message {
+                if let Some(ref file) = self.custom_dash_qt_path
+                    && !file.as_os_str().is_empty()
+                {
+                    ui.horizontal(|ui| {
+                        ui.label("Path:");
+                        ui.label(
+                            egui::RichText::new(format_path_for_display(file))
+                                .color(DashColors::SUCCESS)
+                                .italics(),
+                        );
+                    });
+                }
+                if let Some(ref error) = self.custom_dash_qt_error_message {
                     let error_color = Color32::from_rgb(255, 100, 100);
                     let error = error.clone();
                     Frame::new()
@@ -952,11 +1008,20 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
+                    let previous_overwrite_dash_conf = self.overwrite_dash_conf;
                     if StyledCheckbox::new(&mut self.overwrite_dash_conf, "Overwrite dash.conf")
                         .show(ui)
                         .clicked()
                     {
-                        self.save().expect("Expected to save db settings");
+                        self.custom_dash_qt_error_message = None;
+                        if let Err(e) = self.save() {
+                            tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
+                            self.custom_dash_qt_error_message = Some(
+                                "Failed to save overwrite dash.conf setting. Please try again."
+                                    .to_string(),
+                            );
+                            self.overwrite_dash_conf = previous_overwrite_dash_conf;
+                        }
                     }
                     ui.label(
                         egui::RichText::new("Auto-configure required settings")
@@ -2039,7 +2104,7 @@ impl ScreenLike for NetworkChooserScreen {
             if self.any_rpc_backend() {
                 let current_time = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards");
+                    .unwrap_or_default();
                 if let Some(time) = self.recheck_time {
                     if current_time.as_millis() as u64 >= time {
                         action = AppAction::BackendTask(BackendTask::CoreTask(

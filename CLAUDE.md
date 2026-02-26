@@ -28,12 +28,21 @@ cargo test --test kittest --all-features           # UI integration tests (egui_
 cargo test --test e2e --all-features               # End-to-end tests
 ```
 
+
 Test locations:
 - Unit tests: inline in source files (`#[test]`)
 - UI integration: `tests/kittest/`
 - E2E: `tests/e2e/`
 
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
+
+
+### Manual test scenarios
+
+You MUST identify manual tests needed for the changes and write a manual test scenarios. Use the `claudius:qa-engineer` agent if available.
+Skip the manual test file only for non-functional changes (CI, docs, formatting, pure refactoring) — state why in the PR description.
+Put tests in docs directory, as described in "Documentation" section below. Reference the file in the PR description under "Test plan".
+Before creating a PR, re-review test scenarios and update them if needed.
 
 ## CI: Safe Cargo Wrapper
 
@@ -46,13 +55,24 @@ scripts/safe-cargo.sh clippy --all-features --all-targets -- -D warnings
 scripts/safe-cargo.sh +nightly fmt --all
 ```
 
+
+## Coding Conventions
+
+### Parameter ordering
+
+When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`. Example:
+
+```rust
+fn remove_selected_utxos(&mut self, context: Option<&AppContext>, selected: &BTreeMap<...>) -> Result<(), String>
+```
+
 ## Architecture Overview
 
 **Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.
 
 ## Documentation
 
-- **docs/ai-design** should contain architecture and technical design files, grouped in subdirectories prefixed with ISO-formatted date
+- **docs/ai-design** should contain architecture, technical design and manual testing scenarios files, grouped in subdirectories prefixed with ISO-formatted date
 - end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
 ### Core Module Structure
@@ -102,6 +122,8 @@ Screen::ui() → AppAction::BackendTask(task)
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
+**Error handling**: Backend tasks return `Result<T, TaskError>` (`src/backend_task/error.rs`). `TaskError` is a typed error envelope — `Display` produces user-friendly text for `MessageBanner`, `Debug` provides technical details for logs. `From<String>` ensures backwards compatibility: existing `Result<T, String>` code works unchanged. Domain errors (`DashPayError`, `SpvError`, etc.) are wired as `#[from]` variants for automatic conversion via `?`. When adding new backend error types, add a `#[from]` variant to `TaskError` rather than converting to `String`.
+
 ## Screen Pattern
 
 All screens implement the `ScreenLike` trait:
@@ -129,7 +151,7 @@ Screens hold `Arc<AppContext>` and manage their own UI state.
 
 ## UI Component Pattern
 
-Components follow a lazy initialization pattern (see `doc/COMPONENT_DESIGN_PATTERN.md`):
+Components follow a lazy initialization pattern (see `docs/COMPONENT_DESIGN_PATTERN.md`):
 
 ```rust
 struct MyScreen {
@@ -152,9 +174,13 @@ response.inner.update(&mut self.amount);
 
 **Anti-patterns:** public mutable fields, eager initialization, not clearing invalid data
 
+## Message Display
+
+User-facing messages use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.
+
 ## Database
 
-Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors are `Result<T, String>` — string errors display directly to users.
+Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors use `TaskError` (`src/backend_task/error.rs`) — see App Task System section above.
 
 ## Platform Targets
 

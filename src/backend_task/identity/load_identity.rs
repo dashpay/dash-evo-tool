@@ -285,12 +285,7 @@ impl AppContext {
             start: None,
         };
 
-        let sdk_guard = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
-
-        let maybe_owned_dpns_names = Document::fetch_many(&sdk_guard, dpns_names_document_query)
+        let maybe_owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
             .await
             .map(|document_map| {
                 document_map
@@ -418,10 +413,11 @@ impl AppContext {
         {
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
+                    self,
+                    true,
                     self.network,
                     identity_index,
                     0..top_bound,
-                    Some(self),
                 )?;
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,
@@ -439,10 +435,11 @@ impl AppContext {
         for candidate_index in 0..MAX_IDENTITY_INDEX {
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
+                    self,
+                    false,
                     self.network,
                     candidate_index,
                     0..top_bound,
-                    None,
                 )?;
 
             if !Self::identity_matches_wallet_key_material(
@@ -455,10 +452,11 @@ impl AppContext {
 
             let (public_key_map, public_key_hash_map) = wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
+                    self,
+                    true,
                     self.network,
                     candidate_index,
                     0..top_bound,
-                    Some(self),
                 )?;
 
             let wallet_private_keys = self.build_wallet_private_key_map(

@@ -122,6 +122,7 @@ impl ProfileSearchScreen {
             let color = match message_type {
                 MessageType::Success => DashColors::success_color(dark_mode),
                 MessageType::Error => DashColors::error_color(dark_mode),
+                MessageType::Warning => DashColors::warning_color(dark_mode),
                 MessageType::Info => DashColors::DASH_BLUE,
             };
             ui.colored_label(color, message);

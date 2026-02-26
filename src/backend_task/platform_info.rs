@@ -1,5 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
+use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::block::extended_epoch_info::{v0::ExtendedEpochInfoV0Getters, ExtendedEpochInfo};
 use dash_sdk::dpp::core_types::validator_set::v0::ValidatorSetV0Getters;
@@ -27,7 +28,6 @@ use dash_sdk::query_types::{
     CurrentQuorumsInfo, NoParamQuery, ProtocolVersionUpgrades, TotalCreditsInPlatform,
 };
 use dash_sdk::query_types::AddressInfo;
-use itertools::Itertools;
 use std::sync::Arc;
 use chrono::{prelude::*, LocalResult};
 use chrono_humanize::{Accuracy, HumanTime, Tense};
@@ -202,142 +202,148 @@ fn format_withdrawal_documents_with_daily_limit(
     withdrawal_documents: &[Document],
     total_credits_on_platform: Credits,
     network: Network,
-) -> String {
+) -> Result<String, String> {
     let total_amount: Credits = withdrawal_documents
         .iter()
         .map(|document| {
             document
                 .properties()
                 .get_integer::<Credits>(AMOUNT)
-                .expect("expected amount on withdrawal")
+                .map_err(|e| format!("Failed to get withdrawal amount: {}", e))
         })
+        .collect::<Result<Vec<Credits>, String>>()?
+        .into_iter()
         .sum();
 
-    let amounts = withdrawal_documents
+    let amounts: Vec<String> = withdrawal_documents
         .iter()
         .map(|document| {
-            let index = document.created_at().expect("expected created at");
-            let utc_datetime =
-                DateTime::<Utc>::from_timestamp_millis(index as i64).expect("expected date time");
+            let index = document
+                .created_at()
+                .ok_or("Withdrawal document missing created_at timestamp")?;
+            let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
+                .ok_or("Invalid withdrawal created_at timestamp")?;
             let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
 
             let amount = document
                 .properties()
                 .get_integer::<Credits>(AMOUNT)
-                .expect("expected amount on withdrawal");
-            let status: WithdrawalStatus = document
+                .map_err(|e| format!("Failed to get withdrawal amount: {}", e))?;
+            let status_u8: u8 = document
                 .properties()
                 .get_integer::<u8>(STATUS)
-                .expect("expected status on withdrawal")
+                .map_err(|e| format!("Failed to get withdrawal status: {}", e))?;
+            let status: WithdrawalStatus = status_u8
                 .try_into()
-                .expect("expected a withdrawal status");
+                .map_err(|_| format!("Invalid withdrawal status value: {}", status_u8))?;
             let owner_id = document.owner_id();
             let address_bytes = document
                 .properties()
                 .get_bytes(OUTPUT_SCRIPT)
-                .expect("expected output script");
+                .map_err(|e| format!("Failed to get withdrawal output script: {}", e))?;
             let output_script = ScriptBuf::from_bytes(address_bytes);
             let address = Address::from_script(&output_script, network)
                 .map(|addr| addr.to_string())
                 .unwrap_or_else(|e| format!("Invalid Address: {}", e));
-            format!(
+            Ok(format!(
                 "{}: {:.8} Dash for {} towards {} ({})",
                 local_datetime.format("%Y-%m-%d %H:%M:%S"),
                 amount as f64 / (dash_to_credits!(1) as f64),
                 owner_id,
                 address,
                 status,
-            )
+            ))
         })
-        .join("\n    ");
+        .collect::<Result<Vec<String>, String>>()?;
 
     let daily_withdrawal_limit =
         daily_withdrawal_limit(total_credits_on_platform, PlatformVersion::latest())
-            .expect("expected to get daily withdrawal limit");
+            .map_err(|e| format!("Failed to calculate daily withdrawal limit: {}", e))?;
 
-    format!(
+    Ok(format!(
         "Withdrawal Information:\n\n\
          Total Amount: {:.8} Dash\n\
          Daily Withdrawal Limit: {:.8} Dash\n\
-         Remaining Today: {:.8} Dash\n\n\
+         Remaining Today: N/A (24h usage data unavailable)\n\n\
          Recent Withdrawals:\n    {}",
         total_amount as f64 / (dash_to_credits!(1) as f64),
         daily_withdrawal_limit as f64 / (dash_to_credits!(1) as f64),
-        daily_withdrawal_limit.saturating_sub(0) as f64 / (dash_to_credits!(1) as f64), // We don't have 24h amount
-        amounts
-    )
+        amounts.join("\n    ")
+    ))
 }
 
 fn format_withdrawal_documents_to_bare_info(
     withdrawal_documents: &[Document],
     network: Network,
-) -> String {
+) -> Result<String, String> {
     let total_amount: Credits = withdrawal_documents
         .iter()
         .map(|document| {
             document
                 .properties()
                 .get_integer::<Credits>(AMOUNT)
-                .expect("expected amount on withdrawal")
+                .map_err(|e| format!("Failed to get withdrawal amount: {}", e))
         })
+        .collect::<Result<Vec<Credits>, String>>()?
+        .into_iter()
         .sum();
 
-    let amounts = withdrawal_documents
+    let amounts: Vec<String> = withdrawal_documents
         .iter()
         .map(|document| {
-            let index = document.created_at().expect("expected created at");
-            let utc_datetime =
-                DateTime::<Utc>::from_timestamp_millis(index as i64).expect("expected date time");
+            let index = document
+                .created_at()
+                .ok_or("Withdrawal document missing created_at timestamp")?;
+            let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
+                .ok_or("Invalid withdrawal created_at timestamp")?;
             let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
 
             let amount = document
                 .properties()
                 .get_integer::<Credits>(AMOUNT)
-                .expect("expected amount on withdrawal");
-            let status: WithdrawalStatus = document
+                .map_err(|e| format!("Failed to get withdrawal amount: {}", e))?;
+            let status_u8: u8 = document
                 .properties()
                 .get_integer::<u8>(STATUS)
-                .expect("expected status on withdrawal")
+                .map_err(|e| format!("Failed to get withdrawal status: {}", e))?;
+            let status: WithdrawalStatus = status_u8
                 .try_into()
-                .expect("expected a withdrawal status");
+                .map_err(|_| format!("Invalid withdrawal status value: {}", status_u8))?;
             let owner_id = document.owner_id();
             let address_bytes = document
                 .properties()
                 .get_bytes(OUTPUT_SCRIPT)
-                .expect("expected output script");
+                .map_err(|e| format!("Failed to get withdrawal output script: {}", e))?;
             let output_script = ScriptBuf::from_bytes(address_bytes);
-            let address =
-                Address::from_script(&output_script, network).expect("expected an address");
-            format!(
+            let address = Address::from_script(&output_script, network)
+                .map(|addr| addr.to_string())
+                .unwrap_or_else(|e| format!("Invalid Address: {}", e));
+            Ok(format!(
                 "{}: {:.8} Dash for {} towards {} ({})",
                 local_datetime.format("%Y-%m-%d %H:%M:%S"),
                 amount as f64 / (dash_to_credits!(1) as f64),
                 owner_id,
                 address,
                 status,
-            )
+            ))
         })
-        .join("\n    ");
+        .collect::<Result<Vec<String>, String>>()?;
 
-    format!(
+    Ok(format!(
         "Withdrawal Information:\n\n\
          Total Amount: {:.8} Dash\n\n\
          Recent Withdrawals:\n    {}",
         total_amount as f64 / (dash_to_credits!(1) as f64),
-        amounts
-    )
+        amounts.join("\n    ")
+    ))
 }
 
 impl AppContext {
     pub async fn run_platform_info_task(
         &self,
         request: PlatformInfoTaskRequestType,
+        sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let sdk = {
-            let sdk_guard = self.sdk.read().unwrap();
-            sdk_guard.clone()
-        };
-
         match request {
             PlatformInfoTaskRequestType::BasicPlatformInfo => {
                 // Get platform version from SDK
@@ -365,7 +371,7 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                match ExtendedEpochInfo::fetch_current(&sdk).await {
+                match ExtendedEpochInfo::fetch_current(sdk).await {
                     Ok(epoch_info) => {
                         // Cache the fee multiplier for UI fee estimation
                         let fee_multiplier = epoch_info.fee_multiplier_permille();
@@ -385,7 +391,7 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::TotalCreditsOnPlatform => {
-                match TotalCreditsInPlatform::fetch_current(&sdk).await {
+                match TotalCreditsInPlatform::fetch_current(sdk).await {
                     Ok(total_credits) => {
                         let dash_amount = total_credits.0 as f64 * 10f64.powf(-11.0);
                         let formatted = format!(
@@ -402,7 +408,7 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::CurrentVersionVotingState => {
-                match ProtocolVersionVoteCount::fetch_many(&sdk, ()).await {
+                match ProtocolVersionVoteCount::fetch_many(sdk, ()).await {
                     Ok(votes) => {
                         let votes: ProtocolVersionUpgrades = votes;
                         let votes_info = votes
@@ -428,7 +434,7 @@ impl AppContext {
                 }
             }
             PlatformInfoTaskRequestType::CurrentValidatorSetInfo => {
-                match CurrentQuorumsInfo::fetch_unproved(&sdk, NoParamQuery {}).await {
+                match CurrentQuorumsInfo::fetch_unproved(sdk, NoParamQuery {}).await {
                     Ok(Some(current_quorums_info)) => {
                         let formatted = format_current_quorums_info(&current_quorums_info);
                         Ok(BackendTaskSuccessResult::PlatformInfo(
@@ -449,7 +455,7 @@ impl AppContext {
                     SystemDataContract::Withdrawals,
                     PlatformVersion::latest(),
                 )
-                .expect("expected to get withdrawal contract");
+                .map_err(|e| format!("Failed to load withdrawal contract: {}", e))?;
 
                 // Try the simplest possible query first - no where clauses or ordering
                 let queued_document_query = DocumentQuery {
@@ -461,19 +467,19 @@ impl AppContext {
                     start: None,
                 };
 
-                match Document::fetch_many(&sdk, queued_document_query.clone()).await {
+                match Document::fetch_many(sdk, queued_document_query.clone()).await {
                     Ok(documents) => {
                         let withdrawal_docs: Vec<Document> =
                             documents.values().filter_map(|a| a.clone()).collect();
 
                         // Try to get total credits for daily limit calculation
-                        match TotalCreditsInPlatform::fetch_current(&sdk).await {
+                        match TotalCreditsInPlatform::fetch_current(sdk).await {
                             Ok(total_credits) => {
                                 let formatted = format_withdrawal_documents_with_daily_limit(
                                     &withdrawal_docs,
                                     total_credits.0,
                                     self.network,
-                                );
+                                )?;
                                 Ok(BackendTaskSuccessResult::PlatformInfo(
                                     PlatformInfoTaskResult::TextResult(formatted),
                                 ))
@@ -483,7 +489,7 @@ impl AppContext {
                                 let formatted = format_withdrawal_documents_to_bare_info(
                                     &withdrawal_docs,
                                     self.network,
-                                );
+                                )?;
                                 Ok(BackendTaskSuccessResult::PlatformInfo(
                                     PlatformInfoTaskResult::TextResult(formatted),
                                 ))
@@ -499,7 +505,7 @@ impl AppContext {
                     SystemDataContract::Withdrawals,
                     PlatformVersion::latest(),
                 )
-                .expect("expected to get withdrawal contract");
+                .map_err(|e| format!("Failed to load withdrawal contract: {}", e))?;
 
                 let completed_document_query = DocumentQuery {
                     data_contract: Arc::new(withdrawal_contract),
@@ -526,7 +532,7 @@ impl AppContext {
                     start: None,
                 };
 
-                match Document::fetch_many(&sdk, completed_document_query).await {
+                match Document::fetch_many(sdk, completed_document_query).await {
                     Ok(documents) => {
                         let mut withdrawal_docs: Vec<Document> =
                             documents.values().filter_map(|a| a.clone()).collect();
@@ -554,44 +560,62 @@ impl AppContext {
                                     document
                                         .properties()
                                         .get_integer::<Credits>(AMOUNT)
-                                        .expect("expected amount on withdrawal")
+                                        .map_err(|e| {
+                                            format!("Failed to get withdrawal amount: {}", e)
+                                        })
                                 })
+                                .collect::<Result<Vec<Credits>, String>>()?
+                                .into_iter()
                                 .sum();
 
-                            let amounts = withdrawal_docs
+                            let amounts: Vec<String> = withdrawal_docs
                                 .iter()
                                 .map(|document| {
-                                    let index = document.updated_at().expect("expected updated at");
+                                    let index = document.updated_at().ok_or(
+                                        "Withdrawal document missing updated_at timestamp",
+                                    )?;
                                     let utc_datetime =
                                         DateTime::<Utc>::from_timestamp_millis(index as i64)
-                                            .expect("expected date time");
+                                            .ok_or("Invalid withdrawal updated_at timestamp")?;
                                     let local_datetime: DateTime<Local> =
                                         utc_datetime.with_timezone(&Local);
 
                                     let amount = document
                                         .properties()
                                         .get_integer::<Credits>(AMOUNT)
-                                        .expect("expected amount on withdrawal");
-                                    let status: WithdrawalStatus = document
-                                        .properties()
-                                        .get_integer::<u8>(STATUS)
-                                        .expect("expected status on withdrawal")
-                                        .try_into()
-                                        .expect("expected a withdrawal status");
+                                        .map_err(|e| {
+                                            format!("Failed to get withdrawal amount: {}", e)
+                                        })?;
+                                    let status_u8: u8 =
+                                        document.properties().get_integer::<u8>(STATUS).map_err(
+                                            |e| format!("Failed to get withdrawal status: {}", e),
+                                        )?;
+                                    let status: WithdrawalStatus =
+                                        status_u8.try_into().map_err(|_| {
+                                            format!(
+                                                "Invalid withdrawal status value: {}",
+                                                status_u8
+                                            )
+                                        })?;
                                     let owner_id = document.owner_id();
                                     let address_bytes = document
                                         .properties()
                                         .get_bytes(OUTPUT_SCRIPT)
-                                        .expect("expected output script");
+                                        .map_err(|e| {
+                                            format!("Failed to get withdrawal output script: {}", e)
+                                        })?;
                                     let transaction_index = document
                                         .properties()
                                         .get_integer::<u64>(TRANSACTION_INDEX)
-                                        .expect("expected transaction index");
+                                        .map_err(|e| {
+                                            format!("Failed to get transaction index: {}", e)
+                                        })?;
                                     let output_script = ScriptBuf::from_bytes(address_bytes);
                                     let address =
                                         Address::from_script(&output_script, self.network)
-                                            .expect("expected an address");
-                                    format!(
+                                            .map(|addr| addr.to_string())
+                                            .unwrap_or_else(|e| format!("Invalid Address: {}", e));
+                                    Ok(format!(
                                         "TX #{}: {:.8} Dash for {} to {} ({}) at {}",
                                         transaction_index,
                                         amount as f64 / (dash_to_credits!(1) as f64),
@@ -599,9 +623,9 @@ impl AppContext {
                                         address,
                                         status,
                                         local_datetime.format("%Y-%m-%d %H:%M:%S"),
-                                    )
+                                    ))
                                 })
-                                .join("\n    ");
+                                .collect::<Result<Vec<String>, String>>()?;
 
                             let formatted = format!(
                                 "Recently Completed Withdrawals:\n\n\
@@ -610,7 +634,7 @@ impl AppContext {
                                  Recent Transactions:\n    {}",
                                 total_amount as f64 / (dash_to_credits!(1) as f64),
                                 withdrawal_docs.len(),
-                                amounts
+                                amounts.join("\n    ")
                             );
 
                             Ok(BackendTaskSuccessResult::PlatformInfo(
@@ -633,7 +657,7 @@ impl AppContext {
                 // Fetch the address info using FetchMany with BTreeSet
                 let mut addresses = std::collections::BTreeSet::new();
                 addresses.insert(platform_address);
-                match AddressInfo::fetch_many(&sdk, addresses).await {
+                match AddressInfo::fetch_many(sdk, addresses).await {
                     Ok(address_infos) => {
                         // The result is a map of PlatformAddress -> Option<AddressInfo>
                         let result: Option<&Option<AddressInfo>> =

@@ -12,6 +12,7 @@ use crate::backend_task::identity::{
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -85,6 +86,8 @@ pub struct AddNewIdentityScreen {
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
     error_message: Option<String>,
+    /// Tracks the last error pushed to the global banner to avoid re-sending each frame.
+    last_global_error: Option<String>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
@@ -170,6 +173,7 @@ impl AddNewIdentityScreen {
                 keys_input: vec![],
             },
             error_message: None,
+            last_global_error: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
@@ -231,10 +235,10 @@ impl AddNewIdentityScreen {
 
             let mut wallet = wallet_lock.write().expect("wallet lock failed");
             let master_key = wallet.identity_authentication_ecdsa_private_key(
+                app_context,
                 app_context.network,
                 identity_id_number,
                 0,
-                Some(app_context),
             )?;
 
             let other_keys = default_keys
@@ -244,10 +248,10 @@ impl AddNewIdentityScreen {
                     |(i, (key_type, purpose, security_level, contract_bounds))| {
                         Ok((
                             wallet.identity_authentication_ecdsa_private_key(
+                                app_context,
                                 app_context.network,
                                 identity_id_number,
                                 (i + 1).try_into().expect("key index must fit u32"), // key index 0 is the master key
-                                Some(app_context),
                             )?,
                             key_type,
                             purpose,
@@ -684,6 +688,7 @@ impl AddNewIdentityScreen {
                             });
                             row.col(|ui| {
                                 ui.vertical(|ui| {
+                                    let prev_purpose = *purpose;
                                     ComboBox::from_id_salt(format!("purpose_combo_{}", i))
                                         .selected_text(format!("{:?}", purpose))
                                         .show_ui(ui, |ui| {
@@ -697,7 +702,37 @@ impl AddNewIdentityScreen {
                                                 Purpose::TRANSFER,
                                                 "TRANSFER",
                                             );
+                                            ui.selectable_value(
+                                                purpose,
+                                                Purpose::ENCRYPTION,
+                                                "ENCRYPTION",
+                                            );
+                                            ui.selectable_value(
+                                                purpose,
+                                                Purpose::DECRYPTION,
+                                                "DECRYPTION",
+                                            );
                                         });
+                                    // Auto-set security level when purpose changes
+                                    if *purpose != prev_purpose {
+                                        match *purpose {
+                                            Purpose::TRANSFER => {
+                                                *security_level = SecurityLevel::CRITICAL;
+                                            }
+                                            Purpose::ENCRYPTION | Purpose::DECRYPTION => {
+                                                *security_level = SecurityLevel::MEDIUM;
+                                            }
+                                            Purpose::AUTHENTICATION => {
+                                                if *security_level != SecurityLevel::CRITICAL
+                                                    && *security_level != SecurityLevel::HIGH
+                                                    && *security_level != SecurityLevel::MEDIUM
+                                                {
+                                                    *security_level = SecurityLevel::CRITICAL;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                 });
                             });
                             row.col(|ui| {
@@ -726,6 +761,11 @@ impl AddNewIdentityScreen {
                                             if *purpose == Purpose::TRANSFER {
                                                 *security_level = SecurityLevel::CRITICAL;
                                                 ui.label("Locked to CRITICAL");
+                                            } else if *purpose == Purpose::ENCRYPTION
+                                                || *purpose == Purpose::DECRYPTION
+                                            {
+                                                *security_level = SecurityLevel::MEDIUM;
+                                                ui.label("Locked to MEDIUM");
                                             } else {
                                                 ui.selectable_value(
                                                     security_level,
@@ -930,10 +970,10 @@ impl AddNewIdentityScreen {
             // Update the master private key and keys input from the wallet
             self.identity_keys.master_private_key =
                 Some(wallet.identity_authentication_ecdsa_private_key(
+                    &self.app_context,
                     self.app_context.network,
                     identity_index,
                     0,
-                    Some(&self.app_context),
                 )?);
 
             // Update the additional keys input (preserving contract bounds)
@@ -946,10 +986,10 @@ impl AddNewIdentityScreen {
                     |(key_index, (_, key_type, purpose, security_level, contract_bounds))| {
                         Ok((
                             wallet.identity_authentication_ecdsa_private_key(
+                                &self.app_context,
                                 self.app_context.network,
                                 identity_index,
                                 key_index as u32 + 1,
-                                Some(&self.app_context),
                             )?,
                             *key_type,
                             *purpose,
@@ -980,10 +1020,10 @@ impl AddNewIdentityScreen {
             self.identity_keys.keys_input.push((
                 wallet
                     .identity_authentication_ecdsa_private_key(
+                        &self.app_context,
                         self.app_context.network,
                         self.identity_id_number,
                         new_key_index,
-                        Some(&self.app_context),
                     )
                     .expect("expected to have decrypted wallet"),
                 key_type,
@@ -996,14 +1036,12 @@ impl AddNewIdentityScreen {
 }
 
 impl ScreenLike for AddNewIdentityScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
         if message_type == MessageType::Error {
-            self.error_message = Some(format!("Error registering identity: {}", message));
-            // Reset step so we stop showing "Waiting for Platform acknowledgement"
+            // Reset step so we stop showing "Waiting for Platform acknowledgement".
+            // The error itself is displayed by the global MessageBanner.
             let mut step = self.step.write().unwrap();
             *step = WalletFundedScreenStep::ReadyToCreate;
-        } else {
-            self.error_message = Some(message.to_string());
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -1084,27 +1122,16 @@ impl ScreenLike for AddNewIdentityScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
-            // Display error message at the top, outside of scroll area
-            if let Some(error_message) = self.error_message.clone() {
-                let message_color = DashColors::ERROR;
-
-                ui.horizontal(|ui| {
-                    egui::Frame::new()
-                        .fill(message_color.gamma_multiply(0.1))
-                        .inner_margin(egui::Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, message_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&error_message).color(message_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.error_message = None;
-                                }
-                            });
-                        });
-                });
-                ui.add_space(10.0);
+            // Display local validation errors via the global MessageBanner.
+            // Only push when the message changes to avoid resetting the banner each frame
+            // (e.g. try_open_wallet_no_password can re-set error_message every render pass).
+            if self.error_message != self.last_global_error {
+                if let Some(error_message) = self.error_message.as_ref() {
+                    MessageBanner::set_global(ui.ctx(), error_message, MessageType::Error);
+                } else if let Some(old) = self.last_global_error.as_ref() {
+                    MessageBanner::clear_global_message(ui.ctx(), old);
+                }
+                self.last_global_error = self.error_message.clone();
             }
 
             ScrollArea::vertical().show(ui, |ui| {

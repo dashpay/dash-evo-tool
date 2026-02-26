@@ -20,11 +20,9 @@ fn test_network_config() -> NetworkConfig {
         core_rpc_port: 19998,
         core_rpc_user: "dashrpc".to_string(),
         core_rpc_password: "password".to_string(),
-        insight_api_url: "https://testnet-insight.dash.org/insight-api".to_string(),
         core_zmq_endpoint: Some("tcp://127.0.0.1:23709".to_string()),
         devnet_name: None,
         wallet_private_key: None,
-        show_in_ui: true,
     }
 }
 

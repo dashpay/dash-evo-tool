@@ -70,11 +70,7 @@ impl Provider {
         ac.replace(cloned);
         drop(ac);
 
-        let sdk = app_context
-            .sdk
-            .write()
-            .map_err(|_| "SDK lock poisoned".to_string())?;
-        sdk.set_context_provider(self.clone());
+        app_context.sdk.load().set_context_provider(self.clone());
         Ok(())
     }
 }

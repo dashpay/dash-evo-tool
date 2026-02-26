@@ -22,7 +22,7 @@ impl AppContext {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
-            .expect("expected document type");
+            .map_err(|_| "DPNS contract missing 'domain' document type".to_string())?;
         let Some(contested_index) = document_type.find_contested_index() else {
             return Err("No contested index on dpns domains".to_string());
         };

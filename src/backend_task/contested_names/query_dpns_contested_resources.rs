@@ -21,7 +21,7 @@ impl AppContext {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
-            .expect("expected document type");
+            .map_err(|_| "DPNS contract missing 'domain' document type".to_string())?;
         let Some(contested_index) = document_type.find_contested_index() else {
             return Err(
                 "Contested resource query failed: No contested index on dpns domains.".to_string(),
@@ -128,16 +128,21 @@ impl AppContext {
             let contested_resources_as_strings: Vec<String> = contested_resources
                 .0
                 .into_iter()
-                .map(|contested_resource| {
-                    contested_resource
-                        .0
-                        .as_str()
-                        .expect("expected str")
-                        .to_string()
+                .filter_map(|contested_resource| match contested_resource.0.as_str() {
+                    Some(s) => Some(s.to_string()),
+                    None => {
+                        tracing::warn!(
+                            "Contested resource value is not a string: {:?}",
+                            contested_resource.0
+                        );
+                        None
+                    }
                 })
                 .collect();
 
-            let last_found_name = contested_resources_as_strings.last().unwrap().clone();
+            let Some(last_found_name) = contested_resources_as_strings.last().cloned() else {
+                break;
+            };
 
             let new_names_to_be_updated = self
                 .db
@@ -172,22 +177,32 @@ impl AppContext {
 
             tokio::spawn(async move {
                 // Acquire a permit from the semaphore
-                let _permit: OwnedSemaphorePermit = semaphore.acquire_owned().await.unwrap();
+                let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(e) => {
+                        tracing::error!("Semaphore closed while querying dpns end times: {}", e);
+                        return;
+                    }
+                };
 
                 match self_ref.query_dpns_ending_times(sdk, sender.clone()).await {
                     Ok(_) => {
                         // Send a refresh message if the query succeeded
-                        sender
-                            .send(TaskResult::Refresh)
-                            .await
-                            .expect("expected to send refresh");
+                        if let Err(e) = sender.send(TaskResult::Refresh).await {
+                            tracing::warn!(
+                                "Failed to send refresh after dpns end times query: {}",
+                                e
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
-                        sender
-                            .send(TaskResult::Error(e))
-                            .await
-                            .expect("expected to send error");
+                        if let Err(send_err) = sender.send(TaskResult::Error(e.into())).await {
+                            tracing::warn!(
+                                "Failed to send error for dpns end times query: {}",
+                                send_err
+                            );
+                        }
                     }
                 }
             })
@@ -205,7 +220,17 @@ impl AppContext {
             // Spawn each task with a permit from the semaphore
             let handle = tokio::spawn(async move {
                 // Acquire a permit from the semaphore
-                let _permit: OwnedSemaphorePermit = semaphore.acquire_owned().await.unwrap();
+                let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(e) => {
+                        tracing::error!(
+                            "Semaphore closed while querying vote contenders for {}: {}",
+                            name,
+                            e
+                        );
+                        return;
+                    }
+                };
 
                 // Perform the query
                 match self_ref
@@ -214,17 +239,23 @@ impl AppContext {
                 {
                     Ok(_) => {
                         // Send a refresh message if the query succeeded
-                        sender
-                            .send(TaskResult::Refresh)
-                            .await
-                            .expect("expected to send refresh");
+                        if let Err(e) = sender.send(TaskResult::Refresh).await {
+                            tracing::warn!(
+                                "Failed to send refresh after vote contenders query for {}: {}",
+                                name,
+                                e
+                            );
+                        }
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
-                        sender
-                            .send(TaskResult::Error(e))
-                            .await
-                            .expect("expected to send error");
+                        if let Err(send_err) = sender.send(TaskResult::Error(e.into())).await {
+                            tracing::warn!(
+                                "Failed to send error for vote contenders query for {}: {}",
+                                name,
+                                send_err
+                            );
+                        }
                     }
                 }
             });

@@ -1046,20 +1046,37 @@ impl SpvManager {
     }
 
     /// Identify which sync manager phase is in Error state, if any.
+    /// Checks masternodes first as the most common failure point,
+    /// rather than pipeline execution order used by `spv_phase_summary()`.
     fn failed_manager_name(progress: &SpvSyncProgress) -> &'static str {
-        if progress.masternodes().is_ok_and(|p| p.state() == SyncState::Error) {
+        if progress
+            .masternodes()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
             return "Masternodes";
         }
-        if progress.headers().is_ok_and(|p| p.state() == SyncState::Error) {
+        if progress
+            .headers()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
             return "Headers";
         }
-        if progress.filter_headers().is_ok_and(|p| p.state() == SyncState::Error) {
+        if progress
+            .filter_headers()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
             return "Filter headers";
         }
-        if progress.filters().is_ok_and(|p| p.state() == SyncState::Error) {
+        if progress
+            .filters()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
             return "Filters";
         }
-        if progress.blocks().is_ok_and(|p| p.state() == SyncState::Error) {
+        if progress
+            .blocks()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
             return "Blocks";
         }
         "unknown phase"
@@ -1187,7 +1204,7 @@ impl SpvManager {
                                 // but does NOT update the progress channel on the error
                                 // path, so we must react to the event directly.
                                 if let SyncEvent::ManagerError { ref manager, ref error } = event {
-                                    tracing::error!("SPV manager {:?} reported error: {}", manager, error);
+                                    tracing::error!("SPV manager {} reported error: {}", manager, error);
                                     if let Ok(mut guard) = status.write() {
                                         *guard = SpvStatus::Error;
                                         drop(guard); // Maintain lock ordering: status → release → last_error

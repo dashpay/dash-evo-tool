@@ -284,6 +284,8 @@ impl ConnectionStatus {
                 };
                 let spv_label = if spv_status == SpvStatus::Running {
                     "SPV: Synced".to_string()
+                } else if spv_status == SpvStatus::Error {
+                    "SPV: Error".to_string()
                 } else {
                     app_context
                         .spv_manager()

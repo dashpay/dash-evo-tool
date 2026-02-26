@@ -914,7 +914,7 @@ impl ContactsList {
                                                     );
                                                     MessageBanner::set_global(
                                                         ui.ctx(),
-                                                        &format!("Failed to update contact: {}", e),
+                                                        format!("Failed to update contact: {}", e),
                                                         MessageType::Error,
                                                     );
                                                 } else {

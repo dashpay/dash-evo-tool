@@ -216,7 +216,7 @@ impl DocumentQueryScreen {
                         self.document_query_status = DocumentQueryStatus::Error;
                         MessageBanner::set_global(
                             ui.ctx(),
-                            &format!("Failed to parse query properly: {}", e),
+                            format!("Failed to parse query properly: {}", e),
                             MessageType::Error,
                         );
                     }

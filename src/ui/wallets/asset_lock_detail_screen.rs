@@ -231,7 +231,7 @@ impl AssetLockDetailScreen {
                                                 self.show_private_key_popup = true;
                                             }
                                             Err(e) => {
-                                                MessageBanner::set_global(ui.ctx(), &format!("Error retrieving private key: {}", e), MessageType::Error);
+                                                MessageBanner::set_global(ui.ctx(), format!("Error retrieving private key: {}", e), MessageType::Error);
                                             }
                                         }
                                     }

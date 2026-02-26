@@ -276,7 +276,7 @@ impl GroupActionsScreen {
                                                     FetchGroupActionsStatus::Error;
                                                 MessageBanner::set_global(
                                                     ui.ctx(),
-                                                    &format!("Failed to get identity token info: {}", e),
+                                                    format!("Failed to get identity token info: {}", e),
                                                     MessageType::Error,
                                                 );
                                                 return;

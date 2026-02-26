@@ -77,7 +77,7 @@ impl TransferTokensScreen {
             .unwrap_or_else(|e| {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
-                    &format!("Failed to load identities: {e}"),
+                    format!("Failed to load identities: {e}"),
                     MessageType::Error,
                 );
                 vec![]
@@ -322,7 +322,7 @@ impl ScreenLike for TransferTokensScreen {
             .unwrap_or_else(|e| {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    &format!("Failed to load local identities: {e}"),
+                    format!("Failed to load local identities: {e}"),
                     MessageType::Error,
                 );
                 vec![]
@@ -347,7 +347,7 @@ impl ScreenLike for TransferTokensScreen {
             Err(e) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    &format!("Failed to load token balances: {e}"),
+                    format!("Failed to load token balances: {e}"),
                     MessageType::Error,
                 );
             }

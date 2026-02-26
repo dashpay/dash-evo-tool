@@ -2626,7 +2626,7 @@ impl TokensScreen {
                     {
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
-                            &format!("Error removing token balance: {}", e),
+                            format!("Error removing token balance: {}", e),
                             MessageType::Error,
                         );
                     } else {
@@ -2688,7 +2688,7 @@ impl TokensScreen {
                     {
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
-                            &format!("Error removing token balance: {}", e),
+                            format!("Error removing token balance: {}", e),
                             MessageType::Error,
                         );
                     } else {

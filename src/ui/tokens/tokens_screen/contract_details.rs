@@ -100,7 +100,7 @@ impl TokensScreen {
                                 Err(e) => {
                                     MessageBanner::set_global(
                                         ui.ctx(),
-                                        &e.to_string(),
+                                        e.to_string(),
                                         MessageType::Error,
                                     );
                                 }

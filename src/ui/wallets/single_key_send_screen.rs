@@ -784,7 +784,7 @@ impl SingleKeyWalletSendScreen {
                                     Err(e) => {
                                         MessageBanner::set_global(
                                             ui.ctx(),
-                                            &format!("Failed to unlock: {}", e),
+                                            format!("Failed to unlock: {}", e),
                                             MessageType::Error,
                                         );
                                     }

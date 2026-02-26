@@ -679,7 +679,7 @@ impl TokensScreen {
                     Err(e) => {
                         MessageBanner::set_global(
                             ui.ctx(),
-                            &format!("Error fetching token contract: {e}"),
+                            format!("Error fetching token contract: {e}"),
                             MessageType::Error,
                         );
                     }

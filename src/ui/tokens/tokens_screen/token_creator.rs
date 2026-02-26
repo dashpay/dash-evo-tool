@@ -921,7 +921,7 @@ impl TokensScreen {
                                         ) {
                                             Ok(dc) => dc,
                                             Err(e) => {
-                                                MessageBanner::set_global(context, &format!("Error building contract V1: {e}"), MessageType::Error);
+                                                MessageBanner::set_global(context, format!("Error building contract V1: {e}"), MessageType::Error);
                                                 return;
                                             }
                                         };

@@ -123,7 +123,7 @@ impl QRCodeGeneratorScreen {
                 Err(e) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        &format!("Failed to generate QR code: {}", e),
+                        format!("Failed to generate QR code: {}", e),
                         MessageType::Error,
                     );
                 }

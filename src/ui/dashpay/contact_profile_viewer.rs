@@ -534,7 +534,7 @@ impl ContactProfileViewerScreen {
                                         Err(e) => {
                                             crate::ui::components::MessageBanner::set_global(
                                                 ui.ctx(),
-                                                &format!("Failed to save: {}", e),
+                                                format!("Failed to save: {}", e),
                                                 MessageType::Error,
                                             );
                                         }

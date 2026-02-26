@@ -942,7 +942,7 @@ impl IdentitiesScreen {
                                     );
                                     MessageBanner::set_global(
                                         self.app_context.egui_ctx(),
-                                        &format!("Failed to remove identity: {}", e),
+                                        format!("Failed to remove identity: {}", e),
                                         MessageType::Error,
                                     );
                                 }

@@ -933,7 +933,7 @@ impl NetworkChooserScreen {
                                 };
                                 MessageBanner::set_global(
                                     ui.ctx(),
-                                    &format!(
+                                    format!(
                                         "Invalid file: Please select a valid '{}'.",
                                         required_file_name
                                     ),

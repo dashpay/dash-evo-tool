@@ -204,7 +204,7 @@ impl DestroyFrozenFundsScreen {
             .unwrap_or_else(|e| {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
-                    &format!("Failed to load identities: {e}"),
+                    format!("Failed to load identities: {e}"),
                     MessageType::Error,
                 );
                 vec![]

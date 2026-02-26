@@ -187,7 +187,7 @@ impl AddKeyScreen {
                     self.add_key_status = AddKeyStatus::Error;
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        &format!("Issue verifying private key: {}", err),
+                        format!("Issue verifying private key: {}", err),
                         MessageType::Error,
                     );
                 } else {
@@ -210,7 +210,7 @@ impl AddKeyScreen {
                                 self.add_key_status = AddKeyStatus::Error;
                                 MessageBanner::set_global(
                                     self.app_context.egui_ctx(),
-                                    &format!("Invalid contract ID: {}", e),
+                                    format!("Invalid contract ID: {}", e),
                                     MessageType::Error,
                                 );
                                 return app_action;
@@ -238,7 +238,7 @@ impl AddKeyScreen {
                         self.add_key_status = AddKeyStatus::Error;
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
-                            &format!("Issue verifying private key: {}", err),
+                            format!("Issue verifying private key: {}", err),
                             MessageType::Error,
                         );
                     } else if validation_result.unwrap() {

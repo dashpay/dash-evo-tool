@@ -634,7 +634,7 @@ impl KeyInfoScreen {
         if let Err(err) = validation_result {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
-                &format!("Issue verifying private key {}", err),
+                format!("Issue verifying private key {}", err),
                 MessageType::Error,
             );
         } else if validation_result.unwrap() {
@@ -650,7 +650,7 @@ impl KeyInfoScreen {
             {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    &format!("Issue saving: {}", e),
+                    format!("Issue saving: {}", e),
                     MessageType::Error,
                 );
             }
@@ -800,7 +800,7 @@ impl KeyInfoScreen {
                         {
                             MessageBanner::set_global(
                                 ui.ctx(),
-                                &format!("Issue saving: {}", e),
+                                format!("Issue saving: {}", e),
                                 MessageType::Error,
                             );
                         }

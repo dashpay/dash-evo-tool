@@ -137,7 +137,7 @@ impl SendPaymentScreen {
             Err(e) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    &format!("Invalid amount: {}", e),
+                    format!("Invalid amount: {}", e),
                     MessageType::Error,
                 );
                 return AppAction::None;

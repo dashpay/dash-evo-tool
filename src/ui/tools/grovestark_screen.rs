@@ -400,7 +400,7 @@ impl GroveSTARKScreen {
                     Err(e) => {
                         MessageBanner::set_global(
                             app_context.egui_ctx(),
-                            &format!("Failed to get private key: {}", e),
+                            format!("Failed to get private key: {}", e),
                             MessageType::Error,
                         );
                         self.is_generating = false;
@@ -476,7 +476,7 @@ impl GroveSTARKScreen {
             Err(e) => {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
-                    &format!("Failed to parse proof: {}", e),
+                    format!("Failed to parse proof: {}", e),
                     MessageType::Error,
                 );
                 self.is_verifying = false;

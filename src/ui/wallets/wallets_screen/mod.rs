@@ -571,7 +571,7 @@ impl WalletsBalancesScreen {
                             {
                                 MessageBanner::set_global(
                                     ui.ctx(),
-                                    &format!("Failed to remove: {}", e),
+                                    format!("Failed to remove: {}", e),
                                     MessageType::Error,
                                 );
                             } else {
@@ -737,14 +737,14 @@ impl WalletsBalancesScreen {
 
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    &format!("Removed wallet \"{}\" successfully", alias),
+                    format!("Removed wallet \"{}\" successfully", alias),
                     MessageType::Success,
                 );
             }
             Err(err) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    &format!("Failed to remove wallet: {}", err),
+                    format!("Failed to remove wallet: {}", err),
                     MessageType::Error,
                 );
             }
@@ -1441,7 +1441,7 @@ impl WalletsBalancesScreen {
                 Err(err) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        &format!("Failed to lock wallet: {}", err),
+                        format!("Failed to lock wallet: {}", err),
                         MessageType::Error,
                     );
                     return;
@@ -1966,7 +1966,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 if let Some(warn_msg) = warning {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        &format!("Wallet refreshed with warning: {}", warn_msg),
+                        format!("Wallet refreshed with warning: {}", warn_msg),
                         MessageType::Info,
                     );
                 } else {

@@ -963,13 +963,13 @@ impl DPNSScreen {
                                     {
                                         MessageBanner::set_global(
                                             ui.ctx(),
-                                            &format!("Failed to set alias: {}", e),
+                                            format!("Failed to set alias: {}", e),
                                             MessageType::Error,
                                         );
                                     } else {
                                         MessageBanner::set_global(
                                             ui.ctx(),
-                                            &format!(
+                                            format!(
                                                 "Alias set to '{}' for identity {}",
                                                 alias_with_suffix,
                                                 identifier.to_string(Encoding::Base58)

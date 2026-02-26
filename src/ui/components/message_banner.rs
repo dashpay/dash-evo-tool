@@ -2,6 +2,7 @@ use crate::ui::MessageType;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::InnerResponse;
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
@@ -148,7 +149,7 @@ impl BannerHandle {
 
     /// Update the display text of this banner.
     /// Returns `None` if the banner no longer exists.
-    pub fn set_message(&self, text: &str) -> Option<&Self> {
+    pub fn set_message(&self, text: impl fmt::Display) -> Option<&Self> {
         let mut banners = get_banners(&self.ctx);
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
         b.text = text.to_string();
@@ -183,13 +184,14 @@ impl BannerHandle {
     /// Attach optional technical details to this banner.
     /// Details are shown in a collapsible section (collapsed by default).
     /// Returns `None` if the banner no longer exists.
-    pub fn with_details(&self, details: &str) -> Option<&Self> {
+    pub fn with_details(&self, details: impl fmt::Debug) -> Option<&Self> {
+        let details = format!("{:#?}", details);
         if details.is_empty() {
             return Some(self);
         }
         let mut banners = get_banners(&self.ctx);
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.details = Some(details.to_string());
+        b.details = Some(details);
         set_banners(&self.ctx, banners);
         Some(self)
     }
@@ -197,13 +199,14 @@ impl BannerHandle {
     /// Attach an optional recovery suggestion to this banner.
     /// The suggestion is shown inline (visible without expanding).
     /// Returns `None` if the banner no longer exists.
-    pub fn with_suggestion(&self, suggestion: &str) -> Option<&Self> {
+    pub fn with_suggestion(&self, suggestion: impl fmt::Display) -> Option<&Self> {
+        let suggestion = suggestion.to_string();
         if suggestion.is_empty() {
             return Some(self);
         }
         let mut banners = get_banners(&self.ctx);
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.suggestion = Some(suggestion.to_string());
+        b.suggestion = Some(suggestion);
         set_banners(&self.ctx, banners);
         Some(self)
     }
@@ -236,15 +239,12 @@ impl MessageBanner {
 
     /// Sets or replaces the current message. Resets the auto-dismiss timer.
     /// An empty string is treated as a clear operation.
-    pub fn set_message(&mut self, text: &str, message_type: MessageType) -> &mut Self {
+    pub fn set_message(&mut self, text: impl fmt::Display, message_type: MessageType) -> &mut Self {
+        let text = text.to_string();
         if text.is_empty() {
             self.state = None;
         } else {
-            self.state = Some(BannerState::new(
-                next_banner_key(),
-                text.to_string(),
-                message_type,
-            ));
+            self.state = Some(BannerState::new(next_banner_key(), text, message_type));
         }
         self
     }
@@ -293,7 +293,12 @@ impl MessageBanner {
     /// Evicts the oldest message when the cap ([`MAX_BANNERS`]) is reached.
     ///
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
-    pub fn set_global(ctx: &egui::Context, text: &str, message_type: MessageType) -> BannerHandle {
+    pub fn set_global(
+        ctx: &egui::Context,
+        text: impl fmt::Display,
+        message_type: MessageType,
+    ) -> BannerHandle {
+        let text = text.to_string();
         let mut banners = get_banners(ctx);
         if let Some(existing) = banners.iter().find(|b| b.text == text) {
             return BannerHandle {
@@ -303,7 +308,7 @@ impl MessageBanner {
         }
         let key = next_banner_key();
         if !text.is_empty() {
-            banners.push(BannerState::new(key, text.to_string(), message_type));
+            banners.push(BannerState::new(key, text, message_type));
             if banners.len() > MAX_BANNERS {
                 banners.remove(0);
             }
@@ -321,12 +326,14 @@ impl MessageBanner {
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
     pub fn replace_global(
         ctx: &egui::Context,
-        old_text: &str,
-        new_text: &str,
+        old_text: impl fmt::Display,
+        new_text: impl fmt::Display,
         message_type: MessageType,
     ) -> BannerHandle {
+        let old_text = old_text.to_string();
+        let new_text = new_text.to_string();
         if new_text.is_empty() {
-            Self::clear_global_message(ctx, old_text);
+            Self::clear_global_message(ctx, &old_text);
             return BannerHandle {
                 ctx: ctx.clone(),
                 key: next_banner_key(),
@@ -336,13 +343,13 @@ impl MessageBanner {
         let key;
         if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
             key = b.key;
-            b.reset_to(new_text.to_string(), message_type);
+            b.reset_to(new_text, message_type);
         } else if let Some(existing) = banners.iter_mut().find(|b| b.text == new_text) {
             key = existing.key;
-            existing.reset_to(new_text.to_string(), message_type);
+            existing.reset_to(new_text, message_type);
         } else {
             key = next_banner_key();
-            banners.push(BannerState::new(key, new_text.to_string(), message_type));
+            banners.push(BannerState::new(key, new_text, message_type));
             if banners.len() > MAX_BANNERS {
                 banners.remove(0);
             }
@@ -355,7 +362,8 @@ impl MessageBanner {
     }
 
     /// Clears the specific global banner message matching `text`.
-    pub fn clear_global_message(ctx: &egui::Context, text: &str) {
+    pub fn clear_global_message(ctx: &egui::Context, text: impl fmt::Display) {
+        let text = text.to_string();
         let mut banners = get_banners(ctx);
         banners.retain(|b| b.text != text);
         set_banners(ctx, banners);

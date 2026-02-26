@@ -48,23 +48,19 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
     // Load icon for the window
     let icon_data = load_icon();
 
-    #[allow(unused_mut)]
-    let mut native_options = eframe::NativeOptions {
+    let native_options = eframe::NativeOptions {
         persist_window: true, // Persist window size and position
         centered: true,       // Center window on startup if not maximized
         persistence_path: Some(app_data_dir.join("app.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_icon(icon_data)
             .with_app_id("org.dash.DashEvoTool"),
+        // Use wgpu instead of glow (OpenGL) on macOS to avoid NSOpenGLContext
+        // idle/sleep crashes (#629). Other platforms keep the default glow renderer.
+        #[cfg(target_os = "macos")]
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-
-    // Use wgpu instead of glow (OpenGL) on macOS to avoid NSOpenGLContext
-    // idle/sleep crashes (#629). Other platforms keep the default glow renderer.
-    #[cfg(target_os = "macos")]
-    {
-        native_options.renderer = eframe::Renderer::Wgpu;
-    }
 
     eframe::run_native(
         &format!("Dash Evo Tool v{}", VERSION),

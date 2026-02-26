@@ -16,7 +16,7 @@ egui_commonmark = "0.22.0"
 rfd = "0.17.2"
 qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
-eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
+eframe = { version = "0.33.3", features = ["persistence"] }
 base64 = "0.22.1"
 dash-sdk = { git = "https://github.com/dashpay/platform", rev = "0fa82e6652097d17a700d8bcc006d6b2aa922c6e", features = [
     "core_key_wallet",
@@ -80,6 +80,9 @@ zmq = "0.10.0"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 zeromq = "0.4.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 native-dialog = "0.9.0"

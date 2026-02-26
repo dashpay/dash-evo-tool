@@ -58,13 +58,11 @@ scripts/safe-cargo.sh +nightly fmt --all
 
 ## Coding Conventions
 
-### Parameter ordering
+### General rules
 
-When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`. Example:
-
-```rust
-fn remove_selected_utxos(&mut self, context: Option<&AppContext>, selected: &BTreeMap<...>) -> Result<(), String>
-```
+* When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`.
+* Constructors SHOULD return `Result<Self, ...>` when they can fail.
+* Handle errors using `MessageBanner`; see **Message Display** section below.
 
 ## Architecture Overview
 
@@ -174,7 +172,7 @@ response.inner.update(&mut self.amount);
 
 ## Message Display
 
-User-facing messages use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.
+User-facing messages (errors, warnings, success, infos) use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. When using `MessageBanner::set_global()`, no guard is needed — it is idempotent and automatically logs at the appropriate level (error/warn/debug). Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.
 
 ## Database
 

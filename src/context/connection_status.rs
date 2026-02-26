@@ -321,8 +321,8 @@ impl ConnectionStatus {
                 }
                 _ => {}
             },
-            TaskResult::Error(message) => {
-                if message.contains(
+            TaskResult::Error(err) => {
+                if err.to_string().contains(
                     "Failed to get best chain lock for mainnet, testnet, devnet, and local",
                 ) {
                     self.set_rpc_online(false);

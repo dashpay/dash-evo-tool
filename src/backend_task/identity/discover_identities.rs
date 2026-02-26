@@ -18,7 +18,7 @@ impl AppContext {
 
         const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
-        let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+        let sdk = self.sdk.load().as_ref().clone();
         let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
 
         tracing::info!(

@@ -1,5 +1,4 @@
 use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::wallet::PlatformSyncMode;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -32,7 +31,7 @@ impl AppContext {
                     .ok_or_else(|| "Wallet not found".to_string())?
             };
             let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
-            let sdk = self.sdk.read().map_err(|e| e.to_string())?.clone();
+            let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk)
         };
 
@@ -57,8 +56,7 @@ impl AppContext {
             .map_err(|e| format!("Failed to withdraw from Platform address: {}", e))?;
 
         // Trigger a balance refresh
-        self.fetch_platform_address_balances(seed_hash, PlatformSyncMode::Auto)
-            .await?;
+        self.fetch_platform_address_balances(seed_hash).await?;
 
         Ok(BackendTaskSuccessResult::PlatformAddressWithdrawal { seed_hash })
     }

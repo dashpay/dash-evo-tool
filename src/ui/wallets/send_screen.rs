@@ -485,7 +485,7 @@ impl WalletSendScreen {
     fn now_epoch_secs() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs()
     }
 
@@ -2672,7 +2672,7 @@ impl ScreenLike for WalletSendScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         match message_type {
-            MessageType::Error => {
+            MessageType::Error | MessageType::Warning => {
                 self.send_status = SendStatus::Error(message.to_string());
             }
             MessageType::Success => {

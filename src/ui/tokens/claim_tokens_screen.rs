@@ -203,9 +203,19 @@ impl ClaimTokensScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
+
+                let signing_key = match self.selected_key.clone() {
+                    Some(key) => key,
+                    None => {
+                        self.error_message = Some("No signing key selected".into());
+                        self.status = ClaimTokensStatus::ErrorMessage("No key selected".into());
+                        return AppAction::None;
+                    }
+                };
+
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.status = ClaimTokensStatus::WaitingForResult(now);
 
@@ -216,7 +226,7 @@ impl ClaimTokensScreen {
                             token_position: self.identity_token_basic_info.token_position,
                             actor_identity: self.identity.clone(),
                             distribution_type,
-                            signing_key: self.selected_key.clone().expect("No key selected"),
+                            signing_key,
                             public_note: self.public_note.clone(),
                         })),
                         BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
@@ -566,7 +576,7 @@ impl ScreenLike for ClaimTokensScreen {
                     ClaimTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .unwrap()
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed = now - start_time;
                         ui.label(format!("Claiming... elapsed: {}s", elapsed));

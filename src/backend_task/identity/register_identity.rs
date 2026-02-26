@@ -4,7 +4,6 @@ use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
-use crate::spv::CoreBackendMode;
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -36,10 +35,7 @@ impl AppContext {
             identity_funding_method,
         } = input;
 
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
         let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
             .await
@@ -54,7 +50,7 @@ impl AppContext {
 
                 // Scope the read guard so it's dropped before the async DAPI call below
                 let private_key = {
-                    let wallet = wallet.read().unwrap();
+                    let wallet = wallet.read().map_err(|e| e.to_string())?;
                     wallet_id = wallet.seed_hash();
                     wallet
                         .private_key_for_address(&address, self.network)?
@@ -95,91 +91,44 @@ impl AppContext {
             }
             RegisterIdentityFundingMethod::FundWithWallet(amount, identity_index) => {
                 // Scope the write lock to avoid holding it across an await.
+                // UTXOs are selected but NOT removed yet — removal happens after broadcast.
                 let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
-                    let mut wallet = wallet.write().unwrap();
+                    let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                     wallet_id = wallet.seed_hash();
                     match wallet.registration_asset_lock_transaction(
+                        self,
                         sdk.network,
                         amount,
                         true,
                         identity_index,
-                        Some(self),
                     ) {
                         Ok(transaction) => transaction,
                         Err(e) => {
-                            match self.core_backend_mode() {
-                                CoreBackendMode::Rpc => {
-                                    wallet
-                                        .reload_utxos(
-                                            &self
-                                                .core_client
-                                                .read()
-                                                .expect("Core client lock was poisoned"),
-                                            self.network,
-                                            Some(self),
-                                        )
-                                        .map_err(|e| e.to_string())?;
-                                    wallet.registration_asset_lock_transaction(
-                                        sdk.network,
-                                        amount,
-                                        true,
-                                        identity_index,
-                                        Some(self),
-                                    )?
-                                }
-                                CoreBackendMode::Spv => {
-                                    // SPV wallet state is authoritative — UTXOs are synced
-                                    // continuously via compact block filters. No Core RPC
-                                    // fallback available.
-                                    return Err(e);
-                                }
+                            // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
+                            // Only retry if something actually changed.
+                            if !wallet.reload_utxos(self)? {
+                                return Err(e);
                             }
+                            wallet.registration_asset_lock_transaction(
+                                self,
+                                sdk.network,
+                                amount,
+                                true,
+                                identity_index,
+                            )?
                         }
                     }
                 };
 
-                let tx_id = asset_lock_transaction.txid();
-
-                {
-                    let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                    proofs.insert(tx_id, None);
-                }
-
-                self.broadcast_raw_transaction(&asset_lock_transaction)
-                    .await?;
-
-                // Store the asset lock transaction in the database immediately after sending.
-                // This ensures it's tracked even if the proof times out or identity creation fails.
-                // SPV will update the instant_lock_data when it detects the transaction.
-                self.db
-                    .store_asset_lock_transaction(
+                let tx_id = self
+                    .broadcast_and_commit_asset_lock(
                         &asset_lock_transaction,
                         amount,
-                        None, // No islock yet - SPV will update this
                         &wallet_id,
-                        self.network,
+                        &wallet,
+                        &used_utxos,
                     )
-                    .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
-
-                // TODO: UTXO removal timing issue - UTXOs are removed here BEFORE the asset
-                // lock proof is confirmed below. If the transaction fails or times out after
-                // this point, the UTXOs will be "lost" from wallet tracking even though they
-                // weren't actually spent. This should be refactored to remove UTXOs only AFTER
-                // successful proof confirmation. See Phase 2.2 in PR review plan.
-                {
-                    let mut wallet = wallet.write().unwrap();
-                    wallet.utxos.retain(|_, utxo_map| {
-                        utxo_map.retain(|outpoint, _| !used_utxos.contains_key(outpoint));
-                        !utxo_map.is_empty() // Keep addresses that still have UTXOs
-                    });
-                    for utxo in used_utxos.keys() {
-                        self.db
-                            .drop_utxo(utxo, &self.network.to_string())
-                            .map_err(|e| e.to_string())?;
-                    }
-
-                    wallet.recalculate_affected_address_balances(&used_utxos, self)?;
-                }
+                    .await?;
 
                 let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
@@ -237,54 +186,29 @@ impl AppContext {
             ) => {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key) = {
-                    let mut wallet = wallet.write().unwrap();
+                    let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                     wallet_id = wallet.seed_hash();
                     wallet.registration_asset_lock_transaction_for_utxo(
+                        self,
                         sdk.network,
                         utxo,
                         tx_out.clone(),
                         input_address.clone(),
                         identity_index,
-                        Some(self),
                     )?
                 };
 
-                let tx_id = asset_lock_transaction.txid();
+                let used_utxos = BTreeMap::from([(utxo, (tx_out.clone(), input_address.clone()))]);
 
-                {
-                    let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                    proofs.insert(tx_id, None);
-                }
-
-                self.broadcast_raw_transaction(&asset_lock_transaction)
-                    .await?;
-
-                // Store the asset lock transaction in the database immediately after sending.
-                // This ensures it's tracked even if the proof times out or identity creation fails.
-                // SPV will update the instant_lock_data when it detects the transaction.
-                self.db
-                    .store_asset_lock_transaction(
+                let tx_id = self
+                    .broadcast_and_commit_asset_lock(
                         &asset_lock_transaction,
                         tx_out.value,
-                        None, // No islock yet - SPV will update this
                         &wallet_id,
-                        self.network,
+                        &wallet,
+                        &used_utxos,
                     )
-                    .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
-
-                // TODO: UTXO removal timing issue - see comment above for FundWithWallet case.
-                {
-                    let mut wallet = wallet.write().unwrap();
-                    wallet.utxos.retain(|_, utxo_map| {
-                        utxo_map.retain(|outpoint, _| outpoint != &utxo);
-                        !utxo_map.is_empty()
-                    });
-                    self.db
-                        .drop_utxo(&utxo, &self.network.to_string())
-                        .map_err(|e| e.to_string())?;
-
-                    wallet.recalculate_address_balance(&input_address, self)?;
-                }
+                    .await?;
 
                 let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
@@ -296,7 +220,7 @@ impl AppContext {
             .create_identifier()
             .expect("expected to create an identifier");
 
-        let public_keys = keys.to_public_keys_map();
+        let public_keys = keys.to_public_keys_map()?;
 
         // Debug: Log the keys being registered to verify contract bounds are set
         for (key_id, key) in &public_keys {
@@ -323,12 +247,13 @@ impl AppContext {
             Err(e) => return Err(format!("Error fetching identity: {}", e)),
         };
 
-        let identity = existing_identity.clone().unwrap_or_else(|| {
-            Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
-                .expect("expected to make identity")
-        });
+        let identity = match existing_identity.clone() {
+            Some(id) => id,
+            None => Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
+                .map_err(|e| format!("Failed to create identity: {}", e))?,
+        };
 
-        let wallet_seed_hash = { wallet.read().unwrap().seed_hash() };
+        let wallet_seed_hash = { wallet.read().map_err(|e| e.to_string())?.seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -339,7 +264,7 @@ impl AppContext {
             private_keys: keys.to_key_storage(wallet_seed_hash),
             dpns_names: vec![],
             associated_wallets: BTreeMap::from([(
-                wallet.read().unwrap().seed_hash(),
+                wallet.read().map_err(|e| e.to_string())?.seed_hash(),
                 wallet.clone(),
             )]),
             wallet_index: Some(wallet_identity_index),
@@ -363,7 +288,7 @@ impl AppContext {
             .map_err(|e| e.to_string())?;
 
             {
-                let mut wallet = wallet.write().unwrap();
+                let mut wallet = wallet.write().map_err(|e| e.to_string())?;
                 wallet
                     .unused_asset_locks
                     .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
@@ -512,7 +437,7 @@ impl AppContext {
         )
         .map_err(|e| e.to_string())?;
         {
-            let mut wallet = wallet.write().unwrap();
+            let mut wallet = wallet.write().map_err(|e| e.to_string())?;
             wallet
                 .unused_asset_locks
                 .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
@@ -605,21 +530,24 @@ impl AppContext {
                                 );
                             }
 
-                            let identity_create_transition =
-                                IdentityCreateTransition::try_from_identity_with_signer(
-                                    identity,
-                                    asset_lock_proof,
-                                    asset_lock_proof_private_key.inner.as_ref(),
-                                    &qualified_identity,
-                                    &NativeBlsModule,
-                                    0,
-                                    self.platform_version(),
-                                )
-                                .expect("expected to make transition");
-                            format!(
-                                "error: {}, transaction is {:?}",
-                                e, identity_create_transition
-                            )
+                            match IdentityCreateTransition::try_from_identity_with_signer(
+                                identity,
+                                asset_lock_proof,
+                                asset_lock_proof_private_key.inner.as_ref(),
+                                &qualified_identity,
+                                &NativeBlsModule,
+                                0,
+                                self.platform_version(),
+                            ) {
+                                Ok(transition) => format!(
+                                    "error: {}, transaction is {:?}",
+                                    e, transition
+                                ),
+                                Err(transition_err) => format!(
+                                    "error: {}, also failed to recreate transition for debugging: {}",
+                                    e, transition_err
+                                ),
+                            }
                         })
                 } else {
                     Err(e.to_string())
@@ -646,12 +574,9 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, String> {
         use dash_sdk::platform::transition::put_identity::PutIdentity;
 
-        let sdk = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
+        let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys.to_public_keys_map();
+        let public_keys = keys.to_public_keys_map()?;
 
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();
@@ -672,7 +597,7 @@ impl AppContext {
         )
         .map_err(|e| format!("Failed to create identity: {}", e))?;
 
-        let wallet_seed_hash_actual = { wallet.read().unwrap().seed_hash() };
+        let wallet_seed_hash_actual = { wallet.read().map_err(|e| e.to_string())?.seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -716,7 +641,7 @@ impl AppContext {
                 .map_err(|e| e.to_string())?;
 
                 {
-                    let mut wallet_guard = wallet.write().unwrap();
+                    let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
                     wallet_guard
                         .identities
                         .insert(wallet_identity_index, qualified_identity.identity.clone());

@@ -1,4 +1,5 @@
 use super::AppContext;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::spv::CoreBackendMode;
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -9,7 +10,8 @@ use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLoc
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use rusqlite::Result;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, RwLock};
 
 impl AppContext {
     /// Broadcast a raw transaction via Core RPC or SPV depending on backend mode.
@@ -72,6 +74,82 @@ impl AppContext {
                 ))
             }
         }
+    }
+
+    /// Broadcast an asset lock transaction with the store-before-broadcast
+    /// safety pattern, removing spent UTXOs only after a successful broadcast.
+    ///
+    /// Performs the following steps in order:
+    /// 1. Register the transaction for finality tracking.
+    /// 2. Store the asset lock in the DB **before** broadcast — prevents an SPV
+    ///    InstantSend race where the finality proof arrives before the DB row.
+    /// 3. Broadcast the transaction. On failure: clean up the finality tracker
+    ///    and pre-stored DB row; UTXOs are **not** removed.
+    /// 4. On success: remove spent UTXOs from the wallet and DB.
+    ///
+    /// # UTXO selection race window
+    ///
+    /// Callers select UTXOs while holding the wallet write lock, then drop it
+    /// before calling this method (which re-acquires the lock in step 4). During
+    /// the gap — covering steps 1–3 and the network broadcast — another task
+    /// could theoretically select the same UTXOs via `select_unspent_utxos_for`,
+    /// leading to a double-spend attempt on-chain (which Core would reject).
+    ///
+    /// We cannot hold the `std::sync::RwLock` write guard across the async
+    /// broadcast because the guard is `!Send` and tokio tasks require `Send`
+    /// futures. Fixing this properly requires either migrating to
+    /// `tokio::sync::RwLock` (large refactor) or adding a UTXO reservation
+    /// mechanism. In practice the risk is negligible: users would have to
+    /// trigger two fund operations on the same wallet near-simultaneously.
+    ///
+    /// Returns the [`Txid`] of the broadcast transaction.
+    pub(crate) async fn broadcast_and_commit_asset_lock(
+        &self,
+        asset_lock_transaction: &Transaction,
+        amount: u64,
+        wallet_seed_hash: &WalletSeedHash,
+        wallet: &Arc<RwLock<Wallet>>,
+        used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
+    ) -> std::result::Result<Txid, String> {
+        let tx_id = asset_lock_transaction.txid();
+
+        // Step 1: Register for finality tracking.
+        {
+            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            proofs.insert(tx_id, None);
+        }
+
+        // Step 2: Store the asset lock transaction in the database *before* broadcast.
+        // The SPV finality listener retrieves the transaction from the DB to
+        // process InstantLock/ChainLock events — if the store happened after
+        // broadcast, a fast InstantSend could arrive before the DB row exists.
+        self.db
+            .store_asset_lock_transaction(
+                asset_lock_transaction,
+                amount,
+                None, // No islock yet — SPV will update this
+                wallet_seed_hash,
+                self.network,
+            )
+            .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+
+        // Step 3: Broadcast. On failure, clean up DB row and finality tracker.
+        // UTXOs are NOT removed on failure, preserving wallet balance.
+        if let Err(e) = self.broadcast_raw_transaction(asset_lock_transaction).await {
+            if let Ok(mut proofs) = self.transactions_waiting_for_finality.try_lock() {
+                proofs.remove(&tx_id);
+            }
+            let _ = self.db.delete_asset_lock_transaction(tx_id.as_byte_array());
+            return Err(format!("Failed to broadcast asset lock transaction: {}", e));
+        }
+
+        // Step 4: Broadcast succeeded — commit UTXO removal now.
+        {
+            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+            wallet_guard.remove_selected_utxos(used_utxos, &self.db, self.network)?;
+        }
+
+        Ok(tx_id)
     }
 
     pub(crate) fn received_transaction_finality(
@@ -240,13 +318,18 @@ impl AppContext {
                     self.network,
                 )?;
 
-                let first = payload
-                    .credit_outputs
-                    .first()
-                    .expect("Expected at least one credit output");
+                let first = payload.credit_outputs.first().ok_or_else(|| {
+                    rusqlite::Error::InvalidParameterName(
+                        "Asset lock transaction has no credit outputs".to_string(),
+                    )
+                })?;
 
-                let address = Address::from_script(&first.script_pubkey, self.network)
-                    .expect("expected an address");
+                let address =
+                    Address::from_script(&first.script_pubkey, self.network).map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!(
+                            "Failed to derive address from asset lock credit output script: {e}"
+                        ))
+                    })?;
 
                 // Add the asset lock to the wallet's unused_asset_locks
                 wallet

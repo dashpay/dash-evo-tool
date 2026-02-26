@@ -52,13 +52,15 @@ async fn start(app_data_dir: &std::path::Path) -> Result<(), eframe::Error> {
         persist_window: true, // Persist window size and position
         centered: true,       // Center window on startup if not maximized
         persistence_path: Some(app_data_dir.join("app.ron")),
-        viewport: egui::ViewportBuilder::default().with_icon(icon_data),
+        viewport: egui::ViewportBuilder::default()
+            .with_icon(icon_data)
+            .with_app_id("org.dash.DashEvoTool"),
         ..Default::default()
     };
 
     eframe::run_native(
         &format!("Dash Evo Tool v{}", VERSION),
         native_options,
-        Box::new(|cc| Ok(Box::new(crate::app::AppState::new(cc.egui_ctx.clone())))),
+        Box::new(|cc| Ok(Box::new(crate::app::AppState::new(cc.egui_ctx.clone())?))),
     )
 }

@@ -140,8 +140,7 @@ impl Database {
     ) -> rusqlite::Result<()> {
         let conn = self.conn.lock().unwrap();
 
-        let address = check_address_for_network(address.as_unchecked().clone(), network)
-            .expect("Expected address to be valid for network");
+        let address = check_address_for_network(address.as_unchecked().clone(), network)?;
 
         // Step 1: Check if the address already exists for the given seed.
         let mut stmt = conn.prepare(
@@ -441,11 +440,26 @@ impl Database {
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
-                ExtendedPubKey::decode(&master_ecdsa_bip44_account_0_epk_bytes)
-                    .expect("Failed to decode ExtendedPubKey");
+                ExtendedPubKey::decode(&master_ecdsa_bip44_account_0_epk_bytes).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        4,
+                        rusqlite::types::Type::Blob,
+                        Box::new(CorruptedBlobError(format!(
+                            "Failed to decode ExtendedPubKey: {}",
+                            e
+                        ))),
+                    )
+                })?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(
+                        "Seed hash should be 32 bytes".to_string(),
+                    )),
+                )
+            })?;
             let closed_wallet_seed = ClosedKeyItem {
                 seed_hash: seed_hash_array,
                 encrypted_seed: encrypted_seed.clone(),
@@ -457,9 +471,15 @@ impl Database {
                 WalletSeed::Closed(closed_wallet_seed)
             } else {
                 WalletSeed::Open(OpenWalletSeed {
-                    seed: encrypted_seed
-                        .try_into()
-                        .expect("expected to decrypt seed with no password"),
+                    seed: encrypted_seed.try_into().map_err(|_| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            1,
+                            rusqlite::types::Type::Blob,
+                            Box::new(CorruptedBlobError(
+                                "Seed should be 64 bytes for open wallet".to_string(),
+                            )),
+                        )
+                    })?,
                     wallet_info: closed_wallet_seed,
                 })
             };
@@ -519,8 +539,11 @@ impl Database {
             let path_type: u32 = row.get(5)?;
             let total_received: Option<u64> = row.get(6)?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName(
+                    "Seed hash should be 32 bytes".to_string(),
+                )
+            })?;
 
             // Convert u32 to DerivationPathReference safely
             let path_reference =
@@ -553,12 +576,21 @@ impl Database {
             } else {
                 // Standard Core addresses - validate network
                 let address_unchecked =
-                    Address::from_str(&address_str).expect("Invalid address format");
+                    Address::from_str(&address_str).map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!(
+                            "Invalid address format '{}': {}",
+                            address_str, e
+                        ))
+                    })?;
                 check_address_for_network(address_unchecked, network)?
             };
 
-            let derivation_path = DerivationPath::from_str(&derivation_path)
-                .expect("Expected to convert to derivation path");
+            let derivation_path = DerivationPath::from_str(&derivation_path).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Invalid derivation path '{}': {}",
+                    derivation_path, e
+                ))
+            })?;
 
             let path_type = DerivationPathType::from_bits_truncate(path_type);
 
@@ -645,11 +677,18 @@ impl Database {
             let script_pubkey: Vec<u8> = row.get(4)?;
 
             let address = Address::from_str(&address)
-                .expect("Invalid address format")
+                .map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Invalid UTXO address format '{}': {}",
+                        address, e
+                    ))
+                })?
                 .assume_checked();
 
             let outpoint = OutPoint {
-                txid: Txid::from_slice(&txid).expect("Invalid txid"),
+                txid: Txid::from_slice(&txid).map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!("Invalid UTXO txid: {}", e))
+                })?,
                 vout: vout as u32,
             };
             let tx_out = TxOut {
@@ -685,30 +724,49 @@ impl Database {
             let islock_data: Option<Vec<u8>> = row.get(3)?;
             let chain_locked_height: Option<CoreBlockHeight> = row.get(4)?;
 
-            let wallet_seed_hash_array: [u8; 32] =
-                wallet_seed.try_into().expect("Seed should be 64 bytes");
-            let tx: Transaction = deserialize(&tx_data).expect("Failed to deserialize transaction");
+            let wallet_seed_hash_array: [u8; 32] = wallet_seed.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName("Wallet seed should be 32 bytes".to_string())
+            })?;
+            let tx: Transaction = deserialize(&tx_data).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to deserialize asset lock transaction: {}",
+                    e
+                ))
+            })?;
 
             // Ensure the transaction payload is AssetLockPayloadType
             let Some(TransactionPayload::AssetLockPayloadType(payload)) =
                 &tx.special_transaction_payload
             else {
-                panic!("Expected AssetLockPayloadType in special_transaction_payload");
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "Expected AssetLockPayloadType in special_transaction_payload".to_string(),
+                ));
             };
 
             // Get the first credit output
-            let first = payload
-                .credit_outputs
-                .first()
-                .expect("Expected at least one credit output");
+            let first =
+                payload
+                    .credit_outputs
+                    .first()
+                    .ok_or(rusqlite::Error::InvalidParameterName(
+                        "Expected at least one credit output in asset lock".to_string(),
+                    ))?;
 
-            let address =
-                Address::from_script(&first.script_pubkey, *network).expect("expected an address");
+            let address = Address::from_script(&first.script_pubkey, *network).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to derive address from credit output: {}",
+                    e
+                ))
+            })?;
 
             let (islock, proof) = if let Some(islock_bytes) = islock_data {
                 // Deserialize the InstantLock
-                let is_lock: InstantLock =
-                    deserialize(&islock_bytes).expect("Failed to deserialize InstantLock");
+                let is_lock: InstantLock = deserialize(&islock_bytes).map_err(|e| {
+                    rusqlite::Error::InvalidParameterName(format!(
+                        "Failed to deserialize InstantLock: {}",
+                        e
+                    ))
+                })?;
                 (
                     Some(is_lock.clone()),
                     Some(AssetLockProof::Instant(InstantAssetLockProof::new(
@@ -761,14 +819,26 @@ impl Database {
             let is_ours: bool = row.get(8)?;
             let raw_transaction: Vec<u8> = row.get(9)?;
 
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
-            let txid = Txid::from_slice(&txid_bytes).expect("Invalid txid bytes");
-            let transaction: Transaction =
-                deserialize(&raw_transaction).expect("Failed to deserialize transaction");
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
+            })?;
+            let txid = Txid::from_slice(&txid_bytes).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!("Invalid transaction txid: {}", e))
+            })?;
+            let transaction: Transaction = deserialize(&raw_transaction).map_err(|e| {
+                rusqlite::Error::InvalidParameterName(format!(
+                    "Failed to deserialize transaction: {}",
+                    e
+                ))
+            })?;
             let block_hash = block_hash_bytes
                 .as_ref()
-                .map(|bytes| BlockHash::from_slice(bytes).expect("Invalid block hash"));
+                .map(|bytes| {
+                    BlockHash::from_slice(bytes).map_err(|e| {
+                        rusqlite::Error::InvalidParameterName(format!("Invalid block hash: {}", e))
+                    })
+                })
+                .transpose()?;
             let fee = fee.map(|f| f as u64);
             let height = height.map(|h| h as u32);
 
@@ -808,9 +878,15 @@ impl Database {
             let wallet_seed_hash: Vec<u8> = row.get(1)?;
             let wallet_index: u32 = row.get(2)?;
 
-            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash
-                .try_into()
-                .expect("Seed hash should be 32 bytes");
+            let wallet_seed_hash_array: [u8; 32] = wallet_seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Blob,
+                    Box::new(CorruptedBlobError(
+                        "Identity wallet seed hash should be 32 bytes".to_string(),
+                    )),
+                )
+            })?;
 
             Ok((data, wallet_seed_hash_array, wallet_index))
         })?;
@@ -853,27 +929,21 @@ impl Database {
         );
         // Load platform address info for each wallet (using existing connection to avoid deadlock)
         let mut platform_stmt = conn.prepare(
-            "SELECT seed_hash, address, balance, nonce, last_full_sync_balance FROM platform_address_balances WHERE network = ?",
+            "SELECT seed_hash, address, balance, nonce FROM platform_address_balances WHERE network = ?",
         )?;
         let platform_rows = platform_stmt.query_map([network_str.clone()], |row| {
             let seed_hash: Vec<u8> = row.get(0)?;
             let address_str: String = row.get(1)?;
             let balance: i64 = row.get(2)?;
             let nonce: i64 = row.get(3)?;
-            let last_full_sync_balance: Option<i64> = row.get(4)?;
-            let seed_hash_array: [u8; 32] =
-                seed_hash.try_into().expect("Seed hash should be 32 bytes");
-            Ok((
-                seed_hash_array,
-                address_str,
-                balance as u64,
-                nonce as u32,
-                last_full_sync_balance.map(|b| b as u64),
-            ))
+            let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
+                rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
+            })?;
+            Ok((seed_hash_array, address_str, balance as u64, nonce as u32))
         })?;
 
         for row in platform_rows {
-            if let Ok((seed_hash, address_str, balance, nonce, last_full_sync_balance)) = row
+            if let Ok((seed_hash, address_str, balance, nonce)) = row
                 && let Some(wallet) = wallets_map.get_mut(&seed_hash)
                 && let Ok(address) = Address::<NetworkUnchecked>::from_str(&address_str)
             {
@@ -889,13 +959,7 @@ impl Database {
 
                 wallet.platform_address_info.insert(
                     canonical_address,
-                    crate::model::wallet::PlatformAddressInfo {
-                        balance,
-                        nonce,
-                        // Use the stored last_full_sync_balance from the database
-                        // This is the balance from the last FULL sync checkpoint, not including terminal updates
-                        last_full_sync_balance,
-                    },
+                    crate::model::wallet::PlatformAddressInfo { balance, nonce },
                 );
             }
         }
@@ -905,11 +969,6 @@ impl Database {
     }
 
     /// Store or update Platform address balance and nonce.
-    ///
-    /// When `is_sync_operation` is true, also updates `last_full_sync_balance` to the current
-    /// balance. This should be true for sync operations (full or terminal) and false for
-    /// internal updates (e.g., after a transfer completes), so that subsequent terminal syncs
-    /// can correctly apply any pending AddToCredits.
     pub fn set_platform_address_info(
         &self,
         seed_hash: &[u8; 32],
@@ -917,7 +976,6 @@ impl Database {
         balance: u64,
         nonce: u32,
         network: &Network,
-        is_sync_operation: bool,
     ) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let canonical_address = Wallet::canonical_address(address, *network);
@@ -927,49 +985,23 @@ impl Database {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        if is_sync_operation {
-            // Sync operation: update both balance and last_full_sync_balance
-            // last_full_sync_balance becomes the baseline for pre-population in the next sync
-            self.execute(
-                "INSERT INTO platform_address_balances
-                 (seed_hash, address, balance, nonce, network, updated_at, last_full_sync_balance)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(seed_hash, address, network) DO UPDATE SET
-                 balance = excluded.balance,
-                 nonce = excluded.nonce,
-                 updated_at = excluded.updated_at,
-                 last_full_sync_balance = excluded.last_full_sync_balance",
-                params![
-                    seed_hash,
-                    address_str,
-                    balance as i64,
-                    nonce as i64,
-                    network_str,
-                    updated_at,
-                    balance as i64
-                ],
-            )?;
-        } else {
-            // Internal update (e.g., after transfer): update balance but preserve last_full_sync_balance
-            // This ensures the next terminal sync correctly applies any pending AddToCredits
-            self.execute(
-                "INSERT INTO platform_address_balances
-                 (seed_hash, address, balance, nonce, network, updated_at, last_full_sync_balance)
-                 VALUES (?, ?, ?, ?, ?, ?, NULL)
-                 ON CONFLICT(seed_hash, address, network) DO UPDATE SET
-                 balance = excluded.balance,
-                 nonce = excluded.nonce,
-                 updated_at = excluded.updated_at",
-                params![
-                    seed_hash,
-                    address_str,
-                    balance as i64,
-                    nonce as i64,
-                    network_str,
-                    updated_at
-                ],
-            )?;
-        }
+        self.execute(
+            "INSERT INTO platform_address_balances
+             (seed_hash, address, balance, nonce, network, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(seed_hash, address, network) DO UPDATE SET
+             balance = excluded.balance,
+             nonce = excluded.nonce,
+             updated_at = excluded.updated_at",
+            params![
+                seed_hash,
+                address_str,
+                balance as i64,
+                nonce as i64,
+                network_str,
+                updated_at
+            ],
+        )?;
         Ok(())
     }
 
@@ -1090,49 +1122,36 @@ impl Database {
         Ok(deleted)
     }
 
-    /// Get the last platform full sync timestamp, checkpoint height, and last terminal block for a wallet
-    /// Returns (last_sync_timestamp, checkpoint_height, last_terminal_block) or (0, 0, 0) if not set
-    pub fn get_platform_sync_info(
-        &self,
-        seed_hash: &[u8; 32],
-    ) -> rusqlite::Result<(u64, u64, u64)> {
+    /// Get the last platform sync timestamp and sync height for a wallet.
+    /// Returns (last_sync_timestamp, last_sync_height) or (0, 0) if not set.
+    pub fn get_platform_sync_info(&self, seed_hash: &[u8; 32]) -> rusqlite::Result<(u64, u64)> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT last_platform_full_sync, last_platform_sync_checkpoint, COALESCE(last_terminal_block, 0) FROM wallet WHERE seed_hash = ?",
+            "SELECT last_platform_full_sync, last_platform_sync_checkpoint FROM wallet WHERE seed_hash = ?",
             params![seed_hash],
             |row| {
                 let last_sync: i64 = row.get(0)?;
-                let checkpoint: i64 = row.get(1)?;
-                let last_terminal: i64 = row.get(2)?;
-                Ok((last_sync as u64, checkpoint as u64, last_terminal as u64))
+                let sync_height: i64 = row.get(1)?;
+                Ok((last_sync as u64, sync_height as u64))
             },
         )
     }
 
-    /// Set the last platform full sync timestamp and checkpoint height for a wallet
-    /// Also resets last_terminal_block to 0 since a new full sync was performed
+    /// Set the platform sync timestamp and sync height for a wallet.
+    ///
+    /// Note: The `sync_height` value (SDK's `new_sync_height`) is stored in the
+    /// `last_platform_sync_checkpoint` SQL column. The column was not renamed to
+    /// avoid an extra DB migration, but it now represents a block height rather
+    /// than the old checkpoint concept.
     pub fn set_platform_sync_info(
         &self,
         seed_hash: &[u8; 32],
         last_sync_timestamp: u64,
-        checkpoint_height: u64,
+        sync_height: u64,
     ) -> rusqlite::Result<()> {
         self.execute(
-            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ?, last_terminal_block = 0 WHERE seed_hash = ?",
-            params![last_sync_timestamp as i64, checkpoint_height as i64, seed_hash],
-        )?;
-        Ok(())
-    }
-
-    /// Update the last terminal block height after processing terminal balance updates
-    pub fn set_last_terminal_block(
-        &self,
-        seed_hash: &[u8; 32],
-        last_terminal_block: u64,
-    ) -> rusqlite::Result<()> {
-        self.execute(
-            "UPDATE wallet SET last_terminal_block = ? WHERE seed_hash = ?",
-            params![last_terminal_block as i64, seed_hash],
+            "UPDATE wallet SET last_platform_full_sync = ?, last_platform_sync_checkpoint = ? WHERE seed_hash = ?",
+            params![last_sync_timestamp as i64, sync_height as i64, seed_hash],
         )?;
         Ok(())
     }
@@ -1199,7 +1218,9 @@ impl From<WalletError> for rusqlite::Error {
 mod tests {
     use super::*;
     use crate::database::test_helpers::create_test_database;
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, ExtendedPrivKey};
     use std::str::FromStr;
 
     fn create_test_address(network: Network) -> Address {
@@ -1214,6 +1235,121 @@ mod tests {
             *byte = i as u8;
         }
         hash
+    }
+
+    fn create_test_master_epk_bytes(network: Network) -> Vec<u8> {
+        let seed = [7u8; 64];
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(network, &seed).expect("master key");
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let account = master
+            .derive_priv(&secp, &path)
+            .expect("derive bip44 account");
+        ExtendedPubKey::from_priv(&secp, &account).encode()
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_epk_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let seed_hash = create_test_seed_hash();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    vec![0u8; 64],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    vec![0u8; 78],
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_seed_hash_length_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let valid_epk = create_test_master_epk_bytes(Network::Testnet);
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    vec![0u8; 31],
+                    vec![0u8; 64],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    valid_epk,
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
+    }
+
+    #[test]
+    fn test_get_wallets_invalid_open_seed_length_uses_from_sql_conversion_failure() {
+        let db = create_test_database().expect("Failed to create test database");
+        let seed_hash = create_test_seed_hash();
+        let valid_epk = create_test_master_epk_bytes(Network::Testnet);
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk,
+                    alias, is_main, uses_password, password_hint, network,
+                    confirmed_balance, unconfirmed_balance, total_balance
+                 ) VALUES (?, ?, ?, ?, ?, NULL, 0, 0, NULL, 'testnet', 0, 0, 0)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    vec![0u8; 63],
+                    vec![0u8; 16],
+                    vec![0u8; 12],
+                    valid_epk,
+                ],
+            )
+            .expect("Failed to insert test wallet");
+        }
+
+        let err = db
+            .get_wallets(&Network::Testnet)
+            .expect_err("expected failure");
+        match err {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Blob, _) => {}
+            _ => panic!("unexpected error variant: {}", err),
+        }
     }
 
     #[test]
@@ -1288,7 +1424,7 @@ mod tests {
         assert!(info.is_none());
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
             .expect("Failed to set platform address info");
 
         // Retrieve it
@@ -1301,7 +1437,7 @@ mod tests {
         assert_eq!(info.1, 5); // nonce
 
         // Update it
-        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 20_000_000, 10, &network)
             .expect("Failed to update platform address info");
 
         let info = db
@@ -1399,7 +1535,7 @@ mod tests {
 
         // Add a single valid platform address using the helper function
         let address = create_test_address(network);
-        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 5_000_000, 3, &network)
             .expect("Failed to set platform address info");
 
         // Get all addresses
@@ -1437,7 +1573,7 @@ mod tests {
         }
 
         // Set platform address info
-        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network, true)
+        db.set_platform_address_info(&seed_hash, &address, 10_000_000, 5, &network)
             .expect("Failed to set platform address info");
 
         // Verify it exists
@@ -1480,12 +1616,11 @@ mod tests {
         }
 
         // Initial sync info should be zeros
-        let (last_sync, checkpoint, last_terminal) = db
+        let (last_sync, sync_height) = db
             .get_platform_sync_info(&seed_hash)
             .expect("Failed to get platform sync info");
         assert_eq!(last_sync, 0);
-        assert_eq!(checkpoint, 0);
-        assert_eq!(last_terminal, 0);
+        assert_eq!(sync_height, 0);
 
         // Set sync info
         let timestamp = 1700000000u64;
@@ -1493,21 +1628,11 @@ mod tests {
         db.set_platform_sync_info(&seed_hash, timestamp, height)
             .expect("Failed to set platform sync info");
 
-        let (last_sync, checkpoint, last_terminal) = db
+        let (last_sync, sync_height) = db
             .get_platform_sync_info(&seed_hash)
             .expect("Failed to get platform sync info");
         assert_eq!(last_sync, timestamp);
-        assert_eq!(checkpoint, height);
-        assert_eq!(last_terminal, 0); // Reset to 0 by set_platform_sync_info
-
-        // Set last terminal block
-        db.set_last_terminal_block(&seed_hash, 100500)
-            .expect("Failed to set last terminal block");
-
-        let (_, _, last_terminal) = db
-            .get_platform_sync_info(&seed_hash)
-            .expect("Failed to get platform sync info");
-        assert_eq!(last_terminal, 100500);
+        assert_eq!(sync_height, height);
     }
 
     #[test]

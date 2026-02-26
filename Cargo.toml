@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "d6f4eb9ac9feafaa914f06e1b78eb66beceef3b7", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "0fa82e6652097d17a700d8bcc006d6b2aa922c6e", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -73,6 +73,7 @@ humantime = "2.2.0"
 which = { version = "8.0.0" }
 tz-rs = { version = "0.7.0" }
 tempfile = "3.20.0"
+arc-swap = "1"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"
@@ -83,6 +84,10 @@ zeromq = "0.4.1"
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"
+
+[features]
+testing = []
+e2e = []
 
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
@@ -101,9 +106,6 @@ dashcore_hashes = { git = "https://www.github.com/dashpay/rust-dashcore", rev = 
 key-wallet = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
 key-wallet-manager = { git = "https://www.github.com/dashpay/rust-dashcore", rev = "6affdaa5db30c04f533cfac4a81b9939d1cf2545" }
 
-[features]
-e2e = []
-
 [[test]]
 name = "e2e"
 path = "tests/e2e/main.rs"
@@ -111,7 +113,7 @@ required-features = ["e2e"]
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"

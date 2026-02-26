@@ -193,30 +193,39 @@ impl TransferTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
+        let signing_key = match self.selected_key.clone() {
+            Some(key) => key,
+            None => {
+                self.transfer_tokens_status =
+                    TransferTokensStatus::ErrorMessage("No signing key selected".into());
+                return AppAction::None;
+            }
+        };
+
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
             self.transfer_tokens_status =
                 TransferTokensStatus::ErrorMessage("Invalid amount".into());
             return AppAction::None;
         }
 
-        let parsed_receiver_id = Identifier::from_string_try_encodings(
+        let receiver_id = match Identifier::from_string_try_encodings(
             &self.receiver_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        );
+        ) {
+            Ok(id) => id,
+            Err(_) => {
+                self.transfer_tokens_status =
+                    TransferTokensStatus::ErrorMessage("Invalid receiver".into());
+                return AppAction::None;
+            }
+        };
 
-        if parsed_receiver_id.is_err() {
-            self.transfer_tokens_status =
-                TransferTokensStatus::ErrorMessage("Invalid receiver".into());
-            return AppAction::None;
-        }
-
-        let receiver_id = parsed_receiver_id.unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap_or_default()
             .as_secs();
         self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
 
@@ -234,7 +243,7 @@ impl TransferTokensScreen {
                 amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
                 data_contract,
                 token_position: self.identity_token_balance.token_position,
-                signing_key: self.selected_key.clone().expect("No key selected"),
+                signing_key,
                 public_note: self.public_note.clone(),
             },
         )))
@@ -543,7 +552,7 @@ impl ScreenLike for TransferTokensScreen {
                     TransferTokensStatus::WaitingForResult(start_time) => {
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
-                            .expect("Time went backwards")
+                            .unwrap_or_default()
                             .as_secs();
                         let elapsed_seconds = now - start_time;
 

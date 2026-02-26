@@ -26,6 +26,7 @@ pub struct Contact {
     pub nickname: Option<String>,
     pub is_hidden: bool,
     pub account_reference: u32,
+    pub created_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,7 +35,7 @@ pub enum SearchFilter {
     WithUsernames,    // Only contacts with usernames
     WithoutUsernames, // Only contacts without usernames
     WithBio,          // Contacts with bio
-    Recent,           // Recently added (TODO: needs database timestamp)
+    Recent,           // Added within the last 7 days
     Hidden,           // Only hidden contacts
     Visible,          // Only visible contacts
 }
@@ -43,7 +44,7 @@ pub enum SearchFilter {
 pub enum SortOrder {
     Name,       // Sort by display name/username
     Username,   // Sort by username specifically
-    DateAdded,  // Sort by date added (TODO: needs database timestamp)
+    DateAdded,  // Sort by date added (from database timestamp)
     AccountRef, // Sort by account reference number
 }
 
@@ -140,6 +141,7 @@ impl ContactsList {
                             nickname: None,   // Will be loaded separately from contact_private_info
                             is_hidden: false, // Will be loaded separately from contact_private_info
                             account_reference: 0, // This would need to be loaded from contactInfo document
+                            created_at: Some(stored_contact.created_at),
                         };
 
                         // Only add if contact status is accepted
@@ -480,6 +482,11 @@ impl ContactsList {
                                 );
                                 ui.selectable_value(
                                     &mut self.search_filter,
+                                    SearchFilter::Recent,
+                                    "Recent",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
                                     SearchFilter::Hidden,
                                     "Hidden",
                                 );
@@ -515,6 +522,11 @@ impl ContactsList {
                                 );
                                 ui.selectable_value(
                                     &mut self.sort_order,
+                                    SortOrder::DateAdded,
+                                    "Date added",
+                                );
+                                ui.selectable_value(
+                                    &mut self.sort_order,
                                     SortOrder::AccountRef,
                                     "Account",
                                 );
@@ -535,6 +547,7 @@ impl ContactsList {
             let color = match message_type {
                 MessageType::Success => egui::Color32::DARK_GREEN,
                 MessageType::Error => egui::Color32::DARK_RED,
+                MessageType::Warning => DashColors::WARNING,
                 MessageType::Info => egui::Color32::LIGHT_BLUE,
             };
             ui.colored_label(color, message);
@@ -575,8 +588,15 @@ impl ContactsList {
                     SearchFilter::Hidden if !contact.is_hidden => return false,
                     SearchFilter::Visible if contact.is_hidden => return false,
                     SearchFilter::Recent => {
-                        // TODO: Implement when we have timestamp data
-                        // For now, treat as "All"
+                        let seven_days_ago = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                            - 7 * 24 * 60 * 60;
+                        match contact.created_at {
+                            Some(ts) if ts >= seven_days_ago => {}
+                            _ => return false,
+                        }
                     }
                     _ => {} // SearchFilter::All or other cases pass through
                 }
@@ -670,9 +690,9 @@ impl ContactsList {
                 }
                 SortOrder::AccountRef => a.account_reference.cmp(&b.account_reference),
                 SortOrder::DateAdded => {
-                    // TODO: Implement when we have timestamp data
-                    // For now, sort by identity ID as a proxy
-                    a.identity_id.cmp(&b.identity_id)
+                    // Sort by created_at descending (newest first)
+                    // Contacts without timestamps sort last
+                    b.created_at.unwrap_or(0).cmp(&a.created_at.unwrap_or(0))
                 }
             }
         });
@@ -1025,6 +1045,7 @@ impl ScreenLike for ContactsList {
                         nickname: None,
                         is_hidden: false,
                         account_reference: 0,
+                        created_at: None,
                     };
                     self.contacts.insert(contact_id, contact);
                 }
@@ -1044,10 +1065,13 @@ impl ScreenLike for ContactsList {
 
                     // Clear all existing contacts for this identity from database first
                     // This prevents stale contacts from persisting
-                    let _ = self
+                    if let Err(e) = self
                         .app_context
                         .db
-                        .clear_dashpay_contacts(&owner_id, &network_str);
+                        .clear_dashpay_contacts(&owner_id, &network_str)
+                    {
+                        tracing::warn!("Failed to clear dashpay contacts from database: {}", e);
+                    }
 
                     // Convert ContactData to Contact structs and save to database
                     for contact_data in contacts_data {
@@ -1069,11 +1093,17 @@ impl ScreenLike for ContactsList {
                             nickname: contact_data.nickname.clone(),
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
+                            created_at: Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64,
+                            ), // Fallback to current time for filter/sort
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
 
                         // Save to database
-                        let _ = self.app_context.db.save_dashpay_contact(
+                        if let Err(e) = self.app_context.db.save_dashpay_contact(
                             &owner_id,
                             &contact_data.identity_id,
                             &network_str,
@@ -1082,16 +1112,23 @@ impl ScreenLike for ContactsList {
                             contact_data.avatar_url.as_deref(),
                             None,       // public_message - not yet fetched
                             "accepted", // Only accepted contacts are returned from load_contacts
-                        );
+                        ) {
+                            tracing::warn!("Failed to save dashpay contact to database: {}", e);
+                        }
 
                         // Save private info if present
-                        if let Some(nickname) = &contact_data.nickname {
-                            let _ = self.app_context.db.save_contact_private_info(
+                        if let Some(nickname) = &contact_data.nickname
+                            && let Err(e) = self.app_context.db.save_contact_private_info(
                                 &owner_id,
                                 &contact_data.identity_id,
                                 nickname,
                                 &contact_data.note.unwrap_or_default(),
                                 contact_data.is_hidden,
+                            )
+                        {
+                            tracing::warn!(
+                                "Failed to save contact private info to database: {}",
+                                e
                             );
                         }
                     }
@@ -1112,6 +1149,12 @@ impl ScreenLike for ContactsList {
                             nickname: contact_data.nickname,
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
+                            created_at: Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64,
+                            ), // Fallback to current time for filter/sort
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
                     }
@@ -1163,7 +1206,7 @@ impl ScreenLike for ContactsList {
                     if let Some(identity) = &self.selected_identity {
                         let owner_id = identity.identity.id();
                         let network_str = self.app_context.network.to_string();
-                        let _ = self.app_context.db.save_dashpay_contact(
+                        if let Err(e) = self.app_context.db.save_dashpay_contact(
                             &owner_id,
                             &contact_id,
                             &network_str,
@@ -1172,7 +1215,12 @@ impl ScreenLike for ContactsList {
                             contact.avatar_url.as_deref(),
                             public_message.as_deref(),
                             "accepted",
-                        );
+                        ) {
+                            tracing::warn!(
+                                "Failed to save updated contact profile to database: {}",
+                                e
+                            );
+                        }
                     }
                 }
             }

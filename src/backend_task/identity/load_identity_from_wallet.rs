@@ -115,12 +115,7 @@ impl AppContext {
             start: None,
         };
 
-        let sdk_guard = {
-            let guard = self.sdk.read().unwrap();
-            guard.clone()
-        };
-
-        let maybe_owned_dpns_names = Document::fetch_many(&sdk_guard, dpns_names_document_query)
+        let maybe_owned_dpns_names = Document::fetch_many(sdk, dpns_names_document_query)
             .await
             .map(|document_map| {
                 document_map
@@ -165,10 +160,11 @@ impl AppContext {
             let mut wallet = wallet_arc_ref.wallet.write().unwrap();
             wallet_seed_hash = wallet.seed_hash();
             wallet.identity_authentication_ecdsa_public_keys_data_map(
+                self,
+                true,
                 self.network,
                 identity_index,
                 0..top_bound,
-                Some(self),
             )?
         };
 

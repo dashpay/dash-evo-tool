@@ -552,7 +552,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 // Set the status to waiting and capture the current time
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .expect("Time went backwards")
+                    .unwrap_or_default()
                     .as_secs();
                 self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult(now);
                 inner_action = self.register_dpns_name_clicked();
@@ -568,7 +568,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 RegisterDpnsNameStatus::WaitingForResult(start_time) => {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .expect("Time went backwards")
+                        .unwrap_or_default()
                         .as_secs();
                     let elapsed_seconds = now - start_time;
 

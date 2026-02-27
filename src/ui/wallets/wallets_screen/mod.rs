@@ -15,7 +15,6 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
@@ -2095,7 +2094,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.refreshing = false;
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    &format!("Mined {} block(s)", count),
+                    format!("Mined {} block(s)", count),
                     MessageType::Success,
                 );
             }

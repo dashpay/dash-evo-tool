@@ -530,7 +530,7 @@ impl ScreenLike for TransferScreen {
             .unwrap_or_else(|e| {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
-                    &format!("Failed to load local identities: {e}"),
+                    format!("Failed to load local identities: {e}"),
                     MessageType::Error,
                 );
                 vec![]

@@ -395,7 +395,7 @@ impl ProfileScreen {
         if !self.is_valid() {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
-                &self.validation_errors[0].message(),
+                self.validation_errors[0].message(),
                 MessageType::Error,
             );
             return AppAction::None;

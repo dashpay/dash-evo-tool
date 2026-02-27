@@ -6,12 +6,13 @@ use crate::backend_task::core::CoreItem;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
-use crate::context::connection_status::ConnectionStatus;
+use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
-use crate::ui::components::MessageBanner;
+use crate::spv::CoreBackendMode;
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -91,6 +92,11 @@ pub struct AppState {
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)
     pub welcome_screen: Option<WelcomeScreen>,
+    /// Previous connection state, used to detect transitions and update banners.
+    /// `None` on startup / after network switch to force the first evaluation.
+    previous_connection_state: Option<OverallConnectionState>,
+    /// Handle to the current connection status banner, if one is displayed
+    connection_banner_handle: Option<BannerHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -705,6 +711,8 @@ impl AppState {
             subtasks,
             show_welcome_screen: !onboarding_completed,
             welcome_screen: None,
+            previous_connection_state: None,
+            connection_banner_handle: None,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
@@ -876,6 +884,51 @@ impl AppState {
 
         self.connection_status
             .reset(app_context.core_backend_mode());
+
+        // Reset connection banner tracking so the next frame re-evaluates
+        // the new network's state (even if it matches the old state).
+        if let Some(handle) = self.connection_banner_handle.take() {
+            handle.clear();
+        }
+        self.previous_connection_state = None;
+    }
+
+    /// Update the connection status banner when the overall connection state
+    /// transitions between Disconnected, Syncing, and Synced.
+    fn update_connection_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+        let current_state = app_context.connection_status().overall_state();
+        if self.previous_connection_state == Some(current_state) {
+            return;
+        }
+        // Clear old banner if present
+        if let Some(handle) = self.connection_banner_handle.take() {
+            handle.clear();
+        }
+        // Display new banner based on current state
+        let connection_status = app_context.connection_status();
+        let backend_mode = connection_status.backend_mode();
+        match current_state {
+            OverallConnectionState::Disconnected => {
+                let msg = match backend_mode {
+                    CoreBackendMode::Rpc => "Disconnected — check that Dash Core is running",
+                    CoreBackendMode::Spv => "Disconnected — check your internet connection",
+                };
+                self.connection_banner_handle =
+                    Some(MessageBanner::set_global(ctx, msg, MessageType::Error));
+            }
+            OverallConnectionState::Syncing => {
+                let msg = match backend_mode {
+                    CoreBackendMode::Rpc => "Syncing with Dash Core…",
+                    CoreBackendMode::Spv => "SPV sync in progress…",
+                };
+                self.connection_banner_handle =
+                    Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
+            }
+            OverallConnectionState::Synced => {
+                // No banner needed for fully synced state
+            }
+        }
+        self.previous_connection_state = Some(current_state);
     }
 
     pub fn visible_screen_mut(&mut self) -> &mut Screen {
@@ -1158,6 +1211,8 @@ impl App for AppState {
                 .connection_status()
                 .trigger_refresh(active_context.as_ref()),
         );
+
+        self.update_connection_banner(ctx, &active_context);
 
         for action in actions {
             match action {

@@ -524,14 +524,24 @@ impl ScreenLike for TransferScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        self.identity = self
+        let identities = self
             .app_context
             .load_local_qualified_identities()
-            .unwrap()
-            .into_iter()
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    &format!("Failed to load local identities: {e}"),
+                    MessageType::Error,
+                );
+                vec![]
+            });
+        if let Some(refreshed) = identities
+            .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
-            .unwrap();
-        self.max_amount = self.identity.identity.balance();
+        {
+            self.identity = refreshed.clone();
+            self.max_amount = self.identity.identity.balance();
+        }
     }
 
     /// Renders the UI components for the withdrawal screen

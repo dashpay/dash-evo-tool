@@ -115,7 +115,7 @@ impl FreezeTokensScreen {
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                set_error_banner("Burning is not allowed on this token");
+                set_error_banner("Freezing is not allowed on this token");
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
@@ -123,14 +123,14 @@ impl FreezeTokensScreen {
                     != identity_token_info.identity.identity.id()
                 {
                     set_error_banner(
-                        "You are not allowed to burn this token. Only the contract owner is.",
+                        "You are not allowed to freeze this token. Only the contract owner is.",
                     );
                 }
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    set_error_banner("You are not allowed to burn this token");
+                    set_error_banner("You are not allowed to freeze this token");
                 }
                 None
             }

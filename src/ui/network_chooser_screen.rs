@@ -896,10 +896,9 @@ impl NetworkChooserScreen {
                     if ui.button("Select File").clicked()
                         && let Some(path) = rfd::FileDialog::new().pick_file()
                     {
+                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
                         let file_name = path.file_name().and_then(|f| f.to_str());
                         if let Some(file_name) = file_name {
-                            self.custom_dash_qt_path = None;
-
                             // Handle macOS .app bundles
                             let resolved_path = if cfg!(target_os = "macos")
                                 && path.extension().and_then(|s| s.to_str()) == Some("app")
@@ -922,7 +921,15 @@ impl NetworkChooserScreen {
 
                             if is_valid {
                                 self.custom_dash_qt_path = Some(resolved_path);
-                                self.save().expect("Expected to save db settings");
+                                if let Err(e) = self.save() {
+                                    tracing::warn!("Failed to save Dash-Qt path setting: {}", e);
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        "Failed to save Dash-Qt path setting. Please try again.",
+                                        MessageType::Error,
+                                    );
+                                    self.custom_dash_qt_path = previous_custom_dash_qt_path;
+                                }
                             } else {
                                 let required_file_name = if cfg!(target_os = "windows") {
                                     "dash-qt.exe"
@@ -944,8 +951,17 @@ impl NetworkChooserScreen {
                     }
 
                     if self.custom_dash_qt_path.is_some() && ui.button("Clear").clicked() {
+                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
                         self.custom_dash_qt_path = Some(PathBuf::new());
-                        self.save().expect("Expected to save db settings");
+                        if let Err(e) = self.save() {
+                            tracing::warn!("Failed to save cleared Dash-Qt path setting: {}", e);
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Failed to clear Dash-Qt path setting. Please try again.",
+                                MessageType::Error,
+                            );
+                            self.custom_dash_qt_path = previous_custom_dash_qt_path;
+                        }
                     }
                 });
 
@@ -974,11 +990,19 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
+                    let previous_overwrite_dash_conf = self.overwrite_dash_conf;
                     if StyledCheckbox::new(&mut self.overwrite_dash_conf, "Overwrite dash.conf")
                         .show(ui)
                         .clicked()
+                        && let Err(e) = self.save()
                     {
-                        self.save().expect("Expected to save db settings");
+                        tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Failed to save overwrite dash.conf setting. Please try again.",
+                            MessageType::Error,
+                        );
+                        self.overwrite_dash_conf = previous_overwrite_dash_conf;
                     }
                     ui.label(
                         egui::RichText::new("Auto-configure required settings")

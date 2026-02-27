@@ -119,6 +119,8 @@ Screen::ui() → AppAction::BackendTask(task)
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
+**Error handling**: Backend tasks return `Result<T, TaskError>` (`src/backend_task/error.rs`). `TaskError` is a typed error envelope — `Display` produces user-friendly text for `MessageBanner`, `Debug` provides technical details for logs. `From<String>` ensures backwards compatibility: existing `Result<T, String>` code works unchanged. Domain errors (`DashPayError`, `SpvError`, etc.) are wired as `#[from]` variants for automatic conversion via `?`. When adding new backend error types, add a `#[from]` variant to `TaskError` rather than converting to `String`.
+
 ## Screen Pattern
 
 All screens implement the `ScreenLike` trait:
@@ -175,7 +177,7 @@ User-facing messages (errors, warnings, success, infos) use `MessageBanner` (`sr
 
 ## Database
 
-Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors are `Result<T, String>` — string errors display directly to users.
+Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors use `TaskError` (`src/backend_task/error.rs`) — see App Task System section above.
 
 ## Platform Targets
 

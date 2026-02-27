@@ -17,7 +17,9 @@ const DETAILS_MAX_HEIGHT: f32 = 120.0;
 static BANNER_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn next_banner_key() -> u64 {
-    BANNER_KEY_COUNTER.fetch_add(1, Ordering::Relaxed)
+    // SeqCst ensures total ordering of key generation, future-proofing
+    // against potential multi-threaded banner usage.
+    BANNER_KEY_COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
 /// The domain type for `MessageBanner`, representing the banner's lifecycle state.
@@ -310,7 +312,11 @@ impl MessageBanner {
         if !text.is_empty() {
             banners.push(BannerState::new(key, text, message_type));
             if banners.len() > MAX_BANNERS {
-                banners.remove(0);
+                let evicted = banners.remove(0);
+                warn!(
+                    "Banner evicted (capacity {}): {:?} '{}'",
+                    MAX_BANNERS, evicted.message_type, evicted.text
+                );
             }
             set_banners(ctx, banners);
         }
@@ -351,7 +357,11 @@ impl MessageBanner {
             key = next_banner_key();
             banners.push(BannerState::new(key, new_text, message_type));
             if banners.len() > MAX_BANNERS {
-                banners.remove(0);
+                let evicted = banners.remove(0);
+                warn!(
+                    "Banner evicted (capacity {}): {:?} '{}'",
+                    MAX_BANNERS, evicted.message_type, evicted.text
+                );
             }
         }
         set_banners(ctx, banners);
@@ -390,6 +400,8 @@ impl MessageBanner {
         if banners.is_empty() {
             return;
         }
+        // Always write back: process_banner() mutates state (auto-dismiss timers,
+        // expanded flags) even when no banners are removed.
         banners.retain_mut(|b| process_banner(ui, b) == BannerStatus::Visible);
         set_banners(ui.ctx(), banners);
     }

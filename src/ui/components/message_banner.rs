@@ -132,6 +132,10 @@ impl BannerState {
 ///
 /// The handle is `'static` and safe to store. Methods that modify the banner
 /// (`set_message`, `with_auto_dismiss`) take `&self` so the handle can be reused.
+///
+/// INTENTIONAL(SEC-004): BannerHandle is Send+Sync because egui::Context is
+/// Send+Sync with internal locking. This is acceptable for a single-threaded
+/// UI app; egui's own thread-safety guarantees apply.
 #[derive(Clone)]
 pub struct BannerHandle {
     ctx: egui::Context,
@@ -185,6 +189,12 @@ impl BannerHandle {
 
     /// Attach optional technical details to this banner.
     /// Details are shown in a collapsible section (collapsed by default).
+    ///
+    /// Accepts `impl Debug` (not `Display`) because callers typically pass
+    /// error types whose `Debug` representation includes structured context
+    /// (nested causes, variant names) that is more useful in a diagnostic
+    /// details pane than the single-line `Display` output.
+    ///
     /// Returns `None` if the banner no longer exists.
     pub fn with_details(&self, details: impl fmt::Debug) -> Option<&Self> {
         let details = format!("{:#?}", details);
@@ -327,7 +337,10 @@ impl MessageBanner {
     }
 
     /// Finds a message by `old_text` and replaces it with `new_text`.
-    /// If `old_text` is not found, adds `new_text` as a new message (with dedup check).
+    /// If `old_text` is not found, falls back to adding `new_text` as a new
+    /// message (with dedup check). This fallback is intentional: callers use
+    /// `replace_global` for progress updates where the previous banner may
+    /// have been dismissed or evicted, and the new message should still appear.
     ///
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
     pub fn replace_global(

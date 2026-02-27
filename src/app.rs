@@ -1044,8 +1044,10 @@ impl App for AppState {
                     let msg = err.to_string();
                     let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                     if self.current_app_context().is_developer_mode() {
-                        // NOTE: TaskError Debug output is visible to users in developer
-                        // mode. Ensure inner error types don't expose secrets (see #667).
+                        // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
+                        // in developer mode. This is a local UI app — no third parties
+                        // see this output. Ensure inner error types don't expose secrets
+                        // (see #667).
                         handle.with_details(&err);
                     }
                     self.visible_screen_mut()

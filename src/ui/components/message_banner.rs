@@ -738,6 +738,27 @@ impl<T, E: fmt::Display> ResultBannerExt<T, E> for Result<T, E> {
     }
 }
 
+/// Extension for `Option<T>` — show an error banner on `None`, pass through unchanged.
+///
+/// ```ignore
+/// let identity = identities.first().cloned()
+///     .or_show_error(ctx, "No identities loaded");
+/// ```
+pub trait OptionResultExt<T> {
+    /// If `None`, displays a global error banner with the given message.
+    /// Returns `self` unchanged — this is a side-effect-only method.
+    fn or_show_error(self, ctx: &egui::Context, msg: impl fmt::Display) -> Self;
+}
+
+impl<T> OptionResultExt<T> for Option<T> {
+    fn or_show_error(self, ctx: &egui::Context, msg: impl fmt::Display) -> Self {
+        if self.is_none() {
+            MessageBanner::set_global(ctx, msg, MessageType::Error);
+        }
+        self
+    }
+}
+
 /// Extension for `Option<BannerHandle>` — banner cleanup.
 ///
 /// ```ignore

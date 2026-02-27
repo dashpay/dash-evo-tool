@@ -21,5 +21,5 @@ pub mod wallet_unlock_popup;
 pub use component_trait::{Component, ComponentResponse};
 pub use message_banner::{
     BannerHandle, BannerStatus, MessageBanner, MessageBannerResponse, OptionBannerExt,
-    ResultBannerExt,
+    OptionResultExt, ResultBannerExt,
 };

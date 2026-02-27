@@ -1021,7 +1021,7 @@ impl AddNewIdentityScreen {
 
 impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        if message_type == MessageType::Error {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             // Reset step so we stop showing "Waiting for Platform acknowledgement".
             // The error itself is displayed by the global MessageBanner.
             let mut step = self.step.write().unwrap();

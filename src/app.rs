@@ -896,18 +896,28 @@ impl AppState {
     }
 
     /// Update the connection status banner when the overall connection state
-    /// transitions between Disconnected, Syncing, and Synced.
+    /// transitions between Disconnected, Connecting, Syncing, and Synced.
+    ///
+    /// Also re-evaluates the banner text while in `Connecting` state each frame
+    /// because the degraded-peer timeout can fire without a state transition.
     fn update_connection_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
-        let current_state = app_context.connection_status().overall_state();
-        if self.previous_connection_state == Some(current_state) {
+        let connection_status = app_context.connection_status();
+        let current_state = connection_status.overall_state();
+        let state_changed = self.previous_connection_state != Some(current_state);
+
+        // In Connecting state the banner text can change (normal → degraded)
+        // without a state transition, so we must re-evaluate every frame.
+        // For all other states, skip if nothing changed.
+        if !state_changed && current_state != OverallConnectionState::Connecting {
             return;
         }
-        // Clear old banner if present
-        if let Some(handle) = self.connection_banner_handle.take() {
+
+        // Clear old banner on state transitions
+        if state_changed && let Some(handle) = self.connection_banner_handle.take() {
             handle.clear();
         }
+
         // Display new banner based on current state
-        let connection_status = app_context.connection_status();
         let backend_mode = connection_status.backend_mode();
         match current_state {
             OverallConnectionState::Disconnected => {
@@ -917,6 +927,23 @@ impl AppState {
                 };
                 self.connection_banner_handle =
                     Some(MessageBanner::set_global(ctx, msg, MessageType::Error));
+            }
+            OverallConnectionState::Connecting => {
+                // SPV active but no peers connected yet. The degraded flag
+                // flips after 30 s — `set_global` is idempotent for same text,
+                // so calling it every frame while Connecting is cheap.
+                let msg = if connection_status.spv_peer_degraded() {
+                    "Having trouble finding peers. Check your connection."
+                } else {
+                    "Looking for peers…"
+                };
+                // Replace the banner when the text changes (normal → degraded).
+                if let Some(handle) = &self.connection_banner_handle {
+                    handle.set_message(msg);
+                } else {
+                    self.connection_banner_handle =
+                        Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
+                }
             }
             OverallConnectionState::Syncing => {
                 let msg = match backend_mode {

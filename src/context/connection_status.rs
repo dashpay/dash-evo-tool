@@ -14,23 +14,28 @@ use std::time::{Duration, Instant};
 const REFRESH_CONNECTED: Duration = Duration::from_secs(4);
 const REFRESH_DISCONNECTED: Duration = Duration::from_secs(1);
 
-/// Three-state connection indicator matching the UI's red/orange/green circle.
+const SPV_PEER_DEGRADED_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Four-state connection indicator matching the UI's red/orange/green circle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OverallConnectionState {
     /// No connection at all — red indicator.
     Disconnected = 0,
+    /// SPV active but no peers connected yet — orange indicator (faster pulse).
+    Connecting = 1,
     /// All subsystems connected but still syncing data — orange indicator.
-    Syncing = 1,
+    Syncing = 2,
     /// Fully connected and operational — green indicator.
-    Synced = 2,
+    Synced = 3,
 }
 
 impl From<u8> for OverallConnectionState {
     fn from(v: u8) -> Self {
         match v {
-            1 => Self::Syncing,
-            2 => Self::Synced,
+            1 => Self::Connecting,
+            2 => Self::Syncing,
+            3 => Self::Synced,
             _ => Self::Disconnected,
         }
     }
@@ -49,6 +54,10 @@ pub struct ConnectionStatus {
     disable_zmq: AtomicBool,
     overall_state: AtomicU8,
     last_update: Mutex<Instant>,
+    spv_connected_peers: AtomicU16,
+    /// When SPV first entered an active state (`Starting`/`Syncing`) with zero
+    /// peers.  Reset to `None` once peers connect or SPV stops.
+    spv_no_peers_since: Mutex<Option<Instant>>,
     dapi_total_endpoints: AtomicU16,
     dapi_available_endpoints: AtomicU16,
 }
@@ -63,6 +72,8 @@ impl ConnectionStatus {
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             last_update: Mutex::new(Instant::now()),
+            spv_connected_peers: AtomicU16::new(0),
+            spv_no_peers_since: Mutex::new(None),
             dapi_total_endpoints: AtomicU16::new(0),
             dapi_available_endpoints: AtomicU16::new(0),
         }
@@ -83,14 +94,18 @@ impl ConnectionStatus {
         self.backend_mode
             .store(backend_mode.as_u8(), Ordering::Relaxed);
         self.disable_zmq.store(false, Ordering::Relaxed);
+        self.spv_connected_peers.store(0, Ordering::Relaxed);
+        *self
+            .spv_no_peers_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
         self.overall_state.store(
             OverallConnectionState::Disconnected as u8,
             Ordering::Relaxed,
         );
         // Set last_update to epoch so the next trigger_refresh fires immediately
-        if let Ok(mut last) = self.last_update.lock() {
-            *last = Instant::now() - REFRESH_CONNECTED;
-        }
+        *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
+            Instant::now() - REFRESH_CONNECTED;
     }
 
     pub fn rpc_online(&self) -> bool {
@@ -140,9 +155,8 @@ impl ConnectionStatus {
 
     /// Reset the throttle timer so the next `trigger_refresh()` fires immediately.
     pub fn reset_timer(&self) {
-        if let Ok(mut last) = self.last_update.lock() {
-            *last = Instant::now() - REFRESH_CONNECTED;
-        }
+        *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
+            Instant::now() - REFRESH_CONNECTED;
     }
 
     pub fn dapi_total_endpoints(&self) -> u16 {
@@ -176,6 +190,17 @@ impl ConnectionStatus {
         }
     }
 
+    /// Returns `true` if SPV has been active with zero connected peers
+    /// for longer than [`SPV_PEER_DEGRADED_TIMEOUT`].
+    ///
+    /// If the mutex is poisoned, recovers the inner value and evaluates it.
+    pub fn spv_peer_degraded(&self) -> bool {
+        self.spv_no_peers_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some_and(|since| since.elapsed() >= SPV_PEER_DEGRADED_TIMEOUT)
+    }
+
     pub fn spv_connected(status: SpvStatus) -> bool {
         status.is_active()
     }
@@ -184,6 +209,14 @@ impl ConnectionStatus {
         self.overall_state.load(Ordering::Relaxed).into()
     }
 
+    /// Recompute the overall connection state from the individual subsystem
+    /// flags.
+    ///
+    /// Each field is read with `Ordering::Relaxed` — there is no cross-field
+    /// synchronisation, so a single call may observe a mix of "old" and "new"
+    /// values.  This is acceptable because the function runs on every UI
+    /// frame (1-4 s cadence) and any transient inconsistency self-corrects on
+    /// the next poll.
     pub fn refresh_state(&self) {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
@@ -203,10 +236,18 @@ impl ConnectionStatus {
                 if !dapi_available {
                     OverallConnectionState::Disconnected
                 } else {
+                    let has_peers = self.spv_connected_peers.load(Ordering::Relaxed) > 0;
                     match spv_status {
-                        SpvStatus::Running => OverallConnectionState::Synced,
-                        SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Stopping => {
-                            OverallConnectionState::Syncing
+                        SpvStatus::Running if has_peers => OverallConnectionState::Synced,
+                        SpvStatus::Running
+                        | SpvStatus::Starting
+                        | SpvStatus::Syncing
+                        | SpvStatus::Stopping => {
+                            if has_peers {
+                                OverallConnectionState::Syncing
+                            } else {
+                                OverallConnectionState::Connecting
+                            }
                         }
                         _ => OverallConnectionState::Disconnected,
                     }
@@ -221,6 +262,8 @@ impl ConnectionStatus {
     /// In SPV mode, fetches sync progress from the [`SpvManager`] to display
     /// a detailed phase summary (e.g. `"SPV: Headers: 12345 / 27000 (45%)"`)
     /// instead of the bare `"SPV: Syncing"`.
+    // TODO: decouple from AppContext — accept a struct with the needed fields
+    // (spv_manager status, settings) instead of the full context reference.
     pub fn tooltip_text(&self, app_context: &crate::context::AppContext) -> String {
         let backend_mode = self.backend_mode();
         let disable_zmq = self.disable_zmq();
@@ -244,8 +287,10 @@ impl ConnectionStatus {
 
                 let header = match overall {
                     OverallConnectionState::Synced => "Connected to Dash Core Wallet",
-                    // RPC mode doesn't currently produce Syncing, but kept for forward-compat.
-                    OverallConnectionState::Syncing => "Syncing to Dash Core Wallet",
+                    // RPC mode doesn't currently produce Connecting/Syncing, but kept for forward-compat.
+                    OverallConnectionState::Connecting | OverallConnectionState::Syncing => {
+                        "Syncing to Dash Core Wallet"
+                    }
                     OverallConnectionState::Disconnected if self.rpc_online() => {
                         "Dash Core connection incomplete"
                     }
@@ -258,6 +303,7 @@ impl ConnectionStatus {
             CoreBackendMode::Spv => {
                 let header = match overall {
                     OverallConnectionState::Synced => "Ready",
+                    OverallConnectionState::Connecting => "Connecting...",
                     OverallConnectionState::Syncing => "Syncing",
                     OverallConnectionState::Disconnected => "Disconnected",
                 };
@@ -272,7 +318,12 @@ impl ConnectionStatus {
                         .map(|p| format!("SPV: {}", spv_phase_summary(p)))
                         .unwrap_or_else(|| format!("SPV: {:?}", spv_status))
                 };
-                format!("{header}\n{spv_label}\n{dapi_status}")
+                let degraded_warning = if self.spv_peer_degraded() {
+                    "\nHaving trouble finding peers. Check your connection."
+                } else {
+                    ""
+                };
+                format!("{header}\n{spv_label}{degraded_warning}\n{dapi_status}")
             }
         }
     }
@@ -369,10 +420,25 @@ impl ConnectionStatus {
 
         match backend_mode {
             CoreBackendMode::Spv => {
-                // SPV status is updated elsewhere
-                let spv_status = app_context.spv_manager().status().status;
-                tracing::trace!("ConnectionStatus: polled SPV status = {:?}", spv_status);
-                self.set_spv_status(spv_status);
+                let snapshot = app_context.spv_manager().status();
+                tracing::trace!(
+                    "ConnectionStatus: polled SPV status = {:?}",
+                    snapshot.status
+                );
+                self.set_spv_status(snapshot.status);
+                let peers = (snapshot.connected_peers).min(u16::MAX as usize) as u16;
+                self.spv_connected_peers.store(peers, Ordering::Relaxed);
+
+                // Track how long we've been active with zero peers.
+                let mut since = self
+                    .spv_no_peers_since
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                if peers > 0 || !snapshot.status.is_active() {
+                    *since = None;
+                } else if since.is_none() {
+                    *since = Some(Instant::now());
+                }
             }
             CoreBackendMode::Rpc => {
                 // Update ZMQ status if there's a new event
@@ -469,5 +535,48 @@ fn pct(current: u32, target: u32) -> u32 {
 impl Default for ConnectionStatus {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn spv_peer_degraded_returns_false_when_none() {
+        let status = ConnectionStatus::new();
+        // Default state: spv_no_peers_since is None.
+        assert!(!status.spv_peer_degraded());
+    }
+
+    #[test]
+    fn spv_peer_degraded_returns_false_before_threshold() {
+        let status = ConnectionStatus::new();
+        // Set to "just now" — well within the degraded window.
+        *status.spv_no_peers_since.lock().unwrap() = Some(Instant::now());
+        assert!(!status.spv_peer_degraded());
+    }
+
+    #[test]
+    fn spv_peer_degraded_returns_true_after_threshold() {
+        let status = ConnectionStatus::new();
+        // Set to a point beyond the degraded threshold.
+        *status.spv_no_peers_since.lock().unwrap() =
+            Some(Instant::now() - SPV_PEER_DEGRADED_TIMEOUT - Duration::from_millis(1));
+        assert!(status.spv_peer_degraded());
+    }
+
+    #[test]
+    fn spv_peer_degraded_clears_on_reset() {
+        let status = ConnectionStatus::new();
+        // Set to a point beyond the degraded threshold so it would fire.
+        *status.spv_no_peers_since.lock().unwrap() =
+            Some(Instant::now() - SPV_PEER_DEGRADED_TIMEOUT - Duration::from_millis(1));
+        assert!(status.spv_peer_degraded());
+
+        // After reset the timestamp should be cleared.
+        status.reset(CoreBackendMode::Spv);
+        assert!(!status.spv_peer_degraded());
     }
 }

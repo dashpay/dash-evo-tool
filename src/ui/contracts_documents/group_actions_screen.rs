@@ -17,7 +17,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::message_banner::{BannerHandle, MessageBanner};
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_chooser_pre_filtered;
@@ -461,9 +461,7 @@ impl ScreenLike for GroupActionsScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
-                if let Some(h) = self.fetch_banner.take() {
-                    h.clear();
-                }
+                self.fetch_banner.take_and_clear();
                 self.fetch_group_actions_status = FetchGroupActionsStatus::Error;
             }
             MessageType::Success | MessageType::Info => {}
@@ -474,9 +472,7 @@ impl ScreenLike for GroupActionsScreen {
         if let BackendTaskSuccessResult::ActiveGroupActions(actions_map) =
             backend_task_success_result
         {
-            if let Some(h) = self.fetch_banner.take() {
-                h.clear();
-            }
+            self.fetch_banner.take_and_clear();
             self.fetch_group_actions_status =
                 FetchGroupActionsStatus::Complete(actions_map.clone());
         }
@@ -568,9 +564,7 @@ impl ScreenLike for GroupActionsScreen {
                         .corner_radius(3.0);
 
                 if ui.add(button).clicked() {
-                    if let Some(h) = self.fetch_banner.take() {
-                        h.clear();
-                    }
+                    self.fetch_banner.take_and_clear();
                     let handle = MessageBanner::set_global(
                         ui.ctx(),
                         "Fetching group actions...",

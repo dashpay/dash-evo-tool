@@ -1542,9 +1542,7 @@ impl DPNSScreen {
         if ui.add(button).clicked() {
             action = self.bulk_apply_votes();
             if self.bulk_vote_handling_status == VoteHandlingStatus::CastingVotes {
-                if let Some(h) = self.vote_banner.take() {
-                    h.clear();
-                }
+                self.vote_banner.take_and_clear();
                 let handle =
                     MessageBanner::set_global(ui.ctx(), "Casting votes...", MessageType::Info);
                 handle.with_elapsed();
@@ -1558,9 +1556,7 @@ impl DPNSScreen {
             self.show_bulk_schedule_popup = false;
             self.bulk_schedule_message = None;
             self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
-            if let Some(h) = self.vote_banner.take() {
-                h.clear();
-            }
+            self.vote_banner.take_and_clear();
         }
 
         // Handle status
@@ -1887,17 +1883,13 @@ impl ScreenLike for DPNSScreen {
                     ));
                 }
 
-                if let Some(h) = self.vote_banner.take() {
-                    h.clear();
-                }
+                self.vote_banner.take_and_clear();
                 self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
             }
             // If scheduling succeeded
             BackendTaskSuccessResult::ScheduledVotes => {
                 if self.bulk_vote_handling_status == VoteHandlingStatus::SchedulingVotes {
-                    if let Some(h) = self.vote_banner.take() {
-                        h.clear();
-                    }
+                    self.vote_banner.take_and_clear();
                     self.bulk_vote_handling_status = VoteHandlingStatus::Completed;
                 }
                 self.bulk_schedule_message =

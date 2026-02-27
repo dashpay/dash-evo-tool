@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::message_banner::{BannerHandle, MessageBanner};
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -237,9 +237,7 @@ impl TransitionVisualizerScreen {
 
                     if ui.add(button).clicked() {
                         // Mark as submitting
-                        if let Some(h) = self.submit_banner.take() {
-                            h.clear();
-                        }
+                        self.submit_banner.take_and_clear();
                         let handle = MessageBanner::set_global(
                             ui.ctx(),
                             "Submitting transition...",
@@ -389,16 +387,12 @@ impl ScreenLike for TransitionVisualizerScreen {
         match message_type {
             MessageType::Success => {
                 if matches!(self.broadcast_status, TransitionBroadcastStatus::Submitting) {
-                    if let Some(h) = self.submit_banner.take() {
-                        h.clear();
-                    }
+                    self.submit_banner.take_and_clear();
                     self.broadcast_status = TransitionBroadcastStatus::Complete(Instant::now());
                 }
             }
             MessageType::Error | MessageType::Warning => {
-                if let Some(h) = self.submit_banner.take() {
-                    h.clear();
-                }
+                self.submit_banner.take_and_clear();
                 self.broadcast_status = TransitionBroadcastStatus::NotStarted;
             }
             MessageType::Info => {}

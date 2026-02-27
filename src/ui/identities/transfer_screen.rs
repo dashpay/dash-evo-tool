@@ -13,7 +13,7 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::{BannerHandle, MessageBanner, ResultBannerExt};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -503,10 +503,8 @@ impl TransferScreen {
 impl ScreenLike for TransferScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if let MessageType::Error = message_type {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
-            }
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
             self.transfer_credits_status = TransferCreditsStatus::Error;
         }
     }
@@ -515,9 +513,7 @@ impl ScreenLike for TransferScreen {
         if let BackendTaskSuccessResult::TransferredCredits(fee_result) =
             backend_task_success_result
         {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.transfer_credits_status = TransferCreditsStatus::Complete;
         }

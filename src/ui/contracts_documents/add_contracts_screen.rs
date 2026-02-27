@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::message_banner::{BannerHandle, MessageBanner};
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
@@ -80,9 +80,7 @@ impl AddContractsScreen {
     fn add_contracts_clicked(&mut self) -> AppAction {
         match self.parse_identifiers() {
             Ok(identifiers) => {
-                if let Some(h) = self.add_banner.take() {
-                    h.clear();
-                }
+                self.add_banner.take_and_clear();
                 let handle = MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Adding contract...",
@@ -280,9 +278,7 @@ impl ScreenLike for AddContractsScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
-                if let Some(h) = self.add_banner.take() {
-                    h.clear();
-                }
+                self.add_banner.take_and_clear();
                 self.add_contracts_status = AddContractsStatus::Error;
             }
             MessageType::Success | MessageType::Info => {}
@@ -292,9 +288,7 @@ impl ScreenLike for AddContractsScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::FetchedContracts(maybe_found_contracts) => {
-                if let Some(h) = self.add_banner.take() {
-                    h.clear();
-                }
+                self.add_banner.take_and_clear();
                 let maybe_contracts: Vec<_> = self
                     .contract_ids_input
                     .iter()

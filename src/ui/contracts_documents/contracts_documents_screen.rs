@@ -10,7 +10,7 @@ use crate::ui::components::contract_chooser_panel::{
     ContractChooserState, add_contract_chooser_panel,
 };
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::message_banner::{BannerHandle, MessageBanner};
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
@@ -191,9 +191,7 @@ impl DocumentQueryScreen {
                 match parser.parse_input(&self.document_query) {
                     Ok(parsed_query) => {
                         // Set the status to waiting
-                        if let Some(h) = self.query_banner.take() {
-                            h.clear();
-                        }
+                        self.query_banner.take_and_clear();
                         let handle = MessageBanner::set_global(
                             ui.ctx(),
                             "Querying documents...",
@@ -210,9 +208,7 @@ impl DocumentQueryScreen {
                         )));
                     }
                     Err(e) => {
-                        if let Some(h) = self.query_banner.take() {
-                            h.clear();
-                        }
+                        self.query_banner.take_and_clear();
                         self.document_query_status = DocumentQueryStatus::Error;
                         MessageBanner::set_global(
                             ui.ctx(),
@@ -361,9 +357,7 @@ impl DocumentQueryScreen {
                 if self.current_page > 1 && ui.button("Previous Page").clicked() {
                     // Handle Previous Page
                     if let Some(prev_cursor) = self.get_previous_cursor() {
-                        if let Some(h) = self.query_banner.take() {
-                            h.clear();
-                        }
+                        self.query_banner.take_and_clear();
                         let handle = MessageBanner::set_global(
                             ui.ctx(),
                             "Querying documents...",
@@ -379,9 +373,7 @@ impl DocumentQueryScreen {
                             DocumentTask::FetchDocumentsPage(parsed_query),
                         )));
                     } else {
-                        if let Some(h) = self.query_banner.take() {
-                            h.clear();
-                        }
+                        self.query_banner.take_and_clear();
                         let handle = MessageBanner::set_global(
                             ui.ctx(),
                             "Querying documents...",
@@ -405,9 +397,7 @@ impl DocumentQueryScreen {
                 if self.has_next_page && ui.button("Next Page").clicked() {
                     // Handle Next Page
                     if let Some(next_cursor) = &self.get_next_cursor() {
-                        if let Some(h) = self.query_banner.take() {
-                            h.clear();
-                        }
+                        self.query_banner.take_and_clear();
                         let handle = MessageBanner::set_global(
                             ui.ctx(),
                             "Querying documents...",
@@ -555,9 +545,7 @@ impl ScreenLike for DocumentQueryScreen {
         if message.contains("Error fetching documents")
             && matches!(message_type, MessageType::Error | MessageType::Warning)
         {
-            if let Some(h) = self.query_banner.take() {
-                h.clear();
-            }
+            self.query_banner.take_and_clear();
             self.document_query_status = DocumentQueryStatus::Error;
         }
     }
@@ -565,9 +553,7 @@ impl ScreenLike for DocumentQueryScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::Documents(documents) => {
-                if let Some(h) = self.query_banner.take() {
-                    h.clear();
-                }
+                self.query_banner.take_and_clear();
                 self.matching_documents = documents
                     .iter()
                     .filter_map(|(_, doc)| doc.clone())
@@ -575,9 +561,7 @@ impl ScreenLike for DocumentQueryScreen {
                 self.document_query_status = DocumentQueryStatus::Complete;
             }
             BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor) => {
-                if let Some(h) = self.query_banner.take() {
-                    h.clear();
-                }
+                self.query_banner.take_and_clear();
                 self.matching_documents = page_docs
                     .iter()
                     .filter_map(|(_, doc)| doc.clone())

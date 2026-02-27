@@ -281,7 +281,7 @@ impl PauseTokensScreen {
 impl ScreenLike for PauseTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if let MessageType::Error = message_type {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refresh_banner.take_and_clear();
             self.status = PauseTokensStatus::Error;
         }

@@ -132,35 +132,40 @@ impl UpdateTokenConfigScreen {
             .token_config
             .authorized_action_takers_for_configuration_item(&self.change_item);
 
-        let mut error_message = None;
         let group = match authorized_action_takers {
             AuthorizedActionTakers::NoOne => {
-                error_message = Some("This action is not allowed on this token".to_string());
+                super::set_error_banner(
+                    &self.app_context,
+                    "This action is not allowed on this token",
+                );
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
                 if self.identity_token_info.data_contract.contract.owner_id()
                     != self.identity_token_info.identity.identity.id()
                 {
-                    error_message = Some(
-                        "You are not allowed to perform this action. Only the contract owner is."
-                            .to_string(),
+                    super::set_error_banner(
+                        &self.app_context,
+                        "You are not allowed to perform this action. Only the contract owner is.",
                     );
                 }
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != self.identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to perform this action".to_string());
+                    super::set_error_banner(
+                        &self.app_context,
+                        "You are not allowed to perform this action",
+                    );
                 }
                 None
             }
             AuthorizedActionTakers::MainGroup => {
                 match self.identity_token_info.token_config.main_control_group() {
                     None => {
-                        error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
-                                .to_string(),
+                        super::set_error_banner(
+                            &self.app_context,
+                            "Invalid contract: No main control group, though one should exist",
                         );
                         None
                     }
@@ -173,7 +178,10 @@ impl UpdateTokenConfigScreen {
                         {
                             Ok(group) => Some((group_pos, group.clone())),
                             Err(e) => {
-                                error_message = Some(format!("Invalid contract: {}", e));
+                                super::set_error_banner(
+                                    &self.app_context,
+                                    &format!("Invalid contract: {}", e),
+                                );
                                 None
                             }
                         }
@@ -189,7 +197,10 @@ impl UpdateTokenConfigScreen {
                 {
                     Ok(group) => Some((group_pos, group.clone())),
                     Err(e) => {
-                        error_message = Some(format!("Invalid contract: {}", e));
+                        super::set_error_banner(
+                            &self.app_context,
+                            &format!("Invalid contract: {}", e),
+                        );
                         None
                     }
                 }
@@ -197,9 +208,6 @@ impl UpdateTokenConfigScreen {
         };
 
         self.group = group;
-        if let Some(error) = error_message {
-            MessageBanner::set_global(self.app_context.egui_ctx(), &error, MessageType::Error);
-        }
 
         // Update is_unilateral_group_member based on new group
         self.is_unilateral_group_member = false;
@@ -766,12 +774,13 @@ impl UpdateTokenConfigScreen {
                     validate_signing_key(&self.app_context, self.signing_key.as_ref())
                 {
                     self.update_status = UpdateTokenConfigStatus::Updating;
-                    self.refresh_banner = Some(MessageBanner::set_global(
+                    let handle = MessageBanner::set_global(
                         ui.ctx(),
                         "Updating token configuration...",
                         MessageType::Info,
-                    ));
-                    self.refresh_banner.as_ref().and_then(|h| h.with_elapsed());
+                    );
+                    handle.with_elapsed();
+                    self.refresh_banner = Some(handle);
                     action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                         TokenTask::UpdateTokenConfig {
                             identity_token_info: Box::new(self.identity_token_info.clone()),
@@ -924,7 +933,7 @@ impl UpdateTokenConfigScreen {
 impl ScreenLike for UpdateTokenConfigScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if message_type == MessageType::Error {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refresh_banner.take_and_clear();
             self.update_status = UpdateTokenConfigStatus::NotUpdating;
         }

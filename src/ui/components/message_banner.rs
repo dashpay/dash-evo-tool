@@ -313,7 +313,18 @@ impl MessageBanner {
     ) -> BannerHandle {
         let text = text.to_string();
         let mut banners = get_banners(ctx);
-        if let Some(existing) = banners.iter().find(|b| b.text == text) {
+        if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
+            // Same text already displayed: update message_type if it changed,
+            // but preserve timestamps and auto-dismiss timer (idempotent for text).
+            if existing.message_type != message_type {
+                existing.message_type = message_type;
+                let key = existing.key;
+                set_banners(ctx, banners);
+                return BannerHandle {
+                    ctx: ctx.clone(),
+                    key,
+                };
+            }
             return BannerHandle {
                 ctx: ctx.clone(),
                 key: existing.key,
@@ -727,31 +738,17 @@ impl<T, E: fmt::Display> ResultBannerExt<T, E> for Result<T, E> {
     }
 }
 
-/// Extension for `Option<BannerHandle>` — error display and banner cleanup.
+/// Extension for `Option<BannerHandle>` — banner cleanup.
 ///
 /// ```ignore
-/// let identity = self.identities.first()
-///     .or_show_error(ctx, "No identities loaded");
-///
 /// self.refresh_banner.take_and_clear();
 /// ```
 pub trait OptionBannerExt {
-    /// If `None`, displays a global error banner with the given message.
-    /// Returns `self` unchanged — this is a side-effect-only method.
-    fn or_show_error(self, ctx: &egui::Context, err: impl fmt::Display) -> Self;
-
     /// Takes the handle (leaving `None`) and clears the associated banner.
     fn take_and_clear(&mut self);
 }
 
 impl OptionBannerExt for Option<BannerHandle> {
-    fn or_show_error(self, ctx: &egui::Context, err: impl fmt::Display) -> Self {
-        if self.is_none() {
-            MessageBanner::set_global(ctx, err, MessageType::Error);
-        }
-        self
-    }
-
     fn take_and_clear(&mut self) {
         if let Some(h) = self.take() {
             h.clear();

@@ -33,6 +33,7 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
+use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -297,16 +298,9 @@ impl PurchaseTokenScreen {
 
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
-                let signing_key = match self.selected_key.clone() {
-                    Some(key) => key,
-                    None => {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            "No signing key selected",
-                            MessageType::Error,
-                        );
-                        return AppAction::None;
-                    }
+                let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key)
+                else {
+                    return AppAction::None;
                 };
 
                 self.confirmation_dialog = None;

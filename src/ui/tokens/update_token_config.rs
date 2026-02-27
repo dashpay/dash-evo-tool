@@ -19,6 +19,7 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
+use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -766,7 +767,9 @@ impl UpdateTokenConfigScreen {
                     })
                 };
 
-                if let Some(signing_key) = self.signing_key.clone() {
+                if let Some(signing_key) =
+                    validate_signing_key(&self.app_context, &self.signing_key)
+                {
                     self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
                     action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                         TokenTask::UpdateTokenConfig {
@@ -781,12 +784,6 @@ impl UpdateTokenConfigScreen {
                             group_info,
                         },
                     )));
-                } else {
-                    MessageBanner::set_global(
-                        ui.ctx(),
-                        "No signing key selected",
-                        MessageType::Error,
-                    );
                 }
             }
         }

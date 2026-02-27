@@ -36,6 +36,7 @@ use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::tokens::validate_signing_key;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use super::tokens_screen::IdentityTokenBasicInfo;
@@ -214,6 +215,13 @@ impl ClaimTokensScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
+
+                // Validate signing key before transitioning to waiting state
+                let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key)
+                else {
+                    return AppAction::None;
+                };
+
                 self.status = ClaimTokensStatus::WaitingForResult;
                 let handle = MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -222,18 +230,6 @@ impl ClaimTokensScreen {
                 );
                 handle.with_elapsed();
                 self.refresh_banner = Some(handle);
-
-                let signing_key = match self.selected_key.clone() {
-                    Some(key) => key,
-                    None => {
-                        MessageBanner::set_global(
-                            ui.ctx(),
-                            "No signing key selected",
-                            MessageType::Error,
-                        );
-                        return AppAction::None;
-                    }
-                };
 
                 AppAction::BackendTasks(
                     vec![

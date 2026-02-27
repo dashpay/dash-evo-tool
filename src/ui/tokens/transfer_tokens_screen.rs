@@ -34,6 +34,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::tokens::validate_signing_key;
 
 use super::tokens_screen::IdentityTokenBalance;
 
@@ -215,15 +216,13 @@ impl TransferTokensScreen {
             return AppAction::None;
         }
 
-        let parsed_receiver_id = Identifier::from_string_try_encodings(
+        let Ok(receiver_id) = Identifier::from_string_try_encodings(
             &self.receiver_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        );
-
-        if parsed_receiver_id.is_err() {
+        ) else {
             self.transfer_tokens_status = TransferTokensStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -231,17 +230,12 @@ impl TransferTokensScreen {
                 MessageType::Error,
             );
             return AppAction::None;
-        }
+        };
 
-        let receiver_id = parsed_receiver_id.unwrap();
-        self.transfer_tokens_status = TransferTokensStatus::WaitingForResult;
-        let handle = MessageBanner::set_global(
-            self.app_context.egui_ctx(),
-            "Transferring tokens...",
-            MessageType::Info,
-        );
-        handle.with_elapsed();
-        self.refresh_banner = Some(handle);
+        // Validate signing key before transitioning to waiting state
+        let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key) else {
+            return AppAction::None;
+        };
 
         let data_contract = match self
             .app_context
@@ -258,17 +252,14 @@ impl TransferTokensScreen {
             }
         };
 
-        let signing_key = match self.selected_key.clone() {
-            Some(key) => key,
-            None => {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "No signing key selected",
-                    MessageType::Error,
-                );
-                return AppAction::None;
-            }
-        };
+        self.transfer_tokens_status = TransferTokensStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Transferring tokens...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         AppAction::BackendTask(BackendTask::TokenTask(Box::new(
             TokenTask::TransferTokens {

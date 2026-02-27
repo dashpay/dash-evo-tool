@@ -10,6 +10,7 @@ use crate::ui::components::{BannerHandle, Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::ui::tokens::validate_signing_key;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -271,6 +272,13 @@ impl BurnTokensScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
+
+                // Validate signing key before transitioning to waiting state
+                let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key)
+                else {
+                    return AppAction::None;
+                };
+
                 self.status = BurnTokensStatus::WaitingForResult;
                 let handle = MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -298,18 +306,6 @@ impl BurnTokensScreen {
                     self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
                     })
-                };
-
-                let signing_key = match self.selected_key.clone() {
-                    Some(key) => key,
-                    None => {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            "No signing key selected",
-                            MessageType::Error,
-                        );
-                        return AppAction::None;
-                    }
                 };
 
                 // Dispatch the actual backend burn action

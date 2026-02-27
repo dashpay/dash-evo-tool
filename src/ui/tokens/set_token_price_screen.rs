@@ -23,6 +23,7 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
+use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -728,6 +729,11 @@ impl SetTokenPriceScreen {
             }
         };
 
+        // Validate signing key before transitioning to waiting state
+        let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key) else {
+            return AppAction::None;
+        };
+
         // Set waiting state
         self.status = SetTokenPriceStatus::WaitingForResult;
         let handle = MessageBanner::set_global(
@@ -753,18 +759,6 @@ impl SetTokenPriceScreen {
             self.group.as_ref().map(|(pos, _)| {
                 GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
             })
-        };
-
-        let signing_key = match self.selected_key.clone() {
-            Some(key) => key,
-            None => {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "No signing key selected",
-                    MessageType::Error,
-                );
-                return AppAction::None;
-            }
         };
 
         // Create and return the backend task

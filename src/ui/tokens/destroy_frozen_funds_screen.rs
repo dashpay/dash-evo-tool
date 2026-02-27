@@ -22,6 +22,7 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
+use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -272,14 +273,13 @@ impl DestroyFrozenFundsScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
-        let maybe_frozen_id = Identifier::from_string_try_encodings(
+        let Ok(frozen_id) = Identifier::from_string_try_encodings(
             &self.frozen_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        );
-        if maybe_frozen_id.is_err() {
+        ) else {
             self.status = DestroyFrozenFundsStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -287,8 +287,12 @@ impl DestroyFrozenFundsScreen {
                 MessageType::Error,
             );
             return AppAction::None;
-        }
-        let frozen_id = maybe_frozen_id.unwrap();
+        };
+
+        // Validate signing key before transitioning to waiting state
+        let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key) else {
+            return AppAction::None;
+        };
 
         self.status = DestroyFrozenFundsStatus::WaitingForResult;
         let handle = MessageBanner::set_global(
@@ -315,18 +319,6 @@ impl DestroyFrozenFundsScreen {
             self.group.as_ref().map(|(pos, _)| {
                 GroupStateTransitionInfoStatus::GroupStateTransitionInfoProposer(*pos)
             })
-        };
-
-        let signing_key = match self.selected_key.clone() {
-            Some(key) => key,
-            None => {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "No signing key selected",
-                    MessageType::Error,
-                );
-                return AppAction::None;
-            }
         };
 
         AppAction::BackendTask(BackendTask::TokenTask(Box::new(

@@ -4,7 +4,6 @@ use crate::backend_task::mnlist::MnListTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
@@ -4147,11 +4146,11 @@ impl MasternodeListDiffScreen {
 
 impl ScreenLike for MasternodeListDiffScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.task.pending = None;
             self.ui_state.error = Some(message.to_string());
         }
-        MessageBanner::set_global(self.app_context.egui_ctx(), message, message_type);
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {

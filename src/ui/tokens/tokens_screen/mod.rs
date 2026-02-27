@@ -65,7 +65,7 @@ use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::message_banner::BannerHandle;
+use crate::ui::components::message_banner::{BannerHandle, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -3033,14 +3033,14 @@ impl ScreenLike for TokensScreen {
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
         // Clear any active operation banner
-        if let Some(h) = self.operation_banner.take() {
-            h.clear();
-        }
+        self.operation_banner.take_and_clear();
 
         // Banner display is handled globally by AppState; this is only for side-effects.
 
-        // Reset contract details loading on any error
-        if msg_type == MessageType::Error && self.contract_details_loading {
+        // Reset contract details loading on any error/warning
+        if matches!(msg_type, MessageType::Error | MessageType::Warning)
+            && self.contract_details_loading
+        {
             self.contract_details_loading = false;
         }
 

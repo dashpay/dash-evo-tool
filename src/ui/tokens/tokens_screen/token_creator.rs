@@ -284,12 +284,12 @@ impl TokensScreen {
                                         if crate::ui::helpers::info_icon_button(ui,
                                             "An optional description explaining what your token is for.\n\n\
                                             This helps users understand the purpose of your token.\n\n\
-                                            Maximum 100 characters.").clicked() {
+                                            3–100 characters, or leave blank.").clicked() {
                                             self.show_pop_up_info = Some(
                                                 "Description\n\n\
                                                 An optional description explaining what your token is for.\n\n\
                                                 This helps users understand the purpose of your token.\n\n\
-                                                Maximum 100 characters.".to_string()
+                                                3–100 characters, or leave blank.".to_string()
                                             );
                                         }
                                     });
@@ -556,7 +556,7 @@ impl TokensScreen {
                                 ui.end_row();
 
                                 // Row 5: Token Description
-                                ui.label("Token Description (max 100 chars):");
+                                ui.label("Token Description (3–100 chars):");
                                 ui.text_edit_singleline(&mut self.token_description_input);
                                 ui.end_row();
                             });
@@ -1080,8 +1080,8 @@ impl TokensScreen {
         let token_names = self.parse_token_names(&mut contract_keywords)?;
 
         let token_description = if !self.token_description_input.is_empty() {
-            let len = self.token_description_input.len();
-            if len < 3 || len > 100 {
+            let len = self.token_description_input.chars().count();
+            if !(3..=100).contains(&len) {
                 return Err(
                     "Token description must be either empty or between 3 and 100 characters long"
                         .to_string(),

@@ -285,13 +285,9 @@ impl ScreenLike for AddContactScreen {
 
                         // Update wallet if not already set
                         if self.selected_wallet.is_none() {
-                            let mut error_message = None;
-                            self.selected_wallet = get_selected_wallet(
-                                identity,
-                                Some(&self.app_context),
-                                None,
-                                &mut error_message,
-                            );
+                            self.selected_wallet =
+                                get_selected_wallet(identity, Some(&self.app_context), None)
+                                    .unwrap_or(None);
                         }
                     } else {
                         self.selected_key = None;

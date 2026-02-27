@@ -189,16 +189,12 @@ impl FreezeTokensScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let mut wallet_error = None;
-        let selected_wallet = get_selected_wallet(
-            &identity_token_info.identity,
-            None,
-            possible_key.as_ref(),
-            &mut wallet_error,
-        );
-        if let Some(e) = wallet_error {
-            set_error_banner(&e);
-        }
+        let selected_wallet =
+            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
+                .unwrap_or_else(|e| {
+                    set_error_banner(&e);
+                    None
+                });
 
         Self {
             identity: identity_token_info.identity.clone(),

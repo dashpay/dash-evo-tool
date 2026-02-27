@@ -184,13 +184,12 @@ impl QRScannerScreen {
                 let new_identity_id = self.selected_identity.as_ref().map(|i| i.identity.id());
                 if prev_identity_id != new_identity_id {
                     if let Some(identity) = &self.selected_identity {
-                        let mut error_message = None;
                         self.selected_wallet = get_selected_wallet(
                             identity,
                             Some(&self.app_context),
                             None,
-                            &mut error_message,
-                        );
+                        )
+                        .unwrap_or(None);
                     } else {
                         self.selected_wallet = None;
                     }

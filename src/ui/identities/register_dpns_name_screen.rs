@@ -69,15 +69,14 @@ impl RegisterDpnsNameScreen {
             app_context.load_local_user_identities().unwrap_or_default();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
-        let mut wallet_error: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None, &mut wallet_error)
+            get_selected_wallet(identity, Some(app_context), None).unwrap_or_else(|e| {
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                None
+            })
         } else {
             None
         };
-        if let Some(e) = wallet_error {
-            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-        }
 
         // Auto-select a suitable key for DPNS registration
         // Note: MASTER keys cannot be used for document operations,
@@ -162,12 +161,11 @@ impl RegisterDpnsNameScreen {
                 .cloned();
 
             // Update the selected wallet
-            let mut wallet_error = None;
-            self.selected_wallet =
-                get_selected_wallet(qi, Some(&self.app_context), None, &mut wallet_error);
-            if let Some(e) = wallet_error {
-                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-            }
+            self.selected_wallet = get_selected_wallet(qi, Some(&self.app_context), None)
+                .unwrap_or_else(|e| {
+                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+                    None
+                });
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
@@ -218,12 +216,15 @@ impl RegisterDpnsNameScreen {
                     .cloned();
 
                 // Update wallet
-                let mut wallet_error = None;
-                self.selected_wallet =
-                    get_selected_wallet(identity, Some(&self.app_context), None, &mut wallet_error);
-                if let Some(e) = wallet_error {
-                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-                }
+                self.selected_wallet = get_selected_wallet(identity, Some(&self.app_context), None)
+                    .unwrap_or_else(|e| {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            &e,
+                            MessageType::Error,
+                        );
+                        None
+                    });
             } else {
                 self.selected_key = None;
                 self.selected_wallet = None;

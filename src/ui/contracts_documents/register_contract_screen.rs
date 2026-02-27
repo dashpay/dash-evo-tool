@@ -64,16 +64,14 @@ impl RegisterDataContractScreen {
 
         let selected_qualified_identity = qualified_identities.first().cloned();
 
-        let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None).unwrap_or_else(|e| {
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                None
+            })
         } else {
             None
         };
-
-        if let Some(err) = error_message {
-            MessageBanner::set_global(app_context.egui_ctx(), &err, MessageType::Error);
-        }
 
         // Auto-select a suitable key for contract registration
         use dash_sdk::dpp::identity::KeyType;
@@ -479,16 +477,15 @@ impl ScreenLike for RegisterDataContractScreen {
                             .cloned();
 
                         // Update wallet
-                        let mut wallet_error = None;
                         self.selected_wallet = get_selected_wallet(
                             identity,
                             Some(&self.app_context),
                             None,
-                            &mut wallet_error,
-                        );
-                        if let Some(e) = wallet_error {
+                        )
+                        .unwrap_or_else(|e| {
                             MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                        }
+                            None
+                        });
 
                         // Re-parse contract with new owner ID
                         self.parse_contract();

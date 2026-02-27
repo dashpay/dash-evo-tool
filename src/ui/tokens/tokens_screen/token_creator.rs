@@ -969,12 +969,11 @@ impl TokensScreen {
 
     fn update_selected_wallet(&mut self) {
         if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            let mut wallet_error = None;
-            self.selected_wallet =
-                crate::ui::identities::get_selected_wallet(qid, None, Some(key), &mut wallet_error);
-            if let Some(e) = wallet_error {
-                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-            }
+            self.selected_wallet = crate::ui::identities::get_selected_wallet(qid, None, Some(key))
+                .unwrap_or_else(|e| {
+                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+                    None
+                });
         }
     }
 

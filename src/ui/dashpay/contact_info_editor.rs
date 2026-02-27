@@ -51,9 +51,8 @@ impl ContactInfoEditorScreen {
         contact_id: Identifier,
     ) -> Self {
         // Get wallet for the identity
-        let mut error_message = None;
         let selected_wallet =
-            get_selected_wallet(&identity, Some(&app_context), None, &mut error_message);
+            get_selected_wallet(&identity, Some(&app_context), None).unwrap_or(None);
 
         Self {
             app_context,

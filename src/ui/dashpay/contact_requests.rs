@@ -102,9 +102,8 @@ impl ContactRequests {
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
             // Get wallet for the selected identity
-            let mut error_message = None;
             new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None, &mut error_message);
+                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or(None);
 
             // Load requests from database for this identity
             new_self.load_requests_from_database();
@@ -130,9 +129,8 @@ impl ContactRequests {
                     .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
                 // Update wallet for the newly selected identity
-                let mut error_message = None;
                 self.selected_wallet =
-                    get_selected_wallet(id, Some(&self.app_context), None, &mut error_message);
+                    get_selected_wallet(id, Some(&self.app_context), None).unwrap_or(None);
             } else {
                 self.selected_identity_string.clear();
                 self.selected_wallet = None;
@@ -575,13 +573,9 @@ impl ContactRequests {
 
                             // Update wallet for the newly selected identity
                             if let Some(identity) = &self.selected_identity {
-                                let mut error_message = None;
-                                self.selected_wallet = get_selected_wallet(
-                                    identity,
-                                    Some(&self.app_context),
-                                    None,
-                                    &mut error_message,
-                                );
+                                self.selected_wallet =
+                                    get_selected_wallet(identity, Some(&self.app_context), None)
+                                        .unwrap_or(None);
                             } else {
                                 self.selected_wallet = None;
                             }

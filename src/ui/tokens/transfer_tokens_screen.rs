@@ -97,11 +97,11 @@ impl TransferTokensScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut wallet_error = None;
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key, &mut wallet_error);
-        if let Some(e) = wallet_error {
-            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-        }
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                None
+            });
 
         let amount = Some(Amount::from(&identity_token_balance).with_value(0));
 

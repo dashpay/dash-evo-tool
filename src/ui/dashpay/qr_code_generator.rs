@@ -76,9 +76,8 @@ impl QRCodeGeneratorScreen {
                 identities[0].identity.id().to_string(Encoding::Base58);
 
             // Get wallet for the selected identity
-            let mut error_message = None;
             new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None, &mut error_message);
+                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or(None);
         }
 
         new_self
@@ -202,13 +201,12 @@ impl QRCodeGeneratorScreen {
                             if response.changed() {
                                 // Update wallet for the newly selected identity
                                 if let Some(identity) = &self.selected_identity {
-                                    let mut error_message = None;
                                     self.selected_wallet = get_selected_wallet(
                                         identity,
                                         Some(&self.app_context),
                                         None,
-                                        &mut error_message,
-                                    );
+                                    )
+                                    .unwrap_or(None);
                                 } else {
                                     self.selected_wallet = None;
                                 }

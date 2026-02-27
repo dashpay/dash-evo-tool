@@ -11,7 +11,6 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
-use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -202,13 +201,12 @@ impl ProfileScreen {
             );
 
             // Get wallet for the selected identity
-            let mut error_message = None;
-            new_self.selected_wallet = get_selected_wallet(
-                &identities[selected_idx],
-                Some(&app_context),
-                None,
-                &mut error_message,
-            );
+            new_self.selected_wallet =
+                get_selected_wallet(&identities[selected_idx], Some(&app_context), None)
+                    .unwrap_or_else(|e| {
+                        MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                        None
+                    });
 
             // Load profile from database for this identity
             new_self.load_profile_from_database();
@@ -634,13 +632,16 @@ impl ProfileScreen {
 
                         // Update wallet for the newly selected identity
                         if let Some(identity) = &self.selected_identity {
-                            let mut error_message = None;
-                            self.selected_wallet = get_selected_wallet(
-                                identity,
-                                Some(&self.app_context),
-                                None,
-                                &mut error_message,
-                            );
+                            self.selected_wallet =
+                                get_selected_wallet(identity, Some(&self.app_context), None)
+                                    .unwrap_or_else(|e| {
+                                        MessageBanner::set_global(
+                                            self.app_context.egui_ctx(),
+                                            &e,
+                                            MessageType::Error,
+                                        );
+                                        None
+                                    });
                         } else {
                             self.selected_wallet = None;
                         }

@@ -267,12 +267,11 @@ impl DocumentActionScreen {
                     .cloned();
 
                 // Update wallet
-                self.wallet = get_selected_wallet(
-                    identity,
-                    Some(&self.app_context),
-                    None,
-                    &mut self.backend_message,
-                );
+                self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)
+                    .unwrap_or_else(|e| {
+                        self.backend_message = Some(e);
+                        None
+                    });
             } else {
                 self.selected_key = None;
                 self.wallet = None;
@@ -1765,12 +1764,12 @@ impl DocumentActionScreen {
 
                 // Wallet unlock
                 if let Some(selected_identity) = &self.selected_identity {
-                    self.wallet = get_selected_wallet(
-                        selected_identity,
-                        Some(&self.app_context),
-                        None,
-                        &mut self.backend_message,
-                    );
+                    self.wallet =
+                        get_selected_wallet(selected_identity, Some(&self.app_context), None)
+                            .unwrap_or_else(|e| {
+                                self.backend_message = Some(e);
+                                None
+                            });
                 }
                 if let Some(wallet) = &self.wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {

@@ -73,11 +73,11 @@ impl WithdrawalScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let mut wallet_error = None;
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key, &mut wallet_error);
-        if let Some(e) = wallet_error {
-            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-        }
+        let selected_wallet =
+            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                None
+            });
         Self {
             identity,
             selected_key: selected_key.cloned(),

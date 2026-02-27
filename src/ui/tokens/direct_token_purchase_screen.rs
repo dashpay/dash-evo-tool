@@ -89,18 +89,13 @@ impl PurchaseTokenScreen {
             )
             .cloned();
 
-        let mut wallet_error = None;
-
         // Attempt to get an unlocked wallet reference
-        let selected_wallet = get_selected_wallet(
-            &identity_token_info.identity,
-            None,
-            possible_key.as_ref(),
-            &mut wallet_error,
-        );
-        if let Some(e) = wallet_error {
-            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-        }
+        let selected_wallet =
+            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
+                .unwrap_or_else(|e| {
+                    MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                    None
+                });
 
         Self {
             identity_token_info,

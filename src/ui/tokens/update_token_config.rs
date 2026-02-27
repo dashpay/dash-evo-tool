@@ -87,8 +87,6 @@ impl UpdateTokenConfigScreen {
             )
             .cloned();
 
-        let mut wallet_error = None;
-
         // Initialize with no group - will be set when user selects a change item
         let group = None;
 
@@ -96,15 +94,12 @@ impl UpdateTokenConfigScreen {
         let is_unilateral_group_member = false;
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet = get_selected_wallet(
-            &identity_token_info.identity,
-            None,
-            possible_key.as_ref(),
-            &mut wallet_error,
-        );
-        if let Some(e) = wallet_error {
-            MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-        }
+        let selected_wallet =
+            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
+                .unwrap_or_else(|e| {
+                    MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                    None
+                });
 
         Self {
             identity_token_info: identity_token_info.clone(),

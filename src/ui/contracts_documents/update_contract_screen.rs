@@ -67,9 +67,11 @@ impl UpdateDataContractScreen {
             app_context.load_local_user_identities().unwrap_or_default();
         let selected_qualified_identity = qualified_identities.first().cloned();
 
-        let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None).unwrap_or_else(|e| {
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                None
+            })
         } else {
             None
         };
@@ -494,16 +496,12 @@ impl ScreenLike for UpdateDataContractScreen {
                         .cloned();
 
                     // Update wallet
-                    let mut wallet_error = None;
-                    self.selected_wallet = get_selected_wallet(
-                        identity,
-                        Some(&self.app_context),
-                        None,
-                        &mut wallet_error,
-                    );
-                    if let Some(e) = wallet_error {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                    }
+                    self.selected_wallet =
+                        get_selected_wallet(identity, Some(&self.app_context), None)
+                            .unwrap_or_else(|e| {
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                None
+                            });
 
                     // Re-parse contract with new owner ID
                     self.parse_contract();

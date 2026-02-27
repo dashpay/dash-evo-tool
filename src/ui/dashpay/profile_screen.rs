@@ -11,6 +11,7 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -394,7 +395,11 @@ impl ProfileScreen {
         self.validate_profile();
 
         if !self.is_valid() {
-            self.display_message(&self.validation_errors[0].message(), MessageType::Error);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                &self.validation_errors[0].message(),
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
@@ -432,7 +437,11 @@ impl ProfileScreen {
                 },
             )))
         } else {
-            self.display_message("No identity selected", MessageType::Error);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No identity selected",
+                MessageType::Error,
+            );
             AppAction::None
         }
     }

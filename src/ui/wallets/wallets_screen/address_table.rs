@@ -1,7 +1,8 @@
 use crate::app::AppAction;
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference};
+use crate::ui::MessageType;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::wallets::account_summary::{AccountCategory, categorize_account_path};
-use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
@@ -448,7 +449,13 @@ impl WalletsBalancesScreen {
                                             self.private_key_dialog.private_key_wif = key;
                                             self.private_key_dialog.show_key = false;
                                         }
-                                        Err(err) => self.display_message(&err, MessageType::Error),
+                                        Err(err) => {
+                                            MessageBanner::set_global(
+                                                self.app_context.egui_ctx(),
+                                                &err,
+                                                MessageType::Error,
+                                            );
+                                        }
                                     }
                                 }
                             }

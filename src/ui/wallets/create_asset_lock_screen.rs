@@ -10,6 +10,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -720,7 +721,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             let mut step = self.step.write().unwrap();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
-                            self.display_message(
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
                                 "Asset lock created successfully!",
                                 MessageType::Success,
                             );
@@ -735,7 +737,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             let mut step = self.step.write().unwrap();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
-                            self.display_message(
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
                                 "Asset lock created successfully!",
                                 MessageType::Success,
                             );
@@ -757,7 +760,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             let mut step = self.step.write().unwrap();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
-                            self.display_message(
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
                                 "Asset lock created successfully!",
                                 MessageType::Success,
                             );
@@ -772,7 +776,8 @@ impl ScreenLike for CreateAssetLockScreen {
                             let mut step = self.step.write().unwrap();
                             *step = WalletFundedScreenStep::Success;
                             drop(step);
-                            self.display_message(
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
                                 "Asset lock created successfully!",
                                 MessageType::Success,
                             );

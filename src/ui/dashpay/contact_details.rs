@@ -6,6 +6,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::dashpay::DashPaySubscreen;
@@ -637,7 +638,11 @@ impl ScreenLike for ContactDetailsScreen {
             }
             BackendTaskSuccessResult::DashPayContactInfoUpdated(contact_id) => {
                 if contact_id == self.contact_id {
-                    self.display_message("Contact info saved to Platform", MessageType::Success);
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Contact info saved to Platform",
+                        MessageType::Success,
+                    );
                 }
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {

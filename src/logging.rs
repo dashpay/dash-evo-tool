@@ -1,4 +1,6 @@
 use crate::{VERSION, app_dir::app_user_data_file_path};
+use chrono::{Duration, Local};
+use std::fs;
 use std::panic;
 use std::sync::Once;
 use tracing::{error, info};
@@ -13,6 +15,8 @@ pub fn initialize_logger() {
 }
 
 fn initialize_logger_internal() {
+    rotate_log_file();
+
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::try_new(
             "info,dash_evo_tool=trace,dash_sdk=debug,dash_sdk::platform::transition=trace,tenderdash_abci=debug,drive=debug,drive_proof_verifier=debug,rs_dapi_client=debug,h2=warn,dash_spv=debug",
@@ -92,5 +96,45 @@ fn initialize_logger_internal() {
             version = VERSION,
             "Dash-Evo-Tool logging initialized (stderr fallback)"
         );
+    }
+}
+
+fn rotate_log_file() {
+    let Ok(log_path) = app_user_data_file_path("det.log") else {
+        return;
+    };
+    if log_path.exists() {
+        let ts = fs::metadata(&log_path)
+            .and_then(|m| m.modified())
+            .map(chrono::DateTime::<Local>::from)
+            .unwrap_or_else(|_| Local::now())
+            .timestamp();
+        let rotated = log_path.with_file_name(format!("det.{ts:010}.log"));
+        let _ = fs::rename(&log_path, rotated);
+    }
+
+    let Some(parent) = log_path.parent() else {
+        return;
+    };
+    let cutoff = (Local::now() - Duration::days(7)).timestamp();
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(ts_str) = name
+            .strip_prefix("det.")
+            .and_then(|s| s.strip_suffix(".log"))
+        else {
+            continue;
+        };
+        if let Ok(ts) = ts_str.parse::<i64>()
+            && ts < cutoff
+        {
+            let _ = fs::remove_file(path);
+        }
     }
 }

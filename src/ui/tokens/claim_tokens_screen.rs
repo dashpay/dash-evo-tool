@@ -352,8 +352,8 @@ impl ScreenLike for ClaimTokensScreen {
             }
 
             // Guard: require a loaded identity before rendering interactive content.
-            // Clone early so the borrow is released before mutable method calls below.
-            let Some(identity) = self.identity.clone() else {
+            // Use as_ref() to avoid a per-frame clone of the full QualifiedIdentity.
+            let Some(identity) = self.identity.as_ref() else {
                 ui.colored_label(
                     Color32::RED,
                     "No identity loaded. Please load an identity and reopen this screen.",
@@ -379,27 +379,33 @@ impl ScreenLike for ClaimTokensScreen {
             };
 
             if !has_keys {
+                let identity_type = identity.identity_type;
+                // Extract key data before releasing the borrow (needed for click handlers).
+                let first_key = identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    )
+                    .cloned();
                 ui.colored_label(
                     Color32::RED,
                     format!(
                         "No authentication keys with CRITICAL security level found for this {} identity.",
-                        identity.identity_type,
+                        identity_type,
                     ),
                 );
                 ui.add_space(10.0);
 
-                let first_key = identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
-
                 if let Some(key) = first_key {
                     if ui.button("Check Keys").clicked() {
+                        // Clone only on button click, not every frame.
+                        let identity = self.identity.clone().expect("checked above");
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            identity.clone(),
-                            key.clone(),
+                            identity,
+                            key,
                             None,
                             &self.app_context,
                         )));
@@ -408,8 +414,10 @@ impl ScreenLike for ClaimTokensScreen {
                 }
 
                 if ui.button("Add key").clicked() {
+                    // Clone only on button click, not every frame.
+                    let identity = self.identity.clone().expect("checked above");
                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        identity.clone(),
+                        identity,
                         &self.app_context,
                     )));
                 }
@@ -446,10 +454,12 @@ impl ScreenLike for ClaimTokensScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the Claim transition");
                     ui.add_space(10.0);
+                    // Reborrow identity as ref for add_key_chooser; selected_key is &mut self.
+                    let identity = self.identity.as_ref().expect("checked above");
                     add_key_chooser(
                         ui,
                         &self.app_context,
-                        &identity,
+                        identity,
                         &mut self.selected_key,
                         TransactionType::TokenClaim,
                     );

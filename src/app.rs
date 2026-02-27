@@ -1044,7 +1044,9 @@ impl App for AppState {
                     let msg = err.to_string();
                     let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                     if self.current_app_context().is_developer_mode() {
-                        handle.with_details(format!("{err:?}"));
+                        // NOTE: TaskError Debug output is visible to users in developer
+                        // mode. Ensure inner error types don't expose secrets (see #667).
+                        handle.with_details(&err);
                     }
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Error);

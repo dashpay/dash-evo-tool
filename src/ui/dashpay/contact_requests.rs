@@ -103,7 +103,10 @@ impl ContactRequests {
 
             // Get wallet for the selected identity
             new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or(None);
+                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or_else(|e| {
+                    MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                    None
+                });
 
             // Load requests from database for this identity
             new_self.load_requests_from_database();
@@ -129,8 +132,15 @@ impl ContactRequests {
                     .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
                 // Update wallet for the newly selected identity
-                self.selected_wallet =
-                    get_selected_wallet(id, Some(&self.app_context), None).unwrap_or(None);
+                self.selected_wallet = get_selected_wallet(id, Some(&self.app_context), None)
+                    .unwrap_or_else(|e| {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            &e,
+                            MessageType::Error,
+                        );
+                        None
+                    });
             } else {
                 self.selected_identity_string.clear();
                 self.selected_wallet = None;
@@ -575,7 +585,14 @@ impl ContactRequests {
                             if let Some(identity) = &self.selected_identity {
                                 self.selected_wallet =
                                     get_selected_wallet(identity, Some(&self.app_context), None)
-                                        .unwrap_or(None);
+                                        .unwrap_or_else(|e| {
+                                            MessageBanner::set_global(
+                                                self.app_context.egui_ctx(),
+                                                &e,
+                                                MessageType::Error,
+                                            );
+                                            None
+                                        });
                             } else {
                                 self.selected_wallet = None;
                             }

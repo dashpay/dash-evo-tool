@@ -17,9 +17,10 @@ const DETAILS_MAX_HEIGHT: f32 = 120.0;
 static BANNER_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn next_banner_key() -> u64 {
-    // SeqCst ensures total ordering of key generation, future-proofing
-    // against potential multi-threaded banner usage.
-    BANNER_KEY_COUNTER.fetch_add(1, Ordering::SeqCst)
+    // Relaxed is sufficient: we only need uniqueness (monotonic counter),
+    // not ordering with other atomic operations. The counter runs in a
+    // single-threaded UI context.
+    BANNER_KEY_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 /// The domain type for `MessageBanner`, representing the banner's lifecycle state.
@@ -197,7 +198,7 @@ impl BannerHandle {
     ///
     /// Returns `None` if the banner no longer exists.
     pub fn with_details(&self, details: impl fmt::Debug) -> Option<&Self> {
-        let details = format!("{:#?}", details);
+        let details = format!("{:?}", details);
         if details.is_empty() {
             return Some(self);
         }
@@ -342,6 +343,10 @@ impl MessageBanner {
     /// `replace_global` for progress updates where the previous banner may
     /// have been dismissed or evicted, and the new message should still appear.
     ///
+    /// If `old_text` is not found but `new_text` is already displayed, returns
+    /// a handle to the existing banner without resetting it (consistent with
+    /// [`Self::set_global`] idempotency).
+    ///
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
     pub fn replace_global(
         ctx: &egui::Context,
@@ -363,9 +368,10 @@ impl MessageBanner {
         if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
             key = b.key;
             b.reset_to(new_text, message_type);
-        } else if let Some(existing) = banners.iter_mut().find(|b| b.text == new_text) {
+        } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
+            // Idempotent: if new_text already displayed, return handle without
+            // resetting (consistent with set_global behavior).
             key = existing.key;
-            existing.reset_to(new_text, message_type);
         } else {
             key = next_banner_key();
             banners.push(BannerState::new(key, new_text, message_type));

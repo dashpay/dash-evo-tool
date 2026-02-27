@@ -51,8 +51,11 @@ impl ContactInfoEditorScreen {
         contact_id: Identifier,
     ) -> Self {
         // Get wallet for the identity
-        let selected_wallet =
-            get_selected_wallet(&identity, Some(&app_context), None).unwrap_or(None);
+        let selected_wallet = get_selected_wallet(&identity, Some(&app_context), None)
+            .unwrap_or_else(|e| {
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                None
+            });
 
         Self {
             app_context,

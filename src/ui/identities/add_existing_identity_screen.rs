@@ -86,7 +86,6 @@ enum WalletIdentitySearchMode {
 pub enum AddIdentityStatus {
     NotStarted,
     WaitingForResult,
-    Error,
     Complete,
 }
 
@@ -693,7 +692,7 @@ impl AddExistingIdentityScreen {
                 ));
             } else {
                 // Handle invalid index input
-                self.add_identity_status = AddIdentityStatus::Error;
+                self.add_identity_status = AddIdentityStatus::NotStarted;
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Invalid identity index",
@@ -972,7 +971,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                 if let Some(handle) = self.refresh_banner.take() {
                     handle.clear();
                 }
-                self.add_identity_status = AddIdentityStatus::Error;
+                self.add_identity_status = AddIdentityStatus::NotStarted;
             }
             MessageType::Success => {
                 // Check if this is a final success message or a progress update

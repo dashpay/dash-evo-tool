@@ -7,9 +7,11 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::MessageType;
 use crate::ui::ScreenLike;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -90,7 +92,6 @@ pub struct DocumentActionScreen {
     pub action_type: DocumentActionType,
 
     // Common fields
-    pub backend_message: Option<String>,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
@@ -159,7 +160,6 @@ impl DocumentActionScreen {
         Self {
             app_context,
             action_type,
-            backend_message: None,
             selected_identity,
             selected_identity_string,
             selected_key: None,
@@ -184,7 +184,6 @@ impl DocumentActionScreen {
     }
 
     fn reset_screen(&mut self) {
-        self.backend_message = None;
         self.selected_identity = None;
         self.selected_identity_string = String::new();
         self.selected_key = None;
@@ -269,7 +268,11 @@ impl DocumentActionScreen {
                 // Update wallet
                 self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)
                     .unwrap_or_else(|e| {
-                        self.backend_message = Some(e);
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            &e,
+                            MessageType::Error,
+                        );
                         None
                     });
             } else {
@@ -452,9 +455,7 @@ impl DocumentActionScreen {
             }
         }
 
-        if let Some(backend_message) = &self.backend_message
-            && backend_message.contains("No owned documents found")
-        {
+        if self.broadcast_status == BroadcastStatus::Fetched && self.fetched_documents.is_empty() {
             ui.add_space(10.0);
             ui.label("No owned documents found.");
         }
@@ -514,7 +515,11 @@ impl DocumentActionScreen {
                     )));
                 }
             } else {
-                self.backend_message = Some("Invalid Document ID format".to_string());
+                MessageBanner::set_global(
+                    ui.ctx(),
+                    "Invalid Document ID format",
+                    MessageType::Error,
+                );
             }
         }
 
@@ -579,7 +584,11 @@ impl DocumentActionScreen {
                         )));
                     }
                 } else {
-                    self.backend_message = Some("Invalid Document ID format".to_string());
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "Invalid Document ID format",
+                        MessageType::Error,
+                    );
                 }
             }
         });
@@ -918,7 +927,6 @@ impl DocumentActionScreen {
             .min_size(egui::vec2(100.0, 30.0));
 
         if ui.add(button).clicked() && self.can_broadcast() {
-            self.backend_message = None;
             let task = self.create_document_action();
             if task != BackendTask::None {
                 self.broadcast_status = BroadcastStatus::Broadcasting(
@@ -998,7 +1006,11 @@ impl DocumentActionScreen {
                 )))
             }
             Err(e) => {
-                self.backend_message = Some(format!("Failed to build document: {}", e));
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Failed to build document: {}", e),
+                    MessageType::Error,
+                );
                 BackendTask::None
             }
         }
@@ -1093,7 +1105,11 @@ impl DocumentActionScreen {
                     )))
                 }
                 Err(e) => {
-                    self.backend_message = Some(format!("Failed to build updated document: {}", e));
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        format!("Failed to build updated document: {}", e),
+                        MessageType::Error,
+                    );
                     BackendTask::None
                 }
             }
@@ -1702,28 +1718,33 @@ impl ScreenLike for DocumentActionScreen {
                                     self.fetched_price = Some(price);
                                 }
                                 Ok(None) => {
-                                    self.backend_message =
-                                        Some("Document has no price set".to_string());
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        "Document has no price set",
+                                        MessageType::Error,
+                                    );
                                     self.fetched_price = None;
                                 }
                                 Err(_) => {
-                                    self.backend_message =
-                                        Some("Failed to get document price".to_string());
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        "Failed to get document price",
+                                        MessageType::Error,
+                                    );
                                     self.fetched_price = None;
                                 }
                             }
                         } else {
-                            self.backend_message = Some("No document found".to_string());
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                "No document found",
+                                MessageType::Error,
+                            );
                             self.fetched_price = None;
                         }
                     }
                     DocumentActionType::Delete => {
                         // For delete, store the fetched documents
-                        if documents.is_empty() {
-                            self.backend_message = Some("No owned documents found".to_string());
-                        } else {
-                            self.backend_message = None;
-                        }
                         self.fetched_documents = documents;
                     }
                     _ => {}
@@ -1767,13 +1788,13 @@ impl DocumentActionScreen {
                     self.wallet =
                         get_selected_wallet(selected_identity, Some(&self.app_context), None)
                             .unwrap_or_else(|e| {
-                                self.backend_message = Some(e);
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                                 None
                             });
                 }
                 if let Some(wallet) = &self.wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.backend_message = Some(e);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -1794,26 +1815,6 @@ impl DocumentActionScreen {
                     DocumentActionType::Create => self.render_create_inputs(ui),
                     _ => self.render_action_specific_inputs(ui),
                 };
-
-                if let Some(ref msg) = self.backend_message {
-                    ui.add_space(10.0);
-                    let error_color = DashColors::error_color(ui.visuals().dark_mode);
-                    let msg = msg.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&msg).color(error_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.backend_message = None;
-                                }
-                            });
-                        });
-                }
 
                 action
             })

@@ -724,6 +724,7 @@ impl ScreenLike for DocumentQueryScreen {
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                     .shadow(Shadow::elevated())
                     .show(ui, |ui| {
+                        MessageBanner::show_global(ui);
                         let mut inner_action = AppAction::None;
 
                         // Use a vertical layout that allocates space properly

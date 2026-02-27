@@ -85,9 +85,6 @@ pub struct AddNewIdentityScreen {
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
-    error_message: Option<String>,
-    /// Tracks the last error pushed to the global banner to avoid re-sending each frame.
-    last_global_error: Option<String>,
     wallet_unlock_popup: WalletUnlockPopup,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
@@ -153,8 +150,6 @@ impl AddNewIdentityScreen {
                 master_private_key_type: KeyType::ECDSA_HASH160,
                 keys_input: vec![],
             },
-            error_message: None,
-            last_global_error: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
@@ -1110,18 +1105,6 @@ impl ScreenLike for AddNewIdentityScreen {
 
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
-
-            // Display local validation errors via the global MessageBanner.
-            // Only push when the message changes to avoid resetting the banner each frame
-            // (e.g. try_open_wallet_no_password can re-set error_message every render pass).
-            if self.error_message != self.last_global_error {
-                if let Some(error_message) = self.error_message.as_ref() {
-                    MessageBanner::set_global(ui.ctx(), error_message, MessageType::Error);
-                } else if let Some(old) = self.last_global_error.as_ref() {
-                    MessageBanner::clear_global_message(ui.ctx(), old);
-                }
-                self.last_global_error = self.error_message.clone();
-            }
 
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {*self.step.read().unwrap()};

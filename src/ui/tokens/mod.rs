@@ -19,6 +19,14 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use dash_sdk::platform::IdentityPublicKey;
 
+/// Convenience wrapper for setting an error banner from a screen constructor.
+///
+/// Used by token screen constructors to report configuration errors
+/// (e.g., "Burning is not allowed on this token") during initialization.
+pub fn set_error_banner(app_context: &AppContext, msg: &str) {
+    MessageBanner::set_global(app_context.egui_ctx(), msg, MessageType::Error);
+}
+
 /// Validates that a signing key is selected before dispatching a backend task.
 ///
 /// Returns the signing key on success, or sets a global error banner and returns

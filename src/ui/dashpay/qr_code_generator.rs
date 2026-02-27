@@ -77,7 +77,10 @@ impl QRCodeGeneratorScreen {
 
             // Get wallet for the selected identity
             new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or(None);
+                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or_else(|e| {
+                    MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                    None
+                });
         }
 
         new_self
@@ -206,7 +209,14 @@ impl QRCodeGeneratorScreen {
                                         Some(&self.app_context),
                                         None,
                                     )
-                                    .unwrap_or(None);
+                                    .unwrap_or_else(|e| {
+                                        MessageBanner::set_global(
+                                            self.app_context.egui_ctx(),
+                                            &e,
+                                            MessageType::Error,
+                                        );
+                                        None
+                                    });
                                 } else {
                                     self.selected_wallet = None;
                                 }

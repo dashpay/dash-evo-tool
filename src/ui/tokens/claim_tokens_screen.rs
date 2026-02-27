@@ -89,7 +89,21 @@ impl ClaimTokensScreen {
             })
             .into_iter()
             .find(|id| id.identity.id() == identity_token_basic_info.identity_id)
-            .expect("Identity must exist in local store after successful navigation");
+            .unwrap_or_else(|| {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "Identity not found in local store",
+                    MessageType::Error,
+                );
+                // Return first available identity as fallback for degraded state.
+                // The error banner informs the user; the screen may not function correctly.
+                app_context
+                    .load_local_qualified_identities()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .next()
+                    .expect("At least one identity must exist to reach this screen")
+            });
 
         let identity_clone = identity.identity.clone();
         let mut possible_key = identity_clone.get_first_public_key_matching(

@@ -87,8 +87,19 @@ impl TransferTokensScreen {
         let identity = known_identities
             .iter()
             .find(|identity| identity.identity.id() == identity_token_balance.identity_id)
-            .expect("Identity must exist in local store after successful navigation")
-            .clone();
+            .cloned()
+            .unwrap_or_else(|| {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "Identity not found in local store",
+                    MessageType::Error,
+                );
+                // Fallback to first available identity for degraded state.
+                known_identities
+                    .first()
+                    .cloned()
+                    .expect("At least one identity must exist to reach this screen")
+            });
         let max_amount = Amount::from(&identity_token_balance);
         let identity_clone = identity.identity.clone();
         let selected_key = identity_clone.get_first_public_key_matching(

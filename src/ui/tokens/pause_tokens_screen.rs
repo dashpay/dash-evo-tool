@@ -89,9 +89,7 @@ impl PauseTokensScreen {
             )
             .cloned();
 
-        let set_error_banner = |msg: &str| {
-            MessageBanner::set_global(app_context.egui_ctx(), msg, MessageType::Error);
-        };
+        let set_error_banner = |msg: &str| super::set_error_banner(app_context, msg);
 
         let group = match identity_token_info
             .token_config

@@ -639,7 +639,7 @@ impl WalletsBalancesScreen {
             .selected_account
             .as_ref()
             .is_some_and(|(category, index)| {
-                *category == AccountCategory::Bip44 && index.unwrap_or(0) == 0
+                *category == AccountCategory::Bip44 && *index == Some(0)
             });
 
         if wallet_is_open && is_main_account {

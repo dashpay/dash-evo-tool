@@ -32,7 +32,7 @@ enum AddTokenStatus {
     Searching(u32),
     FoundSingle(Box<TokenInfo>),
     FoundMultiple(Vec<TokenInfo>),
-    Error(String),
+    Error,
     Complete,
 }
 
@@ -89,7 +89,12 @@ impl AddTokenByIdScreen {
                         TokenTask::FetchTokenByContractId(identifier),
                     )));
                 } else {
-                    self.status = AddTokenStatus::Error("Invalid identifier format".into());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Invalid identifier format",
+                        MessageType::Error,
+                    );
+                    self.status = AddTokenStatus::Error;
                 }
             }
         }
@@ -194,7 +199,12 @@ impl AddTokenByIdScreen {
     ) {
         // 1. Bail out if the contract has no tokens
         if contract.tokens().is_empty() {
-            self.status = AddTokenStatus::Error("Contract has no token definitions".into());
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Contract has no token definitions",
+                MessageType::Error,
+            );
+            self.status = AddTokenStatus::Error;
             return;
         }
 
@@ -230,7 +240,12 @@ impl AddTokenByIdScreen {
             {
                 self.status = AddTokenStatus::FoundSingle(Box::new(token_info));
             } else {
-                self.status = AddTokenStatus::Error("Token position not found in contract".into());
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Token position not found in contract",
+                    MessageType::Error,
+                );
+                self.status = AddTokenStatus::Error;
                 return;
             }
         } else if token_infos.len() == 1 {
@@ -261,21 +276,16 @@ impl ScreenLike for AddTokenByIdScreen {
                         // We'll initiate a token ID search
                         self.try_token_id_next = true;
                     } else {
-                        self.status = AddTokenStatus::Error("Contract not found".into());
+                        self.status = AddTokenStatus::Error;
                     }
-                } else if msg.contains("Token not found") {
-                    self.status = AddTokenStatus::Error("Token not found".into());
-                } else if msg.contains("Error fetching contracts") {
-                    self.status = AddTokenStatus::Error(msg.to_owned());
+                } else if msg.contains("Token not found")
+                    || msg.contains("Error fetching contracts")
+                {
+                    self.status = AddTokenStatus::Error;
                 }
             }
             MessageType::Error | MessageType::Warning => {
-                // Handle any error during the add token process
-                if msg.contains("Error inserting contract into the database") {
-                    self.status = AddTokenStatus::Error("Failed to add token to database".into());
-                } else {
-                    self.status = AddTokenStatus::Error(msg.to_owned());
-                }
+                self.status = AddTokenStatus::Error;
             }
             MessageType::Info => {}
         }
@@ -370,10 +380,6 @@ impl ScreenLike for AddTokenByIdScreen {
 
             ui.add_space(10.0);
             self.render_search_results(ui);
-
-            if let AddTokenStatus::Error(msg) = &self.status {
-                MessageBanner::set_global(ui.ctx(), msg, MessageType::Error);
-            }
 
             ui.add_space(10.0);
             inner_action |= self.render_add_button(ui);

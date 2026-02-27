@@ -11,7 +11,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
@@ -86,6 +86,7 @@ enum WalletIdentitySearchMode {
 pub enum AddIdentityStatus {
     NotStarted,
     WaitingForResult,
+    Error,
     Complete,
 }
 
@@ -968,19 +969,15 @@ impl ScreenLike for AddExistingIdentityScreen {
         // Side-effects only: update status and progress tracking.
         match message_type {
             MessageType::Error => {
-                if let Some(handle) = self.refresh_banner.take() {
-                    handle.clear();
-                }
-                self.add_identity_status = AddIdentityStatus::NotStarted;
+                self.refresh_banner.take_and_clear();
+                self.add_identity_status = AddIdentityStatus::Error;
             }
             MessageType::Success => {
                 // Check if this is a final success message or a progress update
                 if message.starts_with("Successfully loaded")
                     || message.starts_with("Finished loading")
                 {
-                    if let Some(handle) = self.refresh_banner.take() {
-                        handle.clear();
-                    }
+                    self.refresh_banner.take_and_clear();
                     self.success_message = Some(message.to_string());
                     self.add_identity_status = AddIdentityStatus::Complete;
                 } else {
@@ -997,18 +994,14 @@ impl ScreenLike for AddExistingIdentityScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::LoadedIdentity(_) => {
-                if let Some(handle) = self.refresh_banner.take() {
-                    handle.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;
             }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is a final success message or a progress update
                 if msg.starts_with("Successfully loaded") || msg.starts_with("Finished loading") {
-                    if let Some(handle) = self.refresh_banner.take() {
-                        handle.clear();
-                    }
+                    self.refresh_banner.take_and_clear();
                     self.success_message = Some(msg);
                     self.add_identity_status = AddIdentityStatus::Complete;
                 } else {

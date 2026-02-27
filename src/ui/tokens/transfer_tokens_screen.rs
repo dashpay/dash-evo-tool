@@ -17,7 +17,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -47,15 +47,15 @@ pub enum TransferTokensStatus {
 }
 
 pub struct TransferTokensScreen {
-    pub identity: QualifiedIdentity,
+    identity: QualifiedIdentity,
     pub identity_token_balance: IdentityTokenBalance,
     known_identities: Vec<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     show_advanced_options: bool,
-    pub public_note: Option<String>,
-    pub receiver_identity_id: String,
-    pub amount: Option<Amount>,
-    pub amount_input: Option<AmountInput>,
+    public_note: Option<String>,
+    receiver_identity_id: String,
+    amount: Option<Amount>,
+    amount_input: Option<AmountInput>,
     transfer_tokens_status: TransferTokensStatus,
     max_amount: Amount,
     pub app_context: Arc<AppContext>,
@@ -75,31 +75,23 @@ impl TransferTokensScreen {
     ) -> Self {
         let known_identities = app_context
             .load_local_qualified_identities()
-            .unwrap_or_else(|e| {
-                MessageBanner::set_global(
-                    app_context.egui_ctx(),
-                    format!("Failed to load identities: {e}"),
-                    MessageType::Error,
-                );
-                vec![]
-            });
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or_default();
 
         let identity = known_identities
             .iter()
             .find(|identity| identity.identity.id() == identity_token_balance.identity_id)
             .cloned()
-            .unwrap_or_else(|| {
+            .or_else(|| {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
                     "Identity not found in local store",
                     MessageType::Error,
                 );
                 // Fallback to first available identity for degraded state.
-                known_identities
-                    .first()
-                    .cloned()
-                    .expect("At least one identity must exist to reach this screen")
-            });
+                known_identities.first().cloned()
+            })
+            .expect("UI prevents opening this screen without loaded identities");
         let max_amount = Amount::from(&identity_token_balance);
         let identity_clone = identity.identity.clone();
         let selected_key = identity_clone.get_first_public_key_matching(
@@ -108,11 +100,9 @@ impl TransferTokensScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            });
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         let amount = Some(Amount::from(&identity_token_balance).with_value(0));
 
@@ -244,7 +234,8 @@ impl TransferTokensScreen {
         };
 
         // Validate signing key before transitioning to waiting state
-        let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key) else {
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
             return AppAction::None;
         };
 
@@ -298,9 +289,7 @@ impl ScreenLike for TransferTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.transfer_tokens_status = TransferTokensStatus::Error;
         }
     }
@@ -308,9 +297,7 @@ impl ScreenLike for TransferTokensScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result
         {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;
         }

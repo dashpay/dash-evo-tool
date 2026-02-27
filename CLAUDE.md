@@ -175,7 +175,7 @@ response.inner.update(&mut self.amount);
 
 User-facing messages (errors, warnings, success, infos) use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. When using `MessageBanner::set_global()`, no guard is needed — it is idempotent and automatically logs at the appropriate level (error/warn/debug). Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.
 
-**BannerHandle lifecycle**: Screens that run backend tasks typically store a `refresh_banner: Option<BannerHandle>` field. On task dispatch, set it via `MessageBanner::set_global()` with an info/progress message. In `display_message()` (called as a side-effect by AppState), clear the handle (`self.refresh_banner = None`) to dismiss the progress banner. AppState handles displaying the actual result banner.
+**BannerHandle lifecycle**: Screens that run backend tasks typically store a `refresh_banner: Option<BannerHandle>` field. On task dispatch, set it via `MessageBanner::set_global()` with an info/progress message. In `display_message()` (called as a side-effect by AppState), dismiss the progress banner via `self.refresh_banner.take_and_clear()` (from `BannerHandleExt`). Simply setting the field to `None` would leak the banner — `take_and_clear()` removes it from the egui context. AppState handles displaying the actual result banner.
 
 ## Database
 

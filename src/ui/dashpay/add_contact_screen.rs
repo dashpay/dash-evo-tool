@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::ResultBannerExt;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
@@ -287,6 +288,7 @@ impl ScreenLike for AddContactScreen {
                         if self.selected_wallet.is_none() {
                             self.selected_wallet =
                                 get_selected_wallet(identity, Some(&self.app_context), None)
+                                    .or_show_error(self.app_context.egui_ctx())
                                     .unwrap_or(None);
                         }
                     } else {
@@ -618,7 +620,9 @@ impl ScreenLike for AddContactScreen {
                 self.selected_key = None;
             }
             BackendTaskSuccessResult::Message(message) => {
-                // Handle error messages only - success is handled by DashPayContactRequestSent
+                // TODO(RUST-004): Replace string-based error matching with structured
+                // error types through the task result system. This is fragile — if
+                // upstream error wording changes, classification silently breaks.
                 if message.contains("Error")
                     || message.contains("Failed")
                     || message.contains("does not have")

@@ -13,7 +13,7 @@ use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, ResultBannerExt};
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -81,7 +81,8 @@ impl TransferScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let known_identities = app_context
             .load_local_qualified_identities()
-            .expect("Identities not loaded");
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or_default();
 
         let max_amount = identity.identity.balance();
         let identity_clone = identity.identity.clone();
@@ -542,6 +543,7 @@ impl ScreenLike for TransferScreen {
             self.identity = refreshed.clone();
             self.max_amount = self.identity.identity.balance();
         }
+        self.known_identities = identities;
     }
 
     /// Renders the UI components for the withdrawal screen

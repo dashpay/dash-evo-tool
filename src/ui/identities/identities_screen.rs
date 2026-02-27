@@ -11,7 +11,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{
@@ -1125,9 +1125,7 @@ impl ScreenLike for IdentitiesScreen {
         {
             self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
             if self.pending_refresh_count == 0 {
-                if let Some(handle) = self.refresh_banner.take() {
-                    handle.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 let message = if self.total_refresh_count == 1 {
                     "Successfully refreshed identity".to_string()
                 } else {
@@ -1229,9 +1227,7 @@ impl ScreenLike for IdentitiesScreen {
                     )
                 }) =>
             {
-                if let Some(handle) = self.refresh_banner.take() {
-                    handle.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 self.pending_refresh_count = tasks.len();
                 self.total_refresh_count = tasks.len();
                 let handle =

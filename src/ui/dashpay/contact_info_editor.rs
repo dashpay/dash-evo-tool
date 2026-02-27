@@ -4,7 +4,6 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -13,6 +12,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -52,10 +52,8 @@ impl ContactInfoEditorScreen {
     ) -> Self {
         // Get wallet for the identity
         let selected_wallet = get_selected_wallet(&identity, Some(&app_context), None)
-            .unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            });
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         Self {
             app_context,

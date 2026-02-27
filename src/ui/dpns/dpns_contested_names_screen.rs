@@ -23,7 +23,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::DashColors;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
@@ -1833,12 +1833,8 @@ impl ScreenLike for DPNSScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
-            if let Some(h) = self.vote_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
+            self.vote_banner.take_and_clear();
         }
         if message.contains("Error casting scheduled vote") {
             self.scheduled_vote_cast_in_progress = false;
@@ -1919,9 +1915,7 @@ impl ScreenLike for DPNSScreen {
             }
             BackendTaskSuccessResult::RefreshedDpnsContests
             | BackendTaskSuccessResult::RefreshedOwnedDpnsNames => {
-                if let Some(h) = self.refresh_banner.take() {
-                    h.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}
@@ -2109,9 +2103,7 @@ impl ScreenLike for DPNSScreen {
             AppAction::BackendTask(BackendTask::ContestedResourceTask(
                 ContestedResourceTask::QueryDPNSContests,
             )) => {
-                if let Some(h) = self.refresh_banner.take() {
-                    h.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 let handle = MessageBanner::set_global(
                     ctx,
                     "Refreshing contested names...",
@@ -2125,9 +2117,7 @@ impl ScreenLike for DPNSScreen {
             AppAction::BackendTask(BackendTask::IdentityTask(
                 IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
             )) => {
-                if let Some(h) = self.refresh_banner.take() {
-                    h.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 let handle = MessageBanner::set_global(
                     ctx,
                     "Refreshing contested names...",
@@ -2138,9 +2128,7 @@ impl ScreenLike for DPNSScreen {
                 self.refreshing_status = RefreshingStatus::Refreshing;
             }
             AppAction::SetMainScreen(_) => {
-                if let Some(h) = self.refresh_banner.take() {
-                    h.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             _ => {}

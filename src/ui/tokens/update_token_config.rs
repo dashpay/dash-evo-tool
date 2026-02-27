@@ -6,7 +6,6 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
@@ -14,6 +13,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -21,7 +21,6 @@ use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
-use chrono::{DateTime, Utc};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -45,7 +44,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, PartialEq)]
 pub enum UpdateTokenConfigStatus {
     NotUpdating,
-    Updating(DateTime<Utc>),
+    Updating,
     Complete,
 }
 
@@ -54,8 +53,8 @@ pub struct UpdateTokenConfigScreen {
     update_status: UpdateTokenConfigStatus,
     pub app_context: Arc<AppContext>,
     pub change_item: TokenConfigurationChangeItem,
-    pub update_text: String,
-    pub text_input_error: String,
+    update_text: String,
+    text_input_error: String,
     signing_key: Option<IdentityPublicKey>,
     show_advanced_options: bool,
     identity: QualifiedIdentity,
@@ -65,13 +64,15 @@ pub struct UpdateTokenConfigScreen {
     pub group_action_id: Option<Identifier>,
 
     // Input state fields
-    pub authorized_identity_input: Option<String>,
-    pub authorized_group_input: Option<String>,
+    authorized_identity_input: Option<String>,
+    authorized_group_input: Option<String>,
 
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<crate::ui::components::BannerHandle>,
 }
 
 impl UpdateTokenConfigScreen {
@@ -96,10 +97,8 @@ impl UpdateTokenConfigScreen {
         // Attempt to get an unlocked wallet reference
         let selected_wallet =
             get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
-                .unwrap_or_else(|e| {
-                    MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                    None
-                });
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None);
 
         Self {
             identity_token_info: identity_token_info.clone(),
@@ -123,6 +122,7 @@ impl UpdateTokenConfigScreen {
             is_unilateral_group_member,
             group_action_id: None,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -763,9 +763,15 @@ impl UpdateTokenConfigScreen {
                 };
 
                 if let Some(signing_key) =
-                    validate_signing_key(&self.app_context, &self.signing_key)
+                    validate_signing_key(&self.app_context, self.signing_key.as_ref())
                 {
-                    self.update_status = UpdateTokenConfigStatus::Updating(Utc::now());
+                    self.update_status = UpdateTokenConfigStatus::Updating;
+                    self.refresh_banner = Some(MessageBanner::set_global(
+                        ui.ctx(),
+                        "Updating token configuration...",
+                        MessageType::Info,
+                    ));
+                    self.refresh_banner.as_ref().and_then(|h| h.with_elapsed());
                     action |= AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                         TokenTask::UpdateTokenConfig {
                             identity_token_info: Box::new(self.identity_token_info.clone()),
@@ -919,6 +925,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if message_type == MessageType::Error {
+            self.refresh_banner.take_and_clear();
             self.update_status = UpdateTokenConfigStatus::NotUpdating;
         }
     }
@@ -927,6 +934,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
         if let BackendTaskSuccessResult::UpdatedTokenConfig(_change_item, fee_result) =
             backend_task_success_result
         {
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.update_status = UpdateTokenConfigStatus::Complete;
         }
@@ -1074,15 +1082,6 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
                 action |= self.render_token_config_updater(ui);
 
-                // Message display is handled by the global MessageBanner
-
-                if self.update_status != UpdateTokenConfigStatus::NotUpdating {
-                    ui.add_space(10.0);
-                    if let UpdateTokenConfigStatus::Updating(start_time) = &self.update_status {
-                        let elapsed = Utc::now().signed_duration_since(*start_time);
-                        ui.label(format!("Updating... ({} seconds)", elapsed.num_seconds()));
-                    }
-                }
             }
             }); // end of ScrollArea
         });

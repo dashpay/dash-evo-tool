@@ -5,13 +5,13 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::DashColors;
@@ -103,10 +103,9 @@ impl ContactRequests {
 
             // Get wallet for the selected identity
             new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or_else(|e| {
-                    MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                    None
-                });
+                get_selected_wallet(&identities[0], Some(&app_context), None)
+                    .or_show_error(app_context.egui_ctx())
+                    .unwrap_or(None);
 
             // Load requests from database for this identity
             new_self.load_requests_from_database();
@@ -133,14 +132,8 @@ impl ContactRequests {
 
                 // Update wallet for the newly selected identity
                 self.selected_wallet = get_selected_wallet(id, Some(&self.app_context), None)
-                    .unwrap_or_else(|e| {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            &e,
-                            MessageType::Error,
-                        );
-                        None
-                    });
+                    .or_show_error(self.app_context.egui_ctx())
+                    .unwrap_or(None);
             } else {
                 self.selected_identity_string.clear();
                 self.selected_wallet = None;
@@ -585,14 +578,8 @@ impl ContactRequests {
                             if let Some(identity) = &self.selected_identity {
                                 self.selected_wallet =
                                     get_selected_wallet(identity, Some(&self.app_context), None)
-                                        .unwrap_or_else(|e| {
-                                            MessageBanner::set_global(
-                                                self.app_context.egui_ctx(),
-                                                &e,
-                                                MessageType::Error,
-                                            );
-                                            None
-                                        });
+                                        .or_show_error(self.app_context.egui_ctx())
+                                        .unwrap_or(None);
                             } else {
                                 self.selected_wallet = None;
                             }

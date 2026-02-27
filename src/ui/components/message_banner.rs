@@ -325,8 +325,8 @@ impl MessageBanner {
             if banners.len() > MAX_BANNERS {
                 let evicted = banners.remove(0);
                 warn!(
-                    "Banner evicted (capacity {}): {:?} '{}'",
-                    MAX_BANNERS, evicted.message_type, evicted.text
+                    "Banner evicted (capacity {}): {:?}",
+                    MAX_BANNERS, evicted.message_type,
                 );
             }
             set_banners(ctx, banners);
@@ -346,6 +346,11 @@ impl MessageBanner {
     /// If `old_text` is not found but `new_text` is already displayed, returns
     /// a handle to the existing banner without resetting it (consistent with
     /// [`Self::set_global`] idempotency).
+    ///
+    /// **Empty `new_text`**: clears the `old_text` banner (if present) and
+    /// returns a handle with a fresh key that does not correspond to any banner.
+    /// Subsequent calls on this handle (`set_message`, `with_details`, `clear`)
+    /// are safe no-ops returning `None`.
     ///
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
     pub fn replace_global(
@@ -378,8 +383,8 @@ impl MessageBanner {
             if banners.len() > MAX_BANNERS {
                 let evicted = banners.remove(0);
                 warn!(
-                    "Banner evicted (capacity {}): {:?} '{}'",
-                    MAX_BANNERS, evicted.message_type, evicted.text
+                    "Banner evicted (capacity {}): {:?}",
+                    MAX_BANNERS, evicted.message_type,
                 );
             }
         }
@@ -693,5 +698,63 @@ fn icon_for_type(message_type: MessageType) -> &'static str {
         MessageType::Warning => "\u{26A0}", // warning sign (⚠)
         MessageType::Success => "\u{2705}", // white heavy check mark (✅)
         MessageType::Info => "\u{1F4AC}",   // speech balloon (💬)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extension traits for ergonomic banner display on Result and Option.
+// ---------------------------------------------------------------------------
+
+/// Extension for `Result<T, E>` — show an error banner on `Err`, pass through unchanged.
+///
+/// ```ignore
+/// let wallet = get_selected_wallet(&identity, None, key)
+///     .or_show_error(app_context.egui_ctx())
+///     .unwrap_or(None);
+/// ```
+pub trait ResultBannerExt<T, E> {
+    /// If `Err`, displays a global error banner with the error's `Display` text.
+    /// Returns `self` unchanged — this is a side-effect-only method.
+    fn or_show_error(self, ctx: &egui::Context) -> Self;
+}
+
+impl<T, E: fmt::Display> ResultBannerExt<T, E> for Result<T, E> {
+    fn or_show_error(self, ctx: &egui::Context) -> Self {
+        if let Err(ref e) = self {
+            MessageBanner::set_global(ctx, e, MessageType::Error);
+        }
+        self
+    }
+}
+
+/// Extension for `Option<BannerHandle>` — error display and banner cleanup.
+///
+/// ```ignore
+/// let identity = self.identities.first()
+///     .or_show_error(ctx, "No identities loaded");
+///
+/// self.refresh_banner.take_and_clear();
+/// ```
+pub trait OptionBannerExt {
+    /// If `None`, displays a global error banner with the given message.
+    /// Returns `self` unchanged — this is a side-effect-only method.
+    fn or_show_error(self, ctx: &egui::Context, err: impl fmt::Display) -> Self;
+
+    /// Takes the handle (leaving `None`) and clears the associated banner.
+    fn take_and_clear(&mut self);
+}
+
+impl OptionBannerExt for Option<BannerHandle> {
+    fn or_show_error(self, ctx: &egui::Context, err: impl fmt::Display) -> Self {
+        if self.is_none() {
+            MessageBanner::set_global(ctx, err, MessageType::Error);
+        }
+        self
+    }
+
+    fn take_and_clear(&mut self) {
+        if let Some(h) = self.take() {
+            h.clear();
+        }
     }
 }

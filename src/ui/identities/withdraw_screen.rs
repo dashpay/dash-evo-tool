@@ -15,7 +15,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::theme::DashColors;
@@ -73,11 +73,9 @@ impl WithdrawalScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            });
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
         Self {
             identity,
             selected_key: selected_key.cloned(),
@@ -331,9 +329,7 @@ impl ScreenLike for WithdrawalScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
         }
     }
@@ -342,9 +338,7 @@ impl ScreenLike for WithdrawalScreen {
         if let BackendTaskSuccessResult::WithdrewFromIdentity(fee_result) =
             backend_task_success_result
         {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Complete;
         }

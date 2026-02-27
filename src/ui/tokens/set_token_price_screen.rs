@@ -17,7 +17,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -93,14 +93,14 @@ pub struct SetTokenPriceScreen {
 
     pub token_pricing_schedule: String,
     /// Token pricing schedule to use; if None, we will remove the pricing schedule
-    pub pricing_type: PricingType,
+    pricing_type: PricingType,
 
     // AmountInput components for pricing - following the design pattern
     single_price_amount: Option<Amount>,
     single_price_input: Option<AmountInput>,
 
     // Tiered pricing with AmountInput components
-    pub tiered_prices: Vec<(Option<AmountInput>, Option<AmountInput>)>, // (amount_input, price_input)
+    tiered_prices: Vec<(Option<AmountInput>, Option<AmountInput>)>, // (amount_input, price_input)
     status: SetTokenPriceStatus,
 
     /// Basic references
@@ -725,7 +725,8 @@ impl SetTokenPriceScreen {
         };
 
         // Validate signing key before transitioning to waiting state
-        let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key) else {
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
             return AppAction::None;
         };
 
@@ -828,18 +829,14 @@ impl ScreenLike for SetTokenPriceScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.status = SetTokenPriceStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::SetTokenPrice(fee_result) = backend_task_success_result {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = SetTokenPriceStatus::Complete;
         }

@@ -6,7 +6,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::components::{BannerHandle, Component, ComponentResponse};
+use crate::ui::components::{BannerHandle, Component, ComponentResponse, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
@@ -64,8 +64,8 @@ pub struct BurnTokensScreen {
 
     // The user chooses how many tokens to burn
     pub amount: Option<Amount>,
-    pub amount_input: Option<AmountInput>,
-    pub max_amount: Option<u64>, // Maximum amount the user can burn based on their balance
+    amount_input: Option<AmountInput>,
+    max_amount: Option<u64>, // Maximum amount the user can burn based on their balance
     pub public_note: Option<String>,
 
     status: BurnTokensStatus,
@@ -268,7 +268,8 @@ impl BurnTokensScreen {
                 self.confirmation_dialog = None;
 
                 // Validate signing key before transitioning to waiting state
-                let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key)
+                let Some(signing_key) =
+                    validate_signing_key(&self.app_context, self.selected_key.as_ref())
                 else {
                     return AppAction::None;
                 };
@@ -349,18 +350,14 @@ impl ScreenLike for BurnTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.status = BurnTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::BurnedTokens(fee_result) = backend_task_success_result {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = BurnTokensStatus::Complete;
         }

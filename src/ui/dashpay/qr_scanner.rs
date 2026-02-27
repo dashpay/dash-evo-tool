@@ -5,7 +5,6 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
@@ -14,6 +13,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -189,6 +189,7 @@ impl QRScannerScreen {
                             Some(&self.app_context),
                             None,
                         )
+                        .or_show_error(self.app_context.egui_ctx())
                         .unwrap_or(None);
                     } else {
                         self.selected_wallet = None;

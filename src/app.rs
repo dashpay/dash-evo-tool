@@ -875,8 +875,9 @@ impl AppState {
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
 
-        // Clear stale banners from the previous network context so error/success
-        // messages don't leak across network boundaries.
+        // INTENTIONAL(SEC-004): Clear stale banners from the previous network context.
+        // A backend task completing after the switch could set a new banner in the new
+        // network context — accepted risk for a local desktop app (cosmetic only).
         MessageBanner::clear_all_global(app_context.egui_ctx());
 
         for screen in self.main_screens.values_mut() {
@@ -1000,6 +1001,10 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         BackendTaskSuccessResult::Message(ref msg) => {
+                            // TODO(RUST-002): Some screens inspect Message text for error
+                            // keywords and may override with an Error banner, causing a
+                            // brief green-then-red flash. Refactor to pass structured error
+                            // types through task results instead of string messages.
                             MessageBanner::set_global(ctx, msg, MessageType::Success);
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);

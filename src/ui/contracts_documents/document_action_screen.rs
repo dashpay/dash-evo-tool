@@ -11,12 +11,12 @@ use crate::ui::MessageType;
 use crate::ui::ScreenLike;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::{island_central_panel, styled_text_edit_singleline};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
     show_success_screen_with_info,
@@ -267,14 +267,8 @@ impl DocumentActionScreen {
 
                 // Update wallet
                 self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)
-                    .unwrap_or_else(|e| {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            &e,
-                            MessageType::Error,
-                        );
-                        None
-                    });
+                    .or_show_error(self.app_context.egui_ctx())
+                    .unwrap_or(None);
             } else {
                 self.selected_key = None;
                 self.wallet = None;
@@ -1787,10 +1781,8 @@ impl DocumentActionScreen {
                 if let Some(selected_identity) = &self.selected_identity {
                     self.wallet =
                         get_selected_wallet(selected_identity, Some(&self.app_context), None)
-                            .unwrap_or_else(|e| {
-                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                                None
-                            });
+                            .or_show_error(ui.ctx())
+                            .unwrap_or(None);
                 }
                 if let Some(wallet) = &self.wallet {
                     if let Err(e) = try_open_wallet_no_password(wallet) {

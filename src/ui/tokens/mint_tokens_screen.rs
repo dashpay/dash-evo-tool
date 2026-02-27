@@ -18,7 +18,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -63,10 +63,10 @@ pub struct MintTokensScreen {
     pub group_action_id: Option<Identifier>,
     known_identities: Vec<QualifiedIdentity>,
 
-    pub recipient_identity_id: String,
+    recipient_identity_id: String,
 
     pub amount: Option<Amount>,
-    pub amount_input: Option<AmountInput>,
+    amount_input: Option<AmountInput>,
     status: MintTokensStatus,
 
     /// Basic references
@@ -86,16 +86,7 @@ pub struct MintTokensScreen {
 
 impl MintTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let known_identities = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_else(|e| {
-                MessageBanner::set_global(
-                    app_context.egui_ctx(),
-                    format!("Failed to load identities: {e}"),
-                    MessageType::Error,
-                );
-                vec![]
-            });
+        let known_identities = super::load_identities_with_banner(app_context);
 
         let possible_key = identity_token_info
             .identity
@@ -311,7 +302,8 @@ impl MintTokensScreen {
         };
 
         // Validate signing key before transitioning to waiting state
-        let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key) else {
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
             return AppAction::None;
         };
 
@@ -375,18 +367,14 @@ impl ScreenLike for MintTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.status = MintTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::MintedTokens(fee_result) = backend_task_success_result {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = MintTokensStatus::Complete;
         }

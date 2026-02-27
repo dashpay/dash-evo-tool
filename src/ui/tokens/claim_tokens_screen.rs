@@ -5,7 +5,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -51,11 +51,11 @@ pub enum ClaimTokensStatus {
 }
 
 pub struct ClaimTokensScreen {
-    pub identity: QualifiedIdentity,
+    identity: QualifiedIdentity,
     pub identity_token_basic_info: IdentityTokenBasicInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
     show_advanced_options: bool,
-    pub public_note: Option<String>,
+    public_note: Option<String>,
     token_contract: QualifiedContract,
     token_configuration: TokenConfiguration,
     distribution_type: Option<TokenDistributionType>,
@@ -77,33 +77,25 @@ impl ClaimTokensScreen {
         token_configuration: TokenConfiguration,
         app_context: &Arc<AppContext>,
     ) -> Self {
-        let identity = app_context
+        let known_identities = app_context
             .load_local_qualified_identities()
-            .unwrap_or_else(|e| {
-                MessageBanner::set_global(
-                    app_context.egui_ctx(),
-                    format!("Failed to load identities: {e}"),
-                    MessageType::Error,
-                );
-                vec![]
-            })
-            .into_iter()
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or_default();
+
+        let identity = known_identities
+            .iter()
             .find(|id| id.identity.id() == identity_token_basic_info.identity_id)
-            .unwrap_or_else(|| {
+            .cloned()
+            .or_else(|| {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
                     "Identity not found in local store",
                     MessageType::Error,
                 );
-                // Return first available identity as fallback for degraded state.
-                // The error banner informs the user; the screen may not function correctly.
-                app_context
-                    .load_local_qualified_identities()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .next()
-                    .expect("At least one identity must exist to reach this screen")
-            });
+                // Fallback to first available identity for degraded state.
+                known_identities.first().cloned()
+            })
+            .expect("UI prevents opening this screen without loaded identities");
 
         let identity_clone = identity.identity.clone();
         let mut possible_key = identity_clone.get_first_public_key_matching(
@@ -122,11 +114,9 @@ impl ClaimTokensScreen {
             );
         }
 
-        let selected_wallet =
-            get_selected_wallet(&identity, None, possible_key).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            });
+        let selected_wallet = get_selected_wallet(&identity, None, possible_key)
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         let distribution_type = match (
             token_configuration
@@ -231,7 +221,8 @@ impl ClaimTokensScreen {
                 self.confirmation_dialog = None;
 
                 // Validate signing key before transitioning to waiting state
-                let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key)
+                let Some(signing_key) =
+                    validate_signing_key(&self.app_context, self.selected_key.as_ref())
                 else {
                     return AppAction::None;
                 };
@@ -282,18 +273,14 @@ impl ScreenLike for ClaimTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.status = ClaimTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = ClaimTokensStatus::Complete;
         }

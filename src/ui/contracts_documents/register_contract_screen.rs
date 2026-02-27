@@ -6,7 +6,6 @@ use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -14,6 +13,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -65,10 +65,9 @@ impl RegisterDataContractScreen {
         let selected_qualified_identity = qualified_identities.first().cloned();
 
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            })
+            get_selected_wallet(identity, Some(app_context), None)
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None)
         } else {
             None
         };
@@ -482,10 +481,8 @@ impl ScreenLike for RegisterDataContractScreen {
                             Some(&self.app_context),
                             None,
                         )
-                        .unwrap_or_else(|e| {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-                            None
-                        });
+                        .or_show_error(ui.ctx())
+                        .unwrap_or(None);
 
                         // Re-parse contract with new owner ID
                         self.parse_contract();

@@ -26,7 +26,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
@@ -293,7 +293,8 @@ impl PurchaseTokenScreen {
 
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
-                let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key)
+                let Some(signing_key) =
+                    validate_signing_key(&self.app_context, self.selected_key.as_ref())
                 else {
                     return AppAction::None;
                 };
@@ -367,9 +368,7 @@ impl ScreenLike for PurchaseTokenScreen {
                 }
             }
             BackendTaskSuccessResult::PurchasedTokens(fee_result) => {
-                if let Some(h) = self.refresh_banner.take() {
-                    h.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.status = PurchaseTokensStatus::Complete;
             }
@@ -380,9 +379,7 @@ impl ScreenLike for PurchaseTokenScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.status = PurchaseTokensStatus::Error;
         }
     }

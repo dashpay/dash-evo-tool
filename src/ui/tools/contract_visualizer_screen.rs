@@ -173,7 +173,8 @@ impl ContractVisualizerScreen {
 
 impl crate::ui::ScreenLike for ContractVisualizerScreen {
     fn display_message(&mut self, _msg: &str, _t: crate::ui::MessageType) {
-        // Banner display is handled globally by AppState.
+        // INTENTIONAL: These screens perform only local synchronous parsing.
+        // No backend tasks are dispatched, so no error/success messages arrive here.
         // Local parse errors are set directly via self.parse_status.
     }
     fn display_task_result(&mut self, _r: BackendTaskSuccessResult) {}

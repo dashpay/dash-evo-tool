@@ -12,7 +12,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
@@ -65,11 +65,9 @@ impl AddKeyScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            });
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         Self {
             identity,
@@ -102,11 +100,9 @@ impl AddKeyScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            });
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         let dashpay_contract_id = app_context
             .dashpay_contract
@@ -144,11 +140,9 @@ impl AddKeyScreen {
             KeyType::all_key_types().into(),
             false,
         );
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            });
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or(None);
 
         let dashpay_contract_id = app_context
             .dashpay_contract
@@ -355,9 +349,7 @@ impl ScreenLike for AddKeyScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Error/success display is handled by the global MessageBanner.
         if let MessageType::Error = message_type {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.add_key_status = AddKeyStatus::Error;
         }
     }
@@ -365,9 +357,7 @@ impl ScreenLike for AddKeyScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
-                if let Some(handle) = self.refresh_banner.take() {
-                    handle.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.add_key_status = AddKeyStatus::Complete;
             }

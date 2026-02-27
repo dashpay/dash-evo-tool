@@ -12,7 +12,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
@@ -70,10 +70,9 @@ impl RegisterDpnsNameScreen {
         let selected_qualified_identity = qualified_identities.first().cloned();
 
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                None
-            })
+            get_selected_wallet(identity, Some(app_context), None)
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None)
         } else {
             None
         };
@@ -162,10 +161,8 @@ impl RegisterDpnsNameScreen {
 
             // Update the selected wallet
             self.selected_wallet = get_selected_wallet(qi, Some(&self.app_context), None)
-                .unwrap_or_else(|e| {
-                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-                    None
-                });
+                .or_show_error(self.app_context.egui_ctx())
+                .unwrap_or(None);
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
@@ -217,14 +214,8 @@ impl RegisterDpnsNameScreen {
 
                 // Update wallet
                 self.selected_wallet = get_selected_wallet(identity, Some(&self.app_context), None)
-                    .unwrap_or_else(|e| {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            &e,
-                            MessageType::Error,
-                        );
-                        None
-                    });
+                    .or_show_error(self.app_context.egui_ctx())
+                    .unwrap_or(None);
             } else {
                 self.selected_key = None;
                 self.selected_wallet = None;
@@ -305,9 +296,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.register_dpns_name_status = RegisterDpnsNameStatus::Error;
         }
     }
@@ -316,9 +305,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
         if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) =
             backend_task_success_result
         {
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }

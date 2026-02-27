@@ -14,7 +14,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -648,6 +648,16 @@ impl WalletSendScreen {
             (Some(SourceSelection::PlatformAddresses(_)), AddressType::Core) => "Withdraw to Core",
             _ => "Send",
         }
+    }
+
+    /// Clear the current send banner and show a new "Sending transaction..." progress banner.
+    ///
+    /// Called before dispatching any send backend task so the elapsed counter always starts fresh.
+    fn set_send_progress_banner(&mut self, ctx: &Context) {
+        self.send_banner.take_and_clear();
+        let handle = MessageBanner::set_global(ctx, "Sending transaction...", MessageType::Info);
+        handle.with_elapsed();
+        self.send_banner = Some(handle);
     }
 
     /// Validate and execute the send based on detected types
@@ -1661,16 +1671,7 @@ impl WalletSendScreen {
             if ui.add_enabled(can_send, send_button).clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
-                        if let Some(h) = self.send_banner.take() {
-                            h.clear();
-                        }
-                        let handle = MessageBanner::set_global(
-                            ui.ctx(),
-                            "Sending transaction...",
-                            MessageType::Info,
-                        );
-                        handle.with_elapsed();
-                        self.send_banner = Some(handle);
+                        self.set_send_progress_banner(ui.ctx());
                         action = send_action;
                     }
                     Err(e) => {
@@ -2248,16 +2249,7 @@ impl WalletSendScreen {
             if ui.add_enabled(can_send, send_button).clicked() {
                 match self.validate_and_send_advanced() {
                     Ok(send_action) => {
-                        if let Some(h) = self.send_banner.take() {
-                            h.clear();
-                        }
-                        let handle = MessageBanner::set_global(
-                            ui.ctx(),
-                            "Sending transaction...",
-                            MessageType::Info,
-                        );
-                        handle.with_elapsed();
-                        self.send_banner = Some(handle);
+                        self.set_send_progress_banner(ui.ctx());
                         action = send_action;
                     }
                     Err(e) => {
@@ -2646,15 +2638,11 @@ impl ScreenLike for WalletSendScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
-                if let Some(h) = self.send_banner.take() {
-                    h.clear();
-                }
+                self.send_banner.take_and_clear();
                 self.send_status = SendStatus::Error;
             }
             MessageType::Success => {
-                if let Some(h) = self.send_banner.take() {
-                    h.clear();
-                }
+                self.send_banner.take_and_clear();
                 self.send_status = SendStatus::Complete(message.to_string());
             }
             MessageType::Info => {
@@ -2667,9 +2655,7 @@ impl ScreenLike for WalletSendScreen {
         &mut self,
         backend_task_success_result: crate::backend_task::BackendTaskSuccessResult,
     ) {
-        if let Some(h) = self.send_banner.take() {
-            h.clear();
-        }
+        self.send_banner.take_and_clear();
         match backend_task_success_result {
             crate::backend_task::BackendTaskSuccessResult::WalletPayment {
                 txid: _,

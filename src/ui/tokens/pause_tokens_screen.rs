@@ -15,7 +15,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -50,7 +50,7 @@ pub enum PauseTokensStatus {
 
 /// A UI screen that allows pausing all token-related actions for a contract
 pub struct PauseTokensScreen {
-    pub identity: QualifiedIdentity,
+    identity: QualifiedIdentity,
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
     show_advanced_options: bool,
@@ -209,7 +209,8 @@ impl PauseTokensScreen {
                 self.confirmation_dialog = None;
 
                 // Validate signing key before transitioning to waiting state
-                let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key)
+                let Some(signing_key) =
+                    validate_signing_key(&self.app_context, self.selected_key.as_ref())
                 else {
                     return AppAction::None;
                 };
@@ -281,18 +282,14 @@ impl ScreenLike for PauseTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.status = PauseTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::PausedTokens(fee_result) = backend_task_success_result {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = PauseTokensStatus::Complete;
         }

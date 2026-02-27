@@ -117,7 +117,8 @@ pub trait ScreenWithWalletUnlock {
                             } else {
                                 "Incorrect Password".to_string()
                             };
-                            MessageBanner::set_global(ui.ctx(), &error_msg, MessageType::Error);
+                            MessageBanner::set_global(ui.ctx(), &error_msg, MessageType::Error)
+                                .with_auto_dismiss(std::time::Duration::from_secs(10));
                         }
                     }
                     // Clear the password field after submission

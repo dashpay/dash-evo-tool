@@ -16,7 +16,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -52,7 +52,7 @@ pub enum DestroyFrozenFundsStatus {
 /// A screen for destroying frozen funds of a particular token contract
 pub struct DestroyFrozenFundsScreen {
     /// Identity that is authorized to destroy
-    pub identity: QualifiedIdentity,
+    identity: QualifiedIdentity,
 
     /// Info on which token contract we're dealing with
     pub identity_token_info: IdentityTokenInfo,
@@ -74,7 +74,7 @@ pub struct DestroyFrozenFundsScreen {
 
     /// All frozen identities that can be selected
     /// TODO: We should filter them by frozen status, right now we just show all known identities
-    pub frozen_identities: Vec<QualifiedIdentity>,
+    frozen_identities: Vec<QualifiedIdentity>,
 
     status: DestroyFrozenFundsStatus,
 
@@ -194,16 +194,7 @@ impl DestroyFrozenFundsScreen {
                     None
                 });
 
-        let all_identities = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_else(|e| {
-                MessageBanner::set_global(
-                    app_context.egui_ctx(),
-                    format!("Failed to load identities: {e}"),
-                    MessageType::Error,
-                );
-                vec![]
-            });
+        let all_identities = super::load_identities_with_banner(app_context);
 
         Self {
             identity: identity_token_info.identity.clone(),
@@ -284,7 +275,8 @@ impl DestroyFrozenFundsScreen {
         };
 
         // Validate signing key before transitioning to waiting state
-        let Some(signing_key) = validate_signing_key(&self.app_context, &self.selected_key) else {
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
             return AppAction::None;
         };
 
@@ -349,9 +341,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if let MessageType::Error = message_type {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.status = DestroyFrozenFundsStatus::Error;
         }
     }
@@ -360,9 +350,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
         if let BackendTaskSuccessResult::DestroyedFrozenFunds(fee_result) =
             backend_task_success_result
         {
-            if let Some(h) = self.refresh_banner.take() {
-                h.clear();
-            }
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = DestroyFrozenFundsStatus::Complete;
         }

@@ -6,7 +6,6 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -14,6 +13,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -203,10 +203,8 @@ impl ProfileScreen {
             // Get wallet for the selected identity
             new_self.selected_wallet =
                 get_selected_wallet(&identities[selected_idx], Some(&app_context), None)
-                    .unwrap_or_else(|e| {
-                        MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
-                        None
-                    });
+                    .or_show_error(app_context.egui_ctx())
+                    .unwrap_or(None);
 
             // Load profile from database for this identity
             new_self.load_profile_from_database();
@@ -634,14 +632,8 @@ impl ProfileScreen {
                         if let Some(identity) = &self.selected_identity {
                             self.selected_wallet =
                                 get_selected_wallet(identity, Some(&self.app_context), None)
-                                    .unwrap_or_else(|e| {
-                                        MessageBanner::set_global(
-                                            self.app_context.egui_ctx(),
-                                            &e,
-                                            MessageType::Error,
-                                        );
-                                        None
-                                    });
+                                    .or_show_error(self.app_context.egui_ctx())
+                                    .unwrap_or(None);
                         } else {
                             self.selected_wallet = None;
                         }

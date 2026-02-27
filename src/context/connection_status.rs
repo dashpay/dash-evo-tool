@@ -441,6 +441,10 @@ impl ConnectionStatus {
                 }
             }
             CoreBackendMode::Rpc => {
+                // Ensure stale SPV state is cleared when RPC backend is active.
+                self.spv_connected_peers.store(0, Ordering::Relaxed);
+                *self.spv_no_peers_since.lock().unwrap() = None;
+
                 // Update ZMQ status if there's a new event
                 let disable_zmq = app_context
                     .get_settings()

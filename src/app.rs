@@ -1170,6 +1170,9 @@ impl App for AppState {
             } else {
                 MessageBanner::clear_global_message(ctx, SPV_DEGRADED_BANNER);
             }
+        } else {
+            // Ensure stale SPV banner is cleared after mode switch.
+            MessageBanner::clear_global_message(ctx, SPV_DEGRADED_BANNER);
         }
 
         for action in actions {

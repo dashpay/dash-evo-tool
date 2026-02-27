@@ -362,7 +362,7 @@ impl UpdateDataContractScreen {
 impl ScreenLike for UpdateDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if message_type == MessageType::Error {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             if message.contains("proof error logged, contract inserted into the database") {
                 self.broadcast_status = BroadcastStatus::Done;
             } else {

@@ -335,10 +335,12 @@ impl AddKeyScreen {
 
 impl ScreenLike for AddKeyScreen {
     fn refresh(&mut self) {
-        if let Some(refreshed_identity) = self
+        let identities = self
             .app_context
             .load_local_user_identities()
-            .expect("Expected to load local identities")
+            .or_show_error(self.app_context.egui_ctx())
+            .unwrap_or_default();
+        if let Some(refreshed_identity) = identities
             .iter()
             .find(|identity| identity.identity.id() == self.identity.identity.id())
         {
@@ -348,7 +350,7 @@ impl ScreenLike for AddKeyScreen {
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Error/success display is handled by the global MessageBanner.
-        if let MessageType::Error = message_type {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refresh_banner.take_and_clear();
             self.add_key_status = AddKeyStatus::Error;
         }

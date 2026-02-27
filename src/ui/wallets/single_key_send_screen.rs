@@ -940,7 +940,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
         }
 
         // Check for min relay fee error and show confirmation dialog
-        if message_type == MessageType::Error
+        if matches!(message_type, MessageType::Error | MessageType::Warning)
             && let Some(required_fee) = Self::parse_min_relay_fee_error(message)
         {
             // Show the fee confirmation dialog instead of the error message

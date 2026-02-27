@@ -1935,7 +1935,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if let MessageType::Error = message_type {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refreshing = false;
 
             // If the fund platform dialog is processing, show error in the dialog instead

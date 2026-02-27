@@ -126,7 +126,7 @@ impl AddressBalanceScreen {
 impl ScreenLike for AddressBalanceScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if message_type == MessageType::Error {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.is_loading = false;
         }
     }

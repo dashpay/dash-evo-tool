@@ -996,7 +996,10 @@ impl ScreenLike for GroveSTARKScreen {
 
     fn display_message(&mut self, _message: &str, message_type: crate::ui::MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if message_type == crate::ui::MessageType::Error {
+        if matches!(
+            message_type,
+            crate::ui::MessageType::Error | crate::ui::MessageType::Warning
+        ) {
             self.is_generating = false;
             self.is_verifying = false;
         }

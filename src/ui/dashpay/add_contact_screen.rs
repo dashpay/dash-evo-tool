@@ -598,7 +598,7 @@ impl ScreenLike for AddContactScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if message_type == MessageType::Error {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             let error = DashPayError::Internal {
                 message: message.to_string(),
             };

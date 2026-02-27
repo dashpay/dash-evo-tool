@@ -1035,7 +1035,7 @@ impl ScreenLike for ContactRequests {
         self.loading = false;
 
         // Check if this is an error about missing keys
-        if message_type == MessageType::Error {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             if message.contains("ENCRYPTION key") {
                 self.error = Some(DashPayError::MissingEncryptionKey);
             } else if message.contains("DECRYPTION key") {

@@ -18,11 +18,19 @@ use dash_evo_tool::spv::CoreBackendMode;
 use dash_evo_tool::utils::tasks::TaskManager;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Shared test context, initialized once across all backend E2E tests.
-pub static CTX: LazyLock<BackendTestContext> = LazyLock::new(BackendTestContext::init);
+///
+/// Uses `tokio::sync::OnceCell` so initialization runs inside the existing
+/// tokio runtime (from `#[tokio::test]`) rather than spawning a nested one.
+static CTX: tokio::sync::OnceCell<BackendTestContext> = tokio::sync::OnceCell::const_new();
+
+/// Get (or initialize) the shared test context.
+pub async fn ctx() -> &'static BackendTestContext {
+    CTX.get_or_init(BackendTestContext::init).await
+}
 
 /// Shared backend context for E2E tests.
 pub struct BackendTestContext {
@@ -32,7 +40,7 @@ pub struct BackendTestContext {
 }
 
 impl BackendTestContext {
-    fn init() -> Self {
+    async fn init() -> Self {
         // Persistent workdir keyed by git revision
         let git_hash = std::process::Command::new("git")
             .args(["rev-parse", "--short", "HEAD"])
@@ -47,8 +55,7 @@ impl BackendTestContext {
         println!("  E2E workdir: {}", workdir.display());
 
         // Point the app data dir to our workdir so config/env files live there.
-        // SAFETY: we are single-threaded at this point (LazyLock init, before
-        // tokio runtime is created).
+        // SAFETY: tests run with --test-threads=1, so no concurrent env var access.
         unsafe {
             std::env::set_var("DASH_EVO_DATA_DIR", &workdir);
         }
@@ -80,70 +87,57 @@ impl BackendTestContext {
         app_context.set_core_backend_mode(CoreBackendMode::Spv);
         app_context.start_spv().expect("Failed to start SPV");
 
-        // Use a temporary tokio runtime for the remaining async setup.
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(12)
-            .enable_all()
-            .build()
-            .expect("Failed to create setup tokio runtime");
-
-        let framework_wallet_hash = rt.block_on(async {
-            // Wait for SPV peers
-            wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))
-                .await
-                .expect("SPV failed to connect to any peers within 60s");
-            println!("  SPV connected to peers");
-
-            // Create or restore framework wallet
-            let mnemonic = match std::env::var("E2E_WALLET_MNEMONIC") {
-                Ok(phrase) => {
-                    println!("  Restoring framework wallet from E2E_WALLET_MNEMONIC");
-                    Mnemonic::parse_in(Language::English, &phrase)
-                        .expect("Invalid E2E_WALLET_MNEMONIC")
-                }
-                Err(_) => {
-                    println!("  Generating fresh framework wallet mnemonic");
-                    Mnemonic::generate_in(Language::English, 12)
-                        .expect("Mnemonic generation failed")
-                }
-            };
-
-            let seed = mnemonic.to_seed("");
-            let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
-                seed,
-                Network::Testnet,
-                Some("E2E Framework Wallet".to_string()),
-                None,
-            )
-            .expect("Failed to create framework wallet");
-
-            let (seed_hash, _wallet_arc) = app_context
-                .register_wallet(wallet)
-                .expect("Failed to register framework wallet");
-
-            // Wait for wallet to appear in SPV
-            wait::wait_for_wallet_in_spv(&app_context, seed_hash, Duration::from_secs(30))
-                .await
-                .expect("Framework wallet not picked up by SPV");
-
-            // Ensure funded
-            funding::ensure_framework_funded(&app_context, seed_hash).await;
-
-            // Wait for balance to be visible via SPV (may take a moment after faucet tx)
-            match wait::wait_for_balance(
-                &app_context,
-                seed_hash,
-                1, // at least 1 duff
-                Duration::from_secs(120),
-            )
+        // Wait for SPV peers
+        wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))
             .await
-            {
-                Ok(balance) => println!("  Framework wallet balance: {} duffs", balance),
-                Err(e) => eprintln!("  Warning: {}", e),
-            }
+            .expect("SPV failed to connect to any peers within 60s");
+        println!("  SPV connected to peers");
 
-            seed_hash
-        });
+        // Create or restore framework wallet
+        let mnemonic = match std::env::var("E2E_WALLET_MNEMONIC") {
+            Ok(phrase) => {
+                println!("  Restoring framework wallet from E2E_WALLET_MNEMONIC");
+                Mnemonic::parse_in(Language::English, &phrase).expect("Invalid E2E_WALLET_MNEMONIC")
+            }
+            Err(_) => {
+                println!("  Generating fresh framework wallet mnemonic");
+                Mnemonic::generate_in(Language::English, 12).expect("Mnemonic generation failed")
+            }
+        };
+
+        let seed = mnemonic.to_seed("");
+        let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            Some("E2E Framework Wallet".to_string()),
+            None,
+        )
+        .expect("Failed to create framework wallet");
+
+        let (framework_wallet_hash, _wallet_arc) = app_context
+            .register_wallet(wallet)
+            .expect("Failed to register framework wallet");
+
+        // Wait for wallet to appear in SPV
+        wait::wait_for_wallet_in_spv(&app_context, framework_wallet_hash, Duration::from_secs(30))
+            .await
+            .expect("Framework wallet not picked up by SPV");
+
+        // Ensure funded
+        funding::ensure_framework_funded(&app_context, framework_wallet_hash).await;
+
+        // Wait for balance to be visible via SPV (may take a moment after faucet tx)
+        match wait::wait_for_balance(
+            &app_context,
+            framework_wallet_hash,
+            1, // at least 1 duff
+            Duration::from_secs(120),
+        )
+        .await
+        {
+            Ok(balance) => println!("  Framework wallet balance: {} duffs", balance),
+            Err(e) => eprintln!("  Warning: {}", e),
+        }
 
         BackendTestContext {
             app_context,

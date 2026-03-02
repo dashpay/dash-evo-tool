@@ -1,6 +1,6 @@
 //! Test: Withdraw credits from an identity to a Core address.
 
-use crate::harness::CTX;
+use crate::harness::ctx;
 use crate::identity_helpers::{build_identity_registration, get_receive_address};
 use crate::task_runner::run_task;
 use dash_evo_tool::backend_task::identity::IdentityTask;
@@ -13,7 +13,7 @@ use std::str::FromStr;
 #[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 async fn test_withdraw_from_identity() {
-    let ctx = &*CTX;
+    let ctx = ctx().await;
 
     // Create funded test wallet
     let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;

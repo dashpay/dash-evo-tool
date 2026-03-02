@@ -1,6 +1,6 @@
 //! Test: Send and receive Core payments between wallets.
 
-use crate::harness::CTX;
+use crate::harness::ctx;
 use crate::identity_helpers::get_receive_address;
 use crate::task_runner::run_task;
 use crate::wait::wait_for_balance;
@@ -12,7 +12,7 @@ use std::time::Duration;
 #[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 async fn test_send_and_receive_funds() {
-    let ctx = &*CTX;
+    let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
     // Create two funded test wallets

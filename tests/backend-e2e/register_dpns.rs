@@ -1,6 +1,6 @@
 //! Test: Register a DPNS name for an identity.
 
-use crate::harness::CTX;
+use crate::harness::ctx;
 use crate::identity_helpers::build_identity_registration;
 use crate::task_runner::run_task;
 use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
@@ -12,7 +12,7 @@ use rand::Rng;
 #[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 async fn test_register_dpns_name() {
-    let ctx = &*CTX;
+    let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
     // Create funded test wallet (needs enough for identity + DPNS registration)

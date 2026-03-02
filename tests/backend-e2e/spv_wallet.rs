@@ -1,6 +1,6 @@
 //! Test: SPV sync and wallet creation using shared context.
 
-use crate::harness::CTX;
+use crate::harness::ctx;
 use bip39::{Language, Mnemonic};
 use dash_sdk::dpp::dashcore::Network;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use tokio::time::timeout;
 #[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 async fn test_spv_sync_and_create_wallet() {
-    let ctx = &*CTX;
+    let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
     // Generate a new wallet from a random mnemonic

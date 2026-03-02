@@ -1,6 +1,6 @@
 //! Test: Fetch data contracts from Platform.
 
-use crate::harness::CTX;
+use crate::harness::ctx;
 use crate::task_runner::run_task;
 use dash_evo_tool::backend_task::contract::ContractTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -11,7 +11,7 @@ use dash_sdk::platform::Identifier;
 #[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 async fn test_fetch_data_contract() {
-    let ctx = &*CTX;
+    let ctx = ctx().await;
     let app_context = &ctx.app_context;
 
     // Use DashPay contract ID (well-known system contract)

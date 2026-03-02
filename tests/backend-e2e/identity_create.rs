@@ -1,6 +1,6 @@
 //! Test: Create a new identity funded from a wallet.
 
-use crate::harness::CTX;
+use crate::harness::ctx;
 use crate::identity_helpers::build_identity_registration;
 use crate::task_runner::run_task;
 use dash_evo_tool::backend_task::identity::IdentityTask;
@@ -11,7 +11,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 #[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 async fn test_create_identity() {
-    let ctx = &*CTX;
+    let ctx = ctx().await;
 
     // Create a funded test wallet (0.01 DASH = 1_000_000 duffs)
     let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(1_000_000).await;

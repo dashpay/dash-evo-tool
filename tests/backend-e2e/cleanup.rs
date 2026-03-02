@@ -1,6 +1,6 @@
 //! Best-effort cleanup: return test wallet funds to the framework wallet.
 
-use crate::harness::CTX;
+use crate::harness::ctx;
 use crate::identity_helpers::get_receive_address;
 use crate::task_runner::run_task;
 use dash_evo_tool::backend_task::BackendTask;
@@ -12,7 +12,7 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 /// Logs errors but does not panic -- funds may already be spent.
 #[allow(dead_code)]
 pub async fn cleanup_test_wallets(framework_wallet_hash: WalletSeedHash) {
-    let app_context = &CTX.app_context;
+    let app_context = &ctx().await.app_context;
 
     // Framework wallet receive address
     let framework_address = {

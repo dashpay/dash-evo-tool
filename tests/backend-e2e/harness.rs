@@ -114,28 +114,62 @@ impl BackendTestContext {
         )
         .expect("Failed to create framework wallet");
 
-        let (framework_wallet_hash, _wallet_arc) = app_context
-            .register_wallet(wallet)
-            .expect("Failed to register framework wallet");
+        let framework_wallet_hash = wallet.seed_hash();
+
+        // Try to register; if the wallet already exists (persistent DB), just look it up.
+        match app_context.register_wallet(wallet) {
+            Ok((hash, _)) => {
+                println!(
+                    "  Registered framework wallet (seed_hash: {:?})",
+                    &hash[..4]
+                );
+            }
+            Err(e) if e.contains("already been imported") => {
+                println!("  Framework wallet already registered (reusing from persistent DB)");
+            }
+            Err(e) => panic!("Failed to register framework wallet: {}", e),
+        }
 
         // Wait for wallet to appear in SPV
         wait::wait_for_wallet_in_spv(&app_context, framework_wallet_hash, Duration::from_secs(30))
             .await
             .expect("Framework wallet not picked up by SPV");
 
-        // Ensure funded
-        funding::ensure_framework_funded(&app_context, framework_wallet_hash).await;
-
-        // Wait for balance to be visible via SPV (may take a moment after faucet tx)
+        // Give SPV time to sync the wallet's existing UTXOs before checking balance.
+        // For a pre-funded wallet, SPV needs to discover on-chain transactions.
+        println!("  Waiting for SPV to sync framework wallet balance...");
         match wait::wait_for_balance(
             &app_context,
             framework_wallet_hash,
             1, // at least 1 duff
+            Duration::from_secs(60),
+        )
+        .await
+        {
+            Ok(balance) => {
+                println!(
+                    "  Framework wallet balance after SPV sync: {} duffs",
+                    balance
+                );
+            }
+            Err(_) => {
+                println!("  No existing balance found, will try faucet");
+            }
+        }
+
+        // Top up from faucet if balance is still below threshold
+        funding::ensure_framework_funded(&app_context, framework_wallet_hash).await;
+
+        // Final balance check (covers faucet case — wait for tx to arrive)
+        match wait::wait_for_balance(
+            &app_context,
+            framework_wallet_hash,
+            1,
             Duration::from_secs(120),
         )
         .await
         {
-            Ok(balance) => println!("  Framework wallet balance: {} duffs", balance),
+            Ok(balance) => println!("  Framework wallet ready, balance: {} duffs", balance),
             Err(e) => eprintln!("  Warning: {}", e),
         }
 

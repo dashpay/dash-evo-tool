@@ -16,7 +16,7 @@ const REFRESH_DISCONNECTED: Duration = Duration::from_secs(1);
 
 const SPV_PEER_DEGRADED_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Four-state connection indicator matching the UI's red/orange/green circle.
+/// Five-state connection indicator matching the UI's colored circle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OverallConnectionState {
@@ -28,6 +28,8 @@ pub enum OverallConnectionState {
     Syncing = 2,
     /// Fully connected and operational — green indicator.
     Synced = 3,
+    /// Connected but sync failed — magenta indicator with "!" glyph.
+    Error = 4,
 }
 
 impl From<u8> for OverallConnectionState {
@@ -36,6 +38,7 @@ impl From<u8> for OverallConnectionState {
             1 => Self::Connecting,
             2 => Self::Syncing,
             3 => Self::Synced,
+            4 => Self::Error,
             _ => Self::Disconnected,
         }
     }
@@ -53,6 +56,9 @@ pub struct ConnectionStatus {
     backend_mode: AtomicU8,
     disable_zmq: AtomicBool,
     overall_state: AtomicU8,
+    // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
+    // single writer (poll cycle), minimal contention. RwLock overhead not justified.
+    spv_last_error: Mutex<Option<String>>,
     last_update: Mutex<Instant>,
     spv_connected_peers: AtomicU16,
     /// When SPV first entered an active state (`Starting`/`Syncing`) with zero
@@ -71,6 +77,7 @@ impl ConnectionStatus {
             backend_mode: AtomicU8::new(CoreBackendMode::Rpc.as_u8()),
             disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
+            spv_last_error: Mutex::new(None),
             last_update: Mutex::new(Instant::now()),
             spv_connected_peers: AtomicU16::new(0),
             spv_no_peers_since: Mutex::new(None),
@@ -103,6 +110,9 @@ impl ConnectionStatus {
             OverallConnectionState::Disconnected as u8,
             Ordering::Relaxed,
         );
+        if let Ok(mut err) = self.spv_last_error.lock() {
+            *err = None;
+        }
         // Set last_update to epoch so the next trigger_refresh fires immediately
         *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
             Instant::now() - REFRESH_CONNECTED;
@@ -249,6 +259,7 @@ impl ConnectionStatus {
                                 OverallConnectionState::Connecting
                             }
                         }
+                        SpvStatus::Error => OverallConnectionState::Error,
                         _ => OverallConnectionState::Disconnected,
                     }
                 }
@@ -287,10 +298,11 @@ impl ConnectionStatus {
 
                 let header = match overall {
                     OverallConnectionState::Synced => "Connected to Dash Core Wallet",
-                    // RPC mode doesn't currently produce Connecting/Syncing, but kept for forward-compat.
+                    // RPC mode doesn't currently produce Connecting/Syncing/Error, but kept for forward-compat.
                     OverallConnectionState::Connecting | OverallConnectionState::Syncing => {
                         "Syncing to Dash Core Wallet"
                     }
+                    OverallConnectionState::Error => "Connection error",
                     OverallConnectionState::Disconnected if self.rpc_online() => {
                         "Dash Core connection incomplete"
                     }
@@ -301,14 +313,25 @@ impl ConnectionStatus {
                 format!("{header}\n{rpc_status}\n{zmq_status}\n{dapi_status}")
             }
             CoreBackendMode::Spv => {
-                let header = match overall {
-                    OverallConnectionState::Synced => "Ready",
-                    OverallConnectionState::Connecting => "Connecting...",
-                    OverallConnectionState::Syncing => "Syncing",
-                    OverallConnectionState::Disconnected => "Disconnected",
+                let header: std::borrow::Cow<'_, str> = match overall {
+                    OverallConnectionState::Synced => "Ready".into(),
+                    OverallConnectionState::Connecting => "Connecting...".into(),
+                    OverallConnectionState::Syncing => "Syncing".into(),
+                    OverallConnectionState::Error => {
+                        let detail = self
+                            .spv_last_error
+                            .lock()
+                            .ok()
+                            .and_then(|g| g.clone())
+                            .unwrap_or_else(|| "unknown error".to_string());
+                        format!("SPV sync error: {detail}").into()
+                    }
+                    OverallConnectionState::Disconnected => "Disconnected".into(),
                 };
                 let spv_label = if spv_status == SpvStatus::Running {
                     "SPV: Synced".to_string()
+                } else if spv_status == SpvStatus::Error {
+                    "SPV: Error".to_string()
                 } else {
                     app_context
                         .spv_manager()
@@ -418,6 +441,9 @@ impl ConnectionStatus {
                     snapshot.status
                 );
                 self.set_spv_status(snapshot.status);
+                if let Ok(mut err) = self.spv_last_error.lock() {
+                    *err = snapshot.last_error;
+                }
                 let peers = (snapshot.connected_peers).min(u16::MAX as usize) as u16;
                 self.spv_connected_peers.store(peers, Ordering::Relaxed);
 

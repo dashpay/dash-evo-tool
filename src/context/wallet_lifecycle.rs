@@ -91,15 +91,13 @@ impl AppContext {
         wallet: Wallet,
     ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), String> {
         // 1. Persist wallet to database
-        self.db
-            .store_wallet(&wallet, &self.network)
-            .map_err(|e| {
-                if e.to_string().contains("UNIQUE constraint failed") {
-                    "This wallet has already been imported for this network.".to_string()
-                } else {
-                    e.to_string()
-                }
-            })?;
+        self.db.store_wallet(&wallet, &self.network).map_err(|e| {
+            if e.to_string().contains("UNIQUE constraint failed") {
+                "This wallet has already been imported for this network.".to_string()
+            } else {
+                e.to_string()
+            }
+        })?;
 
         let seed_hash = wallet.seed_hash();
 

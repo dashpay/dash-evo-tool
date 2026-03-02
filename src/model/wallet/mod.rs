@@ -450,7 +450,10 @@ impl Wallet {
         master_pub: &ExtendedPubKey,
         network: Network,
         secp: &Secp256k1<dash_sdk::dpp::dashcore::secp256k1::All>,
-    ) -> (BTreeMap<Address, DerivationPath>, BTreeMap<DerivationPath, AddressInfo>) {
+    ) -> (
+        BTreeMap<Address, DerivationPath>,
+        BTreeMap<DerivationPath, AddressInfo>,
+    ) {
         let mut known_addresses = BTreeMap::new();
         let mut watched_addresses = BTreeMap::new();
 

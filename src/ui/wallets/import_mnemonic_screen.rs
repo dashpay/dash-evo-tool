@@ -198,8 +198,7 @@ impl ImportMnemonicScreen {
                 password,
             )?;
 
-            let (new_wallet_seed_hash, wallet_arc) =
-                self.app_context.register_wallet(wallet)?;
+            let (new_wallet_seed_hash, wallet_arc) = self.app_context.register_wallet(wallet)?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {

@@ -23,8 +23,7 @@ async fn test_spv_sync_and_create_wallet() {
     let ctx = BackendTestContext::new(Network::Testnet);
 
     // 2. Start SPV sync
-    ctx.start_spv()
-        .expect("SPV start should succeed");
+    ctx.start_spv().expect("SPV start should succeed");
 
     // 3. Wait for at least one peer to connect (60s timeout for CI environments)
     let status = ctx
@@ -38,8 +37,8 @@ async fn test_spv_sync_and_create_wallet() {
     );
 
     // 4. Generate a new wallet from a random mnemonic
-    let mnemonic = Mnemonic::generate_in(Language::English, 12)
-        .expect("Mnemonic generation should succeed");
+    let mnemonic =
+        Mnemonic::generate_in(Language::English, 12).expect("Mnemonic generation should succeed");
     let seed = mnemonic.to_seed("");
 
     let wallet = Wallet::new_from_seed(
@@ -64,7 +63,7 @@ async fn test_spv_sync_and_create_wallet() {
 
     // 6. Verify wallet is in the in-memory map
     {
-        let wallets = ctx.app_context.wallets.read().expect("wallets lock");
+        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
         assert!(
             wallets.contains_key(&seed_hash),
             "Wallet should be registered in AppContext.wallets"
@@ -75,7 +74,7 @@ async fn test_spv_sync_and_create_wallet() {
     {
         let db_wallets = ctx
             .app_context
-            .db
+            .db()
             .get_wallets(&Network::Testnet)
             .expect("DB query should succeed");
         assert!(

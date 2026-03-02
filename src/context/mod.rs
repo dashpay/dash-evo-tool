@@ -581,6 +581,20 @@ impl AppContext {
     }
 }
 
+/// Test-only accessors for fields that are normally `pub(crate)`.
+#[cfg(any(test, feature = "testing"))]
+impl AppContext {
+    /// Returns a reference to the database.
+    pub fn db(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    /// Returns a reference to the wallets map.
+    pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
+        &self.wallets
+    }
+}
+
 /// Returns the default platform version for the given network.
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Ideally use sdk.load().version() but this is a free function with no sdk access

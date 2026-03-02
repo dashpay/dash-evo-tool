@@ -6,7 +6,6 @@
 use dash_evo_tool::app_dir::copy_env_file_if_not_exists;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::ConnectionStatus;
-use dash_evo_tool::database::Database;
 use dash_evo_tool::database::test_helpers::create_temp_database;
 use dash_evo_tool::spv::{CoreBackendMode, SpvStatus};
 use dash_evo_tool::utils::tasks::TaskManager;
@@ -63,18 +62,14 @@ impl BackendTestContext {
 
     /// Switch to SPV backend mode and start the SPV sync loop.
     pub fn start_spv(&self) -> Result<(), String> {
-        self.app_context
-            .set_core_backend_mode(CoreBackendMode::Spv);
+        self.app_context.set_core_backend_mode(CoreBackendMode::Spv);
         self.app_context.start_spv()
     }
 
     /// Wait until at least one SPV peer is connected, or timeout.
     ///
     /// Returns the [`SpvStatus`] on success, or an error on timeout.
-    pub async fn wait_for_spv_peers(
-        &self,
-        wait_timeout: Duration,
-    ) -> Result<SpvStatus, String> {
+    pub async fn wait_for_spv_peers(&self, wait_timeout: Duration) -> Result<SpvStatus, String> {
         let spv = self.app_context.spv_manager().clone();
 
         timeout(wait_timeout, async move {
@@ -87,12 +82,7 @@ impl BackendTestContext {
             }
         })
         .await
-        .map_err(|_| {
-            format!(
-                "Timed out after {:?} waiting for SPV peers",
-                wait_timeout
-            )
-        })
+        .map_err(|_| format!("Timed out after {:?} waiting for SPV peers", wait_timeout))
     }
 }
 

@@ -152,8 +152,7 @@ impl AddNewWalletScreen {
                 self.receive_address = Some(address.clone());
             }
 
-            let (new_wallet_seed_hash, _wallet_arc) =
-                self.app_context.register_wallet(wallet)?;
+            let (new_wallet_seed_hash, _wallet_arc) = self.app_context.register_wallet(wallet)?;
 
             self.created_wallet_seed_hash = Some(new_wallet_seed_hash);
             self.wallet_created = true;

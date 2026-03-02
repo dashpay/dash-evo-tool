@@ -80,6 +80,58 @@ impl AppContext {
         Ok(())
     }
 
+    /// Persist a wallet to the database, register it in the in-memory map,
+    /// save its known addresses, and load it into SPV if applicable.
+    ///
+    /// This is the single entry point for adding a wallet to the system.
+    /// UI screens should call this after constructing a [`Wallet`] via
+    /// [`Wallet::new_from_seed()`].
+    pub fn register_wallet(
+        self: &Arc<Self>,
+        wallet: Wallet,
+    ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), String> {
+        // 1. Persist wallet to database
+        self.db
+            .store_wallet(&wallet, &self.network)
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    "This wallet has already been imported for this network.".to_string()
+                } else {
+                    e.to_string()
+                }
+            })?;
+
+        let seed_hash = wallet.seed_hash();
+
+        // 2. Save known addresses to database
+        for (address, path) in &wallet.known_addresses {
+            let _ = self.db.add_address_if_not_exists(
+                &seed_hash,
+                address,
+                &self.network,
+                path,
+                DerivationPathReference::BIP44,
+                DerivationPathType::CLEAR_FUNDS,
+                None,
+            );
+        }
+
+        // 3. Register in-memory
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+        if let Ok(mut wallets) = self.wallets.write() {
+            wallets.insert(seed_hash, wallet_arc.clone());
+            self.has_wallet.store(true, Ordering::Relaxed);
+        }
+
+        // 4. Bootstrap any additional addresses and load into SPV
+        self.bootstrap_wallet_addresses(&wallet_arc);
+        if self.core_backend_mode() == CoreBackendMode::Spv {
+            self.handle_wallet_unlocked(&wallet_arc);
+        }
+
+        Ok((seed_hash, wallet_arc))
+    }
+
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {
         if let Ok(mut guard) = wallet.write()
             && guard.known_addresses.is_empty()

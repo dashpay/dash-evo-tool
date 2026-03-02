@@ -26,6 +26,8 @@ use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::{Network, Txid};
+#[cfg(any(test, feature = "testing"))]
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -33,6 +35,8 @@ use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::v11::PLATFORM_V11;
 use dash_sdk::platform::DataContract;
+#[cfg(any(test, feature = "testing"))]
+use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -592,6 +596,11 @@ impl AppContext {
     /// Returns a reference to the wallets map.
     pub fn wallets(&self) -> &RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>> {
         &self.wallets
+    }
+
+    /// Returns the DashPay contract identifier.
+    pub fn dashpay_contract_id(&self) -> Identifier {
+        self.dashpay_contract.id()
     }
 }
 

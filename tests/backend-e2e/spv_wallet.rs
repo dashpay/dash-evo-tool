@@ -1,92 +1,68 @@
-//! Test scenario: connect to testnet via SPV, sync, create a wallet.
+//! Test: SPV sync and wallet creation using shared context.
 
-use crate::helpers::BackendTestContext;
+use crate::harness::CTX;
 use bip39::{Language, Mnemonic};
-use dash_evo_tool::model::wallet::Wallet;
-use dash_evo_tool::spv::SpvStatus;
 use dash_sdk::dpp::dashcore::Network;
 use std::time::Duration;
 use tokio::time::timeout;
 
-/// Connect to Dash testnet via SPV, wait for peer connections, create a new
-/// wallet, verify it is persisted to the database and loaded into the SPV
-/// subsystem, then shut down gracefully.
+/// Verify SPV is running and can register a new wallet.
 ///
-/// # Requirements
-///
-/// - Network access to Dash testnet peers (uses DAPI addresses from `.env.example`)
-/// - No running Dash Core node required (SPV-only)
-#[ignore] // Requires network access to Dash testnet peers
+/// Uses the shared `BackendTestContext` -- SPV is already started.
+#[ignore]
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 async fn test_spv_sync_and_create_wallet() {
-    // 1. Set up headless AppContext for testnet
-    let ctx = BackendTestContext::new(Network::Testnet);
+    let ctx = &*CTX;
+    let app_context = &ctx.app_context;
 
-    // 2. Start SPV sync
-    ctx.start_spv().expect("SPV start should succeed");
-
-    // 3. Wait for at least one peer to connect (60s timeout for CI environments)
-    let status = ctx
-        .wait_for_spv_peers(Duration::from_secs(60))
-        .await
-        .expect("Should connect to at least one testnet peer");
-    assert!(
-        matches!(status, SpvStatus::Syncing | SpvStatus::Running),
-        "SPV should be syncing or running after connecting peers, got: {:?}",
-        status
-    );
-
-    // 4. Generate a new wallet from a random mnemonic
+    // Generate a new wallet from a random mnemonic
     let mnemonic =
         Mnemonic::generate_in(Language::English, 12).expect("Mnemonic generation should succeed");
     let seed = mnemonic.to_seed("");
 
-    let wallet = Wallet::new_from_seed(
+    let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
         seed,
         Network::Testnet,
-        Some("Backend E2E Test Wallet".to_string()),
-        None, // no password
+        Some("SPV E2E Test Wallet".to_string()),
+        None,
     )
     .expect("Wallet::new_from_seed should succeed");
 
-    // Verify the wallet has a first receive address
     assert!(
         !wallet.known_addresses.is_empty(),
         "New wallet should have at least one known address"
     );
 
-    // 5. Register the wallet (persists to DB, loads into SPV)
-    let (seed_hash, _wallet_arc) = ctx
-        .app_context
+    // Register the wallet
+    let (seed_hash, _wallet_arc) = app_context
         .register_wallet(wallet)
         .expect("register_wallet should succeed");
 
-    // 6. Verify wallet is in the in-memory map
+    // Verify in-memory
     {
-        let wallets = ctx.app_context.wallets().read().expect("wallets lock");
+        let wallets = app_context.wallets().read().expect("wallets lock");
         assert!(
             wallets.contains_key(&seed_hash),
-            "Wallet should be registered in AppContext.wallets"
+            "Wallet should be registered"
         );
     }
 
-    // 7. Verify wallet is persisted in the database
+    // Verify in DB
     {
-        let db_wallets = ctx
-            .app_context
+        let db_wallets = app_context
             .db()
             .get_wallets(&Network::Testnet)
             .expect("DB query should succeed");
         assert!(
             db_wallets.iter().any(|w| w.seed_hash() == seed_hash),
-            "Wallet should be persisted in the database"
+            "Wallet should be persisted in DB"
         );
     }
 
-    // 8. Wait for wallet to appear in SPV subsystem (10s timeout)
+    // Verify in SPV (10s timeout)
     let wallet_in_spv = timeout(Duration::from_secs(10), async {
         loop {
-            let snapshot = ctx.app_context.spv_manager().det_wallets_snapshot();
+            let snapshot = app_context.spv_manager().det_wallets_snapshot();
             if snapshot.contains_key(&seed_hash) {
                 return true;
             }
@@ -96,8 +72,6 @@ async fn test_spv_sync_and_create_wallet() {
     .await;
     assert!(
         wallet_in_spv.unwrap_or(false),
-        "Wallet should appear in SPV subsystem within 10 seconds"
+        "Wallet should appear in SPV within 10s"
     );
-
-    // 9. Graceful shutdown happens in BackendTestContext::drop
 }

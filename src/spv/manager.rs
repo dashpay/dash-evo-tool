@@ -3,6 +3,7 @@ use crate::app_dir::app_user_data_dir_path;
 use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
+use arc_swap::ArcSwapOption;
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
@@ -20,8 +21,6 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
 use dash_sdk::dpp::key_wallet_manager::WalletEvent;
 use dash_sdk::dpp::key_wallet_manager::wallet_interface::WalletInterface;
 use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
-// use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey; // not needed directly here
-use arc_swap::ArcSwapOption;
 use std::fmt;
 use std::fs;
 use std::net::ToSocketAddrs;

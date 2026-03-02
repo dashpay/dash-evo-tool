@@ -196,6 +196,10 @@ impl BannerHandle {
     /// (nested causes, variant names) that is more useful in a diagnostic
     /// details pane than the single-line `Display` output.
     ///
+    /// INTENTIONAL(RUST-003): When plain strings are passed, `{:?}` wraps them
+    /// in quotes. This is acceptable since `with_details` is primarily for
+    /// error types, not user-facing text.
+    ///
     /// Returns `None` if the banner no longer exists.
     pub fn with_details(&self, details: impl fmt::Debug) -> Option<&Self> {
         let details = format!("{:?}", details);
@@ -759,14 +763,31 @@ impl<T> OptionBannerShowExt<T> for Option<T> {
     }
 }
 
-/// Extension for `Option<BannerHandle>` — banner cleanup.
+/// Extension for `Option<BannerHandle>` — banner lifecycle management.
+///
+/// Screens that run backend tasks typically store a `refresh_banner: Option<BannerHandle>`.
+/// This trait provides convenience methods to clear and/or replace that banner atomically.
 ///
 /// ```ignore
 /// self.refresh_banner.take_and_clear();
+/// self.refresh_banner.replace(ctx, "Loading...", MessageType::Info);
+/// self.refresh_banner.replace_with_elapsed(ctx, "Refreshing...", MessageType::Info);
 /// ```
 pub trait OptionBannerExt {
     /// Takes the handle (leaving `None`) and clears the associated banner.
     fn take_and_clear(&mut self);
+
+    /// Clears any existing banner, sets a new global banner, and stores the handle.
+    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
+
+    /// Like [`replace`](OptionBannerExt::replace), but also enables elapsed-time display on
+    /// the new banner (useful for long-running operations).
+    fn replace_with_elapsed(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    );
 }
 
 impl OptionBannerExt for Option<BannerHandle> {
@@ -774,5 +795,22 @@ impl OptionBannerExt for Option<BannerHandle> {
         if let Some(h) = self.take() {
             h.clear();
         }
+    }
+
+    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
+        self.take_and_clear();
+        *self = Some(MessageBanner::set_global(ctx, msg.to_string(), msg_type));
+    }
+
+    fn replace_with_elapsed(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    ) {
+        self.take_and_clear();
+        let handle = MessageBanner::set_global(ctx, msg.to_string(), msg_type);
+        handle.with_elapsed();
+        *self = Some(handle);
     }
 }

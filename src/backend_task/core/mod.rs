@@ -619,7 +619,11 @@ impl AppContext {
         // Get change address from wallet manager
         let change_result = wm
             .get_change_address(wallet_id, account_index, account_type_pref, true)
-            .map_err(|_| WalletError::AccountNotFound(account_index))?;
+            .map_err(|e| {
+                WalletError::TransactionBuild(format!(
+                    "change address for account {account_index}: {e}"
+                ))
+            })?;
         let change_address = change_result
             .address
             .ok_or_else(|| WalletError::AddressGeneration("No change address generated".into()))?;
@@ -657,6 +661,7 @@ impl AppContext {
                 current_height,
                 |_| None, // No private keys for unsigned transaction
             )
+            // TODO(RUST-002): String-based error classification — see #660
             .map_err(|e| match e.to_string() {
                 msg if msg.contains("Insufficient") => WalletError::InsufficientFunds,
                 msg => WalletError::TransactionBuild(msg),

@@ -3,10 +3,79 @@
 use crate::harness::ctx;
 use crate::identity_helpers::get_receive_address;
 use crate::task_runner::run_task;
-use crate::wait::wait_for_balance;
+use crate::wait::{wait_for_balance, wait_for_spendable_balance};
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+use dash_evo_tool::context::AppContext;
+use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
+
+/// Send a wallet payment with retry logic for "Insufficient funds" errors.
+///
+/// After a previous send, the change output may not be spendable yet (waiting for
+/// InstantSend lock or block confirmation). This helper retries with backoff.
+async fn send_with_retry(
+    app_context: &Arc<AppContext>,
+    wallet: &Arc<RwLock<Wallet>>,
+    wallet_hash: WalletSeedHash,
+    address: String,
+    amount_duffs: u64,
+    subtract_fee: bool,
+    memo: &str,
+) -> BackendTaskSuccessResult {
+    const MAX_RETRIES: u32 = 5;
+    const RETRY_DELAY: Duration = Duration::from_secs(10);
+
+    for attempt in 1..=MAX_RETRIES {
+        // On retries, wait for spendable balance
+        if attempt > 1 {
+            println!(
+                "  Retry {}/{}: waiting for wallet UTXOs to become spendable...",
+                attempt, MAX_RETRIES
+            );
+            let _ = wait_for_spendable_balance(
+                app_context,
+                wallet_hash,
+                if subtract_fee { 1 } else { amount_duffs },
+                RETRY_DELAY,
+            )
+            .await;
+        }
+
+        let request = WalletPaymentRequest {
+            recipients: vec![PaymentRecipient {
+                address: address.clone(),
+                amount_duffs,
+            }],
+            subtract_fee_from_amount: subtract_fee,
+            memo: Some(memo.to_string()),
+            override_fee: None,
+        };
+
+        let task = BackendTask::CoreTask(CoreTask::SendWalletPayment {
+            wallet: wallet.clone(),
+            request,
+        });
+
+        match run_task(app_context, task).await {
+            Ok(result) => return result,
+            Err(e) if e.to_string().contains("Insufficient") && attempt < MAX_RETRIES => {
+                println!(
+                    "  Send attempt {}/{} failed (Insufficient funds), will retry...",
+                    attempt, MAX_RETRIES
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+                continue;
+            }
+            Err(e) => panic!(
+                "Payment '{}' failed after {} attempts: {}",
+                memo, attempt, e
+            ),
+        }
+    }
+    panic!("Payment '{}' failed after {} retries", memo, MAX_RETRIES);
+}
 
 /// Send DASH between two test wallets and verify balances.
 #[ignore]
@@ -16,7 +85,7 @@ async fn test_send_and_receive_funds() {
     let app_context = &ctx.app_context;
 
     // Create two funded test wallets
-    let (_hash_a, wallet_a) = ctx.create_funded_test_wallet(500_000).await;
+    let (hash_a, wallet_a) = ctx.create_funded_test_wallet(500_000).await;
     let (hash_b, wallet_b) = ctx.create_funded_test_wallet(100_000).await;
 
     let initial_b_balance = {
@@ -24,28 +93,25 @@ async fn test_send_and_receive_funds() {
         w.total_balance_duffs()
     };
 
+    // Wait for wallet A's funds to become spendable before sending
+    wait_for_spendable_balance(app_context, hash_a, 1, Duration::from_secs(60))
+        .await
+        .expect("Wallet A funds should become spendable");
+
     // Send 200,000 duffs from A to B
     let send_amount: u64 = 200_000;
     let b_address = get_receive_address(app_context, &wallet_b);
 
-    let request = WalletPaymentRequest {
-        recipients: vec![PaymentRecipient {
-            address: b_address,
-            amount_duffs: send_amount,
-        }],
-        subtract_fee_from_amount: false,
-        memo: Some("E2E test A->B".to_string()),
-        override_fee: None,
-    };
-
-    let task = BackendTask::CoreTask(CoreTask::SendWalletPayment {
-        wallet: wallet_a.clone(),
-        request,
-    });
-
-    let result = run_task(app_context, task)
-        .await
-        .expect("Payment A->B should succeed");
+    let result = send_with_retry(
+        app_context,
+        &wallet_a,
+        hash_a,
+        b_address,
+        send_amount,
+        false,
+        "E2E test A->B",
+    )
+    .await;
 
     match &result {
         BackendTaskSuccessResult::WalletPayment {
@@ -72,27 +138,24 @@ async fn test_send_and_receive_funds() {
         "B should have received funds"
     );
 
+    // Wait for B's funds to become spendable before sending back
+    wait_for_spendable_balance(app_context, hash_b, send_amount, Duration::from_secs(60))
+        .await
+        .expect("Wallet B funds should become spendable");
+
     // Send funds back from B to A
     let a_address = get_receive_address(app_context, &wallet_a);
 
-    let request = WalletPaymentRequest {
-        recipients: vec![PaymentRecipient {
-            address: a_address,
-            amount_duffs: send_amount,
-        }],
-        subtract_fee_from_amount: true,
-        memo: Some("E2E test B->A return".to_string()),
-        override_fee: None,
-    };
-
-    let task = BackendTask::CoreTask(CoreTask::SendWalletPayment {
-        wallet: wallet_b.clone(),
-        request,
-    });
-
-    run_task(app_context, task)
-        .await
-        .expect("Payment B->A should succeed");
+    let _result = send_with_retry(
+        app_context,
+        &wallet_b,
+        hash_b,
+        a_address,
+        send_amount,
+        true,
+        "E2E test B->A return",
+    )
+    .await;
 
     println!("  Round-trip payment completed successfully");
 }

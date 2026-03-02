@@ -3,11 +3,13 @@
 use crate::harness::ctx;
 use crate::identity_helpers::{build_identity_registration, get_receive_address};
 use crate::task_runner::run_task;
+use crate::wait::wait_for_spendable_balance;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use std::str::FromStr;
+use std::time::Duration;
 
 /// Create identity, then withdraw some credits to a Core address.
 #[ignore]
@@ -17,6 +19,11 @@ async fn test_withdraw_from_identity() {
 
     // Create funded test wallet
     let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
+
+    // Wait for test wallet funds to become spendable before identity registration
+    wait_for_spendable_balance(&ctx.app_context, seed_hash, 1, Duration::from_secs(60))
+        .await
+        .expect("Test wallet funds should become spendable");
 
     // Register identity
     let registration_info = build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
-/// Wait until a wallet has at least `min_balance` duffs, polling every 2s.
+/// Wait until a wallet has at least `min_balance` total duffs (including unconfirmed),
+/// polling every 2s. Triggers SPV reconciliation on each poll.
 pub async fn wait_for_balance(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
@@ -15,6 +16,9 @@ pub async fn wait_for_balance(
 ) -> Result<u64, String> {
     timeout(wait_timeout, async {
         loop {
+            // Trigger reconcile so DET wallet model reflects latest SPV state
+            let _ = app_context.reconcile_spv_wallets().await;
+
             let balance = {
                 let wallets = app_context.wallets().read().expect("wallets lock");
                 wallets.get(&wallet_hash).map(|wallet_arc| {
@@ -31,7 +35,67 @@ pub async fn wait_for_balance(
         }
     })
     .await
-    .map_err(|_| format!("Timed out waiting for balance >= {} duffs", min_balance))
+    .map_err(|_| {
+        format!(
+            "Timed out waiting for total balance >= {} duffs",
+            min_balance
+        )
+    })
+}
+
+/// Wait until a wallet has at least `min_balance` **spendable** (confirmed/IS-locked) duffs.
+///
+/// This is stricter than `wait_for_balance()` — it ensures the funds are actually
+/// available for transaction building, not just visible as unconfirmed balance.
+/// Triggers SPV reconciliation on each poll.
+pub async fn wait_for_spendable_balance(
+    app_context: &Arc<AppContext>,
+    wallet_hash: WalletSeedHash,
+    min_balance: u64,
+    wait_timeout: Duration,
+) -> Result<u64, String> {
+    timeout(wait_timeout, async {
+        loop {
+            // Trigger reconcile so DET wallet model reflects latest SPV state
+            let _ = app_context.reconcile_spv_wallets().await;
+
+            let balance = {
+                let wallets = app_context.wallets().read().expect("wallets lock");
+                wallets.get(&wallet_hash).map(|wallet_arc| {
+                    let wallet = wallet_arc.read().expect("wallet lock");
+                    wallet.confirmed_balance_duffs()
+                })
+            };
+            if let Some(b) = balance
+                && b >= min_balance
+            {
+                return b;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    })
+    .await
+    .map_err(|_| {
+        // Report both confirmed and total for diagnostics
+        let (confirmed, total) = {
+            let wallets = app_context.wallets().read().expect("wallets lock");
+            wallets
+                .get(&wallet_hash)
+                .map(|wallet_arc| {
+                    let wallet = wallet_arc.read().expect("wallet lock");
+                    (
+                        wallet.confirmed_balance_duffs(),
+                        wallet.total_balance_duffs(),
+                    )
+                })
+                .unwrap_or((0, 0))
+        };
+        format!(
+            "Timed out waiting for spendable balance >= {} duffs \
+             (confirmed: {}, total: {})",
+            min_balance, confirmed, total
+        )
+    })
 }
 
 /// Wait until a wallet appears in the SPV subsystem.

@@ -9,7 +9,7 @@ use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, ScriptBuf, Transaction
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::sighash::SighashCache;
 use dash_sdk::dpp::dashcore::{EcdsaSighashType, secp256k1::Secp256k1};
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
@@ -63,11 +63,9 @@ impl AppContext {
             // Start with an estimate assuming ~10 inputs, then refine
             let num_outputs = outputs.len() + 1; // +1 for change
             let initial_fee_estimate = Self::estimate_p2pkh_tx_size(10, num_outputs);
-            let initial_fee = request.override_fee.unwrap_or_else(|| {
-                FeeLevel::Normal
-                    .fee_rate()
-                    .calculate_fee(initial_fee_estimate)
-            });
+            let initial_fee = request
+                .override_fee
+                .unwrap_or_else(|| FeeRate::normal().calculate_fee(initial_fee_estimate));
 
             let _target_amount = total_output + initial_fee;
 
@@ -91,7 +89,7 @@ impl AppContext {
                 let current_size = Self::estimate_p2pkh_tx_size(selected.len(), num_outputs);
                 let current_fee = request
                     .override_fee
-                    .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(current_size));
+                    .unwrap_or_else(|| FeeRate::normal().calculate_fee(current_size));
 
                 if selected_total >= total_output + current_fee {
                     break;
@@ -102,7 +100,7 @@ impl AppContext {
             let final_size = Self::estimate_p2pkh_tx_size(selected.len(), num_outputs);
             let final_fee = request
                 .override_fee
-                .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(final_size));
+                .unwrap_or_else(|| FeeRate::normal().calculate_fee(final_size));
 
             if selected_total < total_output + final_fee {
                 return Err(format!(
@@ -124,7 +122,7 @@ impl AppContext {
             Self::estimate_p2pkh_tx_size(selected_utxos.len(), num_outputs_with_change);
         let fee = request
             .override_fee
-            .unwrap_or_else(|| FeeLevel::Normal.fee_rate().calculate_fee(estimated_size));
+            .unwrap_or_else(|| FeeRate::normal().calculate_fee(estimated_size));
 
         let total_input: u64 = selected_utxos.iter().map(|(_, tx_out)| tx_out.value).sum();
 

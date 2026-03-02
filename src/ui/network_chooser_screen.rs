@@ -1790,10 +1790,7 @@ impl NetworkChooserScreen {
                 }
             }
             SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
         }
     }
 
@@ -1827,10 +1824,7 @@ impl NetworkChooserScreen {
                 }
             }
             SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
         }
     }
 
@@ -1867,10 +1861,7 @@ impl NetworkChooserScreen {
                 }
             }
             SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
         }
     }
 
@@ -1893,10 +1884,7 @@ impl NetworkChooserScreen {
                 (mn.current_height() as f32 / target as f32).clamp(0.0, 1.0)
             }
             SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
         }
     }
 
@@ -2015,9 +2003,7 @@ impl NetworkChooserScreen {
                 SyncState::WaitingForConnections => "Connecting to peers".to_string(),
                 SyncState::WaitForEvents => "Querying peer heights".to_string(),
                 SyncState::Error => "Sync error".to_string(),
-                SyncState::Initializing | SyncState::Syncing | SyncState::Synced => {
-                    "Syncing...".to_string()
-                }
+                SyncState::Syncing | SyncState::Synced => "Syncing...".to_string(),
             }
         };
 

@@ -85,19 +85,11 @@ impl TransferTokensScreen {
             .or_else(|| {
                 MessageBanner::set_global(
                     app_context.egui_ctx(),
-                    "Identity not found in local store",
+                    "Identity not found in local store — cannot open Transfer screen",
                     MessageType::Error,
                 );
                 None
             });
-
-        if identity.is_none() {
-            MessageBanner::set_global(
-                app_context.egui_ctx(),
-                "No identities loaded — cannot open Transfer screen",
-                MessageType::Error,
-            );
-        }
 
         let max_amount = Amount::from(&identity_token_balance);
         let selected_key: Option<IdentityPublicKey> = identity.as_ref().and_then(|id| {
@@ -339,9 +331,10 @@ impl ScreenLike for TransferTokensScreen {
                 .unwrap_or_else(|e| {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        format!("Failed to load local identities: {e}"),
+                        "Failed to load local identities",
                         MessageType::Error,
-                    );
+                    )
+                    .with_details(e);
                     vec![]
                 });
             if let Some(refreshed) = all_ids
@@ -360,16 +353,23 @@ impl ScreenLike for TransferTokensScreen {
                 Ok(token_balances) => {
                     self.max_amount = token_balances
                         .values()
-                        .find(|balance| balance.identity_id == current_id)
+                        .find(|balance| {
+                            balance.identity_id == current_id
+                                && balance.data_contract_id
+                                    == self.identity_token_balance.data_contract_id
+                                && balance.token_position
+                                    == self.identity_token_balance.token_position
+                        })
                         .map(Amount::from)
                         .unwrap_or_default();
                 }
                 Err(e) => {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        format!("Failed to load token balances: {e}"),
+                        "Failed to load token balances",
                         MessageType::Error,
-                    );
+                    )
+                    .with_details(e);
                 }
             }
         }

@@ -3,117 +3,217 @@
 Key files for manual review: architectural decisions, reusable patterns, and behavioral changes.
 Files that merely apply patterns defined here are excluded (~57 files).
 
+**Diff summary**: 83 files changed, 3,106 insertions, 3,739 deletions (net −633 lines).
+
+---
+
 ## 1. Core Infrastructure
 
 ### [`src/ui/components/message_banner.rs`](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-5c97c5af2fd0a32afba3e66e5f6a5f7acafb9a73da0d3b89a92f8fc9fca06a35)
 
 Heart of the PR. All other changes depend on patterns defined here.
 
-| What | Lines | Link |
-|---|---|---|
-| `set_global` idempotency change — no longer resets existing banners | L292–333 | [L292](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-5c97c5af2fd0a32afba3e66e5f6a5f7acafb9a73da0d3b89a92f8fc9fca06a35R292) |
-| `replace_global` docs + empty-text semantics | L338–391 | [L338](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-5c97c5af2fd0a32afba3e66e5f6a5f7acafb9a73da0d3b89a92f8fc9fca06a35R338) |
-| `with_details` now takes `impl Debug` instead of `&str` | L190–210 | [L190](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-5c97c5af2fd0a32afba3e66e5f6a5f7acafb9a73da0d3b89a92f8fc9fca06a35R190) |
-| `ResultBannerExt` — `or_show_error()` on `Result` | L715–740 | [L715](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-5c97c5af2fd0a32afba3e66e5f6a5f7acafb9a73da0d3b89a92f8fc9fca06a35R715) |
-| `OptionBannerExt` — `or_show_error()` + `take_and_clear()` on `Option<BannerHandle>` | L742–770 | [L742](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-5c97c5af2fd0a32afba3e66e5f6a5f7acafb9a73da0d3b89a92f8fc9fca06a35R742) |
-| SEC-003: Eviction log no longer includes message text | L327–330 | [L327](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-5c97c5af2fd0a32afba3e66e5f6a5f7acafb9a73da0d3b89a92f8fc9fca06a35R327) |
+| What | Notes |
+|---|---|
+| `set_global` idempotency — no longer resets existing banners | Subtle semantic change; all callers rely on this |
+| `replace_global` — docs + empty-text semantics | Used for progress update sequences |
+| `with_details` takes `impl Debug` instead of `&str` | API broadening |
+| `ResultBannerExt` — `or_show_error()` on `Result<T, E: Display>` | Shows error banner, passes `self` through unchanged |
+| `OptionBannerShowExt` — `or_show_error()` on `Option<T>` | Shows named error banner when `None`, passes `self` through |
+| `OptionBannerExt` — `take_and_clear()` on `Option<BannerHandle>` | Clears progress banner without leaking the handle |
+| SEC-003: Eviction log no longer includes message text | Privacy fix |
 
-**Review focus**: Verify the idempotency change in `set_global` (old behavior reset existing banners, new behavior is a no-op). This is a subtle semantic change that affects all callers.
+**Extension trait summary**:
+
+```rust
+// Result<T, E>  — show banner on Err, return self unchanged
+result.or_show_error(ctx)
+
+// Option<T>  — show named banner on None, return self unchanged
+option.or_show_error(ctx, "message")
+
+// Option<BannerHandle>  — take handle + clear banner atomically
+self.refresh_banner.take_and_clear()
+```
+
+**Review focus**: Verify the idempotency change in `set_global` (old behavior reset existing banners, new behavior is a no-op). This subtle semantic change affects all callers.
+
+---
 
 ## 2. Behavioral / Architectural Decisions
 
-### [`src/ui/mod.rs` — ScreenLike trait](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-d64f1e2614b0de74ea77854bc2fb944deaaa5b40a4e37b91a81a94da9bd5ebf8R840)
+### [`src/ui/mod.rs` — ScreenLike trait](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-d64f1e2614b0de74ea77854bc2fb944deaaa5b40a4e37b91a81a94da9bd5ebf8)
 
-`display_task_result` default changed from showing "Success" banner to **no-op**. Breaking behavioral change — screens that relied on the default now silently swallow success results.
+`display_task_result` default changed from showing "Success" banner to **no-op**. Breaking behavioral change — screens that relied on the default now silently swallow success results. `display_message` contract is also clarified: screens only implement it for side-effects (e.g., clearing a progress banner); banner display is handled centrally by `AppState`.
 
-| What | Lines | Link |
-|---|---|---|
-| `display_task_result` default → no-op | L840–857 | [L840](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-d64f1e2614b0de74ea77854bc2fb944deaaa5b40a4e37b91a81a94da9bd5ebf8R840) |
+| What | Notes |
+|---|---|
+| `display_task_result` default → no-op | AppState now owns success banner display |
+| `display_message` contract clarified | Side-effects only; all 60+ screen impls are boilerplate no-ops |
 
-**Review focus**: Verify that AppState now handles success banners centrally, and no screen was relying on the old default `display_message("Success", Success)`.
+**Review focus**: Verify that `AppState` handles success banners centrally (see `src/app.rs` below), and no screen depended on the old default showing "Success".
 
-### [`src/app.rs` — Connection banner + network switch](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-8c6f1be9c6b6eb6dc2c76e6a6f2706d76f81aad0ff222c5a9ef4eab78acee7b5)
+### [`src/app.rs` — Task result routing + connection banner](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-8c6f1be9c6b6eb6dc2c76e6a6f2706d76f81aad0ff222c5a9ef4eab78acee7b5)
 
-New `update_connection_banner()` state machine and `clear_all_global` on network switch.
+Two distinct changes:
 
-| What | Lines | Link |
-|---|---|---|
-| `previous_connection_state` + `connection_banner_handle` fields | L93–99 | [L93](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-8c6f1be9c6b6eb6dc2c76e6a6f2706d76f81aad0ff222c5a9ef4eab78acee7b5R93) |
-| `clear_all_global` on network switch + INTENTIONAL comment | L875–896 | [L875](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-8c6f1be9c6b6eb6dc2c76e6a6f2706d76f81aad0ff222c5a9ef4eab78acee7b5R875) |
-| `update_connection_banner()` — Disconnected/Syncing/Synced FSM | L898–934 | [L898](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-8c6f1be9c6b6eb6dc2c76e6a6f2706d76f81aad0ff222c5a9ef4eab78acee7b5R898) |
+**Centralized task result dispatch** (around L1023):
+- `TaskResult::Success(Message)` → `MessageBanner::set_global` + `display_task_result`
+- `TaskResult::Success(_)` catch-all → delegates to screen's `display_task_result` only (no global banner)
+- `TaskResult::Error` → `MessageBanner::set_global` + optional debug details in developer mode + `display_message` side-effect
 
-**Review focus**: The FSM uses `OverallConnectionState` equality to avoid redundant banner updates. Verify the state transitions cover all edge cases (e.g., rapid Disconnected→Syncing→Disconnected).
+**Connection banner state machine** (around L881–960):
+
+| What | Notes |
+|---|---|
+| `previous_connection_state` + `connection_banner_handle` fields | Track state for FSM |
+| `clear_all_global` on network switch | Stale banners cleared when user changes network |
+| `update_connection_banner()` — Disconnected/Syncing/Synced FSM | Replaces ad-hoc string matching in connection_status.rs |
+
+**Review focus**: The FSM uses `OverallConnectionState` equality to suppress redundant banner updates. Verify state transitions cover edge cases (rapid Disconnected→Syncing→Disconnected). Verify `clear_all_global` on network switch does not clear banners that should persist.
 
 ### [`src/context/connection_status.rs`](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-75d4306c0e7eca30d7e0dbb01b6f6b3d3b3af1e65a22e6de68aa6c92d9b3779f)
 
-Removed error-string-matching logic (`contains("Failed to get best chain lock...")`). Verify this dead code removal is safe — the connection banner in `app.rs` now handles disconnected state via the FSM instead.
+Removed the `contains("Failed to get best chain lock...")` error-string-matching handler. The connection banner FSM in `app.rs` now owns this responsibility.
 
-| What | Lines | Link |
-|---|---|---|
-| Removed string-matching error handler | L295–327 | [L295](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-75d4306c0e7eca30d7e0dbb01b6f6b3d3b3af1e65a22e6de68aa6c92d9b3779f) |
+**Review focus**: Confirm the removed code path is fully covered by `update_connection_banner()` in `app.rs`, and that `ChainLocks` task no longer bails out when all networks fail (it now returns all-None as a valid result).
 
-## 3. Reusable Pattern Examples (one representative each)
+### [`src/backend_task/core/mod.rs`](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-...) — `build_unsigned_payment_tx`
 
-### [`src/ui/tokens/mod.rs` — Shared helpers](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-0e09ce3e1e56a10a8d2cef2e29e7addb8e5a4dff5f78b8e15c50cdc94ef53e06R16)
+`WalletManager::create_unsigned_payment_transaction` was removed upstream. This PR introduces a local replacement using `TransactionBuilder` directly.
 
-Defines 3 shared helpers used by ~15 token screens. This is where the DRY pattern originates.
+| What | Notes |
+|---|---|
+| `build_unsigned_payment_tx` helper | Replaces removed SDK method; uses `SelectionStrategy::OptimalConsolidation` |
+| `FeeLevel::Normal` → `FeeRate::normal()` | SDK type rename |
+| All-None ChainLocks result now valid | Removed the early-bail error; returns whatever networks succeeded |
 
-| What | Lines | Link |
-|---|---|---|
-| `load_identities_with_banner()` | L22–28 | [L22](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-0e09ce3e1e56a10a8d2cef2e29e7addb8e5a4dff5f78b8e15c50cdc94ef53e06R22) |
-| `set_error_banner()` | L31–34 | [L31](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-0e09ce3e1e56a10a8d2cef2e29e7addb8e5a4dff5f78b8e15c50cdc94ef53e06R31) |
-| `validate_signing_key()` — `&Option<T>` → `Option<&T>` | L40–56 | [L40](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-0e09ce3e1e56a10a8d2cef2e29e7addb8e5a4dff5f78b8e15c50cdc94ef53e06R40) |
+**Review focus**: The new `build_unsigned_payment_tx` manually assembles a transaction (change address, UTXO selection, output creation). Verify the `WalletError` mapping on selection failure (insufficient funds vs. generic build error).
 
-### [`src/ui/tokens/claim_tokens_screen.rs` — Constructor error handling](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-e5e6e8b6d4ffd3f1fba60f4bbb7c2e9a6a5db3b2aa3b0acfe7c4bc01fd2a88b5)
+### [`src/spv/manager.rs`](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-...) — ArcSwapOption migration
 
-Best example of the SEC-001 fix pattern — eliminated `.expect()` panics in constructors, replaced with `or_show_error()` + degraded state.
+`client_interface: Arc<RwLock<Option<DashSpvClientInterface>>>` replaced with `spv_client: ArcSwapOption<SpvClient>`.
 
-| What | Lines | Link |
-|---|---|---|
-| Constructor: single DB load + `or_show_error` + `.or_else` fallback | L77–107 | [L77](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-e5e6e8b6d4ffd3f1fba60f4bbb7c2e9a6a5db3b2aa3b0acfe7c4bc01fd2a88b5R77) |
-| Status enum: `WaitingForResult(u64)` → `WaitingForResult` (dropped timestamp) | L45–50 | [L45](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-e5e6e8b6d4ffd3f1fba60f4bbb7c2e9a6a5db3b2aa3b0acfe7c4bc01fd2a88b5R45) |
+| What | Notes |
+|---|---|
+| `ArcSwapOption` for `spv_client` | Wait-free reads; eliminates lock contention on quorum lookups |
+| `get_quorum_public_key` uses `load_full()` | No lock held across the async `block_on` call |
+| `stop()` comment — no explicit clear needed | Client is cleared asynchronously when it stops |
+| `client.start()` removed; client wrapped in `Arc` before storing | Lifecycle change — verify start/stop symmetry |
 
-### [`src/ui/identities/add_existing_identity_screen.rs` — `AddIdentityStatus::Error` variant](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-ce4b3e7e4e4beb1a3c39f4def2f6a86a86a3a3a97e64bbd29b9fa5f1db34c7e7)
+**Review focus**: The old code called `client.start()` explicitly before storing the interface. The new code stores the `Arc<SpvClient>` without a separate start call. Confirm the SPV client starts implicitly (e.g., on construction) and that the stop path correctly sets `spv_client` to None.
 
-Shows the PROJ-005 pattern — status enums no longer carry error strings (moved to global banner). Also shows constructor error handling via `MessageBanner::set_global`.
+### [`src/ui/identities/mod.rs` — `get_selected_wallet` API](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-...)
 
-| What | Lines | Link |
-|---|---|---|
-| `AddIdentityStatus::Error` (unit variant, no string) | L85–88 | [L85](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-ce4b3e7e4e4beb1a3c39f4def2f6a86a86a3a3a97e64bbd29b9fa5f1db34c7e7R85) |
-| Constructor: init error → `set_global` | L126–128 | [L126](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-ce4b3e7e4e4beb1a3c39f4def2f6a86a86a3a3a97e64bbd29b9fa5f1db34c7e7R126) |
+Out-param error pattern replaced with `Result`.
 
-### [`src/ui/wallets/send_screen.rs` — BannerHandle lifecycle](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-4b2fd2b6b35fe1d83a5c0e1a80e8a51e03ba4c3f03e5da1bb7498fe43e34e57f)
+| Old signature | New signature |
+|---|---|
+| `fn get_selected_wallet(..., error_message: &mut Option<String>) -> Option<Arc<RwLock<Wallet>>>` | `fn get_selected_wallet(...) -> Result<Option<Arc<RwLock<Wallet>>>, String>` |
 
-Most complete example of the `BannerHandle` lifecycle pattern — progress banner with elapsed time, clearing on result, and the `set_send_progress_banner` helper.
+**Review focus**: All callers updated. Verify no call site silently drops the `Err` variant.
 
-| What | Lines | Link |
-|---|---|---|
-| `send_banner: Option<BannerHandle>` field | L389–392 | [L389](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-4b2fd2b6b35fe1d83a5c0e1a80e8a51e03ba4c3f03e5da1bb7498fe43e34e57fR389) |
-| `set_send_progress_banner()` — take_and_clear + set_global + with_elapsed | L650–660 | [L650](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-4b2fd2b6b35fe1d83a5c0e1a80e8a51e03ba4c3f03e5da1bb7498fe43e34e57fR650) |
+### [`src/ui/tokens/mod.rs` — Shared helpers](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-0e09ce3e1e56a10a8d2cef2e29e7addb8e5a4dff5f78b8e15c50cdc94ef53e06)
 
-## 4. Conventions / Docs
+Three helpers shared across ~15 token screens, reducing duplication.
+
+| Helper | Notes |
+|---|---|
+| `load_identities_with_banner()` | Load identities + show error banner on failure |
+| `set_error_banner()` | Thin wrapper around `MessageBanner::set_global` with Error type |
+| `validate_signing_key()` | Signature: `&Option<T>` → returns `Option<&T>` |
+
+---
+
+## 3. Key Behavioral Changes (High Impact)
+
+### Constructor panics eliminated
+
+All screen constructors previously used `.expect()` for DB and identity loads. These now use `or_show_error()` or `MessageBanner::set_global` + graceful degraded state (empty list / zero balance). No constructor returns an error — callers remain clean.
+
+**Representative example**: `src/ui/tokens/claim_tokens_screen.rs` — single DB load + `or_show_error` + `.unwrap_or_default()` fallback.
+
+### Fee-aware validation — `src/ui/identities/transfer_screen.rs`
+
+Amount validation now checks estimated fee before allowing submission:
+
+```rust
+let estimated_fee = self.app_context.fee_estimator().estimate_credit_transfer();
+let max_transferable = (identity.balance() as u128).saturating_sub(estimated_fee as u128);
+if credits > max_transferable {
+    // error banner: "Amount plus estimated fee exceeds available balance (max: ...)"
+}
+```
+
+`TransferCreditsStatus` enum simplified: `WaitingForResult(TimestampMillis)` → `WaitingForResult` (timestamp removed), `ErrorMessage(String)` → `Error` (string moved to global banner).
+
+### Transfer tokens refresh filters by contract+position — `src/ui/tokens/transfer_tokens_screen.rs`
+
+After a successful transfer, the refresh now filters the returned identity list by `data_contract_id` AND `token_position` to find the correct updated balance, rather than a naive first-match.
+
+### QR scanner correct result handling — `src/ui/dashpay/qr_scanner.rs`
+
+`parse_qr_code` previously called `self.display_message(...)` for all outcomes. Now uses `MessageBanner::set_global` directly. The `message: Option<(String, MessageType)>` field and inline rendering are removed.
+
+### Broadcast status screens — elapsed rendering migrated to banner
+
+`register_contract_screen.rs`, `update_contract_screen.rs`, `document_action_screen.rs` no longer store timestamps in status enum variants. Elapsed time is rendered via the `BannerHandle::with_elapsed` mechanism on the progress banner.
+
+### Database error handling restored — `src/ui/dashpay/contacts_list.rs`
+
+Contact update errors that were previously silently dropped now surface via `MessageBanner::set_global` with `tracing::error!`.
+
+---
+
+## 4. Reusable Pattern Examples (Representative)
+
+### [`src/ui/tokens/claim_tokens_screen.rs`](https://github.com/dashpay/dash-evo-tool/pull/604/files#...) — Constructor pattern
+
+Best example of the panic-elimination pattern: DB load + `or_show_error` + `.unwrap_or_default()` + `WaitingForResult` enum simplification (timestamp dropped).
+
+### [`src/ui/identities/add_existing_identity_screen.rs`](https://github.com/dashpay/dash-evo-tool/pull/604/files#...) — Status enum simplification
+
+`AddIdentityStatus::Error` changed from `Error(String)` to unit variant `Error`. Error text lives in the global banner. Constructor init error uses `MessageBanner::set_global`.
+
+### [`src/ui/wallets/send_screen.rs`](https://github.com/dashpay/dash-evo-tool/pull/604/files#...) — BannerHandle lifecycle
+
+Most complete example of the `BannerHandle` lifecycle: progress banner with elapsed time, cleared on result via `take_and_clear()`, with a `set_send_progress_banner()` helper.
+
+---
+
+## 5. Conventions / Docs
 
 ### [`CLAUDE.md`](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-82d8aa1d8fd8d9b71c3cf5e7fcade1d8697cc47c6df2e1b0c77ed5b0f01e5e93)
 
 Updated conventions affect all future development.
 
-| What | Lines | Link |
-|---|---|---|
-| Constructor error handling convention | L58–63 | [L58](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-82d8aa1d8fd8d9b71c3cf5e7fcade1d8697cc47c6df2e1b0c77ed5b0f01e5e93R58) |
-| `BannerHandle` lifecycle docs | L173–181 | [L173](https://github.com/dashpay/dash-evo-tool/pull/604/files#diff-82d8aa1d8fd8d9b71c3cf5e7fcade1d8697cc47c6df2e1b0c77ed5b0f01e5e93R173) |
+| What |
+|---|
+| Constructor error handling: `or_show_error` + degraded state, no `expect()` |
+| `BannerHandle` lifecycle: `refresh_banner` field, `take_and_clear()` on task arrival |
+| `display_message` contract: side-effects only |
 
-## Summary: 8 files to review, ~57 files skipped
+---
+
+## Summary: files to review carefully vs. files to skim
 
 | Priority | File | What to verify |
 |---|---|---|
-| 🔴 | `message_banner.rs` | `set_global` idempotency change, extension traits |
-| 🔴 | `src/ui/mod.rs` | `display_task_result` default → no-op |
-| 🔴 | `src/app.rs` | Connection banner FSM, `clear_all_global` on switch |
-| 🟡 | `connection_status.rs` | Error-string-matching removal safety |
-| 🟡 | `tokens/mod.rs` | Shared helpers (`validate_signing_key` signature) |
-| 🟢 | `claim_tokens_screen.rs` | Constructor pattern example |
-| 🟢 | `add_existing_identity_screen.rs` | Status enum + init error pattern |
-| 🟢 | `send_screen.rs` | BannerHandle lifecycle pattern |
-| 📄 | `CLAUDE.md` | Convention accuracy |
+| Critical | `src/ui/components/message_banner.rs` | `set_global` idempotency, extension trait contracts |
+| Critical | `src/ui/mod.rs` | `display_task_result` default → no-op; `display_message` contract |
+| Critical | `src/app.rs` | Task result dispatch logic; connection banner FSM; `clear_all_global` on switch |
+| High | `src/backend_task/core/mod.rs` | `build_unsigned_payment_tx` correctness; WalletError mapping; all-None ChainLocks |
+| High | `src/spv/manager.rs` | ArcSwapOption migration; SPV client start/stop lifecycle |
+| High | `src/context/connection_status.rs` | Removed error-string handler — covered by FSM in app.rs? |
+| High | `src/ui/identities/mod.rs` | `get_selected_wallet` API: no caller silently drops `Err` |
+| Medium | `src/ui/tokens/mod.rs` | Shared helpers; `validate_signing_key` signature |
+| Medium | `src/ui/identities/transfer_screen.rs` | Fee-aware validation; status enum simplification |
+| Medium | `src/ui/tokens/transfer_tokens_screen.rs` | Refresh filter by contract+position |
+| Medium | `src/ui/dashpay/contacts_list.rs` | DB error handling restored |
+| Low | `src/ui/tokens/claim_tokens_screen.rs` | Constructor pattern example |
+| Low | `src/ui/identities/add_existing_identity_screen.rs` | Status enum example |
+| Low | `src/ui/wallets/send_screen.rs` | BannerHandle lifecycle example |
+| Low | `CLAUDE.md` | Convention accuracy |
+| Skip | ~57 remaining screen files | Mechanical application of the patterns above |
 
-The remaining ~57 files are mechanical applications of these patterns — `take_and_clear()`, `or_show_error()`, status enum simplification, and `error_message` field removal. If the patterns above look correct, those files are correct by construction.
+The ~57 skipped files all apply the same pattern: remove `error_message: Option<String>` field, remove inline error rendering, remove `check_message_expiration`, replace `display_message` with `MessageBanner::set_global` calls, and add a boilerplate `display_message` no-op. If the patterns in the files above are correct, those files are correct by construction.

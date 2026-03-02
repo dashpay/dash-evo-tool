@@ -135,11 +135,7 @@ impl AppContext {
             let (chain_locked_height, proof) = if let Some(ref info) = tx_info {
                 if info.chainlock && info.height.is_some() {
                     let height = info.height.unwrap() as u32;
-                    tracing::debug!(
-                        "Asset lock {} is chain-locked at height {}",
-                        txid,
-                        height
-                    );
+                    tracing::debug!("Asset lock {} is chain-locked at height {}", txid, height);
                     (
                         Some(height),
                         Some(AssetLockProof::Chain(ChainAssetLockProof {
@@ -281,11 +277,7 @@ impl AppContext {
                 let (chain_locked_height, proof) = if let Some(ref info) = tx_info {
                     if info.chainlock && info.height.is_some() {
                         let height = info.height.unwrap() as u32;
-                        tracing::debug!(
-                            "Asset lock {} is chain-locked at height {}",
-                            txid,
-                            height
-                        );
+                        tracing::debug!("Asset lock {} is chain-locked at height {}", txid, height);
                         (
                             Some(height),
                             Some(AssetLockProof::Chain(ChainAssetLockProof {

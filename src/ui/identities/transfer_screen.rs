@@ -322,6 +322,21 @@ impl TransferScreen {
             return AppAction::None;
         }
 
+        // Validate amount against estimated fees
+        let estimated_fee = self
+            .app_context
+            .fee_estimator()
+            .estimate_credit_transfer_to_addresses(1);
+        let max_transferable =
+            (self.identity.identity.balance() as u128).saturating_sub(estimated_fee as u128);
+        if credits > max_transferable {
+            self.set_error_state(format!(
+                "Amount plus estimated fee exceeds available balance (max transferable: {})",
+                format_credits_as_dash(max_transferable as u64)
+            ));
+            return AppAction::None;
+        }
+
         // Set waiting state
         self.transfer_credits_status = TransferCreditsStatus::WaitingForResult;
         let handle = MessageBanner::set_global(
@@ -377,6 +392,19 @@ impl TransferScreen {
                 "Amount must be greater than 0",
                 MessageType::Error,
             );
+            self.confirmation_popup = false;
+            return AppAction::None;
+        }
+
+        // Validate amount against estimated fees
+        let estimated_fee = self.app_context.fee_estimator().estimate_credit_transfer();
+        let max_transferable =
+            (self.identity.identity.balance() as u128).saturating_sub(estimated_fee as u128);
+        if credits > max_transferable {
+            self.set_error_state(format!(
+                "Amount plus estimated fee exceeds available balance (max transferable: {})",
+                format_credits_as_dash(max_transferable as u64)
+            ));
             self.confirmation_popup = false;
             return AppAction::None;
         }

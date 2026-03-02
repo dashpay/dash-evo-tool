@@ -88,8 +88,7 @@ impl TransferTokensScreen {
                     "Identity not found in local store",
                     MessageType::Error,
                 );
-                // Fallback to first available identity for degraded state.
-                known_identities.first().cloned()
+                None
             });
 
         if identity.is_none() {

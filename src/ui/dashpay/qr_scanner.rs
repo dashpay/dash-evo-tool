@@ -314,7 +314,9 @@ impl QRScannerScreen {
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.sending = false;
-        if let BackendTaskSuccessResult::Message(_) = result {
+        if let BackendTaskSuccessResult::DashPayContactRequestSent(_)
+        | BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) = result
+        {
             // Clear the form on success
             self.qr_data_input.clear();
             self.parsed_qr_data = None;

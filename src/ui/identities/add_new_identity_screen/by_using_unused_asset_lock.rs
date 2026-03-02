@@ -1,5 +1,7 @@
 use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::ui::MessageType;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
@@ -59,18 +61,23 @@ impl AddNewIdentityScreen {
 
                             ui.add_space(6.0);
 
-                            // Button to select this asset lock stays visible regardless of wrapping
-                            if ui.button("Select").clicked() {
-                                // Update the selected asset lock
-                                self.funding_asset_lock = Some((
-                                    tx.clone(),
-                                    proof.clone().expect("Asset lock proof is required"),
-                                    address.clone(),
-                                ));
+                            if let Some(asset_lock_proof) = proof {
+                                if ui.button("Select").clicked() {
+                                    self.funding_asset_lock = Some((
+                                        tx.clone(),
+                                        asset_lock_proof.clone(),
+                                        address.clone(),
+                                    ));
 
-                                // Update the step to ready to create identity
-                                let mut step = self.step.write().unwrap();
-                                *step = WalletFundedScreenStep::ReadyToCreate;
+                                    let mut step = self.step.write().unwrap();
+                                    *step = WalletFundedScreenStep::ReadyToCreate;
+                                }
+                            } else if ui.button("Select").clicked() {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Asset lock proof is not yet available — the transaction may not be chain-locked yet. Please try again later.",
+                                    MessageType::Warning,
+                                );
                             }
                         });
                     });

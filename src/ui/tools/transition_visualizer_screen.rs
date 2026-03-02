@@ -26,7 +26,6 @@ use std::time::{Duration, Instant};
 enum TransitionBroadcastStatus {
     NotStarted,
     Submitting,
-    Error(String, Instant),
     Complete(Instant),
 }
 
@@ -34,6 +33,7 @@ pub struct TransitionVisualizerScreen {
     pub app_context: Arc<AppContext>,
     input_data: String,
     parsed_json: Option<String>,
+    parse_error: Option<(String, Instant)>,
     broadcast_status: TransitionBroadcastStatus,
     submit_banner: Option<BannerHandle>,
     show_contract_dialog: bool,
@@ -48,6 +48,7 @@ impl TransitionVisualizerScreen {
             app_context: app_context.clone(),
             input_data: String::new(),
             parsed_json: None,
+            parse_error: None,
             broadcast_status: TransitionBroadcastStatus::NotStarted,
             submit_banner: None,
             show_contract_dialog: false,
@@ -86,10 +87,11 @@ impl TransitionVisualizerScreen {
     fn parse_input(&mut self) {
         // Clear previous parse results...
         self.parsed_json = None;
+        self.parse_error = None;
         self.detected_contract_ids.clear();
 
-        // Reset the broadcast status so we no longer show old errors
-        // or "Submitting" states from a previous parse/broadcast.
+        // Reset the broadcast status so we no longer show old states
+        // from a previous parse/broadcast.
         self.broadcast_status = TransitionBroadcastStatus::NotStarted;
 
         // First, try to parse as comma-separated integers
@@ -129,23 +131,21 @@ impl TransitionVisualizerScreen {
                                 }
                             }
                             Err(e) => {
-                                self.broadcast_status = TransitionBroadcastStatus::Error(
+                                self.parse_error = Some((
                                     format!("Failed to serialize to JSON: {}", e),
                                     Instant::now(),
-                                );
+                                ));
                             }
                         }
                     }
                     Err(e) => {
-                        self.broadcast_status = TransitionBroadcastStatus::Error(
-                            format!("Failed to parse: {}", e),
-                            Instant::now(),
-                        );
+                        self.parse_error =
+                            Some((format!("Failed to parse: {}", e), Instant::now()));
                     }
                 }
             }
             Err(e) => {
-                self.broadcast_status = TransitionBroadcastStatus::Error(e, Instant::now());
+                self.parse_error = Some((e, Instant::now()));
             }
         }
     }
@@ -219,11 +219,8 @@ impl TransitionVisualizerScreen {
 
                 ui.add_space(10.0);
 
-                // if we are NotStarted or in an Error state, show the button
-                if matches!(
-                    self.broadcast_status,
-                    TransitionBroadcastStatus::NotStarted | TransitionBroadcastStatus::Error(_, _)
-                ) {
+                // Show the button when not currently submitting or done
+                if matches!(self.broadcast_status, TransitionBroadcastStatus::NotStarted) {
                     let mut new_style = (**ui.style()).clone();
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                     ui.set_style(new_style);
@@ -264,34 +261,36 @@ impl TransitionVisualizerScreen {
             }
         });
 
-        // Show status
+        // Show parse error if any (with fade-out)
         ui.add_space(5.0);
+        let mut clear_parse_error = false;
+        if let Some((msg, timestamp)) = &self.parse_error {
+            let elapsed = timestamp.elapsed();
+            if elapsed < Duration::from_secs(8) {
+                let alpha = if elapsed > Duration::from_secs(6) {
+                    let fade_progress = (8.0 - elapsed.as_secs_f32()) / 2.0;
+                    (fade_progress * 255.0) as u8
+                } else {
+                    255
+                };
+                ui.colored_label(
+                    Color32::from_rgba_premultiplied(139, 0, 0, alpha), // Dark red
+                    format!("Error: {}", msg),
+                );
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            } else {
+                clear_parse_error = true;
+            }
+        }
+        if clear_parse_error {
+            self.parse_error = None;
+        }
+
+        // Show broadcast status
         match &self.broadcast_status {
             TransitionBroadcastStatus::NotStarted => {}
             TransitionBroadcastStatus::Submitting => {
                 // Elapsed time is shown in the global banner
-            }
-            TransitionBroadcastStatus::Error(msg, timestamp) => {
-                let elapsed = timestamp.elapsed();
-                if elapsed < Duration::from_secs(8) {
-                    // Calculate fade effect for last 2 seconds
-                    let alpha = if elapsed > Duration::from_secs(6) {
-                        let fade_progress = (8.0 - elapsed.as_secs_f32()) / 2.0;
-                        (fade_progress * 255.0) as u8
-                    } else {
-                        255
-                    };
-                    ui.colored_label(
-                        Color32::from_rgba_premultiplied(139, 0, 0, alpha), // Dark red
-                        format!("Error: {}", msg),
-                    );
-
-                    // Request repaint to update the fade effect
-                    ui.ctx().request_repaint_after(Duration::from_millis(100));
-                } else {
-                    // Clear the error after 8 seconds
-                    self.broadcast_status = TransitionBroadcastStatus::NotStarted;
-                }
             }
             TransitionBroadcastStatus::Complete(timestamp) => {
                 let elapsed = timestamp.elapsed();

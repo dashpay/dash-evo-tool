@@ -5,11 +5,10 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
@@ -36,7 +35,6 @@ use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{wallet_needs_unlock, try_open_wallet_no_password, WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::tokens::validate_signing_key;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use super::tokens_screen::IdentityTokenBasicInfo;
@@ -45,29 +43,29 @@ use super::tokens_screen::IdentityTokenBasicInfo;
 #[derive(PartialEq)]
 pub enum ClaimTokensStatus {
     NotStarted,
-    WaitingForResult,
-    Error,
+    WaitingForResult(u64),
+    ErrorMessage(String),
     Complete,
 }
 
 pub struct ClaimTokensScreen {
-    identity: Option<QualifiedIdentity>,
+    pub identity: Option<QualifiedIdentity>,
     pub identity_token_basic_info: IdentityTokenBasicInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
     show_advanced_options: bool,
-    public_note: Option<String>,
+    pub public_note: Option<String>,
     token_contract: QualifiedContract,
     token_configuration: TokenConfiguration,
     distribution_type: Option<TokenDistributionType>,
     status: ClaimTokensStatus,
+    error_message: Option<String>,
     pub app_context: Arc<AppContext>,
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_open_attempted: bool,
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
-    // Banner handle for elapsed time display
-    refresh_banner: Option<BannerHandle>,
 }
 
 impl ClaimTokensScreen {
@@ -77,58 +75,36 @@ impl ClaimTokensScreen {
         token_configuration: TokenConfiguration,
         app_context: &Arc<AppContext>,
     ) -> Self {
-        let known_identities = app_context
+        let identity = app_context
             .load_local_qualified_identities()
-            .or_show_error(app_context.egui_ctx())
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .find(|id| id.identity.id() == identity_token_basic_info.identity_id);
 
-        let identity = known_identities
-            .iter()
-            .find(|id| id.identity.id() == identity_token_basic_info.identity_id)
-            .cloned()
-            .or_else(|| {
-                MessageBanner::set_global(
-                    app_context.egui_ctx(),
-                    "Identity not found in local store",
-                    MessageType::Error,
-                );
-                // Fallback to first available identity for degraded state.
-                known_identities.first().cloned()
-            });
-
-        if identity.is_none() {
-            MessageBanner::set_global(
-                app_context.egui_ctx(),
-                "No identities loaded — cannot open Claim screen",
-                MessageType::Error,
-            );
-        }
-
-        let possible_key: Option<dash_sdk::platform::IdentityPublicKey> =
-            identity.as_ref().and_then(|id| {
-                id.identity
-                    .get_first_public_key_matching(
-                        Purpose::AUTHENTICATION,
+        let (selected_key, selected_wallet) = if let Some(ref id) = identity {
+            let identity_inner = &id.identity;
+            let key = identity_inner
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    HashSet::from([SecurityLevel::CRITICAL]),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .or_else(|| {
+                    identity_inner.get_first_public_key_matching(
+                        Purpose::TRANSFER,
                         HashSet::from([SecurityLevel::CRITICAL]),
                         KeyType::all_key_types().into(),
                         false,
                     )
-                    .or_else(|| {
-                        id.identity.get_first_public_key_matching(
-                            Purpose::TRANSFER,
-                            HashSet::from([SecurityLevel::CRITICAL]),
-                            KeyType::all_key_types().into(),
-                            false,
-                        )
-                    })
-                    .cloned()
-            });
+                })
+                .cloned();
 
-        let selected_wallet = identity.as_ref().and_then(|id| {
-            get_selected_wallet(id, None, possible_key.as_ref())
-                .or_show_error(app_context.egui_ctx())
-                .unwrap_or(None)
-        });
+            let selected_wallet = get_selected_wallet(id, None, key.as_ref()).unwrap_or(None);
+            (key, selected_wallet)
+        } else {
+            (None, None)
+        };
 
         let distribution_type = match (
             token_configuration
@@ -149,36 +125,35 @@ impl ClaimTokensScreen {
         Self {
             identity,
             identity_token_basic_info,
-            selected_key: possible_key,
+            selected_key,
             show_advanced_options: false,
             public_note: None,
             token_contract,
             token_configuration,
             distribution_type,
             status: ClaimTokensStatus::NotStarted,
+            error_message: None,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
+            wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
-            refresh_banner: None,
         }
     }
 
     fn render_token_distribution_type_selector(&mut self, ui: &mut Ui) {
-        let identity_id = self.identity.as_ref().map(|id| id.identity.id());
         let show_perpetual = if let Some(perpetual_distribution) = self
             .token_configuration
             .distribution_rules()
             .perpetual_distribution()
+            && let Some(identity) = &self.identity
         {
             match perpetual_distribution.distribution_recipient() {
                 TokenDistributionRecipient::ContractOwner => {
-                    identity_id.is_some_and(|id| self.token_contract.contract.owner_id() == id)
+                    self.token_contract.contract.owner_id() == identity.identity.id()
                 }
-                TokenDistributionRecipient::Identity(id) => {
-                    identity_id.is_some_and(|self_id| self_id == id)
-                }
+                TokenDistributionRecipient::Identity(id) => identity.identity.id() == id,
                 TokenDistributionRecipient::EvonodesByParticipation => true,
             }
         } else {
@@ -220,6 +195,10 @@ impl ClaimTokensScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(identity) = self.identity.clone() else {
+            self.status = ClaimTokensStatus::ErrorMessage("Identity not available".to_string());
+            return AppAction::None;
+        };
         let distribution_type = self
             .distribution_type
             .unwrap_or(TokenDistributionType::Perpetual);
@@ -235,30 +214,20 @@ impl ClaimTokensScreen {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
 
-                let Some(identity) = self.identity.clone() else {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "No identity loaded — cannot claim tokens",
-                        MessageType::Error,
-                    );
-                    return AppAction::None;
+                let signing_key = match self.selected_key.clone() {
+                    Some(key) => key,
+                    None => {
+                        self.error_message = Some("No signing key selected".into());
+                        self.status = ClaimTokensStatus::ErrorMessage("No key selected".into());
+                        return AppAction::None;
+                    }
                 };
 
-                // Validate signing key before transitioning to waiting state
-                let Some(signing_key) =
-                    validate_signing_key(&self.app_context, self.selected_key.as_ref())
-                else {
-                    return AppAction::None;
-                };
-
-                self.status = ClaimTokensStatus::WaitingForResult;
-                let handle = MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Claiming tokens...",
-                    MessageType::Info,
-                );
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                self.status = ClaimTokensStatus::WaitingForResult(now);
 
                 AppAction::BackendTasks(
                     vec![
@@ -294,27 +263,26 @@ impl ClaimTokensScreen {
 }
 
 impl ScreenLike for ClaimTokensScreen {
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.refresh_banner.take_and_clear();
-            self.status = ClaimTokensStatus::Error;
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
+        if let MessageType::Error = message_type {
+            self.status = ClaimTokensStatus::ErrorMessage(message.to_string());
+            self.error_message = Some(message.to_string());
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::ClaimedTokens(fee_result) = backend_task_success_result {
-            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = ClaimTokensStatus::Complete;
         }
     }
 
     fn refresh(&mut self) {
-        let current_id = self.identity.as_ref().map(|id| id.identity.id());
-        if let Some(current_id) = current_id
+        if let Some(current) = &self.identity
             && let Ok(all) = self.app_context.load_local_qualified_identities()
-            && let Some(updated) = all.into_iter().find(|id| id.identity.id() == current_id)
+            && let Some(updated) = all
+                .into_iter()
+                .find(|id| id.identity.id() == current.identity.id())
         {
             self.identity = Some(updated);
         }
@@ -351,12 +319,10 @@ impl ScreenLike for ClaimTokensScreen {
                 return;
             }
 
-            // Guard: require a loaded identity before rendering interactive content.
-            // Use as_ref() to avoid a per-frame clone of the full QualifiedIdentity.
             let Some(identity) = self.identity.as_ref() else {
                 ui.colored_label(
-                    Color32::RED,
-                    "No identity loaded. Please load an identity and reopen this screen.",
+                    egui::Color32::RED,
+                    "Identity not found in local store. Please refresh or re-open this screen.",
                 );
                 return;
             };
@@ -379,33 +345,27 @@ impl ScreenLike for ClaimTokensScreen {
             };
 
             if !has_keys {
-                let identity_type = identity.identity_type;
-                // Extract key data before releasing the borrow (needed for click handlers).
-                let first_key = identity
-                    .identity
-                    .get_first_public_key_matching(
-                        Purpose::AUTHENTICATION,
-                        HashSet::from([SecurityLevel::CRITICAL]),
-                        KeyType::all_key_types().into(),
-                        false,
-                    )
-                    .cloned();
                 ui.colored_label(
                     Color32::RED,
                     format!(
                         "No authentication keys with CRITICAL security level found for this {} identity.",
-                        identity_type,
+                        identity.identity_type,
                     ),
                 );
                 ui.add_space(10.0);
 
+                let first_key = identity.identity.get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    HashSet::from([SecurityLevel::CRITICAL]),
+                    KeyType::all_key_types().into(),
+                    false,
+                );
+
                 if let Some(key) = first_key {
                     if ui.button("Check Keys").clicked() {
-                        // Clone only on button click, not every frame.
-                        let identity = self.identity.clone().expect("checked above");
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            identity,
-                            key,
+                            identity.clone(),
+                            key.clone(),
                             None,
                             &self.app_context,
                         )));
@@ -414,18 +374,19 @@ impl ScreenLike for ClaimTokensScreen {
                 }
 
                 if ui.button("Add key").clicked() {
-                    // Clone only on button click, not every frame.
-                    let identity = self.identity.clone().expect("checked above");
                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        identity,
+                        identity.clone(),
                         &self.app_context,
                     )));
                 }
             } else {
                 // Possibly handle locked wallet scenario
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.error_message = Some(e);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -454,8 +415,6 @@ impl ScreenLike for ClaimTokensScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the Claim transition");
                     ui.add_space(10.0);
-                    // Reborrow identity as ref for add_key_chooser; selected_key is &mut self.
-                    let identity = self.identity.as_ref().expect("checked above");
                     add_key_chooser(
                         ui,
                         &self.app_context,
@@ -615,11 +574,8 @@ impl ScreenLike for ClaimTokensScreen {
 
                 if ui.add(button).clicked() {
                     if self.distribution_type.is_none() {
-                        self.status = ClaimTokensStatus::Error;
-                        MessageBanner::set_global(
-                            ui.ctx(),
-                            "Please select a distribution type.",
-                            MessageType::Error,
+                        self.status = ClaimTokensStatus::ErrorMessage(
+                            "Please select a distribution type.".to_string(),
                         );
                         return;
                     } else if self.confirmation_dialog.is_none() {
@@ -638,11 +594,33 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.add_space(10.0);
                 match &self.status {
                     ClaimTokensStatus::NotStarted => {}
-                    ClaimTokensStatus::WaitingForResult => {
-                        // Elapsed display is handled by the global MessageBanner
+                    ClaimTokensStatus::WaitingForResult(start_time) => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let elapsed = now - start_time;
+                        ui.label(format!("Claiming... elapsed: {}s", elapsed));
                     }
-                    ClaimTokensStatus::Error => {
-                        // Error display is handled by the global MessageBanner
+                    ClaimTokensStatus::ErrorMessage(msg) => {
+                        let error_color = DashColors::ERROR;
+                        let msg = msg.clone();
+                        Frame::new()
+                            .fill(error_color.gamma_multiply(0.1))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .corner_radius(5.0)
+                            .stroke(egui::Stroke::new(1.0, error_color))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("Error: {}", msg)).color(error_color),
+                                    );
+                                    ui.add_space(10.0);
+                                    if ui.small_button("Dismiss").clicked() {
+                                        self.status = ClaimTokensStatus::NotStarted;
+                                    }
+                                });
+                            });
                     }
                     ClaimTokensStatus::Complete => {}
                 }

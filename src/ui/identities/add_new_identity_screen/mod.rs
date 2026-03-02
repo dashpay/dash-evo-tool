@@ -86,6 +86,7 @@ pub struct AddNewIdentityScreen {
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
@@ -151,6 +152,7 @@ impl AddNewIdentityScreen {
                 keys_input: vec![],
             },
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
@@ -393,6 +395,7 @@ impl AddNewIdentityScreen {
         let is_open = wallet.read().expect("wallet lock poisoned").is_open();
 
         self.selected_wallet = Some(wallet);
+        self.wallet_open_attempted = false;
         self.identity_id_number = self.next_identity_id();
 
         if is_open {
@@ -1138,8 +1141,11 @@ impl ScreenLike for AddNewIdentityScreen {
                 let wallet = self.selected_wallet.as_ref().unwrap();
 
                 // Try to open wallet without password if it doesn't use one
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                if !self.wallet_open_attempted {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    }
+                    self.wallet_open_attempted = true;
                 }
 
                 // If wallet needs password unlock

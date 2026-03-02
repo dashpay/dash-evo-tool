@@ -62,6 +62,7 @@ pub struct TransferTokensScreen {
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
@@ -126,6 +127,7 @@ impl TransferTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             completed_fee_result: None,
             refresh_banner: None,
         }
@@ -478,8 +480,11 @@ impl ScreenLike for TransferTokensScreen {
                 }
             } else {
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);

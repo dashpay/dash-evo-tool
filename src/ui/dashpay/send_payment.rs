@@ -50,6 +50,7 @@ pub struct SendPaymentScreen {
     // Wallet unlock
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
 }
 
 impl SendPaymentScreen {
@@ -75,6 +76,7 @@ impl SendPaymentScreen {
             tx_id: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         }
     }
 
@@ -203,17 +205,17 @@ impl SendPaymentScreen {
         ui.separator();
 
         // Check wallet unlock
-        let (wallet_open_error, needs_unlock) = if let Some(wallet) = &self.selected_wallet {
-            let open_err = try_open_wallet_no_password(wallet).err();
-            let needs = wallet_needs_unlock(wallet);
-            (open_err, needs)
+        let needs_unlock = if let Some(wallet) = &self.selected_wallet {
+            if !self.wallet_open_attempted {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                }
+                self.wallet_open_attempted = true;
+            }
+            wallet_needs_unlock(wallet)
         } else {
-            (None, false)
+            false
         };
-
-        if let Some(e) = wallet_open_error {
-            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
-        }
 
         if needs_unlock {
             ui.add_space(10.0);

@@ -4,7 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::ui::components::MessageBanner;
+use crate::ui::components::ResultBannerExt;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
@@ -27,6 +27,7 @@ pub struct Contact {
     pub nickname: Option<String>,
     pub is_hidden: bool,
     pub account_reference: u32,
+    pub created_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +36,7 @@ pub enum SearchFilter {
     WithUsernames,    // Only contacts with usernames
     WithoutUsernames, // Only contacts without usernames
     WithBio,          // Contacts with bio
-    Recent,           // Recently added (TODO: needs database timestamp)
+    Recent,           // Added within the last 7 days
     Hidden,           // Only hidden contacts
     Visible,          // Only visible contacts
 }
@@ -44,7 +45,7 @@ pub enum SearchFilter {
 pub enum SortOrder {
     Name,       // Sort by display name/username
     Username,   // Sort by username specifically
-    DateAdded,  // Sort by date added (TODO: needs database timestamp)
+    DateAdded,  // Sort by date added (from database timestamp)
     AccountRef, // Sort by account reference number
 }
 
@@ -61,6 +62,7 @@ pub struct ContactsList {
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     search_query: String,
+    message: Option<(String, MessageType)>,
     loading: bool,
     has_loaded: bool, // Track if we've ever loaded contacts
     show_hidden: bool,
@@ -82,6 +84,7 @@ impl ContactsList {
             selected_identity: None,
             selected_identity_string: String::new(),
             search_query: String::new(),
+            message: None,
             loading: false,
             has_loaded: false,
             show_hidden: false,
@@ -139,6 +142,7 @@ impl ContactsList {
                             nickname: None,   // Will be loaded separately from contact_private_info
                             is_hidden: false, // Will be loaded separately from contact_private_info
                             account_reference: 0, // This would need to be loaded from contactInfo document
+                            created_at: Some(stored_contact.created_at),
                         };
 
                         // Only add if contact status is accepted
@@ -175,6 +179,7 @@ impl ContactsList {
         // Only fetch if we have a selected identity
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
+            self.message = None; // Clear any existing message
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
                 identity: identity.clone(),
@@ -202,6 +207,7 @@ impl ContactsList {
     pub fn refresh(&mut self) -> AppAction {
         // Don't clear contacts - preserve loaded state
         // Only clear temporary states
+        self.message = None;
         self.loading = false;
 
         // Auto-select first identity if none selected
@@ -317,6 +323,7 @@ impl ContactsList {
                         self.contacts.clear();
                         self.avatar_textures.clear();
                         self.avatars_loading.clear();
+                        self.message = None;
                         self.loading = false;
 
                         // Load contacts from database for the newly selected identity
@@ -476,6 +483,11 @@ impl ContactsList {
                                 );
                                 ui.selectable_value(
                                     &mut self.search_filter,
+                                    SearchFilter::Recent,
+                                    "Recent",
+                                );
+                                ui.selectable_value(
+                                    &mut self.search_filter,
                                     SearchFilter::Hidden,
                                     "Hidden",
                                 );
@@ -511,6 +523,11 @@ impl ContactsList {
                                 );
                                 ui.selectable_value(
                                     &mut self.sort_order,
+                                    SortOrder::DateAdded,
+                                    "Date added",
+                                );
+                                ui.selectable_value(
+                                    &mut self.sort_order,
                                     SortOrder::AccountRef,
                                     "Account",
                                 );
@@ -524,6 +541,18 @@ impl ContactsList {
 
                 ui.separator();
             }
+        }
+
+        // Show message if any
+        if let Some((message, message_type)) = &self.message {
+            let color = match message_type {
+                MessageType::Success => egui::Color32::DARK_GREEN,
+                MessageType::Error => egui::Color32::DARK_RED,
+                MessageType::Warning => DashColors::WARNING,
+                MessageType::Info => egui::Color32::LIGHT_BLUE,
+            };
+            ui.colored_label(color, message);
+            ui.separator();
         }
 
         // Loading indicator
@@ -560,8 +589,15 @@ impl ContactsList {
                     SearchFilter::Hidden if !contact.is_hidden => return false,
                     SearchFilter::Visible if contact.is_hidden => return false,
                     SearchFilter::Recent => {
-                        // TODO: Implement when we have timestamp data
-                        // For now, treat as "All"
+                        let seven_days_ago = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                            - 7 * 24 * 60 * 60;
+                        match contact.created_at {
+                            Some(ts) if ts >= seven_days_ago => {}
+                            _ => return false,
+                        }
                     }
                     _ => {} // SearchFilter::All or other cases pass through
                 }
@@ -655,9 +691,9 @@ impl ContactsList {
                 }
                 SortOrder::AccountRef => a.account_reference.cmp(&b.account_reference),
                 SortOrder::DateAdded => {
-                    // TODO: Implement when we have timestamp data
-                    // For now, sort by identity ID as a proxy
-                    a.identity_id.cmp(&b.identity_id)
+                    // Sort by created_at descending (newest first)
+                    // Contacts without timestamps sort last
+                    b.created_at.unwrap_or(0).cmp(&a.created_at.unwrap_or(0))
                 }
             }
         });
@@ -908,15 +944,10 @@ impl ContactsList {
                                                         new_hidden,
                                                     )
                                                 {
-                                                    tracing::error!(
-                                                        "Failed to update contact: {}",
-                                                        e
-                                                    );
-                                                    MessageBanner::set_global(
-                                                        ui.ctx(),
+                                                    self.message = Some((
                                                         format!("Failed to update contact: {}", e),
                                                         MessageType::Error,
-                                                    );
+                                                    ));
                                                 } else {
                                                     // Update the contact in memory
                                                     if let Some(c) =
@@ -967,8 +998,8 @@ impl ContactsList {
         action
     }
 
-    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
+    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
+        self.message = Some((message.to_string(), message_type));
     }
 }
 
@@ -988,9 +1019,9 @@ impl ScreenLike for ContactsList {
         action
     }
 
-    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
+    fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.loading = false;
+        self.message = Some((message.to_string(), message_type));
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -1015,12 +1046,14 @@ impl ScreenLike for ContactsList {
                         nickname: None,
                         is_hidden: false,
                         account_reference: 0,
+                        created_at: None,
                     };
                     self.contacts.insert(contact_id, contact);
                 }
 
-                // Mark as loaded
+                // Mark as loaded and clear message
                 self.has_loaded = true;
+                self.message = None;
             }
             BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
                 // Clear existing contacts
@@ -1033,10 +1066,11 @@ impl ScreenLike for ContactsList {
 
                     // Clear all existing contacts for this identity from database first
                     // This prevents stale contacts from persisting
-                    let _ = self
-                        .app_context
+                    self.app_context
                         .db
-                        .clear_dashpay_contacts(&owner_id, &network_str);
+                        .clear_dashpay_contacts(&owner_id, &network_str)
+                        .or_show_error(self.app_context.egui_ctx())
+                        .ok();
 
                     // Convert ContactData to Contact structs and save to database
                     for contact_data in contacts_data {
@@ -1058,30 +1092,44 @@ impl ScreenLike for ContactsList {
                             nickname: contact_data.nickname.clone(),
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
+                            created_at: Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64,
+                            ), // Fallback to current time for filter/sort
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
 
                         // Save to database
-                        let _ = self.app_context.db.save_dashpay_contact(
-                            &owner_id,
-                            &contact_data.identity_id,
-                            &network_str,
-                            contact_data.username.as_deref(),
-                            contact_data.display_name.as_deref(),
-                            contact_data.avatar_url.as_deref(),
-                            None,       // public_message - not yet fetched
-                            "accepted", // Only accepted contacts are returned from load_contacts
-                        );
+                        self.app_context
+                            .db
+                            .save_dashpay_contact(
+                                &owner_id,
+                                &contact_data.identity_id,
+                                &network_str,
+                                contact_data.username.as_deref(),
+                                contact_data.display_name.as_deref(),
+                                contact_data.avatar_url.as_deref(),
+                                None,       // public_message - not yet fetched
+                                "accepted", // Only accepted contacts are returned from load_contacts
+                            )
+                            .or_show_error(self.app_context.egui_ctx())
+                            .ok();
 
                         // Save private info if present
                         if let Some(nickname) = &contact_data.nickname {
-                            let _ = self.app_context.db.save_contact_private_info(
-                                &owner_id,
-                                &contact_data.identity_id,
-                                nickname,
-                                &contact_data.note.unwrap_or_default(),
-                                contact_data.is_hidden,
-                            );
+                            self.app_context
+                                .db
+                                .save_contact_private_info(
+                                    &owner_id,
+                                    &contact_data.identity_id,
+                                    nickname,
+                                    &contact_data.note.unwrap_or_default(),
+                                    contact_data.is_hidden,
+                                )
+                                .or_show_error(self.app_context.egui_ctx())
+                                .ok();
                         }
                     }
                 } else {
@@ -1101,13 +1149,20 @@ impl ScreenLike for ContactsList {
                             nickname: contact_data.nickname,
                             is_hidden: contact_data.is_hidden,
                             account_reference: contact_data.account_reference,
+                            created_at: Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs() as i64,
+                            ), // Fallback to current time for filter/sort
                         };
                         self.contacts.insert(contact_data.identity_id, contact);
                     }
                 }
 
-                // Mark as loaded
+                // Mark as loaded and clear message
                 self.has_loaded = true;
+                self.message = None;
             }
             BackendTaskSuccessResult::DashPayContactProfile(Some(doc)) => {
                 // Extract profile information from the document
@@ -1151,7 +1206,7 @@ impl ScreenLike for ContactsList {
                     if let Some(identity) = &self.selected_identity {
                         let owner_id = identity.identity.id();
                         let network_str = self.app_context.network.to_string();
-                        let _ = self.app_context.db.save_dashpay_contact(
+                        if let Err(e) = self.app_context.db.save_dashpay_contact(
                             &owner_id,
                             &contact_id,
                             &network_str,
@@ -1160,7 +1215,12 @@ impl ScreenLike for ContactsList {
                             contact.avatar_url.as_deref(),
                             public_message.as_deref(),
                             "accepted",
-                        );
+                        ) {
+                            tracing::warn!(
+                                "Failed to save updated contact profile to database: {}",
+                                e
+                            );
+                        }
                     }
                 }
             }

@@ -103,6 +103,7 @@ pub struct AddExistingIdentityScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     identity_associated_with_wallet: bool,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     pub identity_index_input: String,
     pub app_context: Arc<AppContext>,
     show_pop_up_info: Option<String>,
@@ -142,6 +143,7 @@ impl AddExistingIdentityScreen {
             selected_wallet,
             identity_associated_with_wallet: true,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             identity_index_input: String::new(),
             app_context: app_context.clone(),
             show_pop_up_info: None,
@@ -248,6 +250,7 @@ impl AddExistingIdentityScreen {
                                     .clicked()
                                 {
                                     self.selected_wallet = None;
+                                    self.wallet_open_attempted = false;
                                 }
 
                                 for (alias, wallet) in &wallets_snapshot {
@@ -258,6 +261,7 @@ impl AddExistingIdentityScreen {
 
                                     if ui.selectable_label(is_selected, alias).clicked() {
                                         self.selected_wallet = Some(wallet.clone());
+                                        self.wallet_open_attempted = false;
                                     }
                                 }
                             });
@@ -270,8 +274,11 @@ impl AddExistingIdentityScreen {
 
                             if wallet_still_loaded {
                                 // Try to open wallet without password if it doesn't use one
-                                if let Err(e) = try_open_wallet_no_password(selected_wallet) {
-                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                if !self.wallet_open_attempted {
+                                    if let Err(e) = try_open_wallet_no_password(selected_wallet) {
+                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                    }
+                                    self.wallet_open_attempted = true;
                                 }
 
                                 if wallet_needs_unlock(selected_wallet) {
@@ -286,6 +293,7 @@ impl AddExistingIdentityScreen {
                                 }
                             } else {
                                 self.selected_wallet = None;
+                                self.wallet_open_attempted = false;
                                 ui.colored_label(
                                     Color32::RED,
                                     "Selected wallet is no longer loaded. We'll search unlocked wallets instead.",
@@ -533,6 +541,7 @@ impl AddExistingIdentityScreen {
                             {
                                 // Update the selected wallet
                                 self.selected_wallet = Some(wallet.clone());
+                                self.wallet_open_attempted = false;
                             }
                         }
                     });
@@ -579,8 +588,11 @@ impl AddExistingIdentityScreen {
         let wallet = self.selected_wallet.as_ref().unwrap();
 
         // Try to open wallet without password if it doesn't use one
-        if let Err(e) = try_open_wallet_no_password(wallet) {
-            MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+        if !self.wallet_open_attempted {
+            if let Err(e) = try_open_wallet_no_password(wallet) {
+                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+            }
+            self.wallet_open_attempted = true;
         }
 
         if wallet_needs_unlock(wallet) {

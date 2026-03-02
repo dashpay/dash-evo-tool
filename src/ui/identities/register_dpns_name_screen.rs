@@ -55,6 +55,7 @@ pub struct RegisterDpnsNameScreen {
     pub app_context: Arc<AppContext>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
@@ -119,6 +120,7 @@ impl RegisterDpnsNameScreen {
             app_context: app_context.clone(),
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             show_advanced_options: false,
             completed_fee_result: None,
             source,
@@ -163,6 +165,7 @@ impl RegisterDpnsNameScreen {
             self.selected_wallet = get_selected_wallet(qi, Some(&self.app_context), None)
                 .or_show_error(self.app_context.egui_ctx())
                 .unwrap_or(None);
+            self.wallet_open_attempted = false;
         } else {
             // If not found, you might want to handle this case
             // For now, we'll set selected_qualified_identity to None
@@ -170,6 +173,7 @@ impl RegisterDpnsNameScreen {
             self.selected_identity_string = String::new();
             self.selected_key = None;
             self.selected_wallet = None;
+            self.wallet_open_attempted = false;
         }
     }
 
@@ -216,9 +220,11 @@ impl RegisterDpnsNameScreen {
                 self.selected_wallet = get_selected_wallet(identity, Some(&self.app_context), None)
                     .or_show_error(self.app_context.egui_ctx())
                     .unwrap_or(None);
+                self.wallet_open_attempted = false;
             } else {
                 self.selected_key = None;
                 self.selected_wallet = None;
+                self.wallet_open_attempted = false;
             }
         }
 
@@ -403,8 +409,11 @@ impl ScreenLike for RegisterDpnsNameScreen {
 
             if self.selected_wallet.is_some()
                 && let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);

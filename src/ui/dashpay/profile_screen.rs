@@ -101,6 +101,7 @@ pub struct ProfileScreen {
     show_avatar_url_popup: bool, // Show avatar URL when clicking on avatar in view mode
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     show_success: bool,
     was_creating_new: bool, // Track if we were creating vs updating
     confirmation_dialog: Option<ConfirmationDialog>,
@@ -133,6 +134,7 @@ impl ProfileScreen {
             show_avatar_url_popup: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             show_success: false,
             was_creating_new: false,
             confirmation_dialog: None,
@@ -637,6 +639,7 @@ impl ProfileScreen {
                         } else {
                             self.selected_wallet = None;
                         }
+                        self.wallet_open_attempted = false;
 
                         // Load profile from database for the newly selected identity
                         self.load_profile_from_database();
@@ -867,8 +870,11 @@ impl ProfileScreen {
 
                                 // Check wallet lock status before showing save button
                                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
-                                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                    if !self.wallet_open_attempted {
+                                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                        }
+                                        self.wallet_open_attempted = true;
                                     }
                                     wallet_needs_unlock(wallet)
                                 } else {

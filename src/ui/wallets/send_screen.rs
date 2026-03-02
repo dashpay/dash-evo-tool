@@ -393,6 +393,7 @@ pub struct WalletSendScreen {
 
     // Wallet unlock
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
 }
 
 impl WalletSendScreen {
@@ -419,6 +420,7 @@ impl WalletSendScreen {
             send_status: SendStatus::NotStarted,
             send_banner: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         }
     }
 
@@ -1061,8 +1063,11 @@ impl WalletSendScreen {
             return true;
         };
 
-        if let Err(e) = try_open_wallet_no_password(wallet) {
-            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+        if !self.wallet_open_attempted {
+            if let Err(e) = try_open_wallet_no_password(wallet) {
+                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+            }
+            self.wallet_open_attempted = true;
         }
         if wallet_needs_unlock(wallet) {
             ui.add_space(10.0);

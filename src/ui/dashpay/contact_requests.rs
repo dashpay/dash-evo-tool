@@ -63,6 +63,7 @@ pub struct ContactRequests {
     reject_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     /// Structured error for displaying with action buttons
     error: Option<DashPayError>,
     /// Identity IDs that need profile fetching from Platform
@@ -86,6 +87,7 @@ impl ContactRequests {
             reject_confirmation_dialog: None,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             error: None,
             pending_profile_fetches: HashSet::new(),
         };
@@ -134,9 +136,11 @@ impl ContactRequests {
                 self.selected_wallet = get_selected_wallet(id, Some(&self.app_context), None)
                     .or_show_error(self.app_context.egui_ctx())
                     .unwrap_or(None);
+                self.wallet_open_attempted = false;
             } else {
                 self.selected_identity_string.clear();
                 self.selected_wallet = None;
+                self.wallet_open_attempted = false;
             }
 
             // Clear the requests when identity changes
@@ -583,6 +587,7 @@ impl ContactRequests {
                             } else {
                                 self.selected_wallet = None;
                             }
+                            self.wallet_open_attempted = false;
 
                             // Load requests from database for the newly selected identity
                             self.load_requests_from_database();
@@ -805,8 +810,11 @@ impl ContactRequests {
                                             } else {
                                                 // Check wallet lock status before showing buttons
                                                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
-                                                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                                                        crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                                    if !self.wallet_open_attempted {
+                                                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                                                            crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                                        }
+                                                        self.wallet_open_attempted = true;
                                                     }
                                                     wallet_needs_unlock(wallet)
                                                 } else {
@@ -1034,7 +1042,7 @@ impl ScreenLike for ContactRequests {
         // Banner display is handled globally by AppState; this is only for side-effects.
         self.loading = false;
 
-        // Check if this is an error about missing keys
+        // TODO(RUST-002): String-based error classification — see #660
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             if message.contains("ENCRYPTION key") {
                 self.error = Some(DashPayError::MissingEncryptionKey);

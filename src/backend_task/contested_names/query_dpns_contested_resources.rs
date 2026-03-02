@@ -197,7 +197,7 @@ impl AppContext {
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
-                        if let Err(send_err) = sender.send(TaskResult::Error(e)).await {
+                        if let Err(send_err) = sender.send(TaskResult::Error(e.into())).await {
                             tracing::warn!(
                                 "Failed to send error for dpns end times query: {}",
                                 send_err
@@ -249,7 +249,7 @@ impl AppContext {
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
-                        if let Err(send_err) = sender.send(TaskResult::Error(e)).await {
+                        if let Err(send_err) = sender.send(TaskResult::Error(e.into())).await {
                             tracing::warn!(
                                 "Failed to send error for vote contenders query for {}: {}",
                                 name,

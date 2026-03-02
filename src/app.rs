@@ -3,6 +3,7 @@ use crate::app_dir::app_user_data_file_path;
 use crate::app_dir::{copy_env_file_if_not_exists, create_app_user_data_directory_if_not_exists};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
@@ -50,11 +51,11 @@ use tokio::sync::mpsc as tokiompsc;
 pub enum TaskResult {
     Refresh,
     Success(Box<BackendTaskSuccessResult>),
-    Error(String),
+    Error(TaskError),
 }
 
-impl From<Result<BackendTaskSuccessResult, String>> for TaskResult {
-    fn from(value: Result<BackendTaskSuccessResult, String>) -> Self {
+impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
+    fn from(value: Result<BackendTaskSuccessResult, TaskError>) -> Self {
         match value {
             Ok(value) => TaskResult::Success(Box::new(value)),
             Err(e) => TaskResult::Error(e),
@@ -983,10 +984,14 @@ impl App for AppState {
                         }
                     }
                 }
-                TaskResult::Error(message) => {
-                    MessageBanner::set_global(ctx, &message, MessageType::Error);
+                TaskResult::Error(err) => {
+                    let msg = err.to_string();
+                    let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
+                    if self.current_app_context().is_developer_mode() {
+                        handle.with_details(&format!("{err:?}"));
+                    }
                     self.visible_screen_mut()
-                        .display_message(&message, MessageType::Error);
+                        .display_message(&msg, MessageType::Error);
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();
@@ -1155,6 +1160,17 @@ impl App for AppState {
                 .connection_status()
                 .trigger_refresh(active_context.as_ref()),
         );
+
+        // Show a warning banner when SPV has been unable to find peers
+        // for an extended period.  Cleared as soon as the condition resolves.
+        const SPV_DEGRADED_BANNER: &str = "Having trouble finding peers. Check your connection.";
+        if active_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
+            if active_context.connection_status().spv_peer_degraded() {
+                MessageBanner::set_global(ctx, SPV_DEGRADED_BANNER, MessageType::Warning);
+            } else {
+                MessageBanner::clear_global_message(ctx, SPV_DEGRADED_BANNER);
+            }
+        }
 
         for action in actions {
             match action {

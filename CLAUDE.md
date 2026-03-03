@@ -28,11 +28,15 @@ cargo test --test kittest --all-features           # UI integration tests (egui_
 cargo test --test e2e --all-features               # End-to-end tests
 ```
 
+### Backend E2E tests (network-dependent)
+
+Tests that exercise backend tasks against a live Dash testnet via SPV (no GUI). Marked `#[ignore]` — require network access, a funded wallet, and serial execution. See `tests/backend-e2e/README.md` for run commands, architecture, and writing guide.
 
 Test locations:
 - Unit tests: inline in source files (`#[test]`)
 - UI integration: `tests/kittest/`
 - E2E: `tests/e2e/`
+- Backend E2E: `tests/backend-e2e/` (network-dependent, `#[ignore]`)
 
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 

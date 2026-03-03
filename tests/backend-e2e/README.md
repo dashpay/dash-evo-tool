@@ -34,8 +34,41 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 
 | Variable | Required | Description |
 |---|---|---|
-| `E2E_WALLET_MNEMONIC` | No | BIP-39 mnemonic for the framework wallet. If unset, a fresh mnemonic is generated and funded via the testnet faucet. Set this to reuse a pre-funded wallet across runs. |
+| `E2E_WALLET_MNEMONIC` | No | BIP-39 mnemonic for the framework wallet. If unset, a fresh mnemonic is generated and funded via the testnet faucet. Set this to reuse a pre-funded wallet across runs. Can be set as a shell env var or in the project root `.env` file (see below). |
 | `DASH_EVO_DATA_DIR` | No (set automatically) | Overridden by the harness to point at a persistent temp directory. Do not set manually. |
+
+### `.env` file handling
+
+The harness uses two separate `.env` files for different purposes:
+
+1. **Project root `.env`** -- loaded via `dotenvy::dotenv()` at the start of
+   initialization. `dotenvy` merges entries from this file into the process
+   environment, so `E2E_WALLET_MNEMONIC` can be defined here instead of (or in
+   addition to) a shell export. Optional; if absent, the harness prints a note
+   and continues.
+
+   ```bash
+   # Example: add to project root .env to persist across sessions
+   E2E_WALLET_MNEMONIC="word1 word2 word3 ... word12"
+   ```
+
+2. **Workdir `.env`** -- the harness sets `DASH_EVO_DATA_DIR` to a persistent
+   temp directory (e.g., `/tmp/dash-evo-e2e-testnet-abc1234/`), then calls
+   `copy_env_file_if_not_exists()` which copies the bundled `.env.example`
+   into the workdir. `AppContext::new()` reads this file for network
+   configuration (testnet Platform endpoints, seeds, etc.).
+
+**Precedence**: a shell-exported `E2E_WALLET_MNEMONIC` takes priority over the
+`.env` file value (`dotenvy` does not overwrite existing env vars).
+
+```
+Project root .env  →  dotenvy merges into process env
+                      (E2E_WALLET_MNEMONIC, if present)
+
+Harness sets DASH_EVO_DATA_DIR → /tmp/dash-evo-e2e-testnet-<hash>/
+    → copy_env_file_if_not_exists() copies .env.example into workdir
+    → AppContext::new() reads workdir/.env for network config
+```
 
 ## Architecture
 
@@ -66,8 +99,10 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 4. Start SPV in light-client mode and wait for peer connections (60s timeout).
 5. Restore (or generate) the framework wallet from `E2E_WALLET_MNEMONIC`.
 6. Register the wallet with `AppContext` (idempotent -- handles "already imported").
-7. Wait for SPV to sync the wallet's UTXOs.
-8. Top up from the testnet faucet if balance is below 1 DASH.
+7. Wait for SPV to sync the wallet's UTXOs and funds to become spendable.
+8. Top up from the testnet faucet if balance is below 10 tDASH.
+9. Wait for funds to become spendable (up to 180s).
+10. Sweep orphaned test wallets from previous runs back to the framework wallet.
 
 ### Persistent workdir
 
@@ -126,6 +161,11 @@ Testnet Faucet  --->  Framework Wallet  --->  Test Wallet A
 wallets back to the framework wallet. It is best-effort (logs errors but does
 not panic) because UTXOs may already be spent.
 
+Cleanup runs automatically during initialization -- the harness sweeps orphaned
+test wallets from previous runs (e.g., if a test panicked before cleanup).
+Wallets persist in the DB across runs, so AppContext loads them automatically
+and SPV syncs their balances.
+
 ## Framework modules
 
 | Module | Purpose |
@@ -169,7 +209,7 @@ use crate::task_runner::run_task;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 
 #[ignore]
-#[tokio::test(flavor = "multi_thread", worker_threads = 12)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_my_feature() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;
@@ -196,8 +236,11 @@ async fn test_my_feature() {
 Key points:
 
 - Always use `#[ignore]` so the test does not run in CI unit test jobs.
-- Always use `#[tokio::test(flavor = "multi_thread", worker_threads = 12)]` to
-  match the application's runtime configuration.
+- Always use `#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]`.
+  The `shared` runtime is critical -- SPV spawns background tasks via `tokio::spawn`
+  that are bound to the runtime that created them. With `#[tokio::test]`, each test
+  creates its own runtime; when the first test exits, its runtime drops and kills
+  the SPV tasks, causing "channel closed" errors in later tests.
 - Call `ctx().await` as the first line -- it initializes SPV and the framework
   wallet on first use.
 - Use `run_task()` to execute backend tasks. It creates a throwaway MPSC channel

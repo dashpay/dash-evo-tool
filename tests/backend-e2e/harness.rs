@@ -209,19 +209,25 @@ impl BackendTestContext {
         {
             Ok(balance) => println!("  Framework wallet ready, spendable: {} duffs", balance),
             Err(e) => {
-                let (confirmed, total) = {
+                let (confirmed, total, address) = {
                     let wallets = app_context.wallets().read().expect("wallets lock");
                     wallets
                         .get(&framework_wallet_hash)
                         .map(|w| {
-                            let guard = w.read().expect("wallet lock");
-                            (guard.confirmed_balance_duffs(), guard.total_balance_duffs())
+                            let mut guard = w.write().expect("wallet lock");
+                            let bal = (guard.confirmed_balance_duffs(), guard.total_balance_duffs());
+                            let addr = guard
+                                .receive_address(Network::Testnet, false, Some(&app_context))
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|_| "<unknown>".to_string());
+                            (bal.0, bal.1, addr)
                         })
-                        .unwrap_or((0, 0))
+                        .unwrap_or((0, 0, "<unknown>".to_string()))
                 };
                 eprintln!(
-                    "  Warning: {} (confirmed: {}, total: {})",
-                    e, confirmed, total
+                    "  Warning: {} (confirmed: {}, total: {})\n  \
+                     Fund this address manually: {}",
+                    e, confirmed, total, address
                 );
             }
         }

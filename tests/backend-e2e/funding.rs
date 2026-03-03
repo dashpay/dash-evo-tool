@@ -6,12 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const FAUCET_BASE_URL: &str = "http://faucet.testnet.networks.dash.org";
-const MIN_BALANCE_DUFFS: u64 = 100_000_000; // 1 DASH
+const MIN_BALANCE_DUFFS: u64 = 1_000_000_000; // 10 DASH
 
-/// Ensure the framework wallet has at least `MIN_BALANCE_DUFFS`.
+/// Ensure the framework wallet has at least 10 tDASH (`MIN_BALANCE_DUFFS`).
 ///
-/// If the balance is below the threshold, request funds from the testnet faucet
-/// and wait for them to arrive via SPV.
+/// If the balance is below the threshold, request funds from the testnet faucet.
+/// If the faucet fails and the wallet is empty, panics with the receive address
+/// so the user can fund it manually.
 pub async fn ensure_framework_funded(app_context: &Arc<AppContext>, wallet_hash: WalletSeedHash) {
     let current_balance = {
         let wallets = app_context.wallets().read().expect("wallets lock");
@@ -55,16 +56,12 @@ pub async fn ensure_framework_funded(app_context: &Arc<AppContext>, wallet_hash:
     match request_faucet_funds(&address).await {
         Ok(txid) => println!("  Faucet funded framework wallet, txid: {}", txid),
         Err(e) => {
-            if current_balance == 0 {
-                panic!(
-                    "Faucet failed and framework wallet has zero balance: {}. \
-                     Set E2E_WALLET_MNEMONIC to a pre-funded wallet or fund manually.",
-                    e
-                );
-            }
-            eprintln!(
-                "  Faucet request failed ({}), proceeding with existing balance: {}",
-                e, current_balance
+            panic!(
+                "Faucet failed and framework wallet balance is below minimum \
+                 ({} duffs < {} duffs): {}.\n\
+                 Fund this address manually: {}\n\
+                 Or set E2E_WALLET_MNEMONIC to a pre-funded wallet.",
+                current_balance, MIN_BALANCE_DUFFS, e, address
             );
         }
     }

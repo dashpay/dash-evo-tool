@@ -15,7 +15,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner, ResultBannerExt};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
     show_success_screen_with_info,
@@ -90,7 +90,7 @@ pub struct DocumentActionScreen {
     pub action_type: DocumentActionType,
 
     // Common fields
-    pub backend_message: Option<String>,
+    no_documents_found: bool,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
@@ -163,7 +163,7 @@ impl DocumentActionScreen {
         Self {
             app_context,
             action_type,
-            backend_message: None,
+            no_documents_found: false,
             selected_identity,
             selected_identity_string,
             selected_key: None,
@@ -190,19 +190,15 @@ impl DocumentActionScreen {
     }
 
     fn set_fetching_banner(&mut self, ctx: &egui::Context, text: &str) {
-        if let Some(handle) = self.refresh_banner.take() {
-            handle.clear();
-        }
+        self.refresh_banner.take_and_clear();
         let handle = MessageBanner::set_global(ctx, text, crate::ui::MessageType::Info);
         handle.with_elapsed();
         self.refresh_banner = Some(handle);
     }
 
     fn reset_screen(&mut self) {
-        if let Some(handle) = self.refresh_banner.take() {
-            handle.clear();
-        }
-        self.backend_message = None;
+        self.refresh_banner.take_and_clear();
+        self.no_documents_found = false;
         self.selected_identity = None;
         self.selected_identity_string = String::new();
         self.selected_key = None;
@@ -467,9 +463,7 @@ impl DocumentActionScreen {
             }
         }
 
-        if let Some(backend_message) = &self.backend_message
-            && backend_message.contains("No owned documents found")
-        {
+        if self.no_documents_found {
             ui.add_space(10.0);
             ui.label("No owned documents found.");
         }
@@ -520,7 +514,11 @@ impl DocumentActionScreen {
                     )));
                 }
             } else {
-                self.backend_message = Some("Invalid Document ID format".to_string());
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Invalid Document ID format",
+                    crate::ui::MessageType::Error,
+                );
             }
         }
 
@@ -576,7 +574,11 @@ impl DocumentActionScreen {
                         )));
                     }
                 } else {
-                    self.backend_message = Some("Invalid Document ID format".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Invalid Document ID format",
+                        crate::ui::MessageType::Error,
+                    );
                 }
             }
         });
@@ -910,7 +912,6 @@ impl DocumentActionScreen {
             .min_size(egui::vec2(100.0, 30.0));
 
         if ui.add(button).clicked() && self.can_broadcast() {
-            self.backend_message = None;
             let task = self.create_document_action();
             if task != BackendTask::None {
                 self.broadcast_status = BroadcastStatus::Broadcasting;
@@ -972,7 +973,11 @@ impl DocumentActionScreen {
                 )))
             }
             Err(e) => {
-                self.backend_message = Some(format!("Failed to build document: {}", e));
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Failed to build document: {}", e),
+                    crate::ui::MessageType::Error,
+                );
                 BackendTask::None
             }
         }
@@ -1067,7 +1072,11 @@ impl DocumentActionScreen {
                     )))
                 }
                 Err(e) => {
-                    self.backend_message = Some(format!("Failed to build updated document: {}", e));
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        format!("Failed to build updated document: {}", e),
+                        crate::ui::MessageType::Error,
+                    );
                     BackendTask::None
                 }
             }
@@ -1602,23 +1611,20 @@ impl ScreenLike for DocumentActionScreen {
         // Backend messages are handled via display_message
     }
 
-    fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: crate::ui::MessageType) {
         if matches!(
             message_type,
             crate::ui::MessageType::Error | crate::ui::MessageType::Warning
-        ) && let Some(handle) = self.refresh_banner.take()
-        {
-            handle.clear();
+        ) {
+            self.refresh_banner.take_and_clear();
         }
-        self.backend_message = Some(message.to_string());
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
     }
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
         // Clear the progress banner on any completed task
-        if let Some(handle) = self.refresh_banner.take() {
-            handle.clear();
-        }
+        self.refresh_banner.take_and_clear();
         match result {
             BackendTaskSuccessResult::BroadcastedDocument(_) => {
                 self.broadcast_status = BroadcastStatus::Broadcasted;
@@ -1687,28 +1693,34 @@ impl ScreenLike for DocumentActionScreen {
                                     self.fetched_price = Some(price);
                                 }
                                 Ok(None) => {
-                                    self.backend_message =
-                                        Some("Document has no price set".to_string());
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        "Document has no price set",
+                                        crate::ui::MessageType::Error,
+                                    );
                                     self.fetched_price = None;
                                 }
                                 Err(_) => {
-                                    self.backend_message =
-                                        Some("Failed to get document price".to_string());
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        "Failed to get document price",
+                                        crate::ui::MessageType::Error,
+                                    );
                                     self.fetched_price = None;
                                 }
                             }
                         } else {
-                            self.backend_message = Some("No document found".to_string());
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                "No document found",
+                                crate::ui::MessageType::Error,
+                            );
                             self.fetched_price = None;
                         }
                     }
                     DocumentActionType::Delete => {
                         // For delete, store the fetched documents
-                        if documents.is_empty() {
-                            self.backend_message = Some("No owned documents found".to_string());
-                        } else {
-                            self.backend_message = None;
-                        }
+                        self.no_documents_found = documents.is_empty();
                         self.fetched_documents = documents;
                     }
                     _ => {}
@@ -1766,7 +1778,11 @@ impl DocumentActionScreen {
                 if let Some(wallet) = &self.wallet {
                     if !self.wallet_open_attempted {
                         if let Err(e) = try_open_wallet_no_password(wallet) {
-                            self.backend_message = Some(e);
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                e,
+                                crate::ui::MessageType::Error,
+                            );
                         }
                         self.wallet_open_attempted = true;
                     }
@@ -1789,26 +1805,6 @@ impl DocumentActionScreen {
                     DocumentActionType::Create => self.render_create_inputs(ui),
                     _ => self.render_action_specific_inputs(ui),
                 };
-
-                if let Some(ref msg) = self.backend_message {
-                    ui.add_space(10.0);
-                    let error_color = DashColors::error_color(ui.visuals().dark_mode);
-                    let msg = msg.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&msg).color(error_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.backend_message = None;
-                                }
-                            });
-                        });
-                }
 
                 action
             })

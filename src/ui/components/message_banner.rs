@@ -730,6 +730,9 @@ fn icon_for_type(message_type: MessageType) -> &'static str {
 pub trait ResultBannerExt<T, E> {
     /// If `Err`, displays a global error banner with the error's `Display` text.
     /// Returns `self` unchanged — this is a side-effect-only method.
+    ///
+    /// INTENTIONAL(SEC-007): Raw `Display` text is shown directly. Callers must
+    /// ensure error types have user-friendly Display implementations.
     fn or_show_error(self, ctx: &egui::Context) -> Self;
 }
 

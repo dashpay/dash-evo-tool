@@ -1160,9 +1160,16 @@ impl SpvManager {
                                         *guard = SpvStatus::Error;
                                         drop(guard); // Maintain lock ordering: status → release → last_error
                                     }
-                                    // TODO: truncate error string to ~512 chars to prevent
-                                    // unbounded memory from adversarial peer errors (CWE-400).
-                                    let msg = format!("Sync manager {} failed: {}", manager, error);
+                                    let mut msg = format!("Sync manager {} failed: {}", manager, error);
+                                    // Truncate to prevent unbounded memory from
+                                    // adversarial peer errors (CWE-400).
+                                    // Use floor_char_boundary to avoid panicking
+                                    // on multi-byte UTF-8 sequences.
+                                    if msg.len() > 512 {
+                                        let boundary = msg.floor_char_boundary(512);
+                                        msg.truncate(boundary);
+                                        msg.push('…');
+                                    }
                                     if let Ok(mut err_guard) = last_error.write() {
                                         if err_guard.is_none() {
                                             *err_guard = Some(msg);

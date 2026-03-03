@@ -98,6 +98,12 @@ pub struct AppState {
     previous_connection_state: Option<OverallConnectionState>,
     /// Handle to the current connection status banner, if one is displayed
     connection_banner_handle: Option<BannerHandle>,
+    /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
+    /// the viewport is closed once the receiver resolves.
+    shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// Timestamp when the async shutdown was initiated, used as a hard deadline
+    /// to force-close the viewport if the shutdown task stalls.
+    shutdown_started: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -714,6 +720,8 @@ impl AppState {
             welcome_screen: None,
             previous_connection_state: None,
             connection_banner_handle: None,
+            shutdown_receiver: None,
+            shutdown_started: None,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
@@ -1013,6 +1021,66 @@ impl AppState {
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ── Graceful shutdown: intercept window close so the UI stays responsive ──
+        // When the user closes the window we cancel the native close, show a banner,
+        // and start an async shutdown. Once all tasks have finished (or timed out)
+        // we issue Close ourselves.
+        if let Some(rx) = &mut self.shutdown_receiver {
+            // Shutdown already in progress — check if it's done.
+            let should_close = match rx.try_recv() {
+                Ok(()) => {
+                    tracing::debug!("Async shutdown finished, closing viewport");
+                    true
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    // Sender dropped without sending — shutdown task likely panicked.
+                    tracing::warn!("Shutdown channel closed unexpectedly (possible panic)");
+                    true
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    // Still waiting — check hard deadline to prevent infinite loop.
+                    if let Some(started) = self.shutdown_started {
+                        let grace = crate::utils::tasks::SHUTDOWN_TIMEOUT
+                            + std::time::Duration::from_secs(5);
+                        if started.elapsed() > grace {
+                            tracing::warn!(
+                                "Shutdown hard deadline exceeded, force-closing viewport"
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                }
+            };
+            if should_close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint();
+            }
+            // Render a minimal UI that shows the shutdown banner.
+            crate::ui::theme::apply_theme(ctx, self.theme_preference);
+            crate::ui::components::styled::island_central_panel(ctx, |_ui| {});
+            return;
+        }
+
+        if ctx.input(|i| i.viewport().close_requested()) {
+            // Prevent the window from closing immediately.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            MessageBanner::set_global(
+                ctx,
+                "Shutting down background tasks — please wait…",
+                MessageType::Warning,
+            );
+            tracing::debug!("Close requested, starting async shutdown");
+            self.shutdown_receiver = Some(self.subtasks.shutdown_async());
+            self.shutdown_started = Some(std::time::Instant::now());
+            ctx.request_repaint();
+            return;
+        }
+
         // Apply Dash theme with user preference
         crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
@@ -1368,10 +1436,15 @@ impl App for AppState {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Gracefully shutdown all background tasks, waiting for them to complete
-        // This ensures tasks like the dash-qt handler have time to check their settings
-        // and decide whether to terminate the process or leave it running
-        tracing::debug!("App received on_exit event, initiating graceful shutdown");
+        // If shutdown_receiver is Some, the async shutdown was already initiated
+        // in update(). Skip the blocking fallback to avoid double-shutdown.
+        // The blocking path only runs when the window was force-closed without
+        // going through update() (e.g., OS-level kill, alt-F4 on some platforms).
+        if self.shutdown_receiver.is_some() {
+            tracing::debug!("on_exit: async shutdown was initiated, skipping blocking fallback");
+            return;
+        }
+        tracing::debug!("on_exit: fallback blocking shutdown");
         if let Err(e) = self.subtasks.shutdown() {
             tracing::error!("Error during task shutdown: {}", e);
         }

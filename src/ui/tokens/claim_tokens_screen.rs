@@ -402,9 +402,10 @@ impl ScreenLike for ClaimTokensScreen {
                         if let Err(e) = try_open_wallet_no_password(wallet) {
                             MessageBanner::set_global(
                                 self.app_context.egui_ctx(),
-                                e,
+                                "Unable to open wallet. Please unlock it and try again.",
                                 MessageType::Error,
-                            );
+                            )
+                            .with_details(e);
                         }
                         self.wallet_open_attempted = true;
                     }

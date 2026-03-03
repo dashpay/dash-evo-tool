@@ -224,6 +224,12 @@ impl DocumentActionScreen {
         ui.heading("1. Select a contract and document type:");
         ui.add_space(10.0);
 
+        let prev_contract_id = self.selected_contract.as_ref().map(|c| c.contract.id());
+        let prev_doc_type = self
+            .selected_document_type
+            .as_ref()
+            .map(|d| d.name().to_owned());
+
         add_contract_doc_type_chooser_with_filtering(
             ui,
             &mut self.contract_search,
@@ -231,6 +237,19 @@ impl DocumentActionScreen {
             &mut self.selected_contract,
             &mut self.selected_document_type,
         );
+
+        let contract_changed =
+            prev_contract_id != self.selected_contract.as_ref().map(|c| c.contract.id());
+        let doc_type_changed = prev_doc_type
+            != self
+                .selected_document_type
+                .as_ref()
+                .map(|d| d.name().to_owned());
+        if contract_changed || doc_type_changed {
+            self.no_documents_found = false;
+            self.fetched_documents.clear();
+        }
+
         ui.add_space(10.0);
     }
 
@@ -261,6 +280,8 @@ impl DocumentActionScreen {
 
         // Handle identity change - auto-select key and update wallet
         if response.changed() {
+            self.no_documents_found = false;
+            self.fetched_documents.clear();
             if let Some(identity) = &self.selected_identity {
                 // Auto-select a suitable key for document actions
                 // Note: MASTER keys cannot be used for document operations,
@@ -1780,9 +1801,10 @@ impl DocumentActionScreen {
                         if let Err(e) = try_open_wallet_no_password(wallet) {
                             MessageBanner::set_global(
                                 self.app_context.egui_ctx(),
-                                e,
+                                "Unable to open wallet. Please unlock it and try again.",
                                 crate::ui::MessageType::Error,
-                            );
+                            )
+                            .with_details(e);
                         }
                         self.wallet_open_attempted = true;
                     }

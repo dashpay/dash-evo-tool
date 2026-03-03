@@ -1161,10 +1161,12 @@ impl SpvManager {
                                         drop(guard); // Maintain lock ordering: status → release → last_error
                                     }
 
-                                    // In case the error message is too long, we truncate it to avoid overwhelming the UI or logs
-                                    let msg =  format!("Sync manager {} failed: {}", manager, error.get(..100).unwrap_or(&error).to_string());                                    
+                                    // Truncate error before formatting to avoid
+                                    // large transient allocations from adversarial peers.
+                                    let limit = error.floor_char_boundary(100);
+                                    let msg = format!("Sync manager {} failed: {}", manager, &error[..limit]);
                                     if let Ok(mut err_guard) = last_error.write() {
-                                        if err_guard.is_none() {                   
+                                        if err_guard.is_none() {
                                             *err_guard = Some(msg);
                                         } else {
                                             tracing::warn!(%manager, error, "SPV last_error already set, ignoring subsequent: {}", msg);

@@ -1160,21 +1160,14 @@ impl SpvManager {
                                         *guard = SpvStatus::Error;
                                         drop(guard); // Maintain lock ordering: status → release → last_error
                                     }
-                                    let mut msg = format!("Sync manager {} failed: {}", manager, error);
-                                    // Truncate to prevent unbounded memory from
-                                    // adversarial peer errors (CWE-400).
-                                    // Use floor_char_boundary to avoid panicking
-                                    // on multi-byte UTF-8 sequences.
-                                    if msg.len() > 512 {
-                                        let boundary = msg.floor_char_boundary(512);
-                                        msg.truncate(boundary);
-                                        msg.push('…');
-                                    }
+
+                                    // In case the error message is too long, we truncate it to avoid overwhelming the UI or logs
+                                    let msg =  format!("Sync manager {} failed: {}", manager, error.get(..100).unwrap_or(&error).to_string());                                    
                                     if let Ok(mut err_guard) = last_error.write() {
-                                        if err_guard.is_none() {
+                                        if err_guard.is_none() {                   
                                             *err_guard = Some(msg);
                                         } else {
-                                            tracing::warn!("SPV last_error already set, ignoring subsequent: {}", msg);
+                                            tracing::warn!(%manager, error, "SPV last_error already set, ignoring subsequent: {}", msg);
                                         }
                                     }
                                 }

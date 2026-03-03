@@ -150,7 +150,6 @@ pub struct SpvManager {
     // Storage manager for direct access to SPV data (shared component from client)
     storage: Arc<Mutex<Option<Arc<tokio::sync::Mutex<DiskStorageManager>>>>>,
     // Shared reference to the running SPV client (for quorum lookups, etc.)
-    // ArcSwapOption gives wait-free reads (quorum lookups) and atomic set/clear on start/stop.
     spv_client: ArcSwapOption<SpvClient>,
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,

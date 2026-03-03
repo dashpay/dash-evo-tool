@@ -1,19 +1,27 @@
 //! Best-effort cleanup: return test wallet funds to the framework wallet.
+//!
+//! Called during setup to sweep orphaned wallets from previous runs
+//! (e.g., a test panicked before cleanup). Wallets persist in the DB,
+//! so AppContext loads them automatically on the next run.
 
-use crate::harness::ctx;
 use crate::identity_helpers::get_receive_address;
 use crate::task_runner::run_task;
+use crate::wait;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::wallet::WalletSeedHash;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Send all funds from non-framework wallets back to the framework wallet.
 ///
-/// Logs errors but does not panic -- funds may already be spent.
-#[allow(dead_code)]
-pub async fn cleanup_test_wallets(framework_wallet_hash: WalletSeedHash) {
-    let app_context = &ctx().await.app_context;
-
+/// Best-effort: logs errors but does not panic — funds may already be spent
+/// or UTXOs may not yet be spendable.
+pub async fn cleanup_test_wallets(
+    app_context: &Arc<AppContext>,
+    framework_wallet_hash: WalletSeedHash,
+) {
     // Framework wallet receive address
     let framework_address = {
         let wallets = app_context.wallets().read().expect("wallets lock");
@@ -33,6 +41,15 @@ pub async fn cleanup_test_wallets(framework_wallet_hash: WalletSeedHash) {
             .collect()
     };
 
+    if wallet_hashes.is_empty() {
+        return;
+    }
+
+    println!(
+        "  Sweeping {} orphaned test wallet(s) from previous run...",
+        wallet_hashes.len()
+    );
+
     for hash in wallet_hashes {
         let wallet_arc = {
             let wallets = app_context.wallets().read().expect("wallets lock");
@@ -42,9 +59,13 @@ pub async fn cleanup_test_wallets(framework_wallet_hash: WalletSeedHash) {
             }
         };
 
+        // Wait briefly for SPV to sync this wallet's balance.
+        let _ =
+            wait::wait_for_spendable_balance(app_context, hash, 1, Duration::from_secs(10)).await;
+
         let balance = {
             let wallet = wallet_arc.read().expect("wallet lock");
-            wallet.total_balance_duffs()
+            wallet.confirmed_balance_duffs()
         };
 
         if balance == 0 {
@@ -57,7 +78,7 @@ pub async fn cleanup_test_wallets(framework_wallet_hash: WalletSeedHash) {
                 amount_duffs: balance,
             }],
             subtract_fee_from_amount: true,
-            memo: Some("E2E cleanup".to_string()),
+            memo: Some("E2E cleanup: sweep orphaned wallet".to_string()),
             override_fee: None,
         };
 
@@ -68,12 +89,12 @@ pub async fn cleanup_test_wallets(framework_wallet_hash: WalletSeedHash) {
 
         match run_task(app_context, task).await {
             Ok(_) => println!(
-                "  Cleanup: returned {} duffs from wallet {:?}",
+                "  Cleanup: returned {} duffs from orphaned wallet {:?}",
                 balance,
                 &hash[..4]
             ),
             Err(e) => eprintln!(
-                "  Cleanup warning: failed to return funds from wallet {:?}: {}",
+                "  Cleanup warning: failed to sweep wallet {:?}: {}",
                 &hash[..4],
                 e
             ),

@@ -12,7 +12,7 @@ use std::time::Duration;
 
 /// Create identity, register a DPNS name, verify by searching.
 #[ignore]
-#[tokio::test(flavor = "multi_thread", worker_threads = 12)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_register_dpns_name() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;

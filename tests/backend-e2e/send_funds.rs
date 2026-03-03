@@ -79,7 +79,7 @@ async fn send_with_retry(
 
 /// Send DASH between two test wallets and verify balances.
 #[ignore]
-#[tokio::test(flavor = "multi_thread", worker_threads = 12)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_send_and_receive_funds() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;

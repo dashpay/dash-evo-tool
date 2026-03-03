@@ -11,7 +11,7 @@ use std::time::Duration;
 
 /// Create a funded test wallet, register an identity on Platform, verify it was created.
 #[ignore]
-#[tokio::test(flavor = "multi_thread", worker_threads = 12)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_create_identity() {
     let ctx = ctx().await;
 

@@ -2,6 +2,15 @@
 //!
 //! Provides a lazily-initialized `BackendTestContext` that sets up
 //! `AppContext`, SPV, and a funded framework wallet.
+//!
+//! ## Shared Runtime
+//!
+//! All tests use `#[tokio_shared_rt::test(shared)]` instead of `#[tokio::test]`.
+//! SPV spawns background tasks via `tokio::spawn` that are bound to the runtime
+//! that created them. With `#[tokio::test]`, each test creates its own runtime —
+//! when the first test exits, its runtime drops and kills the SPV tasks, causing
+//! "channel closed" errors in later tests. The shared runtime from
+//! `tokio-shared-rt` keeps everything alive for the entire test binary.
 
 use crate::funding;
 use crate::task_runner::run_task;
@@ -28,8 +37,8 @@ const SEND_RETRY_DELAY: Duration = Duration::from_secs(10);
 
 /// Shared test context, initialized once across all backend E2E tests.
 ///
-/// Uses `tokio::sync::OnceCell` so initialization runs inside the existing
-/// tokio runtime (from `#[tokio::test]`) rather than spawning a nested one.
+/// Uses `tokio::sync::OnceCell` so initialization runs inside the shared
+/// runtime context (via `block_on`) rather than spawning a nested one.
 static CTX: tokio::sync::OnceCell<BackendTestContext> = tokio::sync::OnceCell::const_new();
 
 /// Get (or initialize) the shared test context.
@@ -46,6 +55,11 @@ pub struct BackendTestContext {
 
 impl BackendTestContext {
     async fn init() -> Self {
+        // Load .env from the project root so E2E_WALLET_MNEMONIC is available.
+        if let Err(e) = dotenvy::dotenv() {
+            eprintln!("  Note: .env not loaded ({e}), relying on environment");
+        }
+
         // Persistent workdir keyed by git revision
         let git_hash = std::process::Command::new("git")
             .args(["rev-parse", "--short", "HEAD"])
@@ -141,8 +155,6 @@ impl BackendTestContext {
             .expect("Framework wallet not picked up by SPV");
 
         // Wait for SPV to sync the wallet's existing UTXOs and make them spendable.
-        // Use spendable balance (confirmed/IS-locked) — total balance includes unconfirmed
-        // funds that can't actually be used for transaction building.
         println!("  Waiting for SPV to sync framework wallet spendable balance...");
         match wait::wait_for_spendable_balance(
             &app_context,
@@ -186,7 +198,6 @@ impl BackendTestContext {
         funding::ensure_framework_funded(&app_context, framework_wallet_hash).await;
 
         // Wait for funds to become SPENDABLE (not just visible as unconfirmed).
-        // This ensures the first create_funded_test_wallet() call can actually use them.
         println!("  Waiting for framework wallet funds to become spendable...");
         match wait::wait_for_spendable_balance(
             &app_context,
@@ -198,8 +209,6 @@ impl BackendTestContext {
         {
             Ok(balance) => println!("  Framework wallet ready, spendable: {} duffs", balance),
             Err(e) => {
-                // Log detailed diagnostics but don't panic — the send retry loop
-                // in create_funded_test_wallet will handle transient UTXO issues.
                 let (confirmed, total) = {
                     let wallets = app_context.wallets().read().expect("wallets lock");
                     wallets
@@ -216,6 +225,11 @@ impl BackendTestContext {
                 );
             }
         }
+
+        // Sweep orphaned test wallets from previous runs (e.g., a test panicked
+        // before cleanup). Wallets persist in the DB, so AppContext loaded them
+        // automatically and SPV synced their balances.
+        crate::cleanup::cleanup_test_wallets(&app_context, framework_wallet_hash).await;
 
         BackendTestContext {
             app_context,
@@ -269,8 +283,6 @@ impl BackendTestContext {
         };
 
         // Send funds from framework wallet with retry logic.
-        // After a previous send, the change output may not be spendable yet
-        // (waiting for InstantSend lock or block confirmation).
         let framework_wallet_arc = {
             let wallets = app_context.wallets().read().expect("wallets lock");
             wallets
@@ -281,7 +293,6 @@ impl BackendTestContext {
 
         let mut last_error = String::new();
         for attempt in 1..=SEND_MAX_RETRIES {
-            // Ensure framework wallet has spendable UTXOs before attempting send
             if attempt > 1 {
                 println!(
                     "  Retry {}/{}: waiting for framework wallet UTXOs to become spendable...",
@@ -351,8 +362,7 @@ impl BackendTestContext {
             );
         }
 
-        // Wait for test wallet to see the funds (total, not just spendable —
-        // the test wallet just needs to confirm the tx arrived)
+        // Wait for test wallet to see the funds
         wait::wait_for_balance(
             app_context,
             seed_hash,
@@ -363,14 +373,10 @@ impl BackendTestContext {
         .expect("Test wallet did not receive expected funds");
 
         // Wait for framework wallet change output to become spendable.
-        // This ensures the NEXT call to create_funded_test_wallet() won't fail
-        // with "Insufficient funds" because the change hasn't confirmed yet.
-        // Use a short timeout — if it doesn't confirm quickly, the retry loop
-        // in the next call will handle it.
         let _ = wait::wait_for_spendable_balance(
             app_context,
             self.framework_wallet_hash,
-            1, // any spendable amount means change arrived
+            1,
             Duration::from_secs(30),
         )
         .await;

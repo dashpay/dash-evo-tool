@@ -13,7 +13,7 @@ use std::time::Duration;
 
 /// Create identity, then withdraw some credits to a Core address.
 #[ignore]
-#[tokio::test(flavor = "multi_thread", worker_threads = 12)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_withdraw_from_identity() {
     let ctx = ctx().await;
 

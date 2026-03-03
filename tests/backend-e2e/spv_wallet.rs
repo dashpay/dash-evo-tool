@@ -10,7 +10,7 @@ use tokio::time::timeout;
 ///
 /// Uses the shared `BackendTestContext` -- SPV is already started.
 #[ignore]
-#[tokio::test(flavor = "multi_thread", worker_threads = 12)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_spv_sync_and_create_wallet() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;

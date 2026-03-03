@@ -9,7 +9,7 @@ use dash_sdk::platform::Identifier;
 
 /// Fetch the DashPay system contract and verify its structure.
 #[ignore]
-#[tokio::test(flavor = "multi_thread", worker_threads = 12)]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_fetch_data_contract() {
     let ctx = ctx().await;
     let app_context = &ctx.app_context;

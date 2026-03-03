@@ -13,7 +13,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner, ResultBannerExt};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -54,7 +54,6 @@ pub struct RegisterDataContractScreen {
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_open_attempted: bool,
     wallet_unlock_popup: WalletUnlockPopup,
-    error_message: Option<String>,
     completed_fee_result: Option<FeeResult>,
     refresh_banner: Option<BannerHandle>,
 }
@@ -110,7 +109,6 @@ impl RegisterDataContractScreen {
             selected_wallet,
             wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
-            error_message: None,
             completed_fee_result: None,
             refresh_banner: None,
         }
@@ -285,9 +283,7 @@ impl RegisterDataContractScreen {
             && let ContractTask::RegisterDataContract(_, _, _, _) = **contract_task
         {
             self.broadcast_status = BroadcastStatus::Broadcasting;
-            if let Some(handle) = self.refresh_banner.take() {
-                handle.clear();
-            }
+            self.refresh_banner.take_and_clear();
             let handle =
                 MessageBanner::set_global(ui.ctx(), "Broadcasting contract...", MessageType::Info);
             handle.with_elapsed();
@@ -331,14 +327,11 @@ impl RegisterDataContractScreen {
 
 impl ScreenLike for RegisterDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if matches!(message_type, MessageType::Error | MessageType::Warning)
-            && let Some(handle) = self.refresh_banner.take()
-        {
-            handle.clear();
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
         }
         if message_type == MessageType::Error {
             if message.contains("proof error logged, contract inserted into the database") {
-                self.error_message = Some(message.to_string());
                 self.broadcast_status = BroadcastStatus::Done;
             } else {
                 self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
@@ -352,9 +345,7 @@ impl ScreenLike for RegisterDataContractScreen {
                 self.broadcast_status = BroadcastStatus::Broadcasting;
             }
             BackendTaskSuccessResult::RegisteredContract(fee_result) => {
-                if let Some(handle) = self.refresh_banner.take() {
-                    handle.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;
             }
@@ -515,9 +506,8 @@ impl ScreenLike for RegisterDataContractScreen {
                 // Render wallet unlock if needed
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            self.error_message = Some(e);
-                        }
+                        let _ = try_open_wallet_no_password(wallet)
+                            .or_show_error(ui.ctx());
                         self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {

@@ -11,13 +11,13 @@ use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
 use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::{CoreBackendMode, SpvStatus};
-use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::theme::DashColors;
 use crate::ui::wallets::account_summary::{
@@ -100,6 +100,8 @@ pub struct WalletsBalancesScreen {
     pending_refresh_mode: RefreshMode,
     /// Whether we should search for asset locks after wallet is unlocked
     pending_asset_lock_search_after_unlock: bool,
+    /// Banner handle for asset lock search progress
+    asset_lock_search_banner: Option<BannerHandle>,
     /// Current page for single key wallet UTXO pagination (0-indexed)
     utxo_page: usize,
     /// Selected refresh mode (only shown in dev mode)
@@ -196,6 +198,7 @@ impl WalletsBalancesScreen {
             pending_refresh_after_unlock: false,
             pending_refresh_mode: RefreshMode::default(),
             pending_asset_lock_search_after_unlock: false,
+            asset_lock_search_banner: None,
             utxo_page: 0,
             refresh_mode: RefreshMode::default(),
             platform_sync_info,
@@ -1742,11 +1745,14 @@ impl ScreenLike for WalletsBalancesScreen {
                     if self.pending_asset_lock_search_after_unlock {
                         self.pending_asset_lock_search_after_unlock = false;
                         if let Some(wallet_arc) = self.selected_wallet.clone() {
-                            MessageBanner::set_global(
+                            self.asset_lock_search_banner.take_and_clear();
+                            let handle = MessageBanner::set_global(
                                 ctx,
                                 "Searching for unused asset locks...",
                                 MessageType::Info,
                             );
+                            handle.with_elapsed();
+                            self.asset_lock_search_banner = Some(handle);
                             action |= AppAction::BackendTask(BackendTask::CoreTask(
                                 CoreTask::RecoverAssetLocks(wallet_arc),
                             ));
@@ -1916,11 +1922,14 @@ impl ScreenLike for WalletsBalancesScreen {
                     action = AppAction::None;
                 } else {
                     // Wallet is unlocked - proceed with search
-                    MessageBanner::set_global(
+                    self.asset_lock_search_banner.take_and_clear();
+                    let handle = MessageBanner::set_global(
                         ctx,
                         "Searching for unused asset locks...",
                         MessageType::Info,
                     );
+                    handle.with_elapsed();
+                    self.asset_lock_search_banner = Some(handle);
                     action = AppAction::BackendTask(BackendTask::CoreTask(
                         CoreTask::RecoverAssetLocks(wallet_arc),
                     ));
@@ -1937,6 +1946,7 @@ impl ScreenLike for WalletsBalancesScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refreshing = false;
+            self.asset_lock_search_banner.take_and_clear();
 
             // If the fund platform dialog is processing, show error in the dialog instead
             if self.fund_platform_dialog.is_processing {
@@ -1981,6 +1991,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 recovered_count,
                 total_amount,
             } => {
+                self.asset_lock_search_banner.take_and_clear();
                 let msg = if recovered_count == 0 {
                     "No additional unused asset locks found".to_string()
                 } else {

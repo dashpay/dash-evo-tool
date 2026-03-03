@@ -524,6 +524,20 @@ impl AppContext {
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;
 
+        // Obtain change address once before the retry loop to avoid marking
+        // multiple addresses as used on failed fee-adjustment attempts.
+        let change_result = wm
+            .get_change_address(
+                wallet_id,
+                DEFAULT_BIP44_ACCOUNT_INDEX,
+                AccountTypePreference::BIP44,
+                true,
+            )
+            .map_err(|e| format!("Failed to get change address: {e}"))?;
+        let change_address = change_result
+            .address
+            .ok_or_else(|| "No change address generated".to_string())?;
+
         for _ in 0..MAX_FEE_ITERATIONS {
             let scaled_recipients: Vec<(Address, u64)> = recipients
                 .iter()
@@ -534,9 +548,9 @@ impl AppContext {
                 wm,
                 wallet_id,
                 DEFAULT_BIP44_ACCOUNT_INDEX,
-                AccountTypePreference::BIP44,
                 scaled_recipients,
                 current_height,
+                &change_address,
             ) {
                 Ok(tx) => return Ok(tx),
                 Err(WalletError::InsufficientFunds) if request.subtract_fee_from_amount => {
@@ -606,28 +620,14 @@ impl AppContext {
     }
 
     /// Build an unsigned payment transaction using TransactionBuilder.
-    ///
-    /// Replaces the removed `WalletManager::create_unsigned_payment_transaction`.
     fn build_unsigned_payment_tx(
         wm: &mut WalletManager<ManagedWalletInfo>,
         wallet_id: &WalletId,
         account_index: u32,
-        account_type_pref: AccountTypePreference,
         recipients: Vec<(Address, u64)>,
         current_height: u32,
+        change_address: &Address,
     ) -> Result<Transaction, WalletError> {
-        // Get change address from wallet manager
-        let change_result = wm
-            .get_change_address(wallet_id, account_index, account_type_pref, true)
-            .map_err(|e| {
-                WalletError::TransactionBuild(format!(
-                    "change address for account {account_index}: {e}"
-                ))
-            })?;
-        let change_address = change_result
-            .address
-            .ok_or_else(|| WalletError::AddressGeneration("No change address generated".into()))?;
-
         // Get spendable UTXOs from the managed wallet info
         let managed_info = wm
             .get_wallet_info(wallet_id)
@@ -646,7 +646,7 @@ impl AppContext {
         // Build the transaction using TransactionBuilder
         let mut builder = TransactionBuilder::new()
             .set_fee_rate(FeeRate::normal())
-            .set_change_address(change_address);
+            .set_change_address(change_address.clone());
 
         for (address, amount) in recipients {
             builder = builder

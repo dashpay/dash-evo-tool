@@ -1,5 +1,7 @@
 use crate::app_dir::{app_user_data_file_path, create_dash_core_config_if_not_exists};
 use crate::context::AppContext;
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
 use std::path::PathBuf;
@@ -67,8 +69,8 @@ impl AppContext {
         // Spawn a task to wait for the Dash-Qt process to exit
         let cancel = self.subtasks.cancellation_token.clone();
         let db = Arc::clone(&self.db);
+        let egui_ctx = self.egui_ctx().clone();
         self.subtasks.spawn_sync("dash_qt_watcher", async move {
-
             // Wait for the process to exit or current task to be cancelled
             tokio::select! {
                 exited = dash_qt.wait() => {
@@ -95,6 +97,7 @@ impl AppContext {
                     };
                     if should_close {
                         tracing::debug!("dash-qt process was cancelled, sending SIGTERM");
+                        MessageBanner::set_global(&egui_ctx, "Shutting down Dash-Qt...".to_string(), MessageType::Warning);
                         signal_term(&dash_qt)
                             .unwrap_or_else(|e| tracing::error!(error=?e, "Failed to send SIGTERM to dash-qt"));
                         let status = dash_qt.wait().await

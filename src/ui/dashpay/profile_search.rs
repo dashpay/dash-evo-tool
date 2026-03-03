@@ -34,7 +34,6 @@ pub struct ProfileSearchScreen {
     pub app_context: Arc<AppContext>,
     search_query: String,
     search_results: Vec<ProfileSearchResult>,
-    message: Option<(String, MessageType)>,
     loading: bool,
     has_searched: bool, // Track if a search has been performed
     show_info_popup: bool,
@@ -46,16 +45,20 @@ impl ProfileSearchScreen {
             app_context,
             search_query: String::new(),
             search_results: Vec::new(),
-            message: None,
             loading: false,
             has_searched: false,
             show_info_popup: false,
         }
     }
 
-    fn search_profiles(&mut self) -> AppAction {
+    fn search_profiles(&mut self, ctx: &egui::Context) -> AppAction {
         if self.search_query.trim().is_empty() {
-            self.display_message("Please enter a search term", MessageType::Error);
+            self.loading = false;
+            crate::ui::components::MessageBanner::set_global(
+                ctx,
+                "Please enter a search term",
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
@@ -70,14 +73,15 @@ impl ProfileSearchScreen {
         AppAction::BackendTask(task)
     }
 
-    fn view_profile(&mut self, identity_id: Identifier) -> AppAction {
+    fn view_profile(&mut self, ctx: &egui::Context, identity_id: Identifier) -> AppAction {
         // Use any available identity for viewing (just needed for context)
         let identities = self
             .app_context
             .load_local_qualified_identities()
             .unwrap_or_default();
         if identities.is_empty() {
-            self.display_message(
+            crate::ui::components::MessageBanner::set_global(
+                ctx,
                 "No identities available. Please load an identity first.",
                 MessageType::Error,
             );
@@ -117,18 +121,6 @@ impl ProfileSearchScreen {
 
         ui.separator();
 
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => DashColors::success_color(dark_mode),
-                MessageType::Error => DashColors::error_color(dark_mode),
-                MessageType::Warning => DashColors::warning_color(dark_mode),
-                MessageType::Info => DashColors::DASH_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
-        }
-
         ScrollArea::vertical().show(ui, |ui| {
             // Search section
             ui.horizontal(|ui| {
@@ -142,12 +134,12 @@ impl ProfileSearchScreen {
 
                     // Trigger search on Enter key
                     if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        action = self.search_profiles();
+                        action = self.search_profiles(ui.ctx());
                     }
                 });
 
                 if ui.button("Search").clicked() {
-                    action = self.search_profiles();
+                    action = self.search_profiles(ui.ctx());
                 }
             });
 
@@ -233,7 +225,7 @@ impl ProfileSearchScreen {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if ui.button("View Profile").clicked() {
-                                            action = self.view_profile(result.identity_id);
+                                            action = self.view_profile(ui.ctx(), result.identity_id);
                                         }
                                         if ui.button("Add Contact").clicked() {
                                             action = self.add_contact(result.identity_id);
@@ -258,9 +250,9 @@ impl ProfileSearchScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.loading = false;
-        self.message = Some((message.to_string(), message_type));
     }
 }
 
@@ -302,7 +294,6 @@ impl ScreenLike for ProfileSearchScreen {
             self.search_query.clear();
             self.search_results.clear();
             self.has_searched = false;
-            self.message = None;
             action = AppAction::None; // Consume the action
         }
 
@@ -371,8 +362,8 @@ impl ScreenLike for ProfileSearchScreen {
                     self.search_results.push(search_result);
                 }
             }
-            BackendTaskSuccessResult::Message(msg) => {
-                self.message = Some((msg, MessageType::Info));
+            BackendTaskSuccessResult::Message(_msg) => {
+                // Message display is handled globally by AppState
             }
             _ => {
                 // Ignore other results

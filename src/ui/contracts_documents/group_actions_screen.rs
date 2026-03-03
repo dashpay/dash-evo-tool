@@ -17,6 +17,7 @@ use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_chooser_pre_filtered;
@@ -44,24 +45,22 @@ use dash_sdk::dpp::group::action_event::GroupActionEvent;
 use dash_sdk::dpp::group::group_action::{GroupAction, GroupActionAccessors};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::dpp::tokens::emergency_action::TokenEmergencyAction;
 use dash_sdk::dpp::tokens::token_event::TokenEvent;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Color32, Context, Frame, Margin, RichText};
+use eframe::egui::{self, Color32, Context, RichText};
 use egui::{ScrollArea, TextStyle};
 use egui_extras::{Column, TableBuilder};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 // Status of the fetch group actions task
 enum FetchGroupActionsStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
+    WaitingForResult,
     Complete(IndexMap<Identifier, GroupAction>),
-    ErrorMessage(String),
+    Error,
 }
 
 /// The screen
@@ -84,6 +83,7 @@ pub struct GroupActionsScreen {
 
     // Backend task status
     fetch_group_actions_status: FetchGroupActionsStatus,
+    fetch_banner: Option<BannerHandle>,
 
     // App Context
     pub app_context: Arc<AppContext>,
@@ -149,6 +149,7 @@ impl GroupActionsScreen {
 
             // Backend task status
             fetch_group_actions_status: FetchGroupActionsStatus::NotStarted,
+            fetch_banner: None,
 
             // App Context
             app_context: app_context.clone(),
@@ -259,9 +260,12 @@ impl GroupActionsScreen {
                                             Some(identity_token_balance) => identity_token_balance,
                                             None => {
                                                 self.fetch_group_actions_status =
-                                                    FetchGroupActionsStatus::ErrorMessage(
-                                                        "No identity token balance found".to_string(),
-                                                    );
+                                                    FetchGroupActionsStatus::Error;
+                                                MessageBanner::set_global(
+                                                    ui.ctx(),
+                                                    "No identity token balance found",
+                                                    MessageType::Error,
+                                                );
                                                 return;
                                             }
                                         };
@@ -269,9 +273,12 @@ impl GroupActionsScreen {
                                             Ok(identity_token_info) => identity_token_info,
                                             Err(e) => {
                                                 self.fetch_group_actions_status =
-                                                    FetchGroupActionsStatus::ErrorMessage(
-                                                        format!("Failed to get identity token info: {}", e),
-                                                    );
+                                                    FetchGroupActionsStatus::Error;
+                                                MessageBanner::set_global(
+                                                    ui.ctx(),
+                                                    format!("Failed to get identity token info: {}", e),
+                                                    MessageType::Error,
+                                                );
                                                 return;
                                             }
                                         };
@@ -357,7 +364,6 @@ impl GroupActionsScreen {
             TokenEvent::Mint(amount, _identifier, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
                 mint_screen.group_action_id = Some(action_id);
-                // Convert amount to Amount struct using the token configuration
                 mint_screen.amount = Some(Amount::from_token(
                     &mint_screen.identity_token_info,
                     *amount,
@@ -451,11 +457,12 @@ impl ScreenLike for GroupActionsScreen {
         self.fetch_group_actions_status = FetchGroupActionsStatus::NotStarted;
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
-                self.fetch_group_actions_status =
-                    FetchGroupActionsStatus::ErrorMessage(message.to_string());
+                self.fetch_banner.take_and_clear();
+                self.fetch_group_actions_status = FetchGroupActionsStatus::Error;
             }
             MessageType::Success | MessageType::Info => {}
         }
@@ -465,6 +472,7 @@ impl ScreenLike for GroupActionsScreen {
         if let BackendTaskSuccessResult::ActiveGroupActions(actions_map) =
             backend_task_success_result
         {
+            self.fetch_banner.take_and_clear();
             self.fetch_group_actions_status =
                 FetchGroupActionsStatus::Complete(actions_map.clone());
         }
@@ -556,62 +564,26 @@ impl ScreenLike for GroupActionsScreen {
                         .corner_radius(3.0);
 
                 if ui.add(button).clicked() {
-                    self.fetch_group_actions_status = FetchGroupActionsStatus::WaitingForResult(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
+                    self.fetch_banner.take_and_clear();
+                    let handle = MessageBanner::set_global(
+                        ui.ctx(),
+                        "Fetching group actions...",
+                        MessageType::Info,
                     );
+                    handle.with_elapsed();
+                    self.fetch_banner = Some(handle);
+                    self.fetch_group_actions_status = FetchGroupActionsStatus::WaitingForResult;
                     fetch_clicked = true;
                 }
             }
 
             match &self.fetch_group_actions_status {
-                FetchGroupActionsStatus::ErrorMessage(msg) => {
-                    ui.add_space(10.0);
-                    let error_color = DashColors::ERROR;
-                    let msg = msg.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!("Error: {}", msg)).color(error_color),
-                                );
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.fetch_group_actions_status =
-                                        FetchGroupActionsStatus::NotStarted;
-                                }
-                            });
-                        });
+                FetchGroupActionsStatus::Error => {
+                    // Error message is displayed globally via MessageBanner
                 }
 
-                FetchGroupActionsStatus::WaitingForResult(start_time) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let elapsed = now - start_time;
-                    let status = if elapsed < 60 {
-                        format!("{} second{}", elapsed, if elapsed == 1 { "" } else { "s" })
-                    } else {
-                        format!(
-                            "{} minute{} and {} second{}",
-                            elapsed / 60,
-                            if elapsed / 60 == 1 { "" } else { "s" },
-                            elapsed % 60,
-                            if elapsed % 60 == 1 { "" } else { "s" }
-                        )
-                    };
-                    ui.add_space(10.0);
-                    ui.label(format!(
-                        "Fetching group actions… Time taken so far: {}",
-                        status
-                    ));
+                FetchGroupActionsStatus::WaitingForResult => {
+                    // Elapsed time is shown in the global banner
                 }
 
                 _ => {}

@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
@@ -10,19 +11,17 @@ use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::TimestampMillis;
-use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, Ui};
+use eframe::egui::{self, Color32, Context, RichText, Ui};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_CONTRACTS: usize = 10;
 
 #[derive(PartialEq)]
 enum AddContractsStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
+    WaitingForResult,
     Complete(Vec<String>),
-    ErrorMessage(String),
+    Error,
 }
 
 pub struct AddContractsScreen {
@@ -32,6 +31,7 @@ pub struct AddContractsScreen {
     maybe_found_contracts: Vec<String>,
     alias_inputs: Option<Vec<String>>,
     last_alias_result: Option<(usize, Result<String, String>)>,
+    add_banner: Option<BannerHandle>,
 }
 
 impl AddContractsScreen {
@@ -43,6 +43,7 @@ impl AddContractsScreen {
             maybe_found_contracts: vec![],
             alias_inputs: None,
             last_alias_result: None,
+            add_banner: None,
         }
     }
 
@@ -79,18 +80,22 @@ impl AddContractsScreen {
     fn add_contracts_clicked(&mut self) -> AppAction {
         match self.parse_identifiers() {
             Ok(identifiers) => {
-                self.add_contracts_status = AddContractsStatus::WaitingForResult(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
+                self.add_banner.take_and_clear();
+                let handle = MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Adding contract...",
+                    MessageType::Info,
                 );
+                handle.with_elapsed();
+                self.add_banner = Some(handle);
+                self.add_contracts_status = AddContractsStatus::WaitingForResult;
                 AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                     ContractTask::FetchContracts(identifiers),
                 )))
             }
             Err(e) => {
-                self.add_contracts_status = AddContractsStatus::ErrorMessage(e);
+                self.add_contracts_status = AddContractsStatus::Error;
+                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
                 AppAction::None
             }
         }
@@ -269,10 +274,12 @@ impl AddContractsScreen {
 }
 
 impl ScreenLike for AddContractsScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         match message_type {
             MessageType::Error | MessageType::Warning => {
-                self.add_contracts_status = AddContractsStatus::ErrorMessage(message.to_string());
+                self.add_banner.take_and_clear();
+                self.add_contracts_status = AddContractsStatus::Error;
             }
             MessageType::Success | MessageType::Info => {}
         }
@@ -281,6 +288,7 @@ impl ScreenLike for AddContractsScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::FetchedContracts(maybe_found_contracts) => {
+                self.add_banner.take_and_clear();
                 let maybe_contracts: Vec<_> = self
                     .contract_ids_input
                     .iter()
@@ -324,29 +332,7 @@ impl ScreenLike for AddContractsScreen {
             ui.add_space(10.0);
 
             match &self.add_contracts_status {
-                AddContractsStatus::NotStarted | AddContractsStatus::ErrorMessage(_) => {
-                    if let AddContractsStatus::ErrorMessage(msg) = &self.add_contracts_status {
-                        let error_color = DashColors::ERROR;
-                        let msg = msg.clone();
-                        Frame::new()
-                            .fill(error_color.gamma_multiply(0.1))
-                            .inner_margin(Margin::symmetric(10, 8))
-                            .corner_radius(5.0)
-                            .stroke(egui::Stroke::new(1.0, error_color))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        RichText::new(format!("Error: {}", msg)).color(error_color),
-                                    );
-                                    ui.add_space(10.0);
-                                    if ui.small_button("Dismiss").clicked() {
-                                        self.add_contracts_status = AddContractsStatus::NotStarted;
-                                    }
-                                });
-                            });
-                        ui.add_space(10.0);
-                    }
-
+                AddContractsStatus::NotStarted | AddContractsStatus::Error => {
                     // Show input fields
                     self.show_input_fields(ui);
 
@@ -361,35 +347,8 @@ impl ScreenLike for AddContractsScreen {
                         return self.add_contracts_clicked();
                     }
                 }
-                AddContractsStatus::WaitingForResult(start_time) => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let elapsed_seconds = now - start_time;
-
-                    let display_time = if elapsed_seconds < 60 {
-                        format!(
-                            "{} second{}",
-                            elapsed_seconds,
-                            if elapsed_seconds == 1 { "" } else { "s" }
-                        )
-                    } else {
-                        let minutes = elapsed_seconds / 60;
-                        let seconds = elapsed_seconds % 60;
-                        format!(
-                            "{} minute{} and {} second{}",
-                            minutes,
-                            if minutes == 1 { "" } else { "s" },
-                            seconds,
-                            if seconds == 1 { "" } else { "s" }
-                        )
-                    };
-
-                    ui.label(format!(
-                        "Fetching contracts... Time taken so far: {}",
-                        display_time
-                    ));
+                AddContractsStatus::WaitingForResult => {
+                    // Elapsed time is shown in the global banner
                 }
                 AddContractsStatus::Complete(_) => {
                     return self.show_success_screen(ui);

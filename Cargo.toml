@@ -94,6 +94,12 @@ egui_kittest = { version = "0.33.3", features = ["eframe"] }
 [build-dependencies]
 winres = "0.1"
 
+# Keep full debuginfo for our code, but only line tables for dependencies.
+# This shrinks DWARF from ~790MB to a fraction, letting gimli (std's backtrace
+# symbolizer) actually resolve panic backtraces instead of printing <unknown>.
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\"))"]

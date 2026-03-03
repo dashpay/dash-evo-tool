@@ -1,5 +1,6 @@
 use crate::{VERSION, app_dir::app_user_data_file_path};
 use chrono::{Duration, Local};
+use std::backtrace::Backtrace;
 use std::fs;
 use std::panic;
 use std::sync::Once;
@@ -77,9 +78,11 @@ fn initialize_logger_internal() {
             .location()
             .unwrap_or_else(|| panic::Location::caller());
 
+        let backtrace = Backtrace::force_capture();
+
         error!(
             location = tracing::field::display(location),
-            "Panic occurred: {}", message
+            "Panic occurred: {}\n{}", message, backtrace
         );
 
         default_panic_hook(panic_info);

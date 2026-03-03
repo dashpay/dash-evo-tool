@@ -85,10 +85,8 @@ pub struct AddNewIdentityScreen {
     alias_input: String,
     copied_to_clipboard: Option<Option<String>>,
     identity_keys: IdentityKeys,
-    error_message: Option<String>,
-    /// Tracks the last error pushed to the global banner to avoid re-sending each frame.
-    last_global_error: Option<String>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     show_pop_up_info: Option<String>,
     in_key_selection_advanced_mode: bool,
     pub app_context: Arc<AppContext>,
@@ -153,9 +151,8 @@ impl AddNewIdentityScreen {
                 master_private_key_type: KeyType::ECDSA_HASH160,
                 keys_input: vec![],
             },
-            error_message: None,
-            last_global_error: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             show_pop_up_info: None,
             in_key_selection_advanced_mode: false,
             app_context: app_context.clone(),
@@ -398,6 +395,7 @@ impl AddNewIdentityScreen {
         let is_open = wallet.read().expect("wallet lock poisoned").is_open();
 
         self.selected_wallet = Some(wallet);
+        self.wallet_open_attempted = false;
         self.identity_id_number = self.next_identity_id();
 
         if is_open {
@@ -865,12 +863,20 @@ impl AddNewIdentityScreen {
                 // Get selected Platform address and amount from the input fields
                 let Some((platform_addr, amount)) = self.selected_platform_address_for_funding
                 else {
-                    self.error_message = Some("Please select a Platform address".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Please select a Platform address",
+                        MessageType::Error,
+                    );
                     return AppAction::None;
                 };
 
                 if amount == 0 {
-                    self.error_message = Some("Amount must be greater than 0".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Amount must be greater than 0",
+                        MessageType::Error,
+                    );
                     return AppAction::None;
                 }
 
@@ -1018,7 +1024,7 @@ impl AddNewIdentityScreen {
 
 impl ScreenLike for AddNewIdentityScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        if message_type == MessageType::Error {
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             // Reset step so we stop showing "Waiting for Platform acknowledgement".
             // The error itself is displayed by the global MessageBanner.
             let mut step = self.step.write().unwrap();
@@ -1103,18 +1109,6 @@ impl ScreenLike for AddNewIdentityScreen {
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
 
-            // Display local validation errors via the global MessageBanner.
-            // Only push when the message changes to avoid resetting the banner each frame
-            // (e.g. try_open_wallet_no_password can re-set error_message every render pass).
-            if self.error_message != self.last_global_error {
-                if let Some(error_message) = self.error_message.as_ref() {
-                    MessageBanner::set_global(ui.ctx(), error_message, MessageType::Error);
-                } else if let Some(old) = self.last_global_error.as_ref() {
-                    MessageBanner::clear_global_message(ui.ctx(), old);
-                }
-                self.last_global_error = self.error_message.clone();
-            }
-
             ScrollArea::vertical().show(ui, |ui| {
                 let step = {*self.step.read().unwrap()};
                 if step == WalletFundedScreenStep::Success {
@@ -1147,8 +1141,11 @@ impl ScreenLike for AddNewIdentityScreen {
                 let wallet = self.selected_wallet.as_ref().unwrap();
 
                 // Try to open wallet without password if it doesn't use one
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    self.error_message = Some(e);
+                if !self.wallet_open_attempted {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    }
+                    self.wallet_open_attempted = true;
                 }
 
                 // If wallet needs password unlock

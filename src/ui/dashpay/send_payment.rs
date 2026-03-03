@@ -5,6 +5,7 @@ use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::identity_selector::IdentitySelector;
@@ -42,7 +43,6 @@ pub struct SendPaymentScreen {
     amount_input: Option<AmountInput>,
     amount: Amount,
     memo: String,
-    message: Option<(String, MessageType)>,
     sending: bool,
     show_info_popup: bool,
     payment_success: bool,
@@ -50,6 +50,7 @@ pub struct SendPaymentScreen {
     // Wallet unlock
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
 }
 
 impl SendPaymentScreen {
@@ -69,13 +70,13 @@ impl SendPaymentScreen {
             amount_input: None,
             amount: Amount::new_dash(0.0),
             memo: String::new(),
-            message: None,
             sending: false,
             show_info_popup: false,
             payment_success: false,
             tx_id: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         }
     }
 
@@ -103,7 +104,11 @@ impl SendPaymentScreen {
     fn send_payment(&mut self) -> AppAction {
         // Validate amount
         if self.amount.value() == 0 {
-            self.display_message("Please enter an amount", MessageType::Error);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Please enter an amount",
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
@@ -124,7 +129,7 @@ impl SendPaymentScreen {
         };
 
         if let Err(e) = wallet_check {
-            self.display_message(&e, MessageType::Error);
+            MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
             return AppAction::None;
         }
 
@@ -132,7 +137,11 @@ impl SendPaymentScreen {
         let amount_dash = match self.amount.dash_to_duffs() {
             Ok(duffs) => duffs as f64 / 100_000_000.0,
             Err(e) => {
-                self.display_message(&format!("Invalid amount: {}", e), MessageType::Error);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Invalid amount: {}", e),
+                    MessageType::Error,
+                );
                 return AppAction::None;
             }
         };
@@ -195,32 +204,18 @@ impl SendPaymentScreen {
 
         ui.separator();
 
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Warning => {
-                    DashColors::warning_color(ui.ctx().style().visuals.dark_mode)
-                }
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
-        }
-
         // Check wallet unlock
-        let (wallet_open_error, needs_unlock) = if let Some(wallet) = &self.selected_wallet {
-            let open_err = try_open_wallet_no_password(wallet).err();
-            let needs = wallet_needs_unlock(wallet);
-            (open_err, needs)
+        let needs_unlock = if let Some(wallet) = &self.selected_wallet {
+            if !self.wallet_open_attempted {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                }
+                self.wallet_open_attempted = true;
+            }
+            wallet_needs_unlock(wallet)
         } else {
-            (None, false)
+            false
         };
-
-        if let Some(e) = wallet_open_error {
-            self.display_message(&e, MessageType::Error);
-        }
 
         if needs_unlock {
             ui.add_space(10.0);
@@ -369,7 +364,8 @@ impl SendPaymentScreen {
 
                         if ui.add_enabled(send_enabled, send_button).clicked() {
                             if self.memo.len() > 100 {
-                                self.display_message(
+                                MessageBanner::set_global(
+                                    ui.ctx(),
                                     "Memo must be 100 characters or less",
                                     MessageType::Error,
                                 );
@@ -389,8 +385,8 @@ impl SendPaymentScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
     }
 }
 
@@ -452,21 +448,16 @@ impl ScreenLike for SendPaymentScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.sending = false;
-        self.message = Some((message.to_string(), message_type));
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.sending = false;
-        if let BackendTaskSuccessResult::DashPayPaymentSent(recipient, address, amount) = result {
-            // Extract txid from the address (or we could modify the result to include it)
+        if let BackendTaskSuccessResult::DashPayPaymentSent(_recipient, address, _amount) = result {
             self.payment_success = true;
             self.tx_id = Some(format!("Sent to {}", address));
-            self.message = Some((
-                format!("Payment of {} DASH sent to {}", amount, recipient),
-                MessageType::Success,
-            ));
         }
     }
 }
@@ -477,7 +468,6 @@ pub struct PaymentHistory {
     selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     payments: Vec<PaymentRecord>,
-    message: Option<(String, MessageType)>,
     loading: bool,
     has_searched: bool,
 }
@@ -499,7 +489,6 @@ impl PaymentHistory {
             selected_identity: None,
             selected_identity_string: String::new(),
             payments: Vec::new(),
-            message: None,
             loading: false,
             has_searched: false,
         };
@@ -587,7 +576,6 @@ impl PaymentHistory {
     pub fn trigger_fetch_payment_history(&mut self) -> AppAction {
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
-            self.message = Some(("Loading payment history...".to_string(), MessageType::Info));
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
                 identity: identity.clone(),
@@ -601,7 +589,6 @@ impl PaymentHistory {
 
     pub fn refresh(&mut self) {
         // Don't clear if we have data, just clear temporary states
-        self.message = None;
         self.loading = false;
 
         // Auto-select first identity if none selected
@@ -660,20 +647,6 @@ impl PaymentHistory {
 
         if identities.is_empty() {
             return super::render_no_identities_card(ui, &self.app_context);
-        }
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Warning => {
-                    DashColors::warning_color(ui.ctx().style().visuals.dark_mode)
-                }
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
         }
 
         if self.selected_identity.is_none() {
@@ -812,8 +785,8 @@ impl PaymentHistory {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
     }
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -888,9 +861,6 @@ impl PaymentHistory {
                         self.payments.push(payment);
                     }
                 }
-
-                // Don't show message - let the UI handle empty state
-                self.message = None;
             }
             _ => {
                 // Ignore other results

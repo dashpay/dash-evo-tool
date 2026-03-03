@@ -187,19 +187,7 @@ impl AppContext {
                 let devnet_chainlock = devnet_result.ok();
                 let local_chainlock = local_result.ok();
 
-                // If all three failed, bail out with an error
-                if mainnet_chainlock.is_none()
-                    && testnet_chainlock.is_none()
-                    && devnet_chainlock.is_none()
-                    && local_chainlock.is_none()
-                {
-                    return Err(
-                        "Failed to get best chain lock for mainnet, testnet, devnet, and local network"
-                            .to_string(),
-                    );
-                }
-
-                // Otherwise, return the successes we have
+                // Return whatever we have — even all-None is valid.
                 Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
                     mainnet_chainlock,
                     testnet_chainlock,
@@ -562,7 +550,7 @@ impl AppContext {
                 DEFAULT_BIP44_ACCOUNT_INDEX,
                 scaled_recipients,
                 current_height,
-                change_address,
+                &change_address,
             ) {
                 Ok(tx) => return Ok(tx),
                 Err(WalletError::InsufficientFunds) if request.subtract_fee_from_amount => {
@@ -673,6 +661,7 @@ impl AppContext {
                 current_height,
                 |_| None, // No private keys for unsigned transaction
             )
+            // TODO(RUST-002): String-based error classification — see #660
             .map_err(|e| match e.to_string() {
                 msg if msg.contains("Insufficient") => WalletError::InsufficientFunds,
                 msg => WalletError::TransactionBuild(msg),

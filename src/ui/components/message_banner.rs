@@ -2,6 +2,7 @@ use crate::ui::MessageType;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::theme::{DashColors, Shape, Spacing, Typography};
 use egui::InnerResponse;
+use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
@@ -16,6 +17,9 @@ const DETAILS_MAX_HEIGHT: f32 = 120.0;
 static BANNER_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn next_banner_key() -> u64 {
+    // Relaxed is sufficient: we only need uniqueness (monotonic counter),
+    // not ordering with other atomic operations. The counter runs in a
+    // single-threaded UI context.
     BANNER_KEY_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -129,6 +133,10 @@ impl BannerState {
 ///
 /// The handle is `'static` and safe to store. Methods that modify the banner
 /// (`set_message`, `with_auto_dismiss`) take `&self` so the handle can be reused.
+///
+/// INTENTIONAL(SEC-004): BannerHandle is Send+Sync because egui::Context is
+/// Send+Sync with internal locking. This is acceptable for a single-threaded
+/// UI app; egui's own thread-safety guarantees apply.
 #[derive(Clone)]
 pub struct BannerHandle {
     ctx: egui::Context,
@@ -148,7 +156,7 @@ impl BannerHandle {
 
     /// Update the display text of this banner.
     /// Returns `None` if the banner no longer exists.
-    pub fn set_message(&self, text: &str) -> Option<&Self> {
+    pub fn set_message(&self, text: impl fmt::Display) -> Option<&Self> {
         let mut banners = get_banners(&self.ctx);
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
         b.text = text.to_string();
@@ -182,14 +190,25 @@ impl BannerHandle {
 
     /// Attach optional technical details to this banner.
     /// Details are shown in a collapsible section (collapsed by default).
+    ///
+    /// Accepts `impl Debug` (not `Display`) because callers typically pass
+    /// error types whose `Debug` representation includes structured context
+    /// (nested causes, variant names) that is more useful in a diagnostic
+    /// details pane than the single-line `Display` output.
+    ///
+    /// INTENTIONAL(RUST-003): When plain strings are passed, `{:?}` wraps them
+    /// in quotes. This is acceptable since `with_details` is primarily for
+    /// error types, not user-facing text.
+    ///
     /// Returns `None` if the banner no longer exists.
-    pub fn with_details(&self, details: &str) -> Option<&Self> {
+    pub fn with_details(&self, details: impl fmt::Debug) -> Option<&Self> {
+        let details = format!("{:?}", details);
         if details.is_empty() {
             return Some(self);
         }
         let mut banners = get_banners(&self.ctx);
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.details = Some(details.to_string());
+        b.details = Some(details);
         set_banners(&self.ctx, banners);
         Some(self)
     }
@@ -197,13 +216,14 @@ impl BannerHandle {
     /// Attach an optional recovery suggestion to this banner.
     /// The suggestion is shown inline (visible without expanding).
     /// Returns `None` if the banner no longer exists.
-    pub fn with_suggestion(&self, suggestion: &str) -> Option<&Self> {
+    pub fn with_suggestion(&self, suggestion: impl fmt::Display) -> Option<&Self> {
+        let suggestion = suggestion.to_string();
         if suggestion.is_empty() {
             return Some(self);
         }
         let mut banners = get_banners(&self.ctx);
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.suggestion = Some(suggestion.to_string());
+        b.suggestion = Some(suggestion);
         set_banners(&self.ctx, banners);
         Some(self)
     }
@@ -236,15 +256,12 @@ impl MessageBanner {
 
     /// Sets or replaces the current message. Resets the auto-dismiss timer.
     /// An empty string is treated as a clear operation.
-    pub fn set_message(&mut self, text: &str, message_type: MessageType) -> &mut Self {
+    pub fn set_message(&mut self, text: impl fmt::Display, message_type: MessageType) -> &mut Self {
+        let text = text.to_string();
         if text.is_empty() {
             self.state = None;
         } else {
-            self.state = Some(BannerState::new(
-                next_banner_key(),
-                text.to_string(),
-                message_type,
-            ));
+            self.state = Some(BannerState::new(next_banner_key(), text, message_type));
         }
         self
     }
@@ -293,9 +310,25 @@ impl MessageBanner {
     /// Evicts the oldest message when the cap ([`MAX_BANNERS`]) is reached.
     ///
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
-    pub fn set_global(ctx: &egui::Context, text: &str, message_type: MessageType) -> BannerHandle {
+    pub fn set_global(
+        ctx: &egui::Context,
+        text: impl fmt::Display,
+        message_type: MessageType,
+    ) -> BannerHandle {
+        let text = text.to_string();
         let mut banners = get_banners(ctx);
-        if let Some(existing) = banners.iter().find(|b| b.text == text) {
+        if let Some(existing) = banners.iter_mut().find(|b| b.text == text) {
+            // Same text already displayed: update message_type if it changed,
+            // but preserve timestamps and auto-dismiss timer (idempotent for text).
+            if existing.message_type != message_type {
+                existing.message_type = message_type;
+                let key = existing.key;
+                set_banners(ctx, banners);
+                return BannerHandle {
+                    ctx: ctx.clone(),
+                    key,
+                };
+            }
             return BannerHandle {
                 ctx: ctx.clone(),
                 key: existing.key,
@@ -303,9 +336,13 @@ impl MessageBanner {
         }
         let key = next_banner_key();
         if !text.is_empty() {
-            banners.push(BannerState::new(key, text.to_string(), message_type));
+            banners.push(BannerState::new(key, text, message_type));
             if banners.len() > MAX_BANNERS {
-                banners.remove(0);
+                let evicted = banners.remove(0);
+                warn!(
+                    "Banner evicted (capacity {}): {:?}",
+                    MAX_BANNERS, evicted.message_type,
+                );
             }
             set_banners(ctx, banners);
         }
@@ -316,17 +353,31 @@ impl MessageBanner {
     }
 
     /// Finds a message by `old_text` and replaces it with `new_text`.
-    /// If `old_text` is not found, adds `new_text` as a new message (with dedup check).
+    /// If `old_text` is not found, falls back to adding `new_text` as a new
+    /// message (with dedup check). This fallback is intentional: callers use
+    /// `replace_global` for progress updates where the previous banner may
+    /// have been dismissed or evicted, and the new message should still appear.
+    ///
+    /// If `old_text` is not found but `new_text` is already displayed, returns
+    /// a handle to the existing banner without resetting it (consistent with
+    /// [`Self::set_global`] idempotency).
+    ///
+    /// **Empty `new_text`**: clears the `old_text` banner (if present) and
+    /// returns a handle with a fresh key that does not correspond to any banner.
+    /// Subsequent calls on this handle (`set_message`, `with_details`, `clear`)
+    /// are safe no-ops returning `None`.
     ///
     /// Returns a [`BannerHandle`] for updating or clearing the banner later.
     pub fn replace_global(
         ctx: &egui::Context,
-        old_text: &str,
-        new_text: &str,
+        old_text: impl fmt::Display,
+        new_text: impl fmt::Display,
         message_type: MessageType,
     ) -> BannerHandle {
+        let old_text = old_text.to_string();
+        let new_text = new_text.to_string();
         if new_text.is_empty() {
-            Self::clear_global_message(ctx, old_text);
+            Self::clear_global_message(ctx, &old_text);
             return BannerHandle {
                 ctx: ctx.clone(),
                 key: next_banner_key(),
@@ -336,15 +387,20 @@ impl MessageBanner {
         let key;
         if let Some(b) = banners.iter_mut().find(|b| b.text == old_text) {
             key = b.key;
-            b.reset_to(new_text.to_string(), message_type);
-        } else if let Some(existing) = banners.iter_mut().find(|b| b.text == new_text) {
+            b.reset_to(new_text, message_type);
+        } else if let Some(existing) = banners.iter().find(|b| b.text == new_text) {
+            // Idempotent: if new_text already displayed, return handle without
+            // resetting (consistent with set_global behavior).
             key = existing.key;
-            existing.reset_to(new_text.to_string(), message_type);
         } else {
             key = next_banner_key();
-            banners.push(BannerState::new(key, new_text.to_string(), message_type));
+            banners.push(BannerState::new(key, new_text, message_type));
             if banners.len() > MAX_BANNERS {
-                banners.remove(0);
+                let evicted = banners.remove(0);
+                warn!(
+                    "Banner evicted (capacity {}): {:?}",
+                    MAX_BANNERS, evicted.message_type,
+                );
             }
         }
         set_banners(ctx, banners);
@@ -355,10 +411,19 @@ impl MessageBanner {
     }
 
     /// Clears the specific global banner message matching `text`.
-    pub fn clear_global_message(ctx: &egui::Context, text: &str) {
+    pub fn clear_global_message(ctx: &egui::Context, text: impl fmt::Display) {
+        let text = text.to_string();
         let mut banners = get_banners(ctx);
         banners.retain(|b| b.text != text);
         set_banners(ctx, banners);
+    }
+
+    /// Clears all global banner messages.
+    ///
+    /// Use when the context changes significantly (e.g., network switch) and
+    /// stale messages from the previous context should not persist.
+    pub fn clear_all_global(ctx: &egui::Context) {
+        set_banners(ctx, vec![]);
     }
 
     /// Returns whether any global banner messages exist.
@@ -374,6 +439,8 @@ impl MessageBanner {
         if banners.is_empty() {
             return;
         }
+        // Always write back: process_banner() mutates state (auto-dismiss timers,
+        // expanded flags) even when no banners are removed.
         banners.retain_mut(|b| process_banner(ui, b) == BannerStatus::Visible);
         set_banners(ui.ctx(), banners);
     }
@@ -646,5 +713,107 @@ fn icon_for_type(message_type: MessageType) -> &'static str {
         MessageType::Warning => "\u{26A0}", // warning sign (⚠)
         MessageType::Success => "\u{2705}", // white heavy check mark (✅)
         MessageType::Info => "\u{1F4AC}",   // speech balloon (💬)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extension traits for ergonomic banner display on Result and Option.
+// ---------------------------------------------------------------------------
+
+/// Extension for `Result<T, E>` — show an error banner on `Err`, pass through unchanged.
+///
+/// ```ignore
+/// let wallet = get_selected_wallet(&identity, None, key)
+///     .or_show_error(app_context.egui_ctx())
+///     .unwrap_or(None);
+/// ```
+pub trait ResultBannerExt<T, E> {
+    /// If `Err`, displays a global error banner with the error's `Display` text.
+    /// Returns `self` unchanged — this is a side-effect-only method.
+    ///
+    /// INTENTIONAL(SEC-007): Raw `Display` text is shown directly. Callers must
+    /// ensure error types have user-friendly Display implementations.
+    fn or_show_error(self, ctx: &egui::Context) -> Self;
+}
+
+impl<T, E: fmt::Display> ResultBannerExt<T, E> for Result<T, E> {
+    fn or_show_error(self, ctx: &egui::Context) -> Self {
+        if let Err(ref e) = self {
+            MessageBanner::set_global(ctx, e, MessageType::Error);
+        }
+        self
+    }
+}
+
+/// Extension for `Option<T>` — show an error banner on `None`, pass through unchanged.
+///
+/// ```ignore
+/// let identity = identities.first().cloned()
+///     .or_show_error(ctx, "No identities loaded");
+/// ```
+pub trait OptionBannerShowExt<T> {
+    /// If `None`, displays a global error banner with the given message.
+    /// Returns `self` unchanged — this is a side-effect-only method.
+    fn or_show_error(self, ctx: &egui::Context, msg: impl fmt::Display) -> Self;
+}
+
+impl<T> OptionBannerShowExt<T> for Option<T> {
+    fn or_show_error(self, ctx: &egui::Context, msg: impl fmt::Display) -> Self {
+        if self.is_none() {
+            MessageBanner::set_global(ctx, msg, MessageType::Error);
+        }
+        self
+    }
+}
+
+/// Extension for `Option<BannerHandle>` — banner lifecycle management.
+///
+/// Screens that run backend tasks typically store a `refresh_banner: Option<BannerHandle>`.
+/// This trait provides convenience methods to clear and/or replace that banner atomically.
+///
+/// ```ignore
+/// self.refresh_banner.take_and_clear();
+/// self.refresh_banner.replace(ctx, "Loading...", MessageType::Info);
+/// self.refresh_banner.replace_with_elapsed(ctx, "Refreshing...", MessageType::Info);
+/// ```
+pub trait OptionBannerExt {
+    /// Takes the handle (leaving `None`) and clears the associated banner.
+    fn take_and_clear(&mut self);
+
+    /// Clears any existing banner, sets a new global banner, and stores the handle.
+    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
+
+    /// Like [`replace`](OptionBannerExt::replace), but also enables elapsed-time display on
+    /// the new banner (useful for long-running operations).
+    fn replace_with_elapsed(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    );
+}
+
+impl OptionBannerExt for Option<BannerHandle> {
+    fn take_and_clear(&mut self) {
+        if let Some(h) = self.take() {
+            h.clear();
+        }
+    }
+
+    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
+        self.take_and_clear();
+        *self = Some(MessageBanner::set_global(ctx, msg.to_string(), msg_type));
+    }
+
+    fn replace_with_elapsed(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    ) {
+        self.take_and_clear();
+        let handle = MessageBanner::set_global(ctx, msg.to_string(), msg_type);
+        handle.with_elapsed();
+        *self = Some(handle);
     }
 }

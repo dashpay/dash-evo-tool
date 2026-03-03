@@ -562,7 +562,7 @@ impl AppContext {
                 DEFAULT_BIP44_ACCOUNT_INDEX,
                 scaled_recipients,
                 current_height,
-                change_address.clone(),
+                change_address,
             ) {
                 Ok(tx) => return Ok(tx),
                 Err(WalletError::InsufficientFunds) if request.subtract_fee_from_amount => {
@@ -638,7 +638,7 @@ impl AppContext {
         account_index: u32,
         recipients: Vec<(Address, u64)>,
         current_height: u32,
-        change_address: Address,
+        change_address: &Address,
     ) -> Result<Transaction, WalletError> {
         // Get spendable UTXOs from the managed wallet info
         let managed_info = wm
@@ -658,7 +658,7 @@ impl AppContext {
         // Build the transaction using TransactionBuilder
         let mut builder = TransactionBuilder::new()
             .set_fee_rate(FeeRate::normal())
-            .set_change_address(change_address);
+            .set_change_address(change_address.clone());
 
         for (address, amount) in recipients {
             builder = builder

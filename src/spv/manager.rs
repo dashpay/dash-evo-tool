@@ -551,7 +551,6 @@ impl SpvManager {
             *storage_guard = None;
         }
 
-        // spv_client is cleared asynchronously when the client stops; no action needed here.
 
         if let Ok(mut request_guard) = self.request_tx.lock() {
             *request_guard = None;

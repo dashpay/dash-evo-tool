@@ -829,7 +829,6 @@ impl SpvManager {
             }
         }
 
-        // Store the client reference for quorum lookups (wait-free reads via ArcSwap)
         self.spv_client.store(Some(Arc::clone(&client)));
 
         // Subscribe to sync events (broadcast)

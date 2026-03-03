@@ -19,4 +19,7 @@ pub mod wallet_unlock_popup;
 
 // Re-export the main traits for easy access
 pub use component_trait::{Component, ComponentResponse};
-pub use message_banner::{BannerHandle, BannerStatus, MessageBanner, MessageBannerResponse};
+pub use message_banner::{
+    BannerHandle, BannerStatus, MessageBanner, MessageBannerResponse, OptionBannerExt,
+    OptionBannerShowExt, ResultBannerExt,
+};

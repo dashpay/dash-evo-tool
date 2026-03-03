@@ -7,7 +7,6 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
-use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -19,11 +18,13 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
+use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -42,13 +43,11 @@ use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 /// Internal states for the mint process.
 #[derive(PartialEq)]
 pub enum MintTokensStatus {
     NotStarted,
-    WaitingForResult(u64), // Use seconds or millis
+    WaitingForResult,
     Error,
     Complete,
 }
@@ -64,10 +63,10 @@ pub struct MintTokensScreen {
     pub group_action_id: Option<Identifier>,
     known_identities: Vec<QualifiedIdentity>,
 
-    pub recipient_identity_id: String,
+    recipient_identity_id: String,
 
     pub amount: Option<Amount>,
-    pub amount_input: Option<AmountInput>,
+    amount_input: Option<AmountInput>,
     status: MintTokensStatus,
 
     /// Basic references
@@ -79,15 +78,16 @@ pub struct MintTokensScreen {
     // If needed for password-based wallet unlocking:
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl MintTokensScreen {
     pub fn new(identity_token_info: IdentityTokenInfo, app_context: &Arc<AppContext>) -> Self {
-        let known_identities = app_context
-            .load_local_qualified_identities()
-            .expect("Identities not loaded");
+        let known_identities = super::load_identities_with_banner(app_context);
 
         let possible_key = identity_token_info
             .identity
@@ -100,9 +100,7 @@ impl MintTokensScreen {
             )
             .cloned();
 
-        let set_error_banner = |msg: &str| {
-            MessageBanner::set_global(app_context.egui_ctx(), msg, MessageType::Error);
-        };
+        let set_error_banner = |msg: &str| super::set_error_banner(app_context, msg);
 
         let group = match identity_token_info
             .token_config
@@ -183,16 +181,12 @@ impl MintTokensScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let mut wallet_error = None;
-        let selected_wallet = get_selected_wallet(
-            &identity_token_info.identity,
-            None,
-            possible_key.as_ref(),
-            &mut wallet_error,
-        );
-        if let Some(e) = wallet_error {
-            set_error_banner(&e);
-        }
+        let selected_wallet =
+            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
+                .unwrap_or_else(|e| {
+                    set_error_banner(&e);
+                    None
+                });
 
         Self {
             identity_token_info,
@@ -211,7 +205,9 @@ impl MintTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -226,7 +222,7 @@ impl MintTokensScreen {
 
         // Check if input should be disabled when operation is in progress
         let enabled = match self.status {
-            MintTokensStatus::WaitingForResult(_) | MintTokensStatus::Complete => false,
+            MintTokensStatus::WaitingForResult | MintTokensStatus::Complete => false,
             MintTokensStatus::NotStarted | MintTokensStatus::Error => true,
         };
 
@@ -281,19 +277,6 @@ impl MintTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
-        let signing_key = match self.selected_key.clone() {
-            Some(key) => key,
-            None => {
-                self.status = MintTokensStatus::Error;
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "No signing key selected",
-                    MessageType::Error,
-                );
-                return AppAction::None;
-            }
-        };
-
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
             self.status = MintTokensStatus::Error;
             MessageBanner::set_global(
@@ -304,30 +287,36 @@ impl MintTokensScreen {
             return AppAction::None;
         }
 
-        let receiver_id = match Identifier::from_string_try_encodings(
+        let Ok(receiver_id) = Identifier::from_string_try_encodings(
             &self.recipient_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        ) {
-            Ok(id) => id,
-            Err(_) => {
-                self.status = MintTokensStatus::Error;
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Invalid receiver",
-                    MessageType::Error,
-                );
-                return AppAction::None;
-            }
+        ) else {
+            self.status = MintTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Invalid receiver",
+                MessageType::Error,
+            );
+            return AppAction::None;
         };
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.status = MintTokensStatus::WaitingForResult(now);
+        // Validate signing key before transitioning to waiting state
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
+            return AppAction::None;
+        };
+
+        self.status = MintTokensStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Minting tokens...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
@@ -378,15 +367,16 @@ impl MintTokensScreen {
 
 impl ScreenLike for MintTokensScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Global banner is set by AppState before calling display_message; this only updates status.
+        // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
             self.status = MintTokensStatus::Error;
         }
-        // Success/Info: no local state change needed; the global banner is the display mechanism.
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::MintedTokens(fee_result) = backend_task_success_result {
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = MintTokensStatus::Complete;
         }
@@ -511,8 +501,11 @@ impl ScreenLike for MintTokensScreen {
             } else {
                 // Possibly handle locked wallet scenario (similar to TransferTokens)
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -718,16 +711,9 @@ impl ScreenLike for MintTokensScreen {
                 // Show in-progress or error messages
                 ui.add_space(10.0);
                 match &self.status {
-                    MintTokensStatus::NotStarted => {
-                        // no-op
-                    }
-                    MintTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Minting... elapsed: {} seconds", elapsed));
+                    MintTokensStatus::NotStarted => {}
+                    MintTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
                     MintTokensStatus::Error => {
                         // Error display is handled by the global MessageBanner

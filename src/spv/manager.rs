@@ -551,7 +551,6 @@ impl SpvManager {
             *storage_guard = None;
         }
 
-
         if let Ok(mut request_guard) = self.request_tx.lock() {
             *request_guard = None;
         }

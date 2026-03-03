@@ -993,6 +993,10 @@ impl SpvManager {
     ) {
         tracing::info!("SPV request handler started");
         let network_manager = Arc::clone(&self.network_manager);
+        // TODO(workaround): Remove wallet + reconcile_tx captures once
+        // dashpay/rust-dashcore#487 is fixed upstream.
+        let wallet = Arc::clone(&self.wallet);
+        let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         self.subtasks.spawn_sync("spv_request_handler", async move {
             loop {
                 tokio::select! {
@@ -1031,6 +1035,19 @@ impl SpvManager {
                                         Err("SPV network manager not available".to_string())
                                     }
                                 };
+                                // TODO(workaround): Remove once dashpay/rust-dashcore#487
+                                // is fixed. Upstream broadcast does not call
+                                // process_mempool_transaction(), so the wallet doesn't
+                                // know about its own outgoing tx until a block is mined.
+                                if result.is_ok() {
+                                    notify_wallet_after_broadcast(
+                                        &wallet,
+                                        &tx,
+                                        reconcile_tx.as_ref(),
+                                    )
+                                    .await;
+                                }
+
                                 let _ = response_tx.send(result);
                             }
                             None => {
@@ -1427,6 +1444,28 @@ fn build_spv_data_dir(network: Network, config: &NetworkConfig) -> Result<PathBu
     };
 
     Ok(base.join(network_dir))
+}
+
+/// Workaround for [dashpay/rust-dashcore#487]: upstream `broadcast_transaction()` does not
+/// call `process_mempool_transaction()` on the local wallet, so spent UTXOs stay unmarked
+/// and the balance is stale until a block is mined.
+///
+/// Remove this function once the upstream fix lands.
+///
+/// [dashpay/rust-dashcore#487]: https://github.com/dashpay/rust-dashcore/issues/487
+async fn notify_wallet_after_broadcast(
+    wallet: &Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
+    tx: &Transaction,
+    reconcile_tx: Option<&mpsc::Sender<()>>,
+) {
+    {
+        let mut wm = wallet.write().await;
+        wm.process_mempool_transaction(tx).await;
+    }
+    if let Some(ch) = reconcile_tx {
+        let _ = ch.try_send(());
+    }
+    tracing::debug!("Notified wallet about broadcast tx {}", tx.txid());
 }
 
 impl fmt::Debug for SpvManager {

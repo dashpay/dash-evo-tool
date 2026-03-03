@@ -101,6 +101,9 @@ pub struct AppState {
     /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
     /// the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// Timestamp when the async shutdown was initiated, used as a hard deadline
+    /// to force-close the viewport if the shutdown task stalls.
+    shutdown_started: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -718,6 +721,7 @@ impl AppState {
             previous_connection_state: None,
             connection_banner_handle: None,
             shutdown_receiver: None,
+            shutdown_started: None,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
@@ -1023,15 +1027,38 @@ impl App for AppState {
         // we issue Close ourselves.
         if let Some(rx) = &mut self.shutdown_receiver {
             // Shutdown already in progress — check if it's done.
-            match rx.try_recv() {
-                Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+            let should_close = match rx.try_recv() {
+                Ok(()) => {
                     tracing::debug!("Async shutdown finished, closing viewport");
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    true
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    // Sender dropped without sending — shutdown task likely panicked.
+                    tracing::trace!("Shutdown channel closed unexpectedly (possible panic)");
+                    true
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
-                    // Still waiting — request another repaint so we keep polling.
-                    ctx.request_repaint();
+                    // Still waiting — check hard deadline to prevent infinite loop.
+                    if let Some(started) = self.shutdown_started {
+                        let grace = crate::utils::tasks::SHUTDOWN_TIMEOUT
+                            + std::time::Duration::from_secs(5);
+                        if started.elapsed() > grace {
+                            tracing::trace!(
+                                "Shutdown hard deadline exceeded, force-closing viewport"
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
                 }
+            };
+            if should_close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint();
             }
             // Render a minimal UI that shows the shutdown banner.
             crate::ui::theme::apply_theme(ctx, self.theme_preference);
@@ -1049,6 +1076,7 @@ impl App for AppState {
             );
             tracing::debug!("Close requested, starting async shutdown");
             self.shutdown_receiver = Some(self.subtasks.shutdown_async());
+            self.shutdown_started = Some(std::time::Instant::now());
             ctx.request_repaint();
             return;
         }
@@ -1408,12 +1436,12 @@ impl App for AppState {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Normally the async shutdown path (initiated in update()) has already
-        // completed by the time we reach on_exit(). This blocking fallback only
-        // triggers if the window was force-closed without going through update()
-        // (e.g., OS-level kill, alt-F4 on some platforms).
+        // If shutdown_receiver is Some, the async shutdown was already initiated
+        // in update(). Skip the blocking fallback to avoid double-shutdown.
+        // The blocking path only runs when the window was force-closed without
+        // going through update() (e.g., OS-level kill, alt-F4 on some platforms).
         if self.shutdown_receiver.is_some() {
-            tracing::debug!("on_exit: async shutdown already completed");
+            tracing::debug!("on_exit: async shutdown was initiated, skipping blocking fallback");
             return;
         }
         tracing::debug!("on_exit: fallback blocking shutdown");

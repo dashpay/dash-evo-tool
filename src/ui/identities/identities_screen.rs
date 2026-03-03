@@ -11,7 +11,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::{BannerHandle, MessageBanner};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{
@@ -942,7 +942,7 @@ impl IdentitiesScreen {
                                     );
                                     MessageBanner::set_global(
                                         self.app_context.egui_ctx(),
-                                        &format!("Failed to remove identity: {}", e),
+                                        format!("Failed to remove identity: {}", e),
                                         MessageType::Error,
                                     );
                                 }
@@ -1109,10 +1109,8 @@ impl ScreenLike for IdentitiesScreen {
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning)
-            && let Some(handle) = self.refresh_banner.take()
-        {
-            handle.clear();
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
         }
     }
 
@@ -1125,9 +1123,7 @@ impl ScreenLike for IdentitiesScreen {
         {
             self.pending_refresh_count = self.pending_refresh_count.saturating_sub(1);
             if self.pending_refresh_count == 0 {
-                if let Some(handle) = self.refresh_banner.take() {
-                    handle.clear();
-                }
+                self.refresh_banner.take_and_clear();
                 let message = if self.total_refresh_count == 1 {
                     "Successfully refreshed identity".to_string()
                 } else {
@@ -1229,15 +1225,13 @@ impl ScreenLike for IdentitiesScreen {
                     )
                 }) =>
             {
-                if let Some(handle) = self.refresh_banner.take() {
-                    handle.clear();
-                }
                 self.pending_refresh_count = tasks.len();
                 self.total_refresh_count = tasks.len();
-                let handle =
-                    MessageBanner::set_global(ctx, "Refreshing identities...", MessageType::Info);
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
+                self.refresh_banner.replace_with_elapsed(
+                    ctx,
+                    "Refreshing identities...",
+                    MessageType::Info,
+                );
             }
             _ => {}
         }

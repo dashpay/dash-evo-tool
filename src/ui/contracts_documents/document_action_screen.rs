@@ -15,6 +15,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, ResultBannerExt};
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
     show_success_screen_with_info,
@@ -51,7 +52,6 @@ use eframe::epaint::Color32;
 use egui::{Context, Frame, Margin, RichText, Ui};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocumentActionType {
@@ -79,9 +79,9 @@ impl DocumentActionType {
 #[derive(Clone, PartialEq)]
 pub enum BroadcastStatus {
     NotBroadcasted,
-    Fetching(u64),
+    Fetching,
     Fetched,
-    Broadcasting(u64),
+    Broadcasting,
     Broadcasted,
 }
 
@@ -96,6 +96,7 @@ pub struct DocumentActionScreen {
     pub selected_key: Option<IdentityPublicKey>,
     show_advanced_options: bool,
     pub wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_open_attempted: bool,
     pub wallet_unlock_popup: WalletUnlockPopup,
     pub wallet_failure: Option<String>,
     pub broadcast_status: BroadcastStatus,
@@ -127,6 +128,9 @@ pub struct DocumentActionScreen {
 
     // Fee tracking
     pub completed_fee_result: Option<FeeResult>,
+
+    // Banner for in-progress operations
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl DocumentActionScreen {
@@ -165,6 +169,7 @@ impl DocumentActionScreen {
             selected_key: None,
             show_advanced_options: false,
             wallet: None,
+            wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_failure: None,
             broadcast_status: BroadcastStatus::NotBroadcasted,
@@ -180,16 +185,30 @@ impl DocumentActionScreen {
             recipient_id_input: String::new(),
             fetched_documents: IndexMap::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
+    fn set_fetching_banner(&mut self, ctx: &egui::Context, text: &str) {
+        if let Some(handle) = self.refresh_banner.take() {
+            handle.clear();
+        }
+        let handle = MessageBanner::set_global(ctx, text, crate::ui::MessageType::Info);
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
+    }
+
     fn reset_screen(&mut self) {
+        if let Some(handle) = self.refresh_banner.take() {
+            handle.clear();
+        }
         self.backend_message = None;
         self.selected_identity = None;
         self.selected_identity_string = String::new();
         self.selected_key = None;
         self.show_advanced_options = false;
         self.wallet = None;
+        self.wallet_open_attempted = false;
         self.wallet_unlock_popup = WalletUnlockPopup::new();
         self.wallet_failure = None;
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
@@ -267,15 +286,14 @@ impl DocumentActionScreen {
                     .cloned();
 
                 // Update wallet
-                self.wallet = get_selected_wallet(
-                    identity,
-                    Some(&self.app_context),
-                    None,
-                    &mut self.backend_message,
-                );
+                self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)
+                    .or_show_error(self.app_context.egui_ctx())
+                    .unwrap_or(None);
+                self.wallet_open_attempted = false;
             } else {
                 self.selected_key = None;
                 self.wallet = None;
+                self.wallet_open_attempted = false;
             }
         }
 
@@ -380,12 +398,8 @@ impl DocumentActionScreen {
                     ui.label("This document type has an index on $ownerId, so you can fetch owned documents to view and select.");
                     ui.add_space(10.0);
                     if ui.button("Fetch Owned Documents").clicked() {
-                        self.broadcast_status = BroadcastStatus::Fetching(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                        );
+                        self.broadcast_status = BroadcastStatus::Fetching;
+                        self.set_fetching_banner(ui.ctx(), "Fetching owned documents...");
                         action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocuments(query),
                         )));
@@ -461,14 +475,9 @@ impl DocumentActionScreen {
         }
 
         // Show fetching status
-        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
-            let elapsed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                - start;
+        if self.broadcast_status == BroadcastStatus::Fetching {
             ui.add_space(10.0);
-            ui.label(format!("Fetching documents... {}s", elapsed));
+            ui.spinner();
         }
 
         ui.add_space(10.0);
@@ -504,12 +513,8 @@ impl DocumentActionScreen {
                         .expect("Failed to create document query");
                     query = query.with_document_id(&doc_id);
 
-                    self.broadcast_status = BroadcastStatus::Fetching(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    );
+                    self.broadcast_status = BroadcastStatus::Fetching;
+                    self.set_fetching_banner(ui.ctx(), "Fetching document price...");
                     action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                         DocumentTask::FetchDocuments(query),
                     )));
@@ -520,14 +525,9 @@ impl DocumentActionScreen {
         }
 
         // Show fetching status
-        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
-            let elapsed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                - start;
+        if self.broadcast_status == BroadcastStatus::Fetching {
             ui.add_space(10.0);
-            ui.label(format!("Fetching document price... {}s", elapsed));
+            ui.spinner();
         }
 
         if let Some(price) = self.fetched_price {
@@ -569,12 +569,8 @@ impl DocumentActionScreen {
                                 .expect("Failed to create document query");
                         query = query.with_document_id(&doc_id);
 
-                        self.broadcast_status = BroadcastStatus::Fetching(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                        );
+                        self.broadcast_status = BroadcastStatus::Fetching;
+                        self.set_fetching_banner(ui.ctx(), "Fetching document...");
                         action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocuments(query),
                         )));
@@ -586,14 +582,9 @@ impl DocumentActionScreen {
         });
 
         // Show fetching status
-        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
-            let elapsed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                - start;
+        if self.broadcast_status == BroadcastStatus::Fetching {
             ui.add_space(10.0);
-            ui.label(format!("Fetching document... {}s", elapsed));
+            ui.spinner();
         }
 
         if let Some(_original_doc) = &self.original_doc {
@@ -922,35 +913,17 @@ impl DocumentActionScreen {
             self.backend_message = None;
             let task = self.create_document_action();
             if task != BackendTask::None {
-                self.broadcast_status = BroadcastStatus::Broadcasting(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                );
+                self.broadcast_status = BroadcastStatus::Broadcasting;
+                self.set_fetching_banner(ui.ctx(), "Broadcasting...");
                 action = AppAction::BackendTask(task);
             }
         }
 
         // Status display
         match &self.broadcast_status {
-            BroadcastStatus::Broadcasting(start_time) => {
+            BroadcastStatus::Broadcasting | BroadcastStatus::Fetching => {
                 ui.add_space(10.0);
-                let elapsed = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    - start_time;
-                ui.label(format!("Broadcasting... {}s", elapsed));
-            }
-            BroadcastStatus::Fetching(start_time) => {
-                ui.add_space(10.0);
-                let elapsed = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    - start_time;
-                ui.label(format!("Fetching... {}s", elapsed));
+                ui.spinner();
             }
             _ => {}
         }
@@ -1629,12 +1602,23 @@ impl ScreenLike for DocumentActionScreen {
         // Backend messages are handled via display_message
     }
 
-    fn display_message(&mut self, message: &str, _message_type: crate::ui::MessageType) {
+    fn display_message(&mut self, message: &str, message_type: crate::ui::MessageType) {
+        if matches!(
+            message_type,
+            crate::ui::MessageType::Error | crate::ui::MessageType::Warning
+        ) && let Some(handle) = self.refresh_banner.take()
+        {
+            handle.clear();
+        }
         self.backend_message = Some(message.to_string());
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
     }
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
+        // Clear the progress banner on any completed task
+        if let Some(handle) = self.refresh_banner.take() {
+            handle.clear();
+        }
         match result {
             BackendTaskSuccessResult::BroadcastedDocument(_) => {
                 self.broadcast_status = BroadcastStatus::Broadcasted;
@@ -1765,16 +1749,26 @@ impl DocumentActionScreen {
 
                 // Wallet unlock
                 if let Some(selected_identity) = &self.selected_identity {
-                    self.wallet = get_selected_wallet(
-                        selected_identity,
-                        Some(&self.app_context),
-                        None,
-                        &mut self.backend_message,
-                    );
+                    let new_wallet =
+                        get_selected_wallet(selected_identity, Some(&self.app_context), None)
+                            .or_show_error(self.app_context.egui_ctx())
+                            .unwrap_or(None);
+                    let wallet_changed = match (&self.wallet, &new_wallet) {
+                        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                        (None, None) => false,
+                        _ => true,
+                    };
+                    if wallet_changed {
+                        self.wallet_open_attempted = false;
+                    }
+                    self.wallet = new_wallet;
                 }
                 if let Some(wallet) = &self.wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.backend_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.backend_message = Some(e);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);

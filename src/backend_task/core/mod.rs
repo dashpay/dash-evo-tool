@@ -23,7 +23,9 @@ use dash_sdk::dpp::dashcore::{
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
@@ -185,19 +187,7 @@ impl AppContext {
                 let devnet_chainlock = devnet_result.ok();
                 let local_chainlock = local_result.ok();
 
-                // If all three failed, bail out with an error
-                if mainnet_chainlock.is_none()
-                    && testnet_chainlock.is_none()
-                    && devnet_chainlock.is_none()
-                    && local_chainlock.is_none()
-                {
-                    return Err(
-                        "Failed to get best chain lock for mainnet, testnet, devnet, and local network"
-                            .to_string(),
-                    );
-                }
-
-                // Otherwise, return the successes we have
+                // Return whatever we have — even all-None is valid.
                 Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
                     mainnet_chainlock,
                     testnet_chainlock,
@@ -540,12 +530,12 @@ impl AppContext {
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
                 .collect();
 
-            match wm.create_unsigned_payment_transaction(
+            match Self::build_unsigned_payment_tx(
+                wm,
                 wallet_id,
                 DEFAULT_BIP44_ACCOUNT_INDEX,
-                Some(AccountTypePreference::BIP44),
+                AccountTypePreference::BIP44,
                 scaled_recipients,
-                FeeLevel::Normal,
                 current_height,
             ) {
                 Ok(tx) => return Ok(tx),
@@ -611,8 +601,75 @@ impl AppContext {
         }
 
         let estimated_size = Self::estimate_p2pkh_tx_size(spendable_inputs, 1);
-        let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
+        let fee = FeeRate::normal().calculate_fee(estimated_size);
         Ok(spendable_total.saturating_sub(fee))
+    }
+
+    /// Build an unsigned payment transaction using TransactionBuilder.
+    ///
+    /// Replaces the removed `WalletManager::create_unsigned_payment_transaction`.
+    fn build_unsigned_payment_tx(
+        wm: &mut WalletManager<ManagedWalletInfo>,
+        wallet_id: &WalletId,
+        account_index: u32,
+        account_type_pref: AccountTypePreference,
+        recipients: Vec<(Address, u64)>,
+        current_height: u32,
+    ) -> Result<Transaction, WalletError> {
+        // Get change address from wallet manager
+        let change_result = wm
+            .get_change_address(wallet_id, account_index, account_type_pref, true)
+            .map_err(|e| {
+                WalletError::TransactionBuild(format!(
+                    "change address for account {account_index}: {e}"
+                ))
+            })?;
+        let change_address = change_result
+            .address
+            .ok_or_else(|| WalletError::AddressGeneration("No change address generated".into()))?;
+
+        // Get spendable UTXOs from the managed wallet info
+        let managed_info = wm
+            .get_wallet_info(wallet_id)
+            .ok_or(WalletError::WalletNotFound(*wallet_id))?;
+        let collection = managed_info.accounts();
+        let account = collection
+            .standard_bip44_accounts
+            .get(&account_index)
+            .ok_or(WalletError::AccountNotFound(account_index))?;
+
+        let all_utxos: Vec<_> = account.utxos.values().cloned().collect();
+        if all_utxos.is_empty() {
+            return Err(WalletError::InsufficientFunds);
+        }
+
+        // Build the transaction using TransactionBuilder
+        let mut builder = TransactionBuilder::new()
+            .set_fee_rate(FeeRate::normal())
+            .set_change_address(change_address);
+
+        for (address, amount) in recipients {
+            builder = builder
+                .add_output(&address, amount)
+                .map_err(|e| WalletError::TransactionBuild(e.to_string()))?;
+        }
+
+        builder = builder
+            .select_inputs(
+                &all_utxos,
+                SelectionStrategy::OptimalConsolidation,
+                current_height,
+                |_| None, // No private keys for unsigned transaction
+            )
+            // TODO(RUST-002): String-based error classification — see #660
+            .map_err(|e| match e.to_string() {
+                msg if msg.contains("Insufficient") => WalletError::InsufficientFunds,
+                msg => WalletError::TransactionBuild(msg),
+            })?;
+
+        builder
+            .build()
+            .map_err(|e| WalletError::TransactionBuild(e.to_string()))
     }
 
     fn sign_spv_transaction(

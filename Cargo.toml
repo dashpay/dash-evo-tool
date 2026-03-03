@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "0fa82e6652097d17a700d8bcc006d6b2aa922c6e", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "570e3af07ced2315826c157b93f9c520efb7d201", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -93,6 +93,12 @@ egui_kittest = { version = "0.33.3", features = ["eframe"] }
 
 [build-dependencies]
 winres = "0.1"
+
+# Keep full debuginfo for our code, but only line tables for dependencies.
+# This shrinks DWARF from ~790MB to a fraction, letting gimli (std's backtrace
+# symbolizer) actually resolve panic backtraces instead of printing <unknown>.
+[profile.dev.package."*"]
+debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"

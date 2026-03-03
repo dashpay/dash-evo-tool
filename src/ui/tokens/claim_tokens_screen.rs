@@ -49,7 +49,7 @@ pub enum ClaimTokensStatus {
 }
 
 pub struct ClaimTokensScreen {
-    pub identity: QualifiedIdentity,
+    pub identity: Option<QualifiedIdentity>,
     pub identity_token_basic_info: IdentityTokenBasicInfo,
     selected_key: Option<dash_sdk::platform::IdentityPublicKey>,
     show_advanced_options: bool,
@@ -62,6 +62,7 @@ pub struct ClaimTokensScreen {
     pub app_context: Arc<AppContext>,
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_open_attempted: bool,
     wallet_unlock_popup: WalletUnlockPopup,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
@@ -78,29 +79,32 @@ impl ClaimTokensScreen {
             .load_local_qualified_identities()
             .unwrap_or_default()
             .into_iter()
-            .find(|id| id.identity.id() == identity_token_basic_info.identity_id)
-            .expect("No local qualified identity found for this token’s identity.");
+            .find(|id| id.identity.id() == identity_token_basic_info.identity_id);
 
-        let identity_clone = identity.identity.clone();
-        let mut possible_key = identity_clone.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
-            KeyType::all_key_types().into(),
-            false,
-        );
+        let (selected_key, selected_wallet) = if let Some(ref id) = identity {
+            let identity_inner = &id.identity;
+            let key = identity_inner
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    HashSet::from([SecurityLevel::CRITICAL]),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .or_else(|| {
+                    identity_inner.get_first_public_key_matching(
+                        Purpose::TRANSFER,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    )
+                })
+                .cloned();
 
-        if possible_key.is_none() {
-            possible_key = identity_clone.get_first_public_key_matching(
-                Purpose::TRANSFER,
-                HashSet::from([SecurityLevel::CRITICAL]),
-                KeyType::all_key_types().into(),
-                false,
-            );
-        }
-
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, possible_key, &mut error_message);
+            let selected_wallet = get_selected_wallet(id, None, key.as_ref()).unwrap_or(None);
+            (key, selected_wallet)
+        } else {
+            (None, None)
+        };
 
         let distribution_type = match (
             token_configuration
@@ -121,17 +125,18 @@ impl ClaimTokensScreen {
         Self {
             identity,
             identity_token_basic_info,
-            selected_key: possible_key.cloned(),
+            selected_key,
             show_advanced_options: false,
             public_note: None,
             token_contract,
             token_configuration,
             distribution_type,
             status: ClaimTokensStatus::NotStarted,
-            error_message,
+            error_message: None,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
+            wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             completed_fee_result: None,
         }
@@ -142,12 +147,13 @@ impl ClaimTokensScreen {
             .token_configuration
             .distribution_rules()
             .perpetual_distribution()
+            && let Some(identity) = &self.identity
         {
             match perpetual_distribution.distribution_recipient() {
                 TokenDistributionRecipient::ContractOwner => {
-                    self.token_contract.contract.owner_id() == self.identity.identity.id()
+                    self.token_contract.contract.owner_id() == identity.identity.id()
                 }
-                TokenDistributionRecipient::Identity(id) => self.identity.identity.id() == id,
+                TokenDistributionRecipient::Identity(id) => identity.identity.id() == id,
                 TokenDistributionRecipient::EvonodesByParticipation => true,
             }
         } else {
@@ -189,6 +195,10 @@ impl ClaimTokensScreen {
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
+        let Some(identity) = self.identity.clone() else {
+            self.status = ClaimTokensStatus::ErrorMessage("Identity not available".to_string());
+            return AppAction::None;
+        };
         let distribution_type = self
             .distribution_type
             .unwrap_or(TokenDistributionType::Perpetual);
@@ -224,7 +234,7 @@ impl ClaimTokensScreen {
                         BackendTask::TokenTask(Box::new(TokenTask::ClaimTokens {
                             data_contract: Arc::new(self.token_contract.contract.clone()),
                             token_position: self.identity_token_basic_info.token_position,
-                            actor_identity: self.identity.clone(),
+                            actor_identity: identity,
                             distribution_type,
                             signing_key,
                             public_note: self.public_note.clone(),
@@ -268,12 +278,13 @@ impl ScreenLike for ClaimTokensScreen {
     }
 
     fn refresh(&mut self) {
-        if let Ok(all) = self.app_context.load_local_qualified_identities()
+        if let Some(current) = &self.identity
+            && let Ok(all) = self.app_context.load_local_qualified_identities()
             && let Some(updated) = all
                 .into_iter()
-                .find(|id| id.identity.id() == self.identity.identity.id())
+                .find(|id| id.identity.id() == current.identity.id())
         {
-            self.identity = updated;
+            self.identity = Some(updated);
         }
     }
 
@@ -308,20 +319,27 @@ impl ScreenLike for ClaimTokensScreen {
                 return;
             }
 
+            let Some(identity) = self.identity.as_ref() else {
+                ui.colored_label(
+                    egui::Color32::RED,
+                    "Identity not found in local store. Please refresh or re-open this screen.",
+                );
+                return;
+            };
+
             ui.heading("Claim Tokens");
             ui.add_space(10.0);
 
             // Check if user has any auth keys
             let has_keys = if self.app_context.is_developer_mode() {
-                !self.identity.identity.public_keys().is_empty()
+                !identity.identity.public_keys().is_empty()
             } else {
-                match self.identity.identity_type {
-                    IdentityType::User => !self
-                        .identity
+                match identity.identity_type {
+                    IdentityType::User => !identity
                         .available_authentication_keys_with_critical_security_level()
                         .is_empty(),
                     IdentityType::Masternode | IdentityType::Evonode => {
-                        !self.identity.available_transfer_keys().is_empty()
+                        !identity.available_transfer_keys().is_empty()
                     }
                 }
             };
@@ -331,12 +349,12 @@ impl ScreenLike for ClaimTokensScreen {
                     Color32::RED,
                     format!(
                         "No authentication keys with CRITICAL security level found for this {} identity.",
-                        self.identity.identity_type,
+                        identity.identity_type,
                     ),
                 );
                 ui.add_space(10.0);
 
-                let first_key = self.identity.identity.get_first_public_key_matching(
+                let first_key = identity.identity.get_first_public_key_matching(
                     Purpose::AUTHENTICATION,
                     HashSet::from([SecurityLevel::CRITICAL]),
                     KeyType::all_key_types().into(),
@@ -346,7 +364,7 @@ impl ScreenLike for ClaimTokensScreen {
                 if let Some(key) = first_key {
                     if ui.button("Check Keys").clicked() {
                         action |= AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            self.identity.clone(),
+                            identity.clone(),
                             key.clone(),
                             None,
                             &self.app_context,
@@ -357,15 +375,18 @@ impl ScreenLike for ClaimTokensScreen {
 
                 if ui.button("Add key").clicked() {
                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
+                        identity.clone(),
                         &self.app_context,
                     )));
                 }
             } else {
                 // Possibly handle locked wallet scenario
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.error_message = Some(e);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -397,7 +418,7 @@ impl ScreenLike for ClaimTokensScreen {
                     add_key_chooser(
                         ui,
                         &self.app_context,
-                        &self.identity,
+                        identity,
                         &mut self.selected_key,
                         TransactionType::TokenClaim,
                     );

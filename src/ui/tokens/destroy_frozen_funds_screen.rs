@@ -16,11 +16,13 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::theme::DashColors;
+use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -37,21 +39,20 @@ use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Represents possible states in the “destroy frozen funds” flow
 #[derive(PartialEq)]
 pub enum DestroyFrozenFundsStatus {
     NotStarted,
-    WaitingForResult(u64),
-    ErrorMessage(String),
+    WaitingForResult,
+    Error,
     Complete,
 }
 
 /// A screen for destroying frozen funds of a particular token contract
 pub struct DestroyFrozenFundsScreen {
     /// Identity that is authorized to destroy
-    pub identity: QualifiedIdentity,
+    identity: QualifiedIdentity,
 
     /// Info on which token contract we're dealing with
     pub identity_token_info: IdentityTokenInfo,
@@ -73,10 +74,9 @@ pub struct DestroyFrozenFundsScreen {
 
     /// All frozen identities that can be selected
     /// TODO: We should filter them by frozen status, right now we just show all known identities
-    pub frozen_identities: Vec<QualifiedIdentity>,
+    frozen_identities: Vec<QualifiedIdentity>,
 
     status: DestroyFrozenFundsStatus,
-    error_message: Option<String>,
 
     /// Basic references
     pub app_context: Arc<AppContext>,
@@ -87,8 +87,11 @@ pub struct DestroyFrozenFundsScreen {
     /// If password-based wallet unlocking is needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     /// Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    /// Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl DestroyFrozenFundsScreen {
@@ -104,7 +107,7 @@ impl DestroyFrozenFundsScreen {
             )
             .cloned();
 
-        let mut error_message = None;
+        let set_error_banner = |msg: &str| super::set_error_banner(app_context, msg);
 
         let group = match identity_token_info
             .token_config
@@ -112,32 +115,30 @@ impl DestroyFrozenFundsScreen {
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                error_message = Some("Burning is not allowed on this token".to_string());
+                set_error_banner("Destroying frozen funds is not allowed on this token");
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
                     != identity_token_info.identity.identity.id()
                 {
-                    error_message = Some(
-                        "You are not allowed to burn this token. Only the contract owner is."
-                            .to_string(),
+                    set_error_banner(
+                        "You are not allowed to destroy frozen funds on this token. Only the contract owner is.",
                     );
                 }
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to burn this token".to_string());
+                    set_error_banner("You are not allowed to destroy frozen funds on this token");
                 }
                 None
             }
             AuthorizedActionTakers::MainGroup => {
                 match identity_token_info.token_config.main_control_group() {
                     None => {
-                        error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
-                                .to_string(),
+                        set_error_banner(
+                            "Invalid contract: No main control group, though one should exist",
                         );
                         None
                     }
@@ -149,7 +150,7 @@ impl DestroyFrozenFundsScreen {
                         {
                             Ok(group) => Some((group_pos, group.clone())),
                             Err(e) => {
-                                error_message = Some(format!("Invalid contract: {}", e));
+                                set_error_banner(&format!("Invalid contract: {}", e));
                                 None
                             }
                         }
@@ -164,7 +165,7 @@ impl DestroyFrozenFundsScreen {
                 {
                     Ok(group) => Some((*group_pos, group.clone())),
                     Err(e) => {
-                        error_message = Some(format!("Invalid contract: {}", e));
+                        set_error_banner(&format!("Invalid contract: {}", e));
                         None
                     }
                 }
@@ -187,16 +188,14 @@ impl DestroyFrozenFundsScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet = get_selected_wallet(
-            &identity_token_info.identity,
-            None,
-            possible_key.as_ref(),
-            &mut error_message,
-        );
+        let selected_wallet =
+            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
+                .unwrap_or_else(|e| {
+                    set_error_banner(&e);
+                    None
+                });
 
-        let all_identities = app_context
-            .load_local_qualified_identities()
-            .expect("Identities not loaded");
+        let all_identities = super::load_identities_with_banner(app_context);
 
         Self {
             identity: identity_token_info.identity.clone(),
@@ -210,12 +209,13 @@ impl DestroyFrozenFundsScreen {
             group_action_id: None,
             public_note: None,
             status: DestroyFrozenFundsStatus::NotStarted,
-            error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -260,35 +260,36 @@ impl DestroyFrozenFundsScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
-        let signing_key = match self.selected_key.clone() {
-            Some(key) => key,
-            None => {
-                self.error_message = Some("No signing key selected".into());
-                self.status = DestroyFrozenFundsStatus::ErrorMessage("No key selected".into());
-                return AppAction::None;
-            }
-        };
-
-        let frozen_id = match Identifier::from_string_try_encodings(
+        let Ok(frozen_id) = Identifier::from_string_try_encodings(
             &self.frozen_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        ) {
-            Ok(id) => id,
-            Err(_) => {
-                self.error_message = Some("Invalid frozen identity format".into());
-                self.status = DestroyFrozenFundsStatus::ErrorMessage("Invalid identity".into());
-                return AppAction::None;
-            }
+        ) else {
+            self.status = DestroyFrozenFundsStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Invalid frozen identity format",
+                MessageType::Error,
+            );
+            return AppAction::None;
         };
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.status = DestroyFrozenFundsStatus::WaitingForResult(now);
+        // Validate signing key before transitioning to waiting state
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
+            return AppAction::None;
+        };
+
+        self.status = DestroyFrozenFundsStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Destroying frozen funds...",
+            MessageType::Info,
+        );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         let data_contract = Arc::new(self.identity_token_info.data_contract.contract.clone());
 
@@ -339,10 +340,11 @@ impl DestroyFrozenFundsScreen {
 }
 
 impl ScreenLike for DestroyFrozenFundsScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if let MessageType::Error = message_type {
-            self.status = DestroyFrozenFundsStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
+            self.status = DestroyFrozenFundsStatus::Error;
         }
     }
 
@@ -350,6 +352,7 @@ impl ScreenLike for DestroyFrozenFundsScreen {
         if let BackendTaskSuccessResult::DestroyedFrozenFunds(fee_result) =
             backend_task_success_result
         {
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = DestroyFrozenFundsStatus::Complete;
         }
@@ -464,8 +467,11 @@ impl ScreenLike for DestroyFrozenFundsScreen {
             } else {
                 // Possibly handle locked wallet scenario
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -622,22 +628,11 @@ impl ScreenLike for DestroyFrozenFundsScreen {
                     DestroyFrozenFundsStatus::NotStarted => {
                         // no-op
                     }
-                    DestroyFrozenFundsStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!(
-                            "Destroying frozen funds... elapsed: {} seconds",
-                            elapsed
-                        ));
+                    DestroyFrozenFundsStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
-                    DestroyFrozenFundsStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
+                    DestroyFrozenFundsStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     DestroyFrozenFundsStatus::Complete => {
                         // handled above

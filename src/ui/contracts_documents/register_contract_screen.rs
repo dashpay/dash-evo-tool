@@ -13,6 +13,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
@@ -26,15 +27,14 @@ use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Context, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(PartialEq)]
 enum BroadcastStatus {
     Idle,
     ParsingError(String),
     ValidContract(Box<DataContract>),
-    Broadcasting(u64),
-    ProofError(u64),
+    Broadcasting,
+    ProofError,
     BroadcastError(String),
     Done,
 }
@@ -52,9 +52,11 @@ pub struct RegisterDataContractScreen {
     show_advanced_options: bool,
 
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_open_attempted: bool,
     wallet_unlock_popup: WalletUnlockPopup,
     error_message: Option<String>,
     completed_fee_result: Option<FeeResult>,
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl RegisterDataContractScreen {
@@ -64,9 +66,8 @@ impl RegisterDataContractScreen {
 
         let selected_qualified_identity = qualified_identities.first().cloned();
 
-        let mut error_message: Option<String> = None;
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
-            get_selected_wallet(identity, Some(app_context), None, &mut error_message)
+            get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
         } else {
             None
         };
@@ -107,9 +108,11 @@ impl RegisterDataContractScreen {
             show_advanced_options: false,
 
             selected_wallet,
+            wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             error_message: None,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -264,26 +267,11 @@ impl RegisterDataContractScreen {
                     )));
                 }
             }
-            BroadcastStatus::Broadcasting(start_time) => {
-                // Show how long we've been broadcasting
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let elapsed = now - start_time;
-                ui.label(format!(
-                    "Broadcasting contract... {} seconds elapsed.",
-                    elapsed
-                ));
+            BroadcastStatus::Broadcasting => {
+                ui.spinner();
             }
-            BroadcastStatus::ProofError(start_time) => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let elapsed = now - start_time;
-                ui.label("Broadcasted but received proof error. ⚠");
-                ui.label(format!("Fetching contract from Platform and inserting into DET... {elapsed} seconds elapsed."));
+            BroadcastStatus::ProofError => {
+                ui.spinner();
             }
             BroadcastStatus::Done => {
                 ui.colored_label(
@@ -296,12 +284,14 @@ impl RegisterDataContractScreen {
         if let AppAction::BackendTask(BackendTask::ContractTask(contract_task)) = &app_action
             && let ContractTask::RegisterDataContract(_, _, _, _) = **contract_task
         {
-            self.broadcast_status = BroadcastStatus::Broadcasting(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            );
+            self.broadcast_status = BroadcastStatus::Broadcasting;
+            if let Some(handle) = self.refresh_banner.take() {
+                handle.clear();
+            }
+            let handle =
+                MessageBanner::set_global(ui.ctx(), "Broadcasting contract...", MessageType::Info);
+            handle.with_elapsed();
+            self.refresh_banner = Some(handle);
         }
 
         app_action
@@ -341,6 +331,11 @@ impl RegisterDataContractScreen {
 
 impl ScreenLike for RegisterDataContractScreen {
     fn display_message(&mut self, message: &str, message_type: MessageType) {
+        if matches!(message_type, MessageType::Error | MessageType::Warning)
+            && let Some(handle) = self.refresh_banner.take()
+        {
+            handle.clear();
+        }
         if message_type == MessageType::Error {
             if message.contains("proof error logged, contract inserted into the database") {
                 self.error_message = Some(message.to_string());
@@ -354,24 +349,17 @@ impl ScreenLike for RegisterDataContractScreen {
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
             BackendTaskSuccessResult::FetchedNonce => {
-                self.broadcast_status = BroadcastStatus::Broadcasting(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                );
+                self.broadcast_status = BroadcastStatus::Broadcasting;
             }
             BackendTaskSuccessResult::RegisteredContract(fee_result) => {
+                if let Some(handle) = self.refresh_banner.take() {
+                    handle.clear();
+                }
                 self.completed_fee_result = Some(fee_result);
                 self.broadcast_status = BroadcastStatus::Done;
             }
             BackendTaskSuccessResult::ProofErrorLogged => {
-                self.broadcast_status = BroadcastStatus::ProofError(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                );
+                self.broadcast_status = BroadcastStatus::ProofError;
             }
             _ => {}
         }
@@ -480,14 +468,17 @@ impl ScreenLike for RegisterDataContractScreen {
                             identity,
                             Some(&self.app_context),
                             None,
-                            &mut self.error_message,
-                        );
+                        )
+                        .or_show_error(self.app_context.egui_ctx())
+                        .unwrap_or(None);
+                        self.wallet_open_attempted = false;
 
                         // Re-parse contract with new owner ID
                         self.parse_contract();
                     } else {
                         self.selected_key = None;
                         self.selected_wallet = None;
+                        self.wallet_open_attempted = false;
                     }
                 }
 
@@ -523,8 +514,11 @@ impl ScreenLike for RegisterDataContractScreen {
 
                 // Render wallet unlock if needed
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            self.error_message = Some(e);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);

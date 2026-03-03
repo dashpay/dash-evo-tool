@@ -1,14 +1,16 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
-use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::components::{BannerHandle, Component, ComponentResponse, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
+use crate::ui::tokens::validate_signing_key;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -25,7 +27,6 @@ use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -48,8 +49,8 @@ use super::tokens_screen::IdentityTokenInfo;
 #[derive(PartialEq)]
 pub enum BurnTokensStatus {
     NotStarted,
-    WaitingForResult(u64),
-    ErrorMessage(String),
+    WaitingForResult,
+    Error,
     Complete,
 }
 
@@ -63,12 +64,11 @@ pub struct BurnTokensScreen {
 
     // The user chooses how many tokens to burn
     pub amount: Option<Amount>,
-    pub amount_input: Option<AmountInput>,
-    pub max_amount: Option<u64>, // Maximum amount the user can burn based on their balance
+    amount_input: Option<AmountInput>,
+    max_amount: Option<u64>, // Maximum amount the user can burn based on their balance
     pub public_note: Option<String>,
 
     status: BurnTokensStatus,
-    error_message: Option<String>,
 
     // Basic references
     pub app_context: Arc<AppContext>,
@@ -79,8 +79,11 @@ pub struct BurnTokensScreen {
     // For password-based wallet unlocking, if needed
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl BurnTokensScreen {
@@ -108,7 +111,7 @@ impl BurnTokensScreen {
             )
             .cloned();
 
-        let mut error_message = None;
+        let set_error_banner = |msg: &str| super::set_error_banner(app_context, msg);
 
         let group = match identity_token_info
             .token_config
@@ -116,32 +119,30 @@ impl BurnTokensScreen {
             .authorized_to_make_change_action_takers()
         {
             AuthorizedActionTakers::NoOne => {
-                error_message = Some("Burning is not allowed on this token".to_string());
+                set_error_banner("Burning is not allowed on this token");
                 None
             }
             AuthorizedActionTakers::ContractOwner => {
                 if identity_token_info.data_contract.contract.owner_id()
                     != identity_token_info.identity.identity.id()
                 {
-                    error_message = Some(
-                        "You are not allowed to burn this token. Only the contract owner is."
-                            .to_string(),
+                    set_error_banner(
+                        "You are not allowed to burn this token. Only the contract owner is.",
                     );
                 }
                 None
             }
             AuthorizedActionTakers::Identity(identifier) => {
                 if identifier != &identity_token_info.identity.identity.id() {
-                    error_message = Some("You are not allowed to burn this token".to_string());
+                    set_error_banner("You are not allowed to burn this token");
                 }
                 None
             }
             AuthorizedActionTakers::MainGroup => {
                 match identity_token_info.token_config.main_control_group() {
                     None => {
-                        error_message = Some(
-                            "Invalid contract: No main control group, though one should exist"
-                                .to_string(),
+                        set_error_banner(
+                            "Invalid contract: No main control group, though one should exist",
                         );
                         None
                     }
@@ -153,7 +154,7 @@ impl BurnTokensScreen {
                         {
                             Ok(group) => Some((group_pos, group.clone())),
                             Err(e) => {
-                                error_message = Some(format!("Invalid contract: {}", e));
+                                set_error_banner(&format!("Invalid contract: {}", e));
                                 None
                             }
                         }
@@ -168,7 +169,7 @@ impl BurnTokensScreen {
                 {
                     Ok(group) => Some((*group_pos, group.clone())),
                     Err(e) => {
-                        error_message = Some(format!("Invalid contract: {}", e));
+                        set_error_banner(&format!("Invalid contract: {}", e));
                         None
                     }
                 }
@@ -191,12 +192,12 @@ impl BurnTokensScreen {
         };
 
         // Attempt to get an unlocked wallet reference
-        let selected_wallet = get_selected_wallet(
-            &identity_token_info.identity,
-            None,
-            possible_key.as_ref(),
-            &mut error_message,
-        );
+        let selected_wallet =
+            get_selected_wallet(&identity_token_info.identity, None, possible_key.as_ref())
+                .unwrap_or_else(|e| {
+                    set_error_banner(&e);
+                    None
+                });
 
         Self {
             identity_token_info,
@@ -210,12 +211,13 @@ impl BurnTokensScreen {
             max_amount: token_balance,
             public_note: None,
             status: BurnTokensStatus::NotStarted,
-            error_message,
             app_context: app_context.clone(),
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -244,8 +246,12 @@ impl BurnTokensScreen {
         let amount = match self.amount.as_ref() {
             Some(amount) if amount.value() > 0 => amount,
             _ => {
-                self.error_message = Some("Please enter a valid amount greater than 0.".into());
-                self.status = BurnTokensStatus::ErrorMessage("Invalid amount".into());
+                self.status = BurnTokensStatus::Error;
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Please enter a valid amount greater than 0.",
+                    MessageType::Error,
+                );
                 self.confirmation_dialog = None;
                 return AppAction::None;
             }
@@ -262,22 +268,33 @@ impl BurnTokensScreen {
         match dialog.show(ui).inner.dialog_response {
             Some(ConfirmationStatus::Confirmed) => {
                 self.confirmation_dialog = None;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                self.status = BurnTokensStatus::WaitingForResult(now);
+
+                // Validate signing key before transitioning to waiting state
+                let Some(signing_key) =
+                    validate_signing_key(&self.app_context, self.selected_key.as_ref())
+                else {
+                    return AppAction::None;
+                };
+
+                self.status = BurnTokensStatus::WaitingForResult;
+                let handle = MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Burning tokens...",
+                    MessageType::Info,
+                );
+                handle.with_elapsed();
+                self.refresh_banner = Some(handle);
 
                 // Grab the data contract for this token from the app context
                 let data_contract =
                     Arc::new(self.identity_token_info.data_contract.contract.clone());
 
-                let group_info = if self.group_action_id.is_some() {
+                let group_info = if let Some(action_id) = self.group_action_id {
                     self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(
                             GroupStateTransitionInfo {
                                 group_contract_position: *pos,
-                                action_id: self.group_action_id.unwrap(),
+                                action_id,
                                 action_is_proposer: false,
                             },
                         )
@@ -295,7 +312,7 @@ impl BurnTokensScreen {
                             owner_identity: self.identity_token_info.identity.clone(),
                             data_contract,
                             token_position: self.identity_token_info.token_position,
-                            signing_key: self.selected_key.clone().expect("Expected a key"),
+                            signing_key,
                             public_note: if self.group_action_id.is_some() {
                                 None
                             } else {
@@ -332,15 +349,17 @@ impl BurnTokensScreen {
 }
 
 impl ScreenLike for BurnTokensScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if let MessageType::Error = message_type {
-            self.status = BurnTokensStatus::ErrorMessage(message.to_string());
-            self.error_message = Some(message.to_string());
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
+            self.status = BurnTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::BurnedTokens(fee_result) = backend_task_success_result {
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.status = BurnTokensStatus::Complete;
         }
@@ -465,8 +484,11 @@ impl ScreenLike for BurnTokensScreen {
             } else {
                 // Possibly handle locked wallet scenario
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.error_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -652,19 +674,11 @@ impl ScreenLike for BurnTokensScreen {
                     BurnTokensStatus::NotStarted => {
                         // no-op
                     }
-                    BurnTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed = now - start_time;
-                        ui.label(format!("Burning... elapsed: {} seconds", elapsed));
+                    BurnTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
-                    BurnTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
+                    BurnTokensStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     BurnTokensStatus::Complete => {
                         // handled above

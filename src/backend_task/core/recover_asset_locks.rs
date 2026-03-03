@@ -135,6 +135,7 @@ impl AppContext {
             let (chain_locked_height, proof) = if let Some(ref info) = tx_info {
                 if info.chainlock && info.height.is_some() {
                     let height = info.height.unwrap() as u32;
+                    tracing::debug!("Asset lock {} is chain-locked at height {}", txid, height);
                     (
                         Some(height),
                         Some(AssetLockProof::Chain(ChainAssetLockProof {
@@ -143,9 +144,19 @@ impl AppContext {
                         })),
                     )
                 } else {
+                    tracing::debug!(
+                        "Asset lock {} not chain-locked yet (chainlock={}, height={:?}) — proof unavailable",
+                        txid,
+                        info.chainlock,
+                        info.height
+                    );
                     (None, None)
                 }
             } else {
+                tracing::debug!(
+                    "Could not retrieve transaction info for asset lock {} — proof unavailable",
+                    txid
+                );
                 (None, None)
             };
 
@@ -266,6 +277,7 @@ impl AppContext {
                 let (chain_locked_height, proof) = if let Some(ref info) = tx_info {
                     if info.chainlock && info.height.is_some() {
                         let height = info.height.unwrap() as u32;
+                        tracing::debug!("Asset lock {} is chain-locked at height {}", txid, height);
                         (
                             Some(height),
                             Some(AssetLockProof::Chain(ChainAssetLockProof {
@@ -274,9 +286,19 @@ impl AppContext {
                             })),
                         )
                     } else {
+                        tracing::debug!(
+                            "Asset lock {} not chain-locked yet (chainlock={}, height={:?}) — proof unavailable",
+                            txid,
+                            info.chainlock,
+                            info.height
+                        );
                         (None, None)
                     }
                 } else {
+                    tracing::debug!(
+                        "Could not retrieve transaction info for asset lock {} — proof unavailable",
+                        txid
+                    );
                     (None, None)
                 };
 

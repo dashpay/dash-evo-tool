@@ -11,6 +11,7 @@ use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
 use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::{CoreBackendMode, SpvStatus};
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -72,7 +73,6 @@ pub struct WalletsBalancesScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
     pub(crate) app_context: Arc<AppContext>,
-    message: Option<(String, MessageType, DateTime<Utc>)>,
     sort_column: SortColumn,
     sort_order: SortOrder,
     refreshing: bool,
@@ -82,7 +82,6 @@ pub struct WalletsBalancesScreen {
     show_sk_unlock_dialog: bool,
     sk_wallet_password: String,
     sk_show_password: bool,
-    sk_error_message: Option<String>,
     remove_wallet_dialog: Option<ConfirmationDialog>,
     pending_wallet_removal: Option<WalletSeedHash>,
     pending_wallet_removal_alias: Option<String>,
@@ -174,7 +173,6 @@ impl WalletsBalancesScreen {
             selected_wallet,
             selected_single_key_wallet,
             app_context: app_context.clone(),
-            message: None,
             sort_column: SortColumn::Index,
             sort_order: SortOrder::Ascending,
             refreshing: false,
@@ -184,7 +182,6 @@ impl WalletsBalancesScreen {
             show_sk_unlock_dialog: false,
             sk_wallet_password: String::new(),
             sk_show_password: false,
-            sk_error_message: None,
             remove_wallet_dialog: None,
             pending_wallet_removal: None,
             pending_wallet_removal_alias: None,
@@ -339,14 +336,22 @@ impl WalletsBalancesScreen {
             match result {
                 Ok(address) => {
                     let message = format!("Added new receiving address: {}", address);
-                    self.display_message(&message, MessageType::Success);
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        &message,
+                        MessageType::Success,
+                    );
                 }
                 Err(e) => {
-                    self.display_message(&e, MessageType::Error);
+                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
                 }
             }
         } else {
-            self.display_message("No wallet selected", MessageType::Error);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No wallet selected",
+                MessageType::Error,
+            );
         }
     }
 
@@ -564,8 +569,9 @@ impl WalletsBalancesScreen {
                                 .db
                                 .remove_single_key_wallet(&key_hash, self.app_context.network)
                             {
-                                self.display_message(
-                                    &format!("Failed to remove: {}", e),
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    format!("Failed to remove: {}", e),
                                     MessageType::Error,
                                 );
                             } else {
@@ -576,7 +582,11 @@ impl WalletsBalancesScreen {
                                 self.selected_single_key_wallet = None;
                                 // Clear persisted selection in AppContext and database
                                 self.persist_selected_single_key_hash(None);
-                                self.display_message("Wallet removed", MessageType::Success);
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    "Wallet removed",
+                                    MessageType::Success,
+                                );
                             }
                         }
 
@@ -725,14 +735,16 @@ impl WalletsBalancesScreen {
                 self.wallet_unlock_popup.close();
                 self.refreshing = false;
 
-                self.display_message(
-                    &format!("Removed wallet \"{}\" successfully", alias),
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Removed wallet \"{}\" successfully", alias),
                     MessageType::Success,
                 );
             }
             Err(err) => {
-                self.display_message(
-                    &format!("Failed to remove wallet: {}", err),
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Failed to remove wallet: {}", err),
                     MessageType::Error,
                 );
             }
@@ -801,18 +813,6 @@ impl WalletsBalancesScreen {
                     ui.add_space(5.0);
                 });
             });
-    }
-
-    fn dismiss_message(&mut self) {
-        self.message = None;
-    }
-
-    fn check_message_expiration(&mut self) {
-        // Messages no longer auto-expire, they must be dismissed manually
-    }
-
-    fn set_message(&mut self, message: String, message_type: MessageType) {
-        self.message = Some((message, message_type, Utc::now()));
     }
 
     fn format_dash(amount_duffs: u64) -> String {
@@ -930,7 +930,11 @@ impl WalletsBalancesScreen {
                             .create_screen(&self.app_context),
                     );
                 } else {
-                    self.display_message("Select a wallet first", MessageType::Error);
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "Select a wallet first",
+                        MessageType::Error,
+                    );
                 }
             }
 
@@ -1435,8 +1439,9 @@ impl WalletsBalancesScreen {
             let mut wallet = match wallet_arc.write() {
                 Ok(guard) => guard,
                 Err(err) => {
-                    self.display_message(
-                        &format!("Failed to lock wallet: {}", err),
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        format!("Failed to lock wallet: {}", err),
                         MessageType::Error,
                     );
                     return;
@@ -1453,7 +1458,11 @@ impl WalletsBalancesScreen {
 
         if locked {
             self.app_context.handle_wallet_locked(&wallet_arc);
-            self.display_message("Wallet locked", MessageType::Info);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Wallet locked",
+                MessageType::Info,
+            );
         }
     }
 
@@ -1507,8 +1516,6 @@ impl WalletsBalancesScreen {
 
 impl ScreenLike for WalletsBalancesScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_message_expiration();
-
         // Check for pending platform balance refresh (triggered after transfers)
         let pending_refresh_action = if let Some(seed_hash) =
             self.pending_platform_balance_refresh.take()
@@ -1569,38 +1576,7 @@ impl ScreenLike for WalletsBalancesScreen {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-            // Display messages at the top, outside of scroll area
-            let message = self.message.clone();
-            if let Some((message, message_type, _timestamp)) = message {
-                let message_color = match message_type {
-                    MessageType::Error => DashColors::ERROR,
-                    MessageType::Warning => DashColors::WARNING,
-                    MessageType::Info => DashColors::text_primary(dark_mode),
-                    MessageType::Success => egui::Color32::DARK_GREEN,
-                };
-
-                // Display message in a prominent frame with text wrapping
-                Frame::new()
-                    .fill(message_color.gamma_multiply(0.1))
-                    .inner_margin(Margin::symmetric(10, 8))
-                    .corner_radius(5.0)
-                    .stroke(egui::Stroke::new(1.0, message_color))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&message).color(message_color),
-                                )
-                                .wrap(),
-                            );
-                            ui.add_space(5.0);
-                            if ui.small_button("Dismiss").clicked() {
-                                self.dismiss_message();
-                            }
-                        });
-                    });
-                ui.add_space(10.0);
-            }
+            // Message display is handled by the global MessageBanner
 
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
@@ -1740,7 +1716,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                 self.private_key_dialog.show_key = false;
                             }
                             Err(err) => {
-                                self.display_message(&err, MessageType::Error);
+                                MessageBanner::set_global(ctx, &err, MessageType::Error);
                             }
                         }
                     }
@@ -1766,7 +1742,8 @@ impl ScreenLike for WalletsBalancesScreen {
                     if self.pending_asset_lock_search_after_unlock {
                         self.pending_asset_lock_search_after_unlock = false;
                         if let Some(wallet_arc) = self.selected_wallet.clone() {
-                            self.display_message(
+                            MessageBanner::set_global(
+                                ctx,
                                 "Searching for unused asset locks...",
                                 MessageType::Info,
                             );
@@ -1859,45 +1836,23 @@ impl ScreenLike for WalletsBalancesScreen {
 
                                 match unlock_result {
                                     Ok(_) => {
-                                        self.sk_error_message = None;
                                         close_dialog = true;
                                     }
                                     Err(_) => {
-                                        self.sk_error_message =
-                                            Some("Incorrect Password".to_string());
+                                        MessageBanner::set_global(ui.ctx(), "Incorrect Password", MessageType::Error);
                                     }
                                 }
                             }
                             self.sk_wallet_password.clear();
                         }
 
-                        // Display error message if the password was incorrect
-                        if let Some(error_message) = self.sk_error_message.clone() {
-                            ui.add_space(5.0);
-                            let error_color = DashColors::ERROR;
-                            Frame::new()
-                                .fill(error_color.gamma_multiply(0.1))
-                                .inner_margin(Margin::symmetric(10, 8))
-                                .corner_radius(5.0)
-                                .stroke(egui::Stroke::new(1.0, error_color))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new(format!("Error: {}", error_message)).color(error_color));
-                                        ui.add_space(10.0);
-                                        if ui.small_button("Dismiss").clicked() {
-                                            self.sk_error_message = None;
-                                        }
-                                    });
-                                });
-                        }
+                        // Error display is handled by the global MessageBanner.
                     });
                 });
 
             if close_dialog {
                 self.show_sk_unlock_dialog = false;
                 self.sk_wallet_password.clear();
-                self.sk_error_message = None;
-
                 // Check if we were trying to refresh the SK wallet
                 if self.pending_refresh_after_unlock {
                     self.pending_refresh_after_unlock = false;
@@ -1961,7 +1916,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     action = AppAction::None;
                 } else {
                     // Wallet is unlocked - proceed with search
-                    self.display_message("Searching for unused asset locks...", MessageType::Info);
+                    MessageBanner::set_global(
+                        ctx,
+                        "Searching for unused asset locks...",
+                        MessageType::Info,
+                    );
                     action = AppAction::BackendTask(BackendTask::CoreTask(
                         CoreTask::RecoverAssetLocks(wallet_arc),
                     ));
@@ -1975,7 +1934,8 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if let MessageType::Error = message_type {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.refreshing = false;
 
             // If the fund platform dialog is processing, show error in the dialog instead
@@ -1983,10 +1943,8 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.fund_platform_dialog.is_processing = false;
                 self.fund_platform_dialog.status = Some(message.to_string());
                 self.fund_platform_dialog.status_is_error = true;
-                return;
             }
         }
-        self.set_message(message.to_string(), message_type);
     }
 
     fn display_task_result(
@@ -2006,13 +1964,15 @@ impl ScreenLike for WalletsBalancesScreen {
                     self.refresh_platform_sync_info_cache(&hash);
                 }
                 if let Some(warn_msg) = warning {
-                    self.set_message(
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
                         format!("Wallet refreshed with warning: {}", warn_msg),
                         MessageType::Info,
                     );
                 } else {
-                    self.set_message(
-                        "Successfully refreshed wallet".to_string(),
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Successfully refreshed wallet",
                         MessageType::Success,
                     );
                 }
@@ -2030,7 +1990,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         Self::format_dash(total_amount)
                     )
                 };
-                self.display_message(&msg, MessageType::Success);
+                MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::WalletPayment {
                 txid,
@@ -2053,7 +2013,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         txid
                     )
                 };
-                self.display_message(&msg, MessageType::Success);
+                MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
                 if let Some(selected) = &self.selected_wallet
@@ -2079,16 +2039,25 @@ impl ScreenLike for WalletsBalancesScreen {
                 }
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressWithdrawal { .. } => {
-                self.display_message("Platform withdrawal successful. Note: It may take a few minutes for funds to appear on the Core chain.", MessageType::Success);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Platform withdrawal successful. Note: It may take a few minutes for funds to appear on the Core chain.",
+                    MessageType::Success,
+                );
             }
             crate::ui::BackendTaskSuccessResult::PlatformAddressFunded { .. } => {
                 self.fund_platform_dialog.is_processing = false;
                 self.fund_platform_dialog.status = Some("Funding successful!".to_string());
                 self.fund_platform_dialog.status_is_error = false;
-                self.display_message("Platform address funded successfully", MessageType::Success);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Platform address funded successfully",
+                    MessageType::Success,
+                );
             }
             crate::ui::BackendTaskSuccessResult::PlatformCreditsTransferred { seed_hash } => {
-                self.display_message(
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
                     "Platform credits transferred successfully",
                     MessageType::Success,
                 );
@@ -2111,18 +2080,23 @@ impl ScreenLike for WalletsBalancesScreen {
                     }
                 }
                 self.refresh_platform_sync_info_cache(&seed_hash);
-                self.set_message(
-                    "Successfully synced Platform balances".to_string(),
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Successfully synced Platform balances",
                     MessageType::Success,
                 );
             }
             crate::ui::BackendTaskSuccessResult::Message(msg) => {
                 self.refreshing = false;
-                self.display_message(&msg, MessageType::Success);
+                MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
             }
             crate::ui::BackendTaskSuccessResult::MineBlocksSuccess(count) => {
                 self.refreshing = false;
-                self.display_message(&format!("Mined {} block(s)", count), MessageType::Success);
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Mined {} block(s)", count),
+                    MessageType::Success,
+                );
             }
             _ => {}
         }

@@ -369,9 +369,10 @@ impl ConnectionStatus {
         self.set_rpc_online(online);
     }
 
+    /// Updates internal connection state from a task result.
     pub fn handle_task_result(&self, task_result: &TaskResult, active_network: Network) {
-        match task_result {
-            TaskResult::Success(message) => match message.as_ref() {
+        if let TaskResult::Success(message) = task_result {
+            match message.as_ref() {
                 BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
                     mainnet_chainlock,
                     testnet_chainlock,
@@ -394,16 +395,7 @@ impl ConnectionStatus {
                     }
                 }
                 _ => {}
-            },
-            TaskResult::Error(err) => {
-                if err.to_string().contains(
-                    "Failed to get best chain lock for mainnet, testnet, devnet, and local",
-                ) {
-                    self.set_rpc_online(false);
-                    self.refresh_state();
-                }
             }
-            _ => {}
         }
     }
 

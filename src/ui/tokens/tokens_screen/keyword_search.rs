@@ -2,14 +2,15 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
+use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, ContractSearchStatus, TokensScreen,
 };
-use chrono::Utc;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::emath::Align;
-use egui::{Frame, Margin, RichText, Ui};
+use egui::{RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 
 const KEYWORD_SEARCH_INFO_TEXT: &str = "Keyword Search allows you to find tokens by searching their associated keywords.\n\n\
@@ -59,8 +60,17 @@ impl TokensScreen {
                     if go_clicked || enter_pressed {
                         // Clear old results, set status
                         self.search_results.lock().unwrap().clear();
-                        let now = Utc::now().timestamp() as u64;
-                        self.contract_search_status = ContractSearchStatus::WaitingForResult(now);
+                        self.contract_search_status = ContractSearchStatus::WaitingForResult;
+                        if let Some(h) = self.operation_banner.take() {
+                            h.clear();
+                        }
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Searching contracts...",
+                            MessageType::Info,
+                        );
+                        handle.with_elapsed();
+                        self.operation_banner = Some(handle);
                         self.search_current_page = 1;
                         self.next_cursors.clear();
                         self.previous_cursors.clear();
@@ -103,13 +113,8 @@ impl TokensScreen {
             ContractSearchStatus::NotStarted => {
                 // Nothing
             }
-            ContractSearchStatus::WaitingForResult(start_time) => {
-                let now = Utc::now().timestamp() as u64;
-                let elapsed = now - start_time;
-                ui.horizontal(|ui| {
-                    ui.label(format!("Searching... {} seconds", elapsed));
-                    ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-                });
+            ContractSearchStatus::WaitingForResult => {
+                // Elapsed display is handled by the global MessageBanner
             }
             ContractSearchStatus::Complete => {
                 // Show the results
@@ -138,23 +143,8 @@ impl TokensScreen {
                     }
                 }
             }
-            ContractSearchStatus::ErrorMessage(e) => {
-                let error_color = DashColors::error_color(ui.visuals().dark_mode);
-                let msg = e.clone();
-                Frame::new()
-                    .fill(error_color.gamma_multiply(0.1))
-                    .inner_margin(Margin::symmetric(10, 8))
-                    .corner_radius(5.0)
-                    .stroke(egui::Stroke::new(1.0, error_color))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("Error: {}", msg)).color(error_color));
-                            ui.add_space(10.0);
-                            if ui.small_button("Dismiss").clicked() {
-                                self.contract_search_status = ContractSearchStatus::NotStarted;
-                            }
-                        });
-                    });
+            ContractSearchStatus::Error => {
+                // Error message is displayed by the global MessageBanner
             }
         }
 

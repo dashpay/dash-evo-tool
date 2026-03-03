@@ -7,12 +7,13 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
-use crate::context::connection_status::ConnectionStatus;
+use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
-use crate::ui::components::MessageBanner;
+use crate::spv::CoreBackendMode;
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -92,6 +93,11 @@ pub struct AppState {
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)
     pub welcome_screen: Option<WelcomeScreen>,
+    /// Previous connection state, used to detect transitions and update banners.
+    /// `None` on startup / after network switch to force the first evaluation.
+    previous_connection_state: Option<OverallConnectionState>,
+    /// Handle to the current connection status banner, if one is displayed
+    connection_banner_handle: Option<BannerHandle>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -706,6 +712,8 @@ impl AppState {
             subtasks,
             show_welcome_screen: !onboarding_completed,
             welcome_screen: None,
+            previous_connection_state: None,
+            connection_banner_handle: None,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
@@ -867,12 +875,96 @@ impl AppState {
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
 
+        // INTENTIONAL(SEC-004): Clear stale banners from the previous network context.
+        // A backend task completing after the switch could set a new banner in the new
+        // network context — accepted risk for a local desktop app (cosmetic only).
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
         }
 
         self.connection_status
             .reset(app_context.core_backend_mode());
+
+        // Reset connection banner tracking so the next frame re-evaluates
+        // the new network's state (even if it matches the old state).
+        if let Some(handle) = self.connection_banner_handle.take() {
+            handle.clear();
+        }
+        self.previous_connection_state = None;
+    }
+
+    /// Update the connection status banner when the overall connection state
+    /// transitions between Disconnected, Connecting, Syncing, and Synced.
+    ///
+    /// Also re-evaluates the banner text while in `Connecting` state each frame
+    /// because the degraded-peer timeout can fire without a state transition.
+    fn update_connection_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+        let connection_status = app_context.connection_status();
+        let current_state = connection_status.overall_state();
+        let state_changed = self.previous_connection_state != Some(current_state);
+
+        // In Connecting state the banner text can change (normal → degraded)
+        // without a state transition, so we must re-evaluate every frame.
+        // For all other states, skip if nothing changed.
+        if !state_changed && current_state != OverallConnectionState::Connecting {
+            return;
+        }
+
+        // Clear old banner on state transitions
+        if state_changed && let Some(handle) = self.connection_banner_handle.take() {
+            handle.clear();
+        }
+
+        // Display new banner based on current state
+        let backend_mode = connection_status.backend_mode();
+        match current_state {
+            OverallConnectionState::Disconnected => {
+                let msg = match backend_mode {
+                    CoreBackendMode::Rpc => "Disconnected — check that Dash Core is running",
+                    CoreBackendMode::Spv => "Disconnected — check your internet connection",
+                };
+                self.connection_banner_handle =
+                    Some(MessageBanner::set_global(ctx, msg, MessageType::Error));
+            }
+            OverallConnectionState::Connecting => {
+                // SPV active but no peers connected yet. The degraded flag
+                // flips after 30 s — `set_global` is idempotent for same text,
+                // so calling it every frame while Connecting is cheap.
+                let msg = if connection_status.spv_peer_degraded() {
+                    "Having trouble finding peers. Check your connection."
+                } else {
+                    "Looking for peers…"
+                };
+                // Replace the banner when the text changes (normal → degraded).
+                if let Some(handle) = &self.connection_banner_handle {
+                    handle.set_message(msg);
+                } else {
+                    self.connection_banner_handle =
+                        Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
+                }
+            }
+            OverallConnectionState::Syncing => {
+                let msg = match backend_mode {
+                    CoreBackendMode::Rpc => "Syncing with Dash Core…",
+                    CoreBackendMode::Spv => "SPV sync in progress…",
+                };
+                self.connection_banner_handle =
+                    Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
+            }
+            OverallConnectionState::Error => {
+                self.connection_banner_handle = Some(MessageBanner::set_global(
+                    ctx,
+                    "SPV sync error — check connection status for details",
+                    MessageType::Error,
+                ));
+            }
+            OverallConnectionState::Synced => {
+                // No banner needed for fully synced state
+            }
+        }
+        self.previous_connection_state = Some(current_state);
     }
 
     pub fn visible_screen_mut(&mut self) -> &mut Screen {
@@ -942,9 +1034,13 @@ impl App for AppState {
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();
                         }
-                        BackendTaskSuccessResult::Message(ref _msg) => {
-                            // Let the screen handle Message via display_task_result
-                            // so it can do custom handling (like clearing spinners)
+                        BackendTaskSuccessResult::Message(ref msg) => {
+                            // TODO(RUST-002): Some screens inspect Message text for error
+                            // keywords and may override with an Error banner, causing a
+                            // brief green-then-red flash. Refactor to pass structured error
+                            // types through task results instead of string messages.
+                            // See https://github.com/dashpay/dash-evo-tool/issues/660 .
+                            MessageBanner::set_global(ctx, msg, MessageType::Success);
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
@@ -988,7 +1084,11 @@ impl App for AppState {
                     let msg = err.to_string();
                     let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                     if self.current_app_context().is_developer_mode() {
-                        handle.with_details(&format!("{err:?}"));
+                        // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
+                        // in developer mode. This is a local UI app — no third parties
+                        // see this output. Ensure inner error types don't expose secrets
+                        // (see #667).
+                        handle.with_details(&err);
                     }
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Error);
@@ -1161,16 +1261,7 @@ impl App for AppState {
                 .trigger_refresh(active_context.as_ref()),
         );
 
-        // Show a warning banner when SPV has been unable to find peers
-        // for an extended period.  Cleared as soon as the condition resolves.
-        const SPV_DEGRADED_BANNER: &str = "Having trouble finding peers. Check your connection.";
-        if active_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-            if active_context.connection_status().spv_peer_degraded() {
-                MessageBanner::set_global(ctx, SPV_DEGRADED_BANNER, MessageType::Warning);
-            } else {
-                MessageBanner::clear_global_message(ctx, SPV_DEGRADED_BANNER);
-            }
-        }
+        self.update_connection_banner(ctx, &active_context);
 
         for action in actions {
             match action {

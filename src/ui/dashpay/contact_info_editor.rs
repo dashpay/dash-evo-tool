@@ -42,6 +42,7 @@ pub struct ContactInfoEditorScreen {
     show_info_popup: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
 }
 
 impl ContactInfoEditorScreen {
@@ -69,6 +70,7 @@ impl ContactInfoEditorScreen {
             show_info_popup: false,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         }
     }
 
@@ -233,8 +235,11 @@ impl ContactInfoEditorScreen {
 
                 // Check wallet lock status before showing save button
                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     wallet_needs_unlock(wallet)
                 } else {

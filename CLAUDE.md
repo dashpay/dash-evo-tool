@@ -181,10 +181,9 @@ User-facing messages (errors, warnings, success, infos) use `MessageBanner` (`sr
 
 **BannerHandle lifecycle**: Screens that run backend tasks typically store a `refresh_banner: Option<BannerHandle>` field. On task dispatch, set it via `MessageBanner::set_global()` with an info/progress message. In `display_message()` (called as a side-effect by AppState), dismiss the progress banner via `self.refresh_banner.take_and_clear()` (from `OptionBannerExt`). Simply setting the field to `None` would leak the banner — `take_and_clear()` removes it from the egui context. AppState handles displaying the actual result banner.
 
-MessageBanner logs all displayed messages, together with details. No need of additional
-logging.
+**Logging**: MessageBanner logs all displayed messages (with details) automatically. Additional logging is unnecessary.
 
-**Error banners**: Never expose raw backend/database errors to users. When the error doesn't implement `Display`, use a generic user-friendly message in the banner and attach technical details via `BannerHandle::with_details()`:
+**Error banners**: Never expose raw backend/database errors to users. Use a generic user-friendly message in the banner and attach technical details via `BannerHandle::with_details()`. When the error implements `Display` and its text is user-appropriate, pass it directly to `set_global`; otherwise use a descriptive generic message:
 ```rust
 MessageBanner::set_global(ctx, "Failed to load token balances", MessageType::Error)
     .with_details(e);

@@ -47,6 +47,7 @@ pub struct QRCodeGeneratorScreen {
     show_advanced_options: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
 }
 
 impl QRCodeGeneratorScreen {
@@ -62,6 +63,7 @@ impl QRCodeGeneratorScreen {
             show_advanced_options: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         };
 
         // Auto-select first identity on creation if available
@@ -213,6 +215,7 @@ impl QRCodeGeneratorScreen {
                                 } else {
                                     self.selected_wallet = None;
                                 }
+                                self.wallet_open_attempted = false;
                                 // Clear generated QR code when identity changes
                                 self.generated_qr_data = None;
                             }
@@ -265,8 +268,11 @@ impl QRCodeGeneratorScreen {
 
                 // Check wallet lock status before showing generate button
                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     wallet_needs_unlock(wallet)
                 } else {

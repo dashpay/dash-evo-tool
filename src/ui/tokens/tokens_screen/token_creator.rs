@@ -969,11 +969,20 @@ impl TokensScreen {
 
     fn update_selected_wallet(&mut self) {
         if let (Some(qid), Some(key)) = (&self.selected_identity, &self.selected_key) {
-            self.selected_wallet = crate::ui::identities::get_selected_wallet(qid, None, Some(key))
+            let new_wallet = crate::ui::identities::get_selected_wallet(qid, None, Some(key))
                 .unwrap_or_else(|e| {
                     MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
                     None
                 });
+            let wallet_changed = match (&self.selected_wallet, &new_wallet) {
+                (Some(a), Some(b)) => !std::sync::Arc::ptr_eq(a, b),
+                (None, None) => false,
+                _ => true,
+            };
+            if wallet_changed {
+                self.wallet_open_attempted = false;
+            }
+            self.selected_wallet = new_wallet;
         }
     }
 
@@ -983,8 +992,11 @@ impl TokensScreen {
                 try_open_wallet_no_password, wallet_needs_unlock,
             };
 
-            if let Err(e) = try_open_wallet_no_password(wallet) {
-                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+            if !self.wallet_open_attempted {
+                if let Err(e) = try_open_wallet_no_password(wallet) {
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                }
+                self.wallet_open_attempted = true;
             }
 
             if wallet_needs_unlock(wallet) {

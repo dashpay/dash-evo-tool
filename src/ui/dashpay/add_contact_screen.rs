@@ -51,6 +51,7 @@ pub struct AddContactScreen {
     show_advanced_options: bool,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
 }
 
 impl AddContactScreen {
@@ -67,6 +68,7 @@ impl AddContactScreen {
             show_advanced_options: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         }
     }
 
@@ -83,6 +85,7 @@ impl AddContactScreen {
             show_advanced_options: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
         }
     }
 
@@ -290,10 +293,12 @@ impl ScreenLike for AddContactScreen {
                                 get_selected_wallet(identity, Some(&self.app_context), None)
                                     .or_show_error(self.app_context.egui_ctx())
                                     .unwrap_or(None);
+                            self.wallet_open_attempted = false;
                         }
                     } else {
                         self.selected_key = None;
                         self.selected_wallet = None;
+                        self.wallet_open_attempted = false;
                     }
                 }
 
@@ -495,12 +500,15 @@ impl ScreenLike for AddContactScreen {
 
                     // Check wallet lock status before showing send button
                     let wallet_locked = if let Some(wallet) = &self.selected_wallet {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            crate::ui::components::MessageBanner::set_global(
-                                ui.ctx(),
-                                &e,
-                                MessageType::Error,
-                            );
+                        if !self.wallet_open_attempted {
+                            if let Err(e) = try_open_wallet_no_password(wallet) {
+                                crate::ui::components::MessageBanner::set_global(
+                                    ui.ctx(),
+                                    &e,
+                                    MessageType::Error,
+                                );
+                            }
+                            self.wallet_open_attempted = true;
                         }
                         wallet_needs_unlock(wallet)
                     } else {
@@ -620,9 +628,10 @@ impl ScreenLike for AddContactScreen {
                 self.selected_key = None;
             }
             BackendTaskSuccessResult::Message(message) => {
-                // TODO(RUST-004): Replace string-based error matching with structured
+                // TODO(RUST-002): Replace string-based error matching with structured
                 // error types through the task result system. This is fragile — if
                 // upstream error wording changes, classification silently breaks.
+                // See: https://github.com/dashpay/dash-evo-tool/issues/660
                 if message.contains("Error")
                     || message.contains("Failed")
                     || message.contains("does not have")

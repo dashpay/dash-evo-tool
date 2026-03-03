@@ -1225,13 +1225,13 @@ impl ScreenLike for IdentitiesScreen {
                     )
                 }) =>
             {
-                self.refresh_banner.take_and_clear();
                 self.pending_refresh_count = tasks.len();
                 self.total_refresh_count = tasks.len();
-                let handle =
-                    MessageBanner::set_global(ctx, "Refreshing identities...", MessageType::Info);
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
+                self.refresh_banner.replace_with_elapsed(
+                    ctx,
+                    "Refreshing identities...",
+                    MessageType::Info,
+                );
             }
             _ => {}
         }

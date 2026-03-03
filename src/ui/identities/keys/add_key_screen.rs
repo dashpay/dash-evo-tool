@@ -48,6 +48,7 @@ pub struct AddKeyScreen {
     add_key_status: AddKeyStatus,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     contract_id_input: String,
     document_type_input: String,
     enable_contract_bounds: bool,
@@ -79,6 +80,7 @@ impl AddKeyScreen {
             add_key_status: AddKeyStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             contract_id_input: String::new(),
             document_type_input: String::new(),
             enable_contract_bounds: false,
@@ -119,6 +121,7 @@ impl AddKeyScreen {
             add_key_status: AddKeyStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             contract_id_input: dashpay_contract_id,
             document_type_input: String::new(),
             enable_contract_bounds: true,
@@ -159,6 +162,7 @@ impl AddKeyScreen {
             add_key_status: AddKeyStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             contract_id_input: dashpay_contract_id,
             document_type_input: String::new(),
             enable_contract_bounds: true,
@@ -402,8 +406,11 @@ impl ScreenLike for AddKeyScreen {
             if self.selected_wallet.is_some()
                 && let Some(wallet) = &self.selected_wallet
             {
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                if !self.wallet_open_attempted {
+                    if let Err(e) = try_open_wallet_no_password(wallet) {
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    }
+                    self.wallet_open_attempted = true;
                 }
                 if wallet_needs_unlock(wallet) {
                     ui.add_space(10.0);

@@ -1241,6 +1241,7 @@ pub struct TokensScreen {
     selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_open_attempted: bool,
     wallet_unlock_popup: WalletUnlockPopup,
     token_names_input: Vec<(String, String, TokenNameLanguage, TokenSearchable)>,
     contract_keywords_input: String,
@@ -1595,6 +1596,7 @@ impl TokensScreen {
             selected_identity: None,
             selected_key: None,
             selected_wallet: None,
+            wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_token_creator_confirmation_popup: false,
             token_creator_confirmation_dialog: None,
@@ -3032,10 +3034,12 @@ impl ScreenLike for TokensScreen {
     }
 
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
-        // Clear any active operation banner
-        self.operation_banner.take_and_clear();
-
         // Banner display is handled globally by AppState; this is only for side-effects.
+
+        // Clear the operation banner only on Error/Warning (task failed).
+        if matches!(msg_type, MessageType::Error | MessageType::Warning) {
+            self.operation_banner.take_and_clear();
+        }
 
         // Reset contract details loading on any error/warning
         if matches!(msg_type, MessageType::Error | MessageType::Warning)

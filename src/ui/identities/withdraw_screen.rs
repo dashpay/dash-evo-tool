@@ -57,6 +57,7 @@ pub struct WithdrawalScreen {
     withdraw_from_identity_status: WithdrawFromIdentityStatus,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     show_advanced_options: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
@@ -89,6 +90,7 @@ impl WithdrawalScreen {
             withdraw_from_identity_status: WithdrawFromIdentityStatus::NotStarted,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             show_advanced_options: false,
             completed_fee_result: None,
             refresh_banner: None,
@@ -483,15 +485,28 @@ impl ScreenLike for WithdrawalScreen {
                         PrivateKeyTarget::PrivateKeyOnMainIdentity,
                         selected_key.id(),
                     )) {
-                        self.selected_wallet = self
+                        let new_wallet = self
                             .identity
                             .associated_wallets
                             .get(&wallet_derivation_path.wallet_seed_hash)
                             .cloned();
+                        // Reset guard when wallet changes (different Arc pointer)
+                        let wallet_changed = match (&self.selected_wallet, &new_wallet) {
+                            (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                            (None, None) => false,
+                            _ => true,
+                        };
+                        if wallet_changed {
+                            self.wallet_open_attempted = false;
+                        }
+                        self.selected_wallet = new_wallet;
 
                         if let Some(wallet) = &self.selected_wallet {
-                            if let Err(e) = try_open_wallet_no_password(wallet) {
-                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            if !self.wallet_open_attempted {
+                                if let Err(e) = try_open_wallet_no_password(wallet) {
+                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                }
+                                self.wallet_open_attempted = true;
                             }
                             if wallet_needs_unlock(wallet) {
                                 ui.add_space(10.0);

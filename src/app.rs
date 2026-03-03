@@ -956,7 +956,7 @@ impl AppState {
             OverallConnectionState::Error => {
                 self.connection_banner_handle = Some(MessageBanner::set_global(
                     ctx,
-                    "SPV sync error — check connection and restart",
+                    "SPV sync error — check connection status for details",
                     MessageType::Error,
                 ));
             }
@@ -1039,6 +1039,7 @@ impl App for AppState {
                             // keywords and may override with an Error banner, causing a
                             // brief green-then-red flash. Refactor to pass structured error
                             // types through task results instead of string messages.
+                            // See https://github.com/dashpay/dash-evo-tool/issues/660 .
                             MessageBanner::set_global(ctx, msg, MessageType::Success);
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);

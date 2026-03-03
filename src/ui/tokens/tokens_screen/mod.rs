@@ -2504,9 +2504,7 @@ impl TokensScreen {
         // Set adding status
         self.adding_token_start_time = Some(Utc::now());
         self.adding_token_name = Some(token_info.token_name.clone());
-        if let Some(h) = self.operation_banner.take() {
-            h.clear();
-        }
+        self.operation_banner.take_and_clear();
         let handle = MessageBanner::set_global(
             self.app_context.egui_ctx(),
             "Adding token...",
@@ -2534,9 +2532,7 @@ impl TokensScreen {
         if let Some(next_cursor) = self.next_cursors.last().cloned() {
             // set status
             self.contract_search_status = ContractSearchStatus::WaitingForResult;
-            if let Some(h) = self.operation_banner.take() {
-                h.clear();
-            }
+            self.operation_banner.take_and_clear();
             let handle = MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Searching contracts...",
@@ -2566,9 +2562,7 @@ impl TokensScreen {
             // Move to (page - 1)
             self.search_current_page -= 1;
             self.contract_search_status = ContractSearchStatus::WaitingForResult;
-            if let Some(h) = self.operation_banner.take() {
-                h.clear();
-            }
+            self.operation_banner.take_and_clear();
             let handle = MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Searching contracts...",
@@ -2977,9 +2971,7 @@ impl ScreenLike for TokensScreen {
                 if matches!(token_task.as_ref(), TokenTask::QueryMyTokenBalances) =>
             {
                 self.refreshing_status = RefreshingStatus::Refreshing;
-                if let Some(h) = self.operation_banner.take() {
-                    h.clear();
-                }
+                self.operation_banner.take_and_clear();
                 let handle =
                     MessageBanner::set_global(ctx, "Refreshing tokens...", MessageType::Info);
                 handle.with_elapsed();
@@ -3096,9 +3088,7 @@ impl ScreenLike for TokensScreen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         // Clear any active operation banner
-        if let Some(h) = self.operation_banner.take() {
-            h.clear();
-        }
+        self.operation_banner.take_and_clear();
 
         match backend_task_success_result {
             BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {

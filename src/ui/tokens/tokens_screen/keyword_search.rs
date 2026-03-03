@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::ui::MessageType;
-use crate::ui::components::MessageBanner;
+use crate::ui::components::{MessageBanner, OptionBannerExt};
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, ContractSearchStatus, TokensScreen,
@@ -61,9 +61,7 @@ impl TokensScreen {
                         // Clear old results, set status
                         self.search_results.lock().unwrap().clear();
                         self.contract_search_status = ContractSearchStatus::WaitingForResult;
-                        if let Some(h) = self.operation_banner.take() {
-                            h.clear();
-                        }
+                        self.operation_banner.take_and_clear();
                         let handle = MessageBanner::set_global(
                             ui.ctx(),
                             "Searching contracts...",

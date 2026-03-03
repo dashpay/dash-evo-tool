@@ -1034,7 +1034,7 @@ impl App for AppState {
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                     // Sender dropped without sending — shutdown task likely panicked.
-                    tracing::trace!("Shutdown channel closed unexpectedly (possible panic)");
+                    tracing::warn!("Shutdown channel closed unexpectedly (possible panic)");
                     true
                 }
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
@@ -1043,7 +1043,7 @@ impl App for AppState {
                         let grace = crate::utils::tasks::SHUTDOWN_TIMEOUT
                             + std::time::Duration::from_secs(5);
                         if started.elapsed() > grace {
-                            tracing::trace!(
+                            tracing::warn!(
                                 "Shutdown hard deadline exceeded, force-closing viewport"
                             );
                             true

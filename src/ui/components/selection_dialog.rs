@@ -158,7 +158,7 @@ impl SelectionDialog {
         // Draw dark overlay behind the dialog
         let screen_rect = ui.ctx().content_rect();
         let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Background,
+            egui::Order::Middle,
             egui::Id::new("selection_dialog_overlay"),
         ));
         painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());

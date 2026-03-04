@@ -1148,6 +1148,11 @@ impl App for AppState {
                             self.visible_screen_mut().refresh();
                         }
                         BackendTaskSuccessResult::CoreWalletSelectionNeeded(wallets) => {
+                            // Dismiss any in-progress banner on the current screen
+                            self.visible_screen_mut().display_message(
+                                "Dash Core wallet selection required",
+                                MessageType::Info,
+                            );
                             let dialog = SelectionDialog::new(
                                 "Select Dash Core Wallet",
                                 "Your Dash Core node has multiple wallets loaded.\nSelect which wallet to use for RPC operations:",
@@ -1453,9 +1458,22 @@ impl App for AppState {
         // Show Core wallet selection dialog if active
         if self.core_wallet_dialog.is_some() {
             use crate::ui::components::component_trait::{Component, ComponentResponse};
+
+            // Block all input behind the dialog by consuming clicks on a full-screen area
+            egui::Area::new(egui::Id::new("core_wallet_dialog_blocker"))
+                .fixed_pos(egui::Pos2::ZERO)
+                .order(egui::Order::Middle)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    let content_rect = ctx.content_rect();
+                    ui.allocate_response(content_rect.size(), egui::Sense::click_and_drag());
+                });
+
+            // Render the dialog in a Foreground-order Area so the Window appears above everything
             egui::Area::new(egui::Id::new("core_wallet_dialog_area"))
                 .fixed_pos(egui::Pos2::ZERO)
                 .order(egui::Order::Foreground)
+                .interactable(true)
                 .show(ctx, |ui| {
                     ui.set_min_size(ctx.content_rect().size());
                     let mut dialog = self.core_wallet_dialog.take().unwrap();

@@ -71,7 +71,7 @@ Key components:
 4. Because the address match is ambiguous (0 or >1 Core wallets match), observe the SelectionDialog modal that appears
 5. Open the ComboBox dropdown and review the listed wallet names
 6. Select a wallet (e.g., `savings`)
-7. Click the "Confirm" button
+7. Click the "Select" button
 
 ### Expected Result
 - Step 3: The app queries each Core wallet via `getaddressinfo`; no unique match is found
@@ -197,18 +197,18 @@ Key components:
 
 ---
 
-## MWT-007: Error -19 runtime recovery re-prompts selection
+## MWT-007: Unloaded Core wallet triggers re-detection
 
 | Field | Value |
 |---|---|
 | **ID** | MWT-007 |
-| **Title** | Re-prompts SelectionDialog when configured Core wallet is no longer available |
+| **Title** | Unloading a configured Core wallet triggers recovery flow |
 | **Priority** | P0 |
 
 ### Prerequisites
 - A DET wallet with `core_wallet_name=old_wallet` in SQLite
-- Dash Core initially had `old_wallet` loaded but it was unloaded mid-session
-- At least one other wallet is now loaded in Core
+- Dash Core initially had `old_wallet` loaded and the application was working correctly
+- At least one other wallet is loaded in Core
 
 ### Steps
 1. Confirm the application was working with `old_wallet` (RPC calls succeeding)
@@ -216,12 +216,13 @@ Key components:
 3. Trigger a wallet-related RPC operation in the application for that DET wallet
 
 ### Expected Result
-- The RPC call to `/wallet/old_wallet` fails
-- The application detects the failure and re-triggers the wallet detection flow
-- If exactly one wallet remains loaded, it auto-selects (MWT-001 behavior)
-- If multiple wallets remain, auto-detection via `getaddressinfo` is attempted first; if a unique match is found it auto-assigns; otherwise the SelectionDialog modal appears in `app.rs` (MWT-002 behavior)
-- SQLite is updated with the newly selected `core_wallet_name`, replacing `old_wallet`
-- Subsequent RPC calls for this wallet succeed with the new wallet
+- The RPC call to `/wallet/old_wallet` fails with error -18 ("Requested wallet does not exist or is not loaded")
+- **NOTE:** The current recovery flow does NOT handle error -18; it only handles error -19 ("Wallet file not specified"). Therefore, the original RPC operation fails and displays an error banner to the user.
+- SQLite still contains `core_wallet_name=old_wallet` (no automatic re-detection occurs for error -18)
+- To work around this, the user must either:
+  - Reload the old wallet in Dash Core, or
+  - Manually clear the wallet association and trigger the error -19 recovery flow (which will run auto-detection and show the SelectionDialog if needed)
+- **Test Outcome:** Verify that error -18 is displayed gracefully with a user-friendly error message (not a crash)
 
 ---
 
@@ -268,7 +269,7 @@ Key components:
 
 ### Steps
 1. Observe the dialog overlay -- verify it dims/blocks the background UI
-2. Observe dialog contents: title, instruction message, ComboBox, Confirm/Cancel buttons
+2. Observe dialog contents: title, instruction message, ComboBox, Select/Cancel buttons
 3. Press the **Escape** key
 4. Re-trigger the dialog (perform another RPC operation)
 5. Click the **X** (close) button on the dialog window
@@ -277,7 +278,7 @@ Key components:
 
 ### Expected Result
 - Step 1: A semi-transparent overlay covers the main UI; only the dialog is interactive
-- Step 2: Dialog shows "Select Dash Core Wallet" title, instruction text, ComboBox with wallet names, Confirm and Cancel buttons
+- Step 2: Dialog shows "Select Dash Core Wallet" title, instruction text, ComboBox with wallet names, Select and Cancel buttons
 - Step 3: Escape closes the dialog (equivalent to Cancel) -- info banner appears (MWT-003 behavior)
 - Step 5: X button closes the dialog (equivalent to Cancel) -- info banner appears
 - Step 7: Enter key confirms the current ComboBox selection -- wallet is selected and persisted to SQLite for this wallet
@@ -487,7 +488,7 @@ Key components:
 - The app calls `getaddressinfo` on each loaded Core wallet for the DET wallet's first address
 - Exactly one Core wallet (`savings`) reports `is_mine=true` or `is_watchonly=true`
 - The app auto-assigns `core_wallet_name=savings` without showing any dialog
-- A success banner appears (e.g., "Dash Core wallet 'savings' assigned automatically")
+- A success banner appears: "Auto-detected Dash Core wallet 'savings'"
 - The original RPC operation retries and completes successfully using `/wallet/savings`
 - `core_wallet_name=savings` is persisted to SQLite for this specific DET wallet
 - All subsequent RPC calls for this wallet use `/wallet/savings` without further prompts

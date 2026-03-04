@@ -279,7 +279,7 @@ pub enum BackendTaskSuccessResult {
 
     /// Dash Core has multiple wallets; UI should show selection dialog.
     CoreWalletSelectionNeeded {
-        wallet_seed_hash: String,
+        wallet_seed_hash: [u8; 32],
         core_wallets: Vec<String>,
     },
 }

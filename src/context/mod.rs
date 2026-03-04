@@ -590,8 +590,13 @@ impl AppContext {
         let base = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
-                if name.contains('/') || name.contains("..") {
-                    return Err("Invalid wallet name".to_string());
+                if !name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
+                {
+                    return Err(
+                        "Invalid Core wallet name: contains disallowed characters".to_string()
+                    );
                 }
                 format!("{}/wallet/{}", base, name)
             }

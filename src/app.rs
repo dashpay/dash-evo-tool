@@ -101,8 +101,8 @@ pub struct AppState {
     connection_banner_handle: Option<BannerHandle>,
     /// Dialog for selecting which Dash Core wallet to use
     core_wallet_dialog: Option<SelectionDialog>,
-    /// (wallet_seed_hash_hex, core_wallet_names) stored while dialog is open
-    pending_core_wallet_selection: Option<(String, Vec<String>)>,
+    /// (wallet_seed_hash_bytes, core_wallet_names) stored while dialog is open
+    pending_core_wallet_selection: Option<([u8; 32], Vec<String>)>,
     /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
     /// the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
@@ -1029,55 +1029,60 @@ impl AppState {
     fn apply_core_wallet_selection(
         &mut self,
         ctx: &egui::Context,
-        wallet_seed_hash_hex: &str,
+        wallet_hash: &[u8; 32],
         wallet_name: &str,
     ) {
         let app_ctx = self.current_app_context();
 
-        // Decode the hex seed hash
-        let seed_hash_vec = match hex::decode(wallet_seed_hash_hex) {
-            Ok(v) => v,
-            Err(e) => {
+        // Try HD wallets first
+        let mut found_hd = false;
+        if let Ok(wallets) = app_ctx.wallets.read()
+            && wallets.contains_key(wallet_hash)
+        {
+            found_hd = true;
+        }
+
+        if found_hd {
+            // Persist to DB
+            if let Err(e) = app_ctx
+                .db
+                .set_wallet_core_wallet_name(wallet_hash, Some(wallet_name))
+            {
                 MessageBanner::set_global(
                     ctx,
-                    "Failed to set Dash Core wallet",
+                    "Failed to save Dash Core wallet",
                     MessageType::Error,
                 )
                 .with_details(e);
                 return;
             }
-        };
-        let seed_hash: [u8; 32] = match seed_hash_vec.try_into() {
-            Ok(h) => h,
-            Err(_) => {
+            // Update in-memory wallet
+            if let Ok(wallets) = app_ctx.wallets.read()
+                && let Some(w) = wallets.get(wallet_hash)
+                && let Ok(mut guard) = w.write()
+            {
+                guard.core_wallet_name = Some(wallet_name.to_string());
+            }
+        } else {
+            // Try single-key wallets
+            if let Err(e) = app_ctx
+                .db
+                .set_single_key_wallet_core_wallet_name(wallet_hash, Some(wallet_name))
+            {
                 MessageBanner::set_global(
                     ctx,
-                    "Failed to set Dash Core wallet: invalid seed hash",
+                    "Failed to save Dash Core wallet",
                     MessageType::Error,
-                );
+                )
+                .with_details(e);
                 return;
             }
-        };
-
-        // Persist to DB
-        if let Err(e) = app_ctx
-            .db
-            .set_wallet_core_wallet_name(&seed_hash, Some(wallet_name))
-        {
-            MessageBanner::set_global(ctx, "Failed to save Dash Core wallet", MessageType::Error)
-                .with_details(e);
-            return;
-        }
-
-        // Update in-memory wallet
-        if let Ok(wallets) = app_ctx.wallets.read() {
-            for w in wallets.values() {
-                if let Ok(mut guard) = w.write()
-                    && guard.seed_hash() == seed_hash
-                {
-                    guard.core_wallet_name = Some(wallet_name.to_string());
-                    break;
-                }
+            // Update in-memory single-key wallet
+            if let Ok(skw) = app_ctx.single_key_wallets.read()
+                && let Some(w) = skw.get(wallet_hash)
+                && let Ok(mut guard) = w.write()
+            {
+                guard.core_wallet_name = Some(wallet_name.to_string());
             }
         }
 
@@ -1225,18 +1230,21 @@ impl App for AppState {
                             wallet_seed_hash,
                             core_wallets,
                         } => {
-                            self.visible_screen_mut().display_message(
-                                "Dash Core wallet selection required",
-                                MessageType::Info,
-                            );
-                            let dialog = SelectionDialog::new(
-                                "Select Dash Core Wallet",
-                                "Your Dash Core node has multiple wallets loaded.\nSelect which wallet to use for this wallet's RPC operations:",
-                                core_wallets.clone(),
-                            );
-                            self.core_wallet_dialog = Some(dialog);
-                            self.pending_core_wallet_selection =
-                                Some((wallet_seed_hash, core_wallets));
+                            // Guard: skip if a dialog is already open
+                            if self.core_wallet_dialog.is_none() {
+                                self.visible_screen_mut().display_message(
+                                    "Dash Core wallet selection required",
+                                    MessageType::Info,
+                                );
+                                let dialog = SelectionDialog::new(
+                                    "Select Dash Core Wallet",
+                                    "Your Dash Core node has multiple wallets loaded.\nSelect which wallet to use for this wallet's RPC operations:",
+                                    core_wallets.clone(),
+                                );
+                                self.core_wallet_dialog = Some(dialog);
+                                self.pending_core_wallet_selection =
+                                    Some((wallet_seed_hash, core_wallets));
+                            }
                         }
                         _ => {
                             // For all other success results, let the screen decide how to display
@@ -1536,17 +1544,9 @@ impl App for AppState {
         if self.core_wallet_dialog.is_some() {
             use crate::ui::components::component_trait::{Component, ComponentResponse};
 
-            // Block all input behind the dialog
-            egui::Area::new(egui::Id::new("core_wallet_dialog_blocker"))
-                .fixed_pos(egui::Pos2::ZERO)
-                .order(egui::Order::Middle)
-                .interactable(true)
-                .show(ctx, |ui| {
-                    let content_rect = ctx.content_rect();
-                    ui.allocate_response(content_rect.size(), egui::Sense::click_and_drag());
-                });
-
             // Render dialog, collect result
+            // SelectionDialog.show() internally draws its own modal overlay, so no
+            // separate blocker Area is needed here.
             let mut selection_result: Option<SelectionStatus> = None;
             egui::Area::new(egui::Id::new("core_wallet_dialog_area"))
                 .fixed_pos(egui::Pos2::ZERO)
@@ -1567,15 +1567,11 @@ impl App for AppState {
             if let Some(status) = selection_result {
                 match status {
                     SelectionStatus::Selected(idx) => {
-                        if let Some((wallet_seed_hash_hex, wallets)) =
+                        if let Some((wallet_hash, wallets)) =
                             self.pending_core_wallet_selection.take()
                             && let Some(wallet_name) = wallets.get(idx).cloned()
                         {
-                            self.apply_core_wallet_selection(
-                                ctx,
-                                &wallet_seed_hash_hex,
-                                &wallet_name,
-                            );
+                            self.apply_core_wallet_selection(ctx, &wallet_hash, &wallet_name);
                         }
                     }
                     SelectionStatus::Canceled => {

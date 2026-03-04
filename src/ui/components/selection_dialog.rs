@@ -168,6 +168,7 @@ impl SelectionDialog {
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .order(egui::Order::Foreground)
             .open(&mut is_open)
             .frame(egui::Frame {
                 inner_margin: egui::Margin::same(16),

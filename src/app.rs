@@ -1550,7 +1550,7 @@ impl App for AppState {
             let mut selection_result: Option<SelectionStatus> = None;
             egui::Area::new(egui::Id::new("core_wallet_dialog_area"))
                 .fixed_pos(egui::Pos2::ZERO)
-                .order(egui::Order::Foreground)
+                .order(egui::Order::Middle)
                 .interactable(true)
                 .show(ctx, |ui| {
                     ui.set_min_size(ctx.content_rect().size());

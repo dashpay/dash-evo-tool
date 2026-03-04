@@ -39,6 +39,8 @@ pub struct NetworkConfig {
     pub core_rpc_password: String,
     /// ZMQ endpoint for Core blockchain events (e.g., tcp://127.0.0.1:23708)
     pub core_zmq_endpoint: Option<String>,
+    /// Core wallet name for multi-wallet RPC calls (e.g., "wallet.dat")
+    pub core_wallet_name: Option<String>,
     /// Devnet network name if one exists
     pub devnet_name: Option<String>,
     /// Optional wallet private key to instantiate the wallet
@@ -110,6 +112,11 @@ impl Config {
                     prefix, core_zmq_endpoint
                 )
                 .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            }
+
+            if let Some(core_wallet_name) = &config.core_wallet_name {
+                writeln!(env_file, "{}core_wallet_name={}", prefix, core_wallet_name)
+                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
             }
 
             if let Some(devnet_name) = &config.devnet_name {
@@ -332,6 +339,7 @@ mod tests {
             core_rpc_user: "dashrpc".to_string(),
             core_rpc_password: "password".to_string(),
             core_zmq_endpoint: Some("tcp://127.0.0.1:23708".to_string()),
+            core_wallet_name: None,
             devnet_name: None,
             wallet_private_key: None,
         }
@@ -702,6 +710,32 @@ mod tests {
     }
 
     // ── Config clone ────────────────────────────────────────────────
+
+    #[test]
+    fn test_network_config_core_wallet_name() {
+        let mut config = make_network_config("https://127.0.0.1:443", 9998);
+        assert!(config.core_wallet_name.is_none());
+        config.core_wallet_name = Some("wallet.dat".to_string());
+        assert_eq!(config.core_wallet_name.as_ref().unwrap(), "wallet.dat");
+    }
+
+    #[test]
+    fn test_envy_parsing_with_core_wallet_name() {
+        use std::collections::HashMap;
+        let mut env_map: HashMap<String, String> = HashMap::new();
+        env_map.insert("CWN_dapi_addresses".into(), "https://1.2.3.4:443".into());
+        env_map.insert("CWN_core_host".into(), "127.0.0.1".into());
+        env_map.insert("CWN_core_rpc_port".into(), "9998".into());
+        env_map.insert("CWN_core_rpc_user".into(), "user".into());
+        env_map.insert("CWN_core_rpc_password".into(), "pass".into());
+        env_map.insert("CWN_core_wallet_name".into(), "mywallet".into());
+
+        let result: Result<NetworkConfig, _> =
+            envy::prefixed("CWN_").from_iter(env_map.iter().map(|(k, v)| (k.clone(), v.clone())));
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        assert_eq!(config.core_wallet_name, Some("mywallet".to_string()));
+    }
 
     #[test]
     fn test_config_clone() {

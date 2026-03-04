@@ -271,6 +271,9 @@ pub enum BackendTaskSuccessResult {
 
     // Mining results (dev mode, Regtest/Devnet only)
     MineBlocksSuccess(u64),
+
+    /// Dash Core has multiple wallets; UI should show selection dialog.
+    CoreWalletSelectionNeeded(Vec<String>),
 }
 
 impl BackendTaskSuccessResult {}

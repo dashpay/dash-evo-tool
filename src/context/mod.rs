@@ -42,6 +42,15 @@ use crate::model::settings::Settings;
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Build the Core RPC URL, appending `/wallet/<name>` when configured.
+pub(crate) fn core_rpc_url(config: &NetworkConfig) -> String {
+    let base = format!("http://{}:{}", config.core_host, config.core_rpc_port);
+    match &config.core_wallet_name {
+        Some(name) if !name.is_empty() => format!("{}/wallet/{}", base, name),
+        _ => base,
+    }
+}
+
 /// A guard that ensures settings cache invalidation happens atomically
 ///
 /// This guard holds a write lock on the cached settings, preventing reads
@@ -195,10 +204,7 @@ impl AppContext {
                 }
             };
 
-        let addr = format!(
-            "http://{}:{}",
-            network_config.core_host, network_config.core_rpc_port
-        );
+        let addr = core_rpc_url(&network_config);
         let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
             Ok(p) => p,
             Err(e) => {
@@ -514,7 +520,7 @@ impl AppContext {
         // Note: developer_mode is now global and managed separately
 
         // 2. Rebuild the RPC client with the new password
-        let addr = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+        let addr = core_rpc_url(&cfg);
         let new_client = Client::new(
             &addr,
             Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
@@ -579,6 +585,30 @@ impl AppContext {
 
         Ok(())
     }
+
+    /// Set the Dash Core wallet name, persist to .env, and reinit the RPC client.
+    pub fn set_core_wallet_name(self: Arc<Self>, name: String) -> Result<(), String> {
+        {
+            let mut cfg = self
+                .config
+                .write()
+                .map_err(|_| "Config lock poisoned".to_string())?;
+            cfg.core_wallet_name = Some(name.clone());
+        }
+        let mut full_config =
+            Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
+        let net_cfg = full_config
+            .config_for_network(self.network)
+            .clone()
+            .ok_or_else(|| format!("No config for network {:?}", self.network))?;
+        let mut net_cfg = net_cfg;
+        net_cfg.core_wallet_name = Some(name);
+        full_config.update_config_for_network(self.network, net_cfg);
+        full_config
+            .save()
+            .map_err(|e| format!("Failed to save config: {}", e))?;
+        self.reinit_core_client_and_sdk()
+    }
 }
 
 /// Returns the default platform version for the given network.
@@ -590,5 +620,48 @@ pub(crate) const fn default_platform_version(network: &Network) -> &'static Plat
         Network::Devnet => &PLATFORM_V11,
         Network::Regtest => &PLATFORM_V11,
         _ => panic!("Unsupported network for default_platform_version"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::NetworkConfig;
+
+    fn test_network_config() -> NetworkConfig {
+        NetworkConfig {
+            dapi_addresses: "https://127.0.0.1:443".to_string(),
+            core_host: "127.0.0.1".to_string(),
+            core_rpc_port: 9998,
+            core_rpc_user: "dashrpc".to_string(),
+            core_rpc_password: "password".to_string(),
+            core_zmq_endpoint: None,
+            devnet_name: None,
+            wallet_private_key: None,
+            core_wallet_name: None,
+        }
+    }
+
+    #[test]
+    fn test_core_rpc_url_without_wallet() {
+        let config = test_network_config();
+        assert_eq!(core_rpc_url(&config), "http://127.0.0.1:9998");
+    }
+
+    #[test]
+    fn test_core_rpc_url_with_wallet() {
+        let mut config = test_network_config();
+        config.core_wallet_name = Some("wallet.dat".to_string());
+        assert_eq!(
+            core_rpc_url(&config),
+            "http://127.0.0.1:9998/wallet/wallet.dat"
+        );
+    }
+
+    #[test]
+    fn test_core_rpc_url_with_empty_wallet() {
+        let mut config = test_network_config();
+        config.core_wallet_name = Some(String::new());
+        assert_eq!(core_rpc_url(&config), "http://127.0.0.1:9998");
     }
 }

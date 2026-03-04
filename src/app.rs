@@ -13,6 +13,7 @@ use crate::database::Database;
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
 use crate::spv::CoreBackendMode;
+use crate::ui::components::selection_dialog::{SelectionDialog, SelectionStatus};
 use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
@@ -98,6 +99,10 @@ pub struct AppState {
     previous_connection_state: Option<OverallConnectionState>,
     /// Handle to the current connection status banner, if one is displayed
     connection_banner_handle: Option<BannerHandle>,
+    /// Dialog for selecting which Dash Core wallet to use
+    core_wallet_dialog: Option<SelectionDialog>,
+    /// Wallet names from Core, stored while dialog is open
+    core_wallet_names: Option<Vec<String>>,
     /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
     /// the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
@@ -720,6 +725,8 @@ impl AppState {
             welcome_screen: None,
             previous_connection_state: None,
             connection_banner_handle: None,
+            core_wallet_dialog: None,
+            core_wallet_names: None,
             shutdown_receiver: None,
             shutdown_started: None,
         };
@@ -1140,6 +1147,15 @@ impl App for AppState {
                             );
                             self.visible_screen_mut().refresh();
                         }
+                        BackendTaskSuccessResult::CoreWalletSelectionNeeded(wallets) => {
+                            let dialog = SelectionDialog::new(
+                                "Select Dash Core Wallet",
+                                "Your Dash Core node has multiple wallets loaded.\nSelect which wallet to use for RPC operations:",
+                                wallets.clone(),
+                            );
+                            self.core_wallet_dialog = Some(dialog);
+                            self.core_wallet_names = Some(wallets);
+                        }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
@@ -1432,6 +1448,63 @@ impl App for AppState {
                     }
                 }
             }
+        }
+
+        // Show Core wallet selection dialog if active
+        if self.core_wallet_dialog.is_some() {
+            use crate::ui::components::component_trait::{Component, ComponentResponse};
+            egui::Area::new(egui::Id::new("core_wallet_dialog_area"))
+                .fixed_pos(egui::Pos2::ZERO)
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    ui.set_min_size(ctx.content_rect().size());
+                    let mut dialog = self.core_wallet_dialog.take().unwrap();
+                    let response = dialog.show(ui);
+                    if let Some(status) = response.inner.changed_value() {
+                        match status {
+                            SelectionStatus::Selected(idx) => {
+                                if let Some(wallets) = self.core_wallet_names.take()
+                                    && let Some(wallet_name) = wallets.get(*idx).cloned()
+                                {
+                                    match self
+                                        .current_app_context()
+                                        .clone()
+                                        .set_core_wallet_name(wallet_name.clone())
+                                    {
+                                        Ok(()) => {
+                                            MessageBanner::set_global(
+                                                ctx,
+                                                format!(
+                                                    "Dash Core wallet '{}' selected",
+                                                    wallet_name
+                                                ),
+                                                MessageType::Success,
+                                            );
+                                        }
+                                        Err(e) => {
+                                            MessageBanner::set_global(
+                                                ctx,
+                                                "Failed to set Dash Core wallet",
+                                                MessageType::Error,
+                                            )
+                                            .with_details(&e);
+                                        }
+                                    }
+                                }
+                            }
+                            SelectionStatus::Canceled => {
+                                self.core_wallet_names = None;
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Dash Core wallet not selected. Set manually in .env with {NETWORK}_core_wallet_name=<wallet>",
+                                    MessageType::Info,
+                                );
+                            }
+                        }
+                    } else {
+                        self.core_wallet_dialog = Some(dialog);
+                    }
+                });
         }
     }
 

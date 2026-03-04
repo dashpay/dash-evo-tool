@@ -9,6 +9,7 @@ use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
+use crate::context::core_rpc_url;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::spv::CoreBackendMode;
@@ -156,18 +157,26 @@ impl AppContext {
         task: CoreTask,
     ) -> Result<BackendTaskSuccessResult, String> {
         match task {
-            CoreTask::GetBestChainLock => self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned")
-                .get_best_chain_lock()
-                .map(|chain_lock| {
-                    BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
+            CoreTask::GetBestChainLock => {
+                match self
+                    .core_client
+                    .read()
+                    .expect("Core client lock was poisoned")
+                    .get_best_chain_lock()
+                {
+                    Ok(chain_lock) => Ok(BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
                         chain_lock,
                         self.network,
-                    ))
-                })
-                .map_err(|e| e.to_string()),
+                    ))),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if let Some(result) = self.check_wallet_not_specified(&msg) {
+                            return result;
+                        }
+                        Err(msg)
+                    }
+                }
+            }
             CoreTask::GetBestChainLocks => {
                 // Load configs
                 let config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
@@ -211,10 +220,17 @@ impl AppContext {
                 } else {
                     // Run blocking RPC calls on a dedicated thread pool to avoid freezing the UI
                     let ctx = self.clone();
-                    tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
-                        .await
-                        .map_err(|e| format!("Task join error: {}", e))?
-                        .map_err(|e| format!("Error refreshing wallet: {}", e))?;
+                    if let Err(e) =
+                        tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
+                            .await
+                            .map_err(|e| format!("Task join error: {}", e))?
+                    {
+                        let msg = format!("Error refreshing wallet: {}", e);
+                        if let Some(result) = self.check_wallet_not_specified(&msg) {
+                            return result;
+                        }
+                        return Err(msg);
+                    }
                 }
 
                 // Also refresh Platform address balances if requested
@@ -245,14 +261,36 @@ impl AppContext {
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
                 .map_err(|e| e.to_string())
                 .map(|_| BackendTaskSuccessResult::None),
-            CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => self
-                .create_registration_asset_lock(wallet, amount, true, identity_index)
-                .await
-                .map_err(|e| format!("Error creating asset lock: {}", e)),
-            CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => self
-                .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
-                .await
-                .map_err(|e| format!("Error creating top up asset lock: {}", e)),
+            CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => {
+                match self
+                    .create_registration_asset_lock(wallet, amount, true, identity_index)
+                    .await
+                {
+                    Ok(result) => Ok(result),
+                    Err(e) => {
+                        let msg = format!("Error creating asset lock: {}", e);
+                        if let Some(result) = self.check_wallet_not_specified(&msg) {
+                            return result;
+                        }
+                        Err(msg)
+                    }
+                }
+            }
+            CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => {
+                match self
+                    .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
+                    .await
+                {
+                    Ok(result) => Ok(result),
+                    Err(e) => {
+                        let msg = format!("Error creating top up asset lock: {}", e);
+                        if let Some(result) = self.check_wallet_not_specified(&msg) {
+                            return result;
+                        }
+                        Err(msg)
+                    }
+                }
+            }
             CoreTask::SendWalletPayment { wallet, request } => {
                 self.send_wallet_payment(wallet, request).await
             }
@@ -297,6 +335,71 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::MineBlocksSuccess(mined_count))
             }
         }
+    }
+
+    /// If error indicates "Wallet file not specified" (Core error -19),
+    /// detect loaded wallets and either auto-select or return selection needed.
+    fn check_wallet_not_specified(
+        &self,
+        error_msg: &str,
+    ) -> Option<Result<BackendTaskSuccessResult, String>> {
+        if !error_msg.contains("Wallet file not specified") {
+            return None;
+        }
+        tracing::info!("RPC error -19: wallet not specified with multiple wallets loaded");
+
+        let cfg = self.config.read().ok()?;
+        let base_url = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+        let temp_client = Client::new(
+            &base_url,
+            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
+        )
+        .ok()?;
+        drop(cfg);
+
+        let wallets = match temp_client.list_wallets() {
+            Ok(w) => w,
+            Err(e) => return Some(Err(format!("Failed to list Dash Core wallets: {}", e))),
+        };
+
+        if wallets.is_empty() {
+            return Some(Err("No wallets loaded in Dash Core".to_string()));
+        }
+
+        if wallets.len() == 1 {
+            let wallet_name = wallets.into_iter().next().unwrap();
+            tracing::info!("Auto-selecting single Dash Core wallet: {}", wallet_name);
+
+            if let Ok(mut cfg) = self.config.write() {
+                cfg.core_wallet_name = Some(wallet_name.clone());
+            }
+
+            if let Ok(mut full_config) = Config::load()
+                && let Some(mut net_cfg) = full_config.config_for_network(self.network).clone()
+            {
+                net_cfg.core_wallet_name = Some(wallet_name);
+                full_config.update_config_for_network(self.network, net_cfg);
+                let _ = full_config.save();
+            }
+
+            if let Ok(cfg) = self.config.read() {
+                let new_url = core_rpc_url(&cfg);
+                let user = cfg.core_rpc_user.clone();
+                let pass = cfg.core_rpc_password.clone();
+                drop(cfg);
+                if let Ok(new_client) = Client::new(&new_url, Auth::UserPass(user, pass))
+                    && let Ok(mut client_guard) = self.core_client.write()
+                {
+                    *client_guard = new_client;
+                }
+            }
+
+            return Some(Ok(BackendTaskSuccessResult::Refresh));
+        }
+
+        Some(Ok(BackendTaskSuccessResult::CoreWalletSelectionNeeded(
+            wallets,
+        )))
     }
 
     fn get_best_chain_lock(

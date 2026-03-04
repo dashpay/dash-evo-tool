@@ -21,6 +21,7 @@ fn test_network_config() -> NetworkConfig {
         core_rpc_user: "dashrpc".to_string(),
         core_rpc_password: "password".to_string(),
         core_zmq_endpoint: Some("tcp://127.0.0.1:23709".to_string()),
+        core_wallet_name: None,
         devnet_name: None,
         wallet_private_key: None,
     }

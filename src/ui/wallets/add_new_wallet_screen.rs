@@ -5,8 +5,10 @@ use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType,
     OpenWalletSeed, Wallet, WalletSeed,
 };
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::selection_dialog::{SelectionDialog, SelectionStatus};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
@@ -101,6 +103,10 @@ pub struct AddNewWalletScreen {
     receive_qr_texture: Option<TextureHandle>,
     show_receive_popup: bool,
     funds_received: bool,
+    /// Dialog for selecting which Dash Core wallet to associate with this wallet
+    core_wallet_dialog: Option<SelectionDialog>,
+    /// Core wallet names from list_core_wallets(), stored while dialog is open
+    core_wallet_names: Option<Vec<String>>,
 }
 
 impl AddNewWalletScreen {
@@ -125,6 +131,8 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
+            core_wallet_dialog: None,
+            core_wallet_names: None,
         }
     }
 
@@ -269,6 +277,7 @@ impl AddNewWalletScreen {
                 unconfirmed_balance: 0,
                 total_balance: 0,
                 platform_address_info: Default::default(),
+                core_wallet_name: None,
             };
 
             self.app_context
@@ -330,6 +339,20 @@ impl AddNewWalletScreen {
 
             self.created_wallet_seed_hash = Some(new_wallet_seed_hash);
             self.wallet_created = true;
+
+            // Check if Core has multiple wallets loaded; if so, prompt the user
+            if let Ok(core_wallets) = self.app_context.list_core_wallets()
+                && core_wallets.len() > 1
+            {
+                let dialog = SelectionDialog::new(
+                    "Select Dash Core Wallet",
+                    "Your Dash Core node has multiple wallets loaded.\nSelect which wallet to use for this wallet:",
+                    core_wallets.clone(),
+                );
+                self.core_wallet_dialog = Some(dialog);
+                self.core_wallet_names = Some(core_wallets);
+            }
+
             Ok(AppAction::None) // Show success screen instead of navigating away
         } else {
             Ok(AppAction::None) // No action if no seed phrase exists
@@ -899,6 +922,56 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.add_space(10.0);
                     if ui.button("Close").clicked() {
                         self.error = None; // Clear the error to close the popup
+                    }
+                });
+        }
+
+        // Show Core wallet selection dialog if active
+        if self.core_wallet_dialog.is_some() {
+            egui::Area::new(egui::Id::new("new_wallet_core_dialog_blocker"))
+                .fixed_pos(egui::Pos2::ZERO)
+                .order(egui::Order::Middle)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    let rect = ctx.content_rect();
+                    ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
+                });
+
+            egui::Area::new(egui::Id::new("new_wallet_core_dialog_area"))
+                .fixed_pos(egui::Pos2::ZERO)
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    ui.set_min_size(ctx.content_rect().size());
+                    let mut dialog = self.core_wallet_dialog.take().unwrap();
+                    let response = dialog.show(ui);
+                    if let Some(status) = response.inner.changed_value() {
+                        match status {
+                            SelectionStatus::Selected(idx) => {
+                                if let Some(wallets) = self.core_wallet_names.take()
+                                    && let Some(wallet_name) = wallets.get(*idx).cloned()
+                                    && let Some(seed_hash) = self.created_wallet_seed_hash
+                                {
+                                    // Persist the association
+                                    let _ = self.app_context.db.set_wallet_core_wallet_name(
+                                        &seed_hash,
+                                        Some(&wallet_name),
+                                    );
+                                    // Update in-memory wallet
+                                    if let Ok(wallets) = self.app_context.wallets.read()
+                                        && let Some(wallet_arc) = wallets.get(&seed_hash)
+                                        && let Ok(mut w) = wallet_arc.write()
+                                    {
+                                        w.core_wallet_name = Some(wallet_name);
+                                    }
+                                }
+                            }
+                            SelectionStatus::Canceled => {
+                                self.core_wallet_names = None;
+                            }
+                        }
+                    } else {
+                        self.core_wallet_dialog = Some(dialog);
                     }
                 });
         }

@@ -24,7 +24,8 @@ impl Database {
                 network TEXT NOT NULL,
                 confirmed_balance INTEGER DEFAULT 0,
                 unconfirmed_balance INTEGER DEFAULT 0,
-                total_balance INTEGER DEFAULT 0
+                total_balance INTEGER DEFAULT 0,
+                core_wallet_name TEXT DEFAULT NULL
             )",
             [],
         )?;
@@ -58,8 +59,9 @@ impl Database {
                 network,
                 confirmed_balance,
                 unconfirmed_balance,
-                total_balance
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                total_balance,
+                core_wallet_name
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 wallet.key_hash.as_slice(),
                 wallet.encrypted_private_key(),
@@ -73,6 +75,7 @@ impl Database {
                 wallet.confirmed_balance as i64,
                 wallet.unconfirmed_balance as i64,
                 wallet.total_balance as i64,
+                wallet.core_wallet_name.as_deref(),
             ],
         )?;
         Ok(())
@@ -97,7 +100,8 @@ impl Database {
                     uses_password,
                     confirmed_balance,
                     unconfirmed_balance,
-                    total_balance
+                    total_balance,
+                    core_wallet_name
                 FROM single_key_wallet
                 WHERE network = ?1",
             )?;
@@ -114,6 +118,7 @@ impl Database {
                 let confirmed_balance: i64 = row.get(8)?;
                 let unconfirmed_balance: i64 = row.get(9)?;
                 let total_balance: i64 = row.get(10)?;
+                let core_wallet_name: Option<String> = row.get(11)?;
 
                 Ok((
                     key_hash_vec,
@@ -127,6 +132,7 @@ impl Database {
                     confirmed_balance,
                     unconfirmed_balance,
                     total_balance,
+                    core_wallet_name,
                 ))
             })?;
 
@@ -145,6 +151,7 @@ impl Database {
                     confirmed_balance,
                     unconfirmed_balance,
                     total_balance,
+                    core_wallet_name,
                 ) = row_result?;
 
                 // Parse key hash
@@ -189,6 +196,7 @@ impl Database {
                     unconfirmed_balance: unconfirmed_balance as u64,
                     total_balance: total_balance as u64,
                     utxos: HashMap::new(),
+                    core_wallet_name,
                 };
 
                 wallets.push(wallet);
@@ -245,6 +253,20 @@ impl Database {
                 total_balance as i64,
                 key_hash.as_slice(),
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Update the Dash Core wallet name for a single key wallet.
+    pub fn set_single_key_wallet_core_wallet_name(
+        &self,
+        key_hash: &SingleKeyHash,
+        core_wallet_name: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE single_key_wallet SET core_wallet_name = ?1 WHERE key_hash = ?2",
+            params![core_wallet_name, key_hash.as_slice()],
         )?;
         Ok(())
     }

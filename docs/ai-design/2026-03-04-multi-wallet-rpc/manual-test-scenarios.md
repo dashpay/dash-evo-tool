@@ -2,70 +2,93 @@
 
 ## Overview
 
-When Dash Core (dash-qt) has multiple wallets loaded, wallet-specific RPC calls fail with error code -19 ("Wallet file not specified"). This feature detects the error on first occurrence, calls `listwallets` RPC to enumerate loaded wallets, and either auto-selects a single wallet or presents a SelectionDialog for the user to choose one. The selected wallet name is persisted in `.env` config as `{PREFIX}_core_wallet_name` and used via the `/wallet/<name>` URL path for all subsequent RPC calls.
+When Dash Core (dash-qt) has multiple wallets loaded, wallet-specific RPC calls fail with error code -19 ("Wallet file not specified"). This feature:
+
+1. Detects the error on first occurrence
+2. Calls `listwallets` RPC to enumerate loaded wallets
+3. Auto-selects if only one wallet exists, or presents a `SelectionDialog` for the user to choose
+4. Persists the selected wallet name to `.env` as `{PREFIX}_core_wallet_name`
+5. Uses the `/wallet/<name>` URL path for all subsequent RPC calls
+6. On subsequent error -19 (e.g., wallet removed from Core), re-triggers the detection flow
+
+Key components:
+- `SelectionDialog` (`src/ui/components/selection_dialog.rs`) -- modal ComboBox dialog with Confirm/Cancel, Escape/Enter/X support
+- `AppState` (`src/app.rs`) -- owns `core_wallet_dialog` and `core_wallet_names`, handles `CoreWalletSelectionNeeded` result
+- `AppContext` (`src/context/mod.rs`) -- `set_core_wallet_name()` persists to `.env` and reinits RPC client
+- `core_rpc_url()` (`src/backend_task/core/mod.rs`) -- appends `/wallet/<name>` when configured
+- `NetworkConfig.core_wallet_name` (`src/config.rs`) -- per-network config field
 
 ---
 
-## MWR-001: Single wallet auto-select
+## MWT-001: Single Core wallet -- auto-select on first RPC call
 
-### Preconditions
-- Application configured for any network (Testnet, Regtest, etc.) with RPC backend
-- Dash Core is running with exactly **one** wallet loaded
-- No `{PREFIX}_core_wallet_name` is set in `.env`
+| Field | Value |
+|---|---|
+| **ID** | MWT-001 |
+| **Title** | Single Core wallet is auto-selected transparently |
+| **Priority** | P0 |
 
-### Steps
-1. Launch the application
-2. Navigate to the Wallets screen
-3. Trigger any wallet-related RPC operation (e.g., refresh wallet balance, send payment)
-
-### Expected Result
-- The first RPC call triggers error -19, but the application transparently handles it
-- No dialog is shown to the user
-- The application calls `listwallets`, discovers exactly one wallet, and auto-selects it
-- The original operation completes successfully
-- The wallet name is persisted to `.env` as `{PREFIX}_core_wallet_name` (e.g., `TESTNET_core_wallet_name=wallet.dat`)
-- All subsequent RPC calls use the `/wallet/<name>` URL path without further prompts
-
-### Notes
-- The auto-selection should be invisible to the user -- the operation should appear to succeed on the first attempt
-
----
-
-## MWR-002: Multiple wallets -- user selects one
-
-### Preconditions
+### Prerequisites
+- Dash Core running with exactly **one** wallet loaded
+- No `{PREFIX}_core_wallet_name` set in `.env`
 - Application configured for any network with RPC backend
-- Dash Core is running with **two or more** wallets loaded (e.g., `wallet.dat`, `savings`, `trading`)
-- No `{PREFIX}_core_wallet_name` is set in `.env`
 
 ### Steps
 1. Launch the application
 2. Navigate to the Wallets screen
-3. Trigger any wallet-related RPC operation
-4. Observe the SelectionDialog that appears
-5. Open the ComboBox dropdown and review the listed wallet names
-6. Select a wallet (e.g., `savings`)
-7. Click the "Confirm" button
+3. Trigger any wallet-related RPC operation (e.g., refresh balance)
 
 ### Expected Result
-- Step 4: A modal overlay appears with a SelectionDialog titled with wallet selection instructions
-- Step 5: The ComboBox lists all wallet names returned by `listwallets` (e.g., `wallet.dat`, `savings`, `trading`)
-- Step 7: The dialog closes, and the original RPC operation retries and succeeds using the selected wallet
-- The selected wallet name is persisted to `.env` as `{PREFIX}_core_wallet_name=savings`
-- All subsequent RPC calls use `/wallet/savings` URL path
+- The RPC call initially triggers error -19, but the application handles it transparently
+- No `SelectionDialog` is shown to the user
+- The application calls `listwallets`, discovers exactly one wallet, auto-selects it
+- The original operation completes successfully
+- `{PREFIX}_core_wallet_name=<wallet_name>` is persisted to `.env`
+- All subsequent RPC calls use `/wallet/<name>` URL path without further prompts
+
+---
+
+## MWT-002: Multiple Core wallets -- user selects via dialog
+
+| Field | Value |
+|---|---|
+| **ID** | MWT-002 |
+| **Title** | SelectionDialog appears when multiple Core wallets exist |
+| **Priority** | P0 |
+
+### Prerequisites
+- Dash Core running with **two or more** wallets loaded (e.g., `wallet.dat`, `savings`, `trading`)
+- No `{PREFIX}_core_wallet_name` set in `.env`
+
+### Steps
+1. Launch the application
+2. Trigger any wallet-related RPC operation
+3. Observe the SelectionDialog that appears
+4. Open the ComboBox dropdown and review the listed wallet names
+5. Select a wallet (e.g., `savings`)
+6. Click the "Confirm" button
+
+### Expected Result
+- Step 3: A modal overlay appears with a SelectionDialog titled "Select Dash Core Wallet"
+- Step 4: The ComboBox lists all wallet names returned by `listwallets`
+- Step 6: The dialog closes; the original RPC operation retries and succeeds
+- `{PREFIX}_core_wallet_name=savings` is persisted to `.env`
+- All subsequent RPC calls use `/wallet/savings`
 - The selection persists across application restarts
 
-### Notes
-- Verify the wallet list matches the output of `dash-cli listwallets` on the same Core instance
-
 ---
 
-## MWR-003: Multiple wallets -- user cancels selection
+## MWT-003: Multiple Core wallets -- user cancels selection
 
-### Preconditions
-- Application configured for any network with RPC backend
-- Dash Core is running with two or more wallets loaded
-- No `{PREFIX}_core_wallet_name` is set in `.env`
+| Field | Value |
+|---|---|
+| **ID** | MWT-003 |
+| **Title** | Canceling the SelectionDialog shows info banner |
+| **Priority** | P0 |
+
+### Prerequisites
+- Dash Core running with two or more wallets loaded
+- No `{PREFIX}_core_wallet_name` set in `.env`
 
 ### Steps
 1. Trigger a wallet-related RPC operation
@@ -74,40 +97,134 @@ When Dash Core (dash-qt) has multiple wallets loaded, wallet-specific RPC calls 
 
 ### Expected Result
 - The dialog closes
-- An info banner appears with instructions to manually configure the wallet name in `.env` (e.g., "Set {PREFIX}_core_wallet_name in your .env configuration file")
+- An info banner appears: "Dash Core wallet not selected. Set manually in .env with {NETWORK}_core_wallet_name=<wallet>"
 - The original RPC operation fails gracefully -- no crash or hang
 - No wallet name is persisted to `.env`
-- Subsequent RPC operations will continue to trigger the -19 error and re-prompt the dialog
+- Subsequent RPC operations re-trigger error -19 and re-prompt the dialog
 
 ---
 
-## MWR-004: Dash Core not running
+## MWT-004: DET wallet creation with single Core wallet
 
-### Preconditions
-- Application configured for any network with RPC backend
-- Dash Core is **not running** or RPC endpoint is unreachable
-- No `{PREFIX}_core_wallet_name` is set in `.env`
+| Field | Value |
+|---|---|
+| **ID** | MWT-004 |
+| **Title** | Creating a new DET wallet with single Core wallet works seamlessly |
+| **Priority** | P0 |
+
+### Prerequisites
+- Dash Core running with exactly one wallet loaded
+- No existing DET wallets in the application
 
 ### Steps
-1. Launch the application
-2. Attempt a wallet-related RPC operation
+1. Navigate to Wallets screen and click "Create Wallet"
+2. Complete the entropy grid, generate seed phrase, write it down
+3. Enter a wallet name (e.g., "My Test Wallet")
+4. Click "Save Wallet"
+5. Observe the wallet creation success screen
 
 ### Expected Result
-- A normal connection error is displayed (e.g., "Could not connect to Dash Core")
-- The SelectionDialog is **not** triggered -- the wallet selection flow only activates on error code -19, not on connection failures
-- No wallet name is persisted to `.env`
-
-### Notes
-- This verifies that the feature specifically handles error -19 and does not interfere with other RPC error paths
+- The wallet is created successfully without any Core wallet selection dialog
+- The Core wallet is auto-selected in the background (MWT-001 behavior)
+- The success screen shows "Wallet Created Successfully!" with next steps
+- The receive address is displayed and QR code can be generated
+- `{PREFIX}_core_wallet_name` is persisted to `.env`
 
 ---
 
-## MWR-005: Pre-configured wallet name in .env
+## MWT-005: DET wallet creation with multiple Core wallets
 
-### Preconditions
-- Application configured for Testnet with RPC backend
+| Field | Value |
+|---|---|
+| **ID** | MWT-005 |
+| **Title** | Creating a new DET wallet triggers Core wallet selection when multiple exist |
+| **Priority** | P0 |
+
+### Prerequisites
+- Dash Core running with two or more wallets loaded
+- No `{PREFIX}_core_wallet_name` set in `.env`
+
+### Steps
+1. Navigate to Wallets screen and click "Create Wallet"
+2. Complete the wallet creation form (entropy, seed phrase, name, password)
+3. Click "Save Wallet"
+4. When the SelectionDialog appears, select the desired Core wallet
+5. Click "Confirm"
+
+### Expected Result
+- The wallet creation succeeds locally (seed stored in SQLite)
+- When a subsequent RPC call is made (e.g., balance refresh), error -19 triggers the SelectionDialog
+- After selecting a Core wallet, the DET wallet connects to the correct Core wallet for RPC operations
+- The selected Core wallet name is persisted to `.env`
+
+---
+
+## MWT-006: DET wallet import triggers Core wallet selection
+
+| Field | Value |
+|---|---|
+| **ID** | MWT-006 |
+| **Title** | Importing a wallet by seed phrase works with multi-wallet Core |
+| **Priority** | P1 |
+
+### Prerequisites
+- Dash Core running with multiple wallets loaded
+- No `{PREFIX}_core_wallet_name` set in `.env`
+- A valid BIP39 seed phrase available for import
+
+### Steps
+1. Navigate to Wallets screen and import a wallet using a seed phrase
+2. Complete the import process
+3. When a wallet-related RPC call triggers error -19, observe the SelectionDialog
+4. Select the appropriate Core wallet and confirm
+
+### Expected Result
+- The wallet is imported successfully (local data stored in SQLite)
+- The SelectionDialog appears on the first RPC call requiring Core interaction
+- After selection, the imported wallet's balance and transactions are fetched correctly
+- The Core wallet selection is persisted and not re-prompted
+
+---
+
+## MWT-007: Error -19 runtime recovery re-prompts selection
+
+| Field | Value |
+|---|---|
+| **ID** | MWT-007 |
+| **Title** | Re-prompts SelectionDialog when configured Core wallet is no longer available |
+| **Priority** | P0 |
+
+### Prerequisites
+- Application running with `{PREFIX}_core_wallet_name=old_wallet` in `.env`
+- Dash Core initially had `old_wallet` loaded but it was unloaded mid-session
+- At least one other wallet is now loaded in Core
+
+### Steps
+1. Confirm the application was working with `old_wallet` (RPC calls succeeding)
+2. Unload `old_wallet` from Dash Core (via `dash-cli unloadwallet old_wallet`)
+3. Trigger a wallet-related RPC operation in the application
+
+### Expected Result
+- The RPC call to `/wallet/old_wallet` fails
+- The application detects the failure and re-triggers the wallet detection flow
+- If exactly one wallet remains loaded, it auto-selects (MWT-001 behavior)
+- If multiple wallets remain, the SelectionDialog appears (MWT-002 behavior)
+- `.env` is updated with the newly selected wallet name, replacing `old_wallet`
+- Subsequent RPC calls succeed with the new wallet
+
+---
+
+## MWT-008: Pre-configured Core wallet name in .env
+
+| Field | Value |
+|---|---|
+| **ID** | MWT-008 |
+| **Title** | Application uses pre-configured wallet name without prompting |
+| **Priority** | P1 |
+
+### Prerequisites
 - `.env` contains `TESTNET_core_wallet_name=savings`
-- Dash Core is running with the `savings` wallet loaded
+- Dash Core running with the `savings` wallet loaded
 
 ### Steps
 1. Launch the application
@@ -122,69 +239,50 @@ When Dash Core (dash-qt) has multiple wallets loaded, wallet-specific RPC calls 
 
 ---
 
-## MWR-006: Configured wallet removed from Core
+## MWT-009: SelectionDialog UI interactions (Escape, X button, Enter)
 
-### Preconditions
-- Application configured for Testnet with RPC backend
-- `.env` contains `TESTNET_core_wallet_name=old_wallet`
-- Dash Core is running but `old_wallet` is **no longer loaded** (it was unloaded or removed)
-- At least one other wallet is loaded in Core
+| Field | Value |
+|---|---|
+| **ID** | MWT-009 |
+| **Title** | SelectionDialog supports keyboard shortcuts and X close button |
+| **Priority** | P1 |
 
-### Steps
-1. Launch the application
-2. Trigger a wallet-related RPC operation
-
-### Expected Result
-- The RPC call to `/wallet/old_wallet` fails (likely with an error indicating the wallet is not found)
-- The application detects the failure and re-triggers the wallet detection flow
-- If exactly one wallet remains loaded, it auto-selects (MWR-001 behavior)
-- If multiple wallets remain, the SelectionDialog appears (MWR-002 behavior)
-- The `.env` is updated with the newly selected wallet name, replacing `old_wallet`
-
-### Notes
-- This scenario tests recovery from stale configuration
-
----
-
-## MWR-007: SelectionDialog UI behavior
-
-### Preconditions
-- Application configured for any network with RPC backend
-- Dash Core is running with two or more wallets loaded
-- No `{PREFIX}_core_wallet_name` is set in `.env`
-- A wallet-related RPC operation has been triggered, causing the SelectionDialog to appear
+### Prerequisites
+- Dash Core running with two or more wallets loaded
+- No `{PREFIX}_core_wallet_name` set in `.env`
+- A wallet-related RPC operation triggers the SelectionDialog
 
 ### Steps
-1. Observe the dialog overlay -- verify it dims or blocks the background UI
-2. Observe the dialog contents: title/instructions, ComboBox, Confirm button, Cancel button
-3. Open the ComboBox dropdown and verify all loaded wallet names are listed
-4. Select a wallet from the dropdown
-5. Press the Escape key on the keyboard
-6. Re-trigger the dialog (perform another RPC operation)
-7. Click the X (close) button on the dialog (if present)
-8. Re-trigger the dialog again
-9. Select a wallet and click "Confirm"
+1. Observe the dialog overlay -- verify it dims/blocks the background UI
+2. Observe dialog contents: title, instruction message, ComboBox, Confirm/Cancel buttons
+3. Press the **Escape** key
+4. Re-trigger the dialog (perform another RPC operation)
+5. Click the **X** (close) button on the dialog window
+6. Re-trigger the dialog again
+7. Use the ComboBox to select a wallet, then press **Enter**
 
 ### Expected Result
 - Step 1: A semi-transparent overlay covers the main UI; only the dialog is interactive
-- Step 2: The dialog contains clear instructions, a ComboBox dropdown, and Confirm/Cancel buttons
-- Step 3: All wallet names from `listwallets` are shown in the ComboBox
-- Step 5: Pressing Escape closes the dialog (equivalent to Cancel) -- same info banner as MWR-003
-- Step 7: Clicking X closes the dialog (equivalent to Cancel) -- same info banner as MWR-003
-- Step 9: Selecting and confirming works normally (same as MWR-002)
-
-### Notes
-- Verify that keyboard navigation works within the dialog (Tab between elements, Enter to confirm)
+- Step 2: Dialog shows "Select Dash Core Wallet" title, instruction text, ComboBox with wallet names, Confirm and Cancel buttons
+- Step 3: Escape closes the dialog (equivalent to Cancel) -- info banner appears (MWT-003 behavior)
+- Step 5: X button closes the dialog (equivalent to Cancel) -- info banner appears
+- Step 7: Enter key confirms the current ComboBox selection -- wallet is selected and persisted
 
 ---
 
-## MWR-008: Network switch -- independent wallet selection per network
+## MWT-010: Network switch -- independent wallet selection per network
 
-### Preconditions
+| Field | Value |
+|---|---|
+| **ID** | MWT-010 |
+| **Title** | Each network maintains its own Core wallet name independently |
+| **Priority** | P1 |
+
+### Prerequisites
 - Application configured with both Testnet and Mainnet RPC backends
 - Testnet Core has wallets: `testnet_wallet_1`, `testnet_wallet_2`
 - Mainnet Core has wallets: `mainnet_wallet_A`, `mainnet_wallet_B`
-- No `{PREFIX}_core_wallet_name` is set in `.env` for either network
+- No `{PREFIX}_core_wallet_name` set in `.env` for either network
 
 ### Steps
 1. Connect to Testnet
@@ -200,23 +298,52 @@ When Dash Core (dash-qt) has multiple wallets loaded, wallet-specific RPC calls 
 - Step 3: `TESTNET_core_wallet_name=testnet_wallet_1` is persisted to `.env`
 - Step 5: A new SelectionDialog appears listing Mainnet wallets (not Testnet wallets)
 - Step 6: `MAINNET_core_wallet_name=mainnet_wallet_A` is persisted to `.env`
-- Step 7-8: No dialog appears; Testnet continues using `testnet_wallet_1` from the persisted config
-- Both `TESTNET_core_wallet_name` and `MAINNET_core_wallet_name` coexist in `.env`
-
-### Notes
-- Each network prefix (`MAINNET_`, `TESTNET_`, `DEVNET_`, `LOCAL_`) has its own independent wallet name setting
+- Step 7-8: No dialog appears; Testnet uses `testnet_wallet_1` from persisted config
+- Both entries coexist in `.env`
 
 ---
 
-## MWR-009: Wallet name with special characters
+## MWT-011: Multiple DET wallets share the same Core wallet selection
 
-### Preconditions
-- Application configured for any network with RPC backend
-- Dash Core is running with wallets that have special characters in their names:
+| Field | Value |
+|---|---|
+| **ID** | MWT-011 |
+| **Title** | Core wallet selection applies globally to all DET wallets on the same network |
+| **Priority** | P1 |
+
+### Prerequisites
+- Two or more DET wallets already created in the application
+- Dash Core running with multiple wallets loaded
+- `{PREFIX}_core_wallet_name` already set (e.g., `savings`)
+
+### Steps
+1. Select DET Wallet A in the UI
+2. Trigger an RPC operation (e.g., refresh balance)
+3. Select DET Wallet B in the UI
+4. Trigger an RPC operation
+
+### Expected Result
+- Both DET wallets use the same Core wallet (`savings`) for RPC calls
+- No SelectionDialog appears for either wallet
+- The Core wallet name is a per-network setting, not per-DET-wallet
+- Both wallets' balances and transactions are fetched correctly via the same Core RPC endpoint
+
+---
+
+## MWT-012: Wallet name with special characters
+
+| Field | Value |
+|---|---|
+| **ID** | MWT-012 |
+| **Title** | Core wallet names with spaces, dots, and special characters are handled correctly |
+| **Priority** | P2 |
+
+### Prerequisites
+- Dash Core running with wallets having special characters in names:
   - `my wallet.dat` (space and dot)
   - `test-wallet_2` (hyphen and underscore)
   - `wallet (backup)` (parentheses and space)
-- No `{PREFIX}_core_wallet_name` is set in `.env`
+- No `{PREFIX}_core_wallet_name` set in `.env`
 
 ### Steps
 1. Trigger a wallet-related RPC operation
@@ -228,54 +355,54 @@ When Dash Core (dash-qt) has multiple wallets loaded, wallet-specific RPC calls 
 7. Trigger another wallet-related RPC operation
 
 ### Expected Result
-- Step 2: All wallet names including those with special characters are displayed correctly in the ComboBox
-- Step 4: The wallet name is persisted to `.env` as `{PREFIX}_core_wallet_name=my wallet.dat`
-- Step 5: The RPC URL path correctly encodes the wallet name (e.g., `/wallet/my%20wallet.dat` or however the RPC client handles URL encoding)
-- Step 7: After restart, the persisted wallet name with special characters is read correctly from `.env` and used without re-prompting
-
-### Notes
-- URL encoding of the wallet name in the RPC path is critical -- spaces, dots, and other special characters must be handled correctly
-- Verify no corruption occurs when writing/reading special characters to/from the `.env` file
+- Step 2: All wallet names including those with special characters are displayed correctly
+- Step 4: Wallet name persisted as `{PREFIX}_core_wallet_name=my wallet.dat`
+- Step 5: The RPC URL path handles the wallet name correctly (e.g., `/wallet/my wallet.dat`)
+- Step 7: After restart, the persisted name is read correctly and used without re-prompting
 
 ---
 
-## MWR-010: Error -19 only triggers once per session (after successful selection)
+## MWT-013: Dash Core not running -- no false wallet selection trigger
 
-### Preconditions
-- Application configured for any network with RPC backend
-- Dash Core is running with multiple wallets loaded
-- No `{PREFIX}_core_wallet_name` is set in `.env`
+| Field | Value |
+|---|---|
+| **ID** | MWT-013 |
+| **Title** | Connection errors do not trigger the wallet selection flow |
+| **Priority** | P2 |
+
+### Prerequisites
+- Dash Core is **not running** or RPC endpoint is unreachable
+- No `{PREFIX}_core_wallet_name` set in `.env`
 
 ### Steps
-1. Trigger a wallet-related RPC operation (first time)
-2. Select a wallet in the SelectionDialog and confirm
-3. Trigger multiple different wallet-related RPC operations (refresh balance, list UTXOs, send payment)
+1. Launch the application
+2. Attempt a wallet-related RPC operation
 
 ### Expected Result
-- Step 1-2: The SelectionDialog appears once and the user selects a wallet
-- Step 3: All subsequent RPC operations succeed without showing the dialog again
-- The `/wallet/<name>` path is consistently applied to all RPC calls for the rest of the session
-
-### Notes
-- This verifies that the wallet selection is cached in-memory (not just persisted) so that every RPC call in the session benefits from the selection without re-reading `.env`
+- A normal connection error is displayed (e.g., "Could not connect to Dash Core")
+- The SelectionDialog is **not** triggered -- the wallet selection flow only activates on error code -19
+- No wallet name is persisted to `.env`
 
 ---
 
-## MWR-011: Concurrent RPC calls during wallet detection
+## MWT-014: Concurrent RPC calls during wallet detection
 
-### Preconditions
-- Application configured for any network with RPC backend
-- Dash Core is running with multiple wallets loaded
-- No `{PREFIX}_core_wallet_name` is set in `.env`
-- Multiple background tasks may trigger RPC calls simultaneously (e.g., wallet refresh + balance check)
+| Field | Value |
+|---|---|
+| **ID** | MWT-014 |
+| **Title** | Only one SelectionDialog appears even with concurrent error -19 triggers |
+| **Priority** | P2 |
+
+### Prerequisites
+- Dash Core running with multiple wallets loaded
+- No `{PREFIX}_core_wallet_name` set in `.env`
+- Multiple background tasks may trigger RPC calls simultaneously
 
 ### Steps
-1. Trigger multiple wallet-related operations in quick succession (e.g., refresh wallet info while another operation is pending)
+1. Trigger multiple wallet-related operations in quick succession (e.g., navigate to wallet screen which triggers refresh + balance check concurrently)
 
 ### Expected Result
-- Only one SelectionDialog appears (not multiple stacked dialogs)
-- The first -19 error triggers the detection; subsequent -19 errors are queued or suppressed until the wallet is selected
-- After selection, all pending operations retry successfully
-
-### Notes
-- This is an edge case around race conditions -- the implementation should serialize or deduplicate the wallet detection flow
+- Only **one** SelectionDialog appears (not multiple stacked dialogs)
+- The first error -19 triggers the detection; subsequent errors are handled after selection
+- After selection, all pending and subsequent operations succeed
+- No race condition causes duplicate `.env` writes or conflicting wallet names

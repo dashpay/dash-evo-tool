@@ -329,6 +329,8 @@ pub struct Wallet {
     pub total_balance: u64,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
+    /// Dash Core wallet name for multi-wallet RPC calls
+    pub core_wallet_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2515,6 +2517,7 @@ mod tests {
             unconfirmed_balance: 0,
             total_balance: 0,
             platform_address_info: BTreeMap::new(),
+            core_wallet_name: None,
         }
     }
 

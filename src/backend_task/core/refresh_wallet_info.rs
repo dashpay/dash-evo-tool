@@ -17,7 +17,7 @@ impl AppContext {
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, String> {
         // Step 1: Collect data from wallet with brief read lock
-        let (addresses, asset_lock_txs, seed_hash) = {
+        let (addresses, asset_lock_txs, seed_hash, core_wallet_name) = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
             let addrs = wallet_guard
                 .known_addresses
@@ -31,31 +31,25 @@ impl AppContext {
                 .map(|(tx, _, _, _, _)| tx.clone())
                 .collect();
             let seed = wallet_guard.seed_hash();
-            (addrs, asset_locks, seed)
+            let cwn = wallet_guard.core_wallet_name.clone();
+            (addrs, asset_locks, seed, cwn)
         };
         // Read lock released here
 
-        // Step 2: Import addresses to Core (no wallet lock needed)
-        {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
+        // Build an RPC client targeting the wallet's Core wallet (if set)
+        let client = self
+            .core_client_for_wallet(core_wallet_name.as_deref())
+            .map_err(|e| format!("Failed to create Core RPC client: {}", e))?;
 
-            for address in &addresses {
-                if let Err(e) = client.import_address(address, None, Some(false)) {
-                    tracing::debug!(?e, address = %address, "import_address failed during refresh");
-                }
+        // Step 2: Import addresses to Core (no wallet lock needed)
+        for address in &addresses {
+            if let Err(e) = client.import_address(address, None, Some(false)) {
+                tracing::debug!(?e, address = %address, "import_address failed during refresh");
             }
         }
 
         // Step 3: Fetch UTXOs from Core RPC (no wallet lock needed)
         let utxo_map: HashMap<OutPoint, TxOut> = {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
-
             // Get UTXOs for all addresses
             let utxos = if addresses.is_empty() {
                 Vec::new()
@@ -96,11 +90,6 @@ impl AppContext {
         // Step 5: Fetch total received for each address from Core RPC (no wallet lock)
         let mut total_received_map: HashMap<Address, u64> = HashMap::new();
         {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
-
             for address in &addresses {
                 match client.get_received_by_address(address, None) {
                     Ok(amount) => {
@@ -119,11 +108,6 @@ impl AppContext {
 
         // Step 6: Check which asset locks are stale (no wallet lock needed)
         let stale_txids: Vec<_> = {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
-
             asset_lock_txs
                 .iter()
                 .filter_map(|tx| {

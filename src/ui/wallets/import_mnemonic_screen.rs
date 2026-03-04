@@ -1,7 +1,9 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::selection_dialog::{SelectionDialog, SelectionStatus};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
@@ -55,6 +57,15 @@ pub struct ImportMnemonicScreen {
 
     // Identity discovery options
     identity_scan_count: u32,
+
+    /// Dialog for selecting which Dash Core wallet to associate
+    core_wallet_dialog: Option<SelectionDialog>,
+    /// Core wallet names while dialog is open
+    core_wallet_names: Option<Vec<String>>,
+    /// Seed hash of the just-imported HD wallet (for core wallet association)
+    imported_seed_hash: Option<[u8; 32]>,
+    /// Key hash of the just-imported single key wallet
+    imported_key_hash: Option<[u8; 32]>,
 }
 
 impl ImportMnemonicScreen {
@@ -83,6 +94,11 @@ impl ImportMnemonicScreen {
 
             // Identity discovery options
             identity_scan_count: 5,
+
+            core_wallet_dialog: None,
+            core_wallet_names: None,
+            imported_seed_hash: None,
+            imported_key_hash: None,
         }
     }
 
@@ -163,8 +179,25 @@ impl ImportMnemonicScreen {
         }
 
         self.wallet_imported = true;
+        self.imported_key_hash = Some(key_hash);
+        self.check_core_wallets();
         Ok(AppAction::None)
     }
+
+    fn check_core_wallets(&mut self) {
+        if let Ok(core_wallets) = self.app_context.list_core_wallets()
+            && core_wallets.len() > 1
+        {
+            let dialog = SelectionDialog::new(
+                "Select Dash Core Wallet",
+                "Your Dash Core node has multiple wallets loaded.\nSelect which wallet to use for this wallet:",
+                core_wallets.clone(),
+            );
+            self.core_wallet_dialog = Some(dialog);
+            self.core_wallet_names = Some(core_wallets);
+        }
+    }
+
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
@@ -244,6 +277,7 @@ impl ImportMnemonicScreen {
                 unconfirmed_balance: 0,
                 total_balance: 0,
                 platform_address_info: Default::default(),
+                core_wallet_name: None,
             };
 
             self.app_context
@@ -285,6 +319,8 @@ impl ImportMnemonicScreen {
             }
 
             self.wallet_imported = true;
+            self.imported_seed_hash = Some(seed_hash);
+            self.check_core_wallets();
             Ok(AppAction::None) // Show success screen instead of navigating away
         } else {
             Ok(AppAction::None) // No action if no seed phrase exists
@@ -752,6 +788,70 @@ impl ScreenLike for ImportMnemonicScreen {
 
             inner_action
         });
+
+        // Show Core wallet selection dialog if active
+        if self.core_wallet_dialog.is_some() {
+            egui::Area::new(egui::Id::new("import_core_dialog_blocker"))
+                .fixed_pos(egui::Pos2::ZERO)
+                .order(egui::Order::Middle)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    let rect = ctx.content_rect();
+                    ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
+                });
+
+            egui::Area::new(egui::Id::new("import_core_dialog_area"))
+                .fixed_pos(egui::Pos2::ZERO)
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    ui.set_min_size(ctx.content_rect().size());
+                    let mut dialog = self.core_wallet_dialog.take().unwrap();
+                    let response = dialog.show(ui);
+                    if let Some(status) = response.inner.changed_value() {
+                        match status {
+                            SelectionStatus::Selected(idx) => {
+                                if let Some(wallets) = self.core_wallet_names.take()
+                                    && let Some(wallet_name) = wallets.get(*idx).cloned()
+                                {
+                                    if let Some(seed_hash) = self.imported_seed_hash {
+                                        let _ = self.app_context.db.set_wallet_core_wallet_name(
+                                            &seed_hash,
+                                            Some(&wallet_name),
+                                        );
+                                        if let Ok(ws) = self.app_context.wallets.read()
+                                            && let Some(w) = ws.get(&seed_hash)
+                                            && let Ok(mut g) = w.write()
+                                        {
+                                            g.core_wallet_name = Some(wallet_name.clone());
+                                        }
+                                    }
+                                    if let Some(key_hash) = self.imported_key_hash {
+                                        let _ = self
+                                            .app_context
+                                            .db
+                                            .set_single_key_wallet_core_wallet_name(
+                                                &key_hash,
+                                                Some(&wallet_name),
+                                            );
+                                        if let Ok(ws) = self.app_context.single_key_wallets.read()
+                                            && let Some(w) = ws.get(&key_hash)
+                                            && let Ok(mut g) = w.write()
+                                        {
+                                            g.core_wallet_name = Some(wallet_name.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            SelectionStatus::Canceled => {
+                                self.core_wallet_names = None;
+                            }
+                        }
+                    } else {
+                        self.core_wallet_dialog = Some(dialog);
+                    }
+                });
+        }
 
         action
     }

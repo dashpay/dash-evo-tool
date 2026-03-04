@@ -273,7 +273,10 @@ pub enum BackendTaskSuccessResult {
     MineBlocksSuccess(u64),
 
     /// Dash Core has multiple wallets; UI should show selection dialog.
-    CoreWalletSelectionNeeded(Vec<String>),
+    CoreWalletSelectionNeeded {
+        wallet_seed_hash: String,
+        core_wallets: Vec<String>,
+    },
 }
 
 impl BackendTaskSuccessResult {}

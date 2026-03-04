@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 27;
+pub const DEFAULT_DB_VERSION: u16 = 28;
 
 pub const DEFAULT_NETWORK: &str = "dash";
 
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            28 => {
+                self.add_core_wallet_name_column(tx)?;
+            }
             27 => {
                 self.add_network_indexes(tx)?;
             }
@@ -316,7 +319,8 @@ impl Database {
                 total_balance INTEGER DEFAULT 0,
                 last_platform_full_sync INTEGER DEFAULT 0,
                 last_platform_sync_checkpoint INTEGER DEFAULT 0,
-                last_terminal_block INTEGER DEFAULT 0
+                last_terminal_block INTEGER DEFAULT 0,
+                core_wallet_name TEXT DEFAULT NULL
             )",
             [],
         )?;
@@ -835,6 +839,19 @@ impl Database {
             }
         }
 
+        Ok(())
+    }
+
+    /// Migration: Add core_wallet_name column to wallet and single_key_wallet tables (version 28).
+    fn add_core_wallet_name_column(&self, conn: &Connection) -> rusqlite::Result<()> {
+        conn.execute(
+            "ALTER TABLE wallet ADD COLUMN core_wallet_name TEXT DEFAULT NULL",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE single_key_wallet ADD COLUMN core_wallet_name TEXT DEFAULT NULL",
+            [],
+        )?;
         Ok(())
     }
 

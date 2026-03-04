@@ -1944,8 +1944,10 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // Always clear refreshing — the originating task is done regardless of result type.
+        self.refreshing = false;
+
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.refreshing = false;
             self.asset_lock_search_banner.take_and_clear();
 
             // If the fund platform dialog is processing, show error in the dialog instead
@@ -2156,5 +2158,8 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
-    fn refresh(&mut self) {}
+    fn refresh(&mut self) {
+        self.refreshing = false;
+        self.refresh_on_arrival();
+    }
 }

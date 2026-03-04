@@ -353,27 +353,16 @@ impl AppContext {
             return None;
         }
 
-        // If defaulting to RPC is desired, swap provider after binding.
-        if app_context.core_backend_mode() == CoreBackendMode::Rpc {
-            if let Err(e) = app_context
+        // If defaulting to RPC, rebind the RPC provider (overrides SPV registration above).
+        if app_context.core_backend_mode() == CoreBackendMode::Rpc
+            && let Err(e) = app_context
                 .rpc_context_provider
                 .read()
                 .map_err(|_| "RPC provider lock poisoned".to_string())
                 .and_then(|provider| provider.bind_app_context(app_context.clone()))
-            {
-                tracing::error!("Failed to bind RPC provider: {}", e);
-                return None;
-            }
-        } else {
-            // Ensure SDK uses the SPV provider
-            let provider = match app_context.spv_context_provider.read() {
-                Ok(p) => p.clone(),
-                Err(_) => {
-                    tracing::error!("SPV provider lock poisoned");
-                    return None;
-                }
-            };
-            app_context.sdk.load().set_context_provider(provider);
+        {
+            tracing::error!("Failed to bind RPC provider: {}", e);
+            return None;
         }
 
         app_context.bootstrap_loaded_wallets();
@@ -419,22 +408,16 @@ impl AppContext {
         // Switch SDK context provider to match the selected backend
         match mode {
             CoreBackendMode::Spv => {
-                // Clone the SPV provider and bind app context on the clone
-                let provider = match self.spv_context_provider.read() {
-                    Ok(p) => p.clone(),
-                    Err(_) => {
-                        tracing::error!("SPV provider lock poisoned");
-                        return;
-                    }
-                };
-                if let Err(e) = provider.bind_app_context(Arc::clone(self)) {
+                if let Err(e) = self
+                    .spv_context_provider
+                    .read()
+                    .map_err(|_| "SPV provider lock poisoned".to_string())
+                    .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
+                {
                     tracing::error!("Failed to bind SPV provider: {}", e);
-                    return;
                 }
-                self.sdk.load().set_context_provider(provider);
             }
             CoreBackendMode::Rpc => {
-                // RPC provider binding also sets itself on the SDK
                 if let Err(e) = self
                     .rpc_context_provider
                     .read()
@@ -558,7 +541,9 @@ impl AppContext {
         }
         self.sdk.store(Arc::new(new_sdk));
 
-        // Rebind providers to ensure they hold the new AppContext reference
+        // Rebind providers to ensure they hold the new AppContext reference.
+        // bind_app_context also registers the provider with the SDK, so the
+        // active provider (last bound) wins.
         self.spv_context_provider
             .read()
             .map_err(|_| "SPV provider lock poisoned".to_string())?
@@ -568,13 +553,6 @@ impl AppContext {
                 .read()
                 .map_err(|_| "RPC provider lock poisoned".to_string())?
                 .bind_app_context(self.clone())?;
-        } else {
-            let provider = self
-                .spv_context_provider
-                .read()
-                .map_err(|_| "SPV provider lock poisoned".to_string())?
-                .clone();
-            self.sdk.load().set_context_provider(provider);
         }
 
         Ok(())

@@ -601,17 +601,16 @@ fn render_banner(
 
                 // Right-aligned: annotation + dismiss
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    let dismiss_response = ui.add(
-                        egui::Label::new(
-                            egui::RichText::new("\u{274C}")
-                                .color(fg_color)
-                                .font(Typography::body_small()),
+                    let dismiss_response = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new("\u{274C}")
+                                    .color(fg_color)
+                                    .font(Typography::body_small()),
+                            )
+                            .sense(egui::Sense::click()),
                         )
-                        .sense(egui::Sense::click()),
-                    );
-                    if dismiss_response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if dismiss_response.clicked() {
                         dismissed = true;
                     }
@@ -648,7 +647,7 @@ fn render_banner(
                 } else {
                     "Show details"
                 };
-                if ui
+                let toggle_response = ui
                     .add(
                         egui::Label::new(
                             egui::RichText::new(toggle_text)
@@ -658,8 +657,8 @@ fn render_banner(
                         )
                         .sense(egui::Sense::click()),
                     )
-                    .clicked()
-                {
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if toggle_response.clicked() {
                     *details_expanded = !*details_expanded;
                 }
 

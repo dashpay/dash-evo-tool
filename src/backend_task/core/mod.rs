@@ -24,8 +24,10 @@ use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::{FeeLevel, FeeRate};
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::{
+    BuilderError, TransactionBuilder,
+};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
@@ -645,13 +647,13 @@ impl AppContext {
 
         // Build the transaction using TransactionBuilder
         let mut builder = TransactionBuilder::new()
-            .set_fee_rate(FeeRate::normal())
+            .set_fee_level(FeeLevel::Normal)
             .set_change_address(change_address.clone());
 
         for (address, amount) in recipients {
             builder = builder
                 .add_output(&address, amount)
-                .map_err(|e| WalletError::TransactionBuild(e.to_string()))?;
+                .map_err(|e: BuilderError| WalletError::TransactionBuild(e.to_string()))?;
         }
 
         builder = builder
@@ -662,14 +664,14 @@ impl AppContext {
                 |_| None, // No private keys for unsigned transaction
             )
             // TODO(RUST-002): String-based error classification — see #660
-            .map_err(|e| match e.to_string() {
+            .map_err(|e: BuilderError| match e.to_string() {
                 msg if msg.contains("Insufficient") => WalletError::InsufficientFunds,
                 msg => WalletError::TransactionBuild(msg),
             })?;
 
         builder
             .build()
-            .map_err(|e| WalletError::TransactionBuild(e.to_string()))
+            .map_err(|e: BuilderError| WalletError::TransactionBuild(e.to_string()))
     }
 
     fn sign_spv_transaction(

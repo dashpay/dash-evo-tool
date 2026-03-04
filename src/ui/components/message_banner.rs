@@ -648,18 +648,19 @@ fn render_banner(
                 } else {
                     "Show details"
                 };
-                if ui
-                    .add(
-                        egui::Label::new(
-                            egui::RichText::new(toggle_text)
-                                .font(Typography::body_small())
-                                .color(DashColors::DASH_BLUE)
-                                .underline(),
-                        )
-                        .sense(egui::Sense::click()),
+                let toggle_response = ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(toggle_text)
+                            .font(Typography::body_small())
+                            .color(DashColors::DASH_BLUE)
+                            .underline(),
                     )
-                    .clicked()
-                {
+                    .sense(egui::Sense::click()),
+                );
+                if toggle_response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if toggle_response.clicked() {
                     *details_expanded = !*details_expanded;
                 }
 

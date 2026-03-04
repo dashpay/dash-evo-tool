@@ -1213,6 +1213,14 @@ impl App for AppState {
                             );
                             self.visible_screen_mut().refresh();
                         }
+                        BackendTaskSuccessResult::CoreWalletAutoDetected { wallet_name } => {
+                            MessageBanner::set_global(
+                                ctx,
+                                format!("Auto-detected Dash Core wallet '{}'", wallet_name),
+                                MessageType::Success,
+                            );
+                            self.visible_screen_mut().refresh();
+                        }
                         BackendTaskSuccessResult::CoreWalletSelectionNeeded {
                             wallet_seed_hash,
                             core_wallets,

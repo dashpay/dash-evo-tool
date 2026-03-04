@@ -25,7 +25,7 @@ use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
-use dash_sdk::dpp::dashcore::{Network, Txid};
+use dash_sdk::dpp::dashcore::{Address, Network, Txid};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -610,6 +610,41 @@ impl AppContext {
         client
             .list_wallets()
             .map_err(|e| format!("Failed to list Core wallets: {e}"))
+    }
+
+    /// Try to detect which loaded Core wallet owns the given address.
+    ///
+    /// Returns `Ok(Some(name))` if exactly one wallet recognizes it,
+    /// `Ok(None)` if ambiguous (0 or >1 matches).
+    pub fn try_detect_core_wallet_for_address(
+        &self,
+        address: &Address,
+    ) -> Result<Option<String>, String> {
+        let core_wallets = self.list_core_wallets()?;
+        if core_wallets.is_empty() {
+            return Err("No wallets loaded in Dash Core".to_string());
+        }
+        if core_wallets.len() == 1 {
+            return Ok(Some(core_wallets.into_iter().next().unwrap()));
+        }
+        // Multiple wallets — check which one recognizes the address
+        let mut matches = Vec::new();
+        for wallet_name in &core_wallets {
+            let client = self.core_client_for_wallet(Some(wallet_name))?;
+            match client.get_address_info(address) {
+                Ok(info) if info.is_mine || info.is_watchonly => {
+                    matches.push(wallet_name.clone());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::debug!(?e, wallet_name, "get_address_info failed");
+                }
+            }
+        }
+        match matches.len() {
+            1 => Ok(Some(matches.into_iter().next().unwrap())),
+            _ => Ok(None), // 0 or >1 matches — ambiguous
+        }
     }
 }
 

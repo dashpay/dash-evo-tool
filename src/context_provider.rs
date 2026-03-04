@@ -15,16 +15,25 @@ use std::sync::{Arc, Mutex};
 // Shared contract/token resolution used by both RPC and SPV providers.
 // ---------------------------------------------------------------------------
 
+/// Number of system contracts cached on [`AppContext`].
+/// Update this when adding a new system contract field.
+///
+/// The typed array size in [`resolve_data_contract`] must match — the compiler
+/// will reject a mismatch, catching forgotten additions at build time.
+pub(crate) const SYSTEM_CONTRACT_COUNT: usize = 5;
+
 /// Resolve a data contract by ID: check cached system contracts first, then DB.
 ///
-/// All system contracts are listed in `CACHED` — adding a new one is a single
+/// All system contracts are listed in `cached` — adding a new one is a single
 /// array edit, which prevents the two providers from drifting out of sync.
+/// The array size is tied to [`SYSTEM_CONTRACT_COUNT`] so the compiler enforces
+/// completeness.
 pub(crate) fn resolve_data_contract(
     app_ctx: &AppContext,
     db: &Database,
     data_contract_id: &Identifier,
 ) -> Result<Option<Arc<DataContract>>, ContextProviderError> {
-    let cached: [&Arc<DataContract>; 5] = [
+    let cached: [&Arc<DataContract>; SYSTEM_CONTRACT_COUNT] = [
         &app_ctx.dpns_contract,
         &app_ctx.dashpay_contract,
         &app_ctx.token_history_contract,
@@ -65,7 +74,7 @@ pub(crate) struct Provider {
 impl Provider {
     /// Create new ContextProvider.
     ///
-    /// Note that you have to bind it to app context using [Provider::set_app_context()].
+    /// Note that you have to bind it to app context using [`Provider::bind_app_context`].
     pub fn new(
         db: Arc<Database>,
         network: Network,
@@ -128,11 +137,13 @@ impl ContextProvider for Provider {
         let guard = self
             .app_context
             .lock()
-            .map_err(|_| ContextProviderError::Config("Provider lock poisoned".to_string()))?;
+            .map_err(|_| ContextProviderError::Config("RpcProvider lock poisoned".to_string()))?;
         let app_ctx = guard
             .as_ref()
-            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
-        resolve_data_contract(app_ctx, &self.db, data_contract_id)
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?
+            .clone();
+        drop(guard);
+        resolve_data_contract(&app_ctx, &self.db, data_contract_id)
     }
 
     fn get_token_configuration(
@@ -143,11 +154,13 @@ impl ContextProvider for Provider {
         let guard = self
             .app_context
             .lock()
-            .map_err(|_| ContextProviderError::Config("Provider lock poisoned".to_string()))?;
+            .map_err(|_| ContextProviderError::Config("RpcProvider lock poisoned".to_string()))?;
         let app_ctx = guard
             .as_ref()
-            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
-        resolve_token_configuration(app_ctx, &self.db, token_id)
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?
+            .clone();
+        drop(guard);
+        resolve_token_configuration(&app_ctx, &self.db, token_id)
     }
 
     fn get_quorum_public_key(

@@ -29,10 +29,14 @@ impl SpvProvider {
 
     /// Attach the `AppContext` and register this provider with the SDK.
     ///
-    /// Mirrors `RpcProvider::bind_app_context` — after this call, the SDK
+    /// Mirrors [`Provider::bind_app_context`](crate::context_provider::Provider::bind_app_context)
+    /// — after this call, the SDK
     /// uses this provider for proof verification and quorum key resolution.
     ///
     /// Returns an error if the lock is poisoned (indicates a prior panic).
+    ///
+    /// # Thread safety
+    /// Called during init and mode-switch only — not on hot paths.
     pub fn bind_app_context(&self, app_context: Arc<AppContext>) -> Result<(), String> {
         let cloned = app_context.clone();
         let mut ac = self
@@ -59,8 +63,10 @@ impl ContextProvider for SpvProvider {
             .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
         let app_ctx = guard
             .as_ref()
-            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
-        resolve_data_contract(app_ctx, &self.db, data_contract_id)
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?
+            .clone();
+        drop(guard);
+        resolve_data_contract(&app_ctx, &self.db, data_contract_id)
     }
 
     fn get_token_configuration(
@@ -74,8 +80,10 @@ impl ContextProvider for SpvProvider {
             .map_err(|_| ContextProviderError::Config("SpvProvider lock poisoned".to_string()))?;
         let app_ctx = guard
             .as_ref()
-            .ok_or(ContextProviderError::Config("no app context".to_string()))?;
-        resolve_token_configuration(app_ctx, &self.db, token_id)
+            .ok_or(ContextProviderError::Config("no app context".to_string()))?
+            .clone();
+        drop(guard);
+        resolve_token_configuration(&app_ctx, &self.db, token_id)
     }
 
     fn get_quorum_public_key(

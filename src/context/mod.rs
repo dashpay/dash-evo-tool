@@ -405,7 +405,10 @@ impl AppContext {
             tracing::error!("Failed to persist core backend mode: {}", e);
         }
 
-        // Switch SDK context provider to match the selected backend
+        // Switch SDK context provider to match the selected backend.
+        // Early returns are defensive: if code is added after this match, a failed
+        // bind should not proceed with a stale provider.
+        #[allow(clippy::needless_return)]
         match mode {
             CoreBackendMode::Spv => {
                 if let Err(e) = self
@@ -415,6 +418,7 @@ impl AppContext {
                     .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
                 {
                     tracing::error!("Failed to bind SPV provider: {}", e);
+                    return;
                 }
             }
             CoreBackendMode::Rpc => {
@@ -425,6 +429,7 @@ impl AppContext {
                     .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
                 {
                     tracing::error!("Failed to bind RPC provider: {}", e);
+                    return;
                 }
             }
         }

@@ -16,7 +16,7 @@ use egui::Ui;
 use std::sync::Arc;
 
 impl AddNewIdentityScreen {
-    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
+    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), TaskError> {
         let (address, _should_check_balance) = {
             // Scope the write lock to ensure it's dropped before calling `start_balance_check`.
 
@@ -40,8 +40,7 @@ impl AddNewIdentityScreen {
                                     &receive_address,
                                     Some("Managed by Dash Evo Tool"),
                                     Some(false),
-                                )
-                                .map_err(|e| e.to_string())?;
+                                )?;
                         }
                         self.funding_address = Some(receive_address);
                     } else {
@@ -50,8 +49,7 @@ impl AddNewIdentityScreen {
                             .core_client
                             .read()
                             .expect("Core client lock was poisoned")
-                            .get_address_info(&receive_address)
-                            .map_err(|e| e.to_string())?;
+                            .get_address_info(&receive_address)?;
 
                         if !(info.is_watchonly || info.is_mine) {
                             self.app_context
@@ -62,8 +60,7 @@ impl AddNewIdentityScreen {
                                     &receive_address,
                                     Some("Managed by Dash Evo Tool"),
                                     Some(false),
-                                )
-                                .map_err(|e| e.to_string())?;
+                                )?;
                         }
                         self.funding_address = Some(receive_address);
                         self.core_has_funding_address = Some(true);
@@ -75,7 +72,7 @@ impl AddNewIdentityScreen {
                     (self.funding_address.as_ref().unwrap().clone(), false)
                 }
             } else {
-                return Err("No wallet selected".to_string());
+                return Err("No wallet selected".to_string().into());
             }
         };
 
@@ -170,7 +167,7 @@ impl AddNewIdentityScreen {
                 if let Err(e) = self.render_qr_code(ui, amount_dash) {
                     MessageBanner::set_global(
                         ui.ctx(),
-                        TaskError::user_message(&e),
+                        e.to_string(),
                         MessageType::Error,
                     );
                 }

@@ -98,7 +98,7 @@ impl CreateAssetLockScreen {
         }
     }
 
-    fn generate_funding_address(&mut self) -> Result<(), String> {
+    fn generate_funding_address(&mut self) -> Result<(), TaskError> {
         let mut wallet = self.wallet.write().unwrap();
 
         // Generate a new asset lock funding address
@@ -116,8 +116,7 @@ impl CreateAssetLockScreen {
                         &receive_address,
                         Some("Managed by Dash Evo Tool - Asset Lock"),
                         Some(false),
-                    )
-                    .map_err(|e| e.to_string())?;
+                    )?;
             }
             self.funding_address = Some(receive_address);
         } else {
@@ -126,8 +125,7 @@ impl CreateAssetLockScreen {
                 .core_client
                 .read()
                 .expect("Core client lock was poisoned")
-                .get_address_info(&receive_address)
-                .map_err(|e| e.to_string())?;
+                .get_address_info(&receive_address)?;
 
             if !(info.is_watchonly || info.is_mine) {
                 self.app_context
@@ -138,8 +136,7 @@ impl CreateAssetLockScreen {
                         &receive_address,
                         Some("Managed by Dash Evo Tool - Asset Lock"),
                         Some(false),
-                    )
-                    .map_err(|e| e.to_string())?;
+                    )?;
             }
             self.funding_address = Some(receive_address);
             self.core_has_funding_address = Some(true);
@@ -148,7 +145,7 @@ impl CreateAssetLockScreen {
         Ok(())
     }
 
-    fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), String> {
+    fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), TaskError> {
         if self.funding_address.is_none() {
             self.generate_funding_address()?
         }
@@ -587,7 +584,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                 egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
                                 |ui| {
                                     if let Err(e) = self.render_qr_code(ui) {
-                                        MessageBanner::set_global(ui.ctx(), TaskError::user_message(&e), MessageType::Error);
+                                        MessageBanner::set_global(ui.ctx(), e.to_string(), MessageType::Error);
                                     }
 
                                     ui.add_space(20.0);

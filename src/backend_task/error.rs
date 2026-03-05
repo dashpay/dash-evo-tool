@@ -5,7 +5,11 @@
 //! `From<String>` → backwards compatible with existing `Result<T, String>` code.
 //!   Parses known error patterns into typed variants automatically.
 
+use dash_sdk::dashcore_rpc;
 use thiserror::Error;
+
+/// Dash Core RPC error code: wallet file not specified (multi-wallet node).
+const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
@@ -48,18 +52,6 @@ pub enum TaskError {
     },
 }
 
-impl TaskError {
-    /// Convert a raw error string into a user-friendly message.
-    ///
-    /// Uses the same detection logic as `From<String>`: known error patterns
-    /// (e.g. RPC error -19) are replaced with human-readable text. Unknown
-    /// errors pass through unchanged. Useful in UI code that shows errors
-    /// via `MessageBanner` without going through the backend task system.
-    pub fn user_message(raw: &str) -> String {
-        TaskError::from(raw.to_string()).to_string()
-    }
-}
-
 impl From<String> for TaskError {
     fn from(s: String) -> Self {
         if s.contains("Wallet file not specified") {
@@ -69,6 +61,20 @@ impl From<String> for TaskError {
         } else {
             TaskError::Generic(s)
         }
+    }
+}
+
+impl From<dashcore_rpc::Error> for TaskError {
+    fn from(e: dashcore_rpc::Error) -> Self {
+        if let dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(ref rpc_err)) =
+            e
+            && rpc_err.code == RPC_WALLET_NOT_SPECIFIED
+        {
+            return TaskError::CoreWalletNotConfigured {
+                wallet_seed_hash: [0; 32],
+            };
+        }
+        TaskError::Generic(e.to_string())
     }
 }
 
@@ -102,5 +108,35 @@ mod tests {
         .to_string();
         assert!(msg.contains("Wallets screen"));
         assert!(msg.contains("refresh"));
+    }
+
+    #[test]
+    fn rpc_error_code_neg19_converts_to_core_wallet_not_configured() {
+        let rpc_err = dashcore_rpc::jsonrpc::error::RpcError {
+            code: -19,
+            message: "Wallet file not specified".to_string(),
+            data: None,
+        };
+        let err: TaskError =
+            dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(rpc_err)).into();
+        assert!(
+            matches!(err, TaskError::CoreWalletNotConfigured { .. }),
+            "Expected CoreWalletNotConfigured, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn other_rpc_error_converts_to_generic() {
+        let rpc_err = dashcore_rpc::jsonrpc::error::RpcError {
+            code: -1,
+            message: "Some other error".to_string(),
+            data: None,
+        };
+        let err: TaskError =
+            dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(rpc_err)).into();
+        assert!(
+            matches!(err, TaskError::Generic(_)),
+            "Expected Generic, got: {err:?}"
+        );
     }
 }

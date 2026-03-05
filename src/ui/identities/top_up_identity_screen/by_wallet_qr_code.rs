@@ -12,7 +12,7 @@ use egui::Ui;
 use std::sync::Arc;
 
 impl TopUpIdentityScreen {
-    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
+    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), TaskError> {
         let address = {
             if let Some(wallet_guard) = self.wallet.as_ref() {
                 // Get the receive address from the selected wallet
@@ -31,18 +31,14 @@ impl TopUpIdentityScreen {
                         .read()
                         .map_err(|_| "Core client lock was poisoned".to_string())?;
 
-                    let info = core_client
-                        .get_address_info(&receive_address)
-                        .map_err(|e| e.to_string())?;
+                    let info = core_client.get_address_info(&receive_address)?;
 
                     if !(info.is_watchonly || info.is_mine) {
-                        core_client
-                            .import_address(
-                                &receive_address,
-                                Some("Managed by Dash Evo Tool"),
-                                Some(false),
-                            )
-                            .map_err(|e| e.to_string())?;
+                        core_client.import_address(
+                            &receive_address,
+                            Some("Managed by Dash Evo Tool"),
+                            Some(false),
+                        )?;
                     }
 
                     drop(core_client);
@@ -53,7 +49,7 @@ impl TopUpIdentityScreen {
                     self.funding_address.as_ref().unwrap().clone()
                 }
             } else {
-                return Err("No wallet selected".to_string());
+                return Err("No wallet selected".to_string().into());
             }
         };
 
@@ -129,11 +125,7 @@ impl TopUpIdentityScreen {
             if let Ok(amount_dash) = self.funding_amount.parse::<f64>() {
                 if amount_dash > 0.0 {
                     if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                        MessageBanner::set_global(
-                            ui.ctx(),
-                            TaskError::user_message(&e),
-                            MessageType::Error,
-                        );
+                        MessageBanner::set_global(ui.ctx(), e.to_string(), MessageType::Error);
                     }
                 } else {
                     ui.label("Please enter an amount greater than 0");

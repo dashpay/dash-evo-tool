@@ -1,5 +1,6 @@
 //! Refresh Single Key Wallet Info - Reload UTXOs and balances for a single key wallet
 
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -12,7 +13,7 @@ impl AppContext {
     pub fn refresh_single_key_wallet_info(
         &self,
         wallet: Arc<RwLock<SingleKeyWallet>>,
-    ) -> Result<(), String> {
+    ) -> Result<(), TaskError> {
         // Step 1: Get the address from the wallet
         let (address, key_hash, core_wallet_name) = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
@@ -35,9 +36,7 @@ impl AppContext {
 
         // Step 3: Get UTXOs for this address
         let utxo_map = {
-            let utxos = client
-                .list_unspent(Some(0), None, Some(&[&address]), None, None)
-                .map_err(|e| format!("Failed to list UTXOs: {}", e))?;
+            let utxos = client.list_unspent(Some(0), None, Some(&[&address]), None, None)?;
 
             let mut map: HashMap<OutPoint, TxOut> = HashMap::new();
             for utxo in utxos {

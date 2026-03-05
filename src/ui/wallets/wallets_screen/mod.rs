@@ -2062,8 +2062,20 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
-        if let TaskError::CoreWalletNotConfigured { wallet_seed_hash } = error {
+        if matches!(error, TaskError::CoreWalletNotConfigured) {
             self.refreshing = false;
+
+            // Determine the wallet hash from the currently selected wallet
+            let wallet_hash = self
+                .selected_wallet
+                .as_ref()
+                .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+                .or_else(|| {
+                    self.selected_single_key_wallet
+                        .as_ref()
+                        .and_then(|w| w.read().ok().map(|g| g.key_hash))
+                });
+
             match self.app_context.list_core_wallets() {
                 Ok(wallets) if !wallets.is_empty() => {
                     let dialog = SelectionDialog::new(
@@ -2072,7 +2084,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         wallets.clone(),
                     );
                     self.core_wallet_dialog = Some(dialog);
-                    self.pending_core_wallet_seed_hash = Some(*wallet_seed_hash);
+                    self.pending_core_wallet_seed_hash = wallet_hash;
                     self.pending_core_wallet_options = Some(wallets);
                 }
                 Ok(_) => {
@@ -2102,6 +2114,9 @@ impl ScreenLike for WalletsBalancesScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
+            crate::ui::BackendTaskSuccessResult::CoreWalletAutoDetected { .. } => {
+                self.refreshing = false;
+            }
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
                 // Refresh the cached platform sync info so the panel shows

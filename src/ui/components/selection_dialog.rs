@@ -150,7 +150,7 @@ impl SelectionDialog {
         use crate::ui::components::component_trait::{Component, ComponentResponse};
 
         let mut selection_result: Option<SelectionStatus> = None;
-        egui::Area::new(egui::Id::new("selection_dialog_modal_area"))
+        egui::Area::new(egui::Id::new("selection_dialog_modal").with(self.title.text()))
             .fixed_pos(egui::Pos2::ZERO)
             .order(egui::Order::Middle)
             .interactable(true)
@@ -186,6 +186,7 @@ impl SelectionDialog {
         painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
         let mut final_response = None;
+        let mut combo_popup_id: Option<egui::Id> = None;
         let window_response = egui::Window::new(self.title.clone())
             .collapsible(false)
             .resizable(false)
@@ -224,10 +225,13 @@ impl SelectionDialog {
                     let selected_text = self
                         .options
                         .get(self.selected_index)
-                        .cloned()
+                        .map(|s| s.as_str())
                         .unwrap_or_default();
 
-                    egui::ComboBox::from_id_salt("selection_dialog_combo")
+                    let salt = ui.id().with("selection_dialog_combo");
+                    let widget_id = ui.make_persistent_id(egui::Id::new(salt));
+                    combo_popup_id = Some(widget_id.with("popup"));
+                    egui::ComboBox::from_id_salt(salt)
                         .selected_text(selected_text)
                         .width(ui.available_width() - 8.0)
                         .show_ui(ui, |ui| {
@@ -312,8 +316,10 @@ impl SelectionDialog {
             final_response = Some(SelectionStatus::Canceled);
         }
 
-        // Handle Enter key
-        if final_response.is_none() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        // Handle Enter key (skip if ComboBox dropdown is open)
+        let combo_open = combo_popup_id.is_some_and(|id| egui::Popup::is_id_open(ui.ctx(), id));
+        if final_response.is_none() && !combo_open && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        {
             final_response = Some(SelectionStatus::Selected(self.selected_index));
         }
 

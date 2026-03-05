@@ -18,7 +18,7 @@ When Dash Core (dash-qt) has multiple wallets loaded, wallet-specific RPC calls 
 Key components:
 - **Inline ComboBox** (`add_new_wallet_screen.rs`, `import_mnemonic_screen.rs`) -- appears in the creation/import form when Dash Core has >1 wallets loaded
 - **SelectionDialog** (`src/ui/components/selection_dialog.rs`) -- modal dialog used only on the **Wallets screen** for runtime recovery of legacy wallets hitting error -19
-- **Wallets screen** (`src/ui/wallets/`) -- handles `CoreWalletSelectionNeeded` result for runtime recovery; runs auto-detection before falling back to modal
+- **Wallets screen** (`src/ui/wallets/`) -- handles `CoreWalletNotConfigured` result for runtime recovery; runs auto-detection before falling back to modal
 - **Non-Wallets screens** -- display error banner on error -19, directing the user to the Wallets screen
 - **SQLite persistence** (`src/database/wallet.rs`, `src/database/single_key_wallet.rs`) -- `core_wallet_name` column per wallet
 - **`core_client_for_wallet()`** (`src/context/mod.rs`) -- builds RPC client with `/wallet/<name>` path

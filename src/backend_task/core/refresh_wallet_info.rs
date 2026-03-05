@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -15,7 +16,7 @@ impl AppContext {
     pub fn refresh_wallet_info(
         &self,
         wallet: Arc<RwLock<Wallet>>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Step 1: Collect data from wallet with brief read lock
         let (addresses, asset_lock_txs, seed_hash, core_wallet_name) = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
@@ -54,15 +55,13 @@ impl AppContext {
             let utxos = if addresses.is_empty() {
                 Vec::new()
             } else {
-                client
-                    .list_unspent(
-                        None,
-                        None,
-                        Some(&addresses.iter().collect::<Vec<_>>()),
-                        Some(false),
-                        None,
-                    )
-                    .map_err(|e| format!("Failed to list UTXOs: {}", e))?
+                client.list_unspent(
+                    None,
+                    None,
+                    Some(&addresses.iter().collect::<Vec<_>>()),
+                    Some(false),
+                    None,
+                )?
             };
 
             // Build the UTXO map

@@ -46,18 +46,13 @@ pub enum TaskError {
     #[error(
         "Core wallet not configured for this wallet. Go to the Wallets screen and refresh to auto-detect the Core wallet association."
     )]
-    CoreWalletNotConfigured {
-        /// Seed hash (HD) or key hash (single-key) identifying the wallet.
-        wallet_seed_hash: [u8; 32],
-    },
+    CoreWalletNotConfigured,
 }
 
 impl From<String> for TaskError {
     fn from(s: String) -> Self {
         if s.contains("Wallet file not specified") {
-            TaskError::CoreWalletNotConfigured {
-                wallet_seed_hash: [0; 32],
-            }
+            TaskError::CoreWalletNotConfigured
         } else {
             TaskError::Generic(s)
         }
@@ -70,9 +65,7 @@ impl From<dashcore_rpc::Error> for TaskError {
             e
             && rpc_err.code == RPC_WALLET_NOT_SPECIFIED
         {
-            return TaskError::CoreWalletNotConfigured {
-                wallet_seed_hash: [0; 32],
-            };
+            return TaskError::CoreWalletNotConfigured;
         }
         TaskError::Generic(e.to_string())
     }
@@ -86,7 +79,7 @@ mod tests {
     fn from_string_detects_rpc_error_minus_19() {
         let err: TaskError = "JSON-RPC error: RPC error response: RpcError { code: -19, message: \"Wallet file not specified\" }".to_string().into();
         assert!(
-            matches!(err, TaskError::CoreWalletNotConfigured { .. }),
+            matches!(err, TaskError::CoreWalletNotConfigured),
             "Expected CoreWalletNotConfigured, got: {err:?}",
         );
     }
@@ -102,10 +95,7 @@ mod tests {
 
     #[test]
     fn display_message_is_user_friendly() {
-        let msg = TaskError::CoreWalletNotConfigured {
-            wallet_seed_hash: [0; 32],
-        }
-        .to_string();
+        let msg = TaskError::CoreWalletNotConfigured.to_string();
         assert!(msg.contains("Wallets screen"));
         assert!(msg.contains("refresh"));
     }
@@ -120,7 +110,7 @@ mod tests {
         let err: TaskError =
             dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(rpc_err)).into();
         assert!(
-            matches!(err, TaskError::CoreWalletNotConfigured { .. }),
+            matches!(err, TaskError::CoreWalletNotConfigured),
             "Expected CoreWalletNotConfigured, got: {err:?}"
         );
     }

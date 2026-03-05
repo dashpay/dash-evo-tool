@@ -599,6 +599,11 @@ impl AppContext {
                         "Invalid Core wallet name: contains disallowed characters".to_string()
                     );
                 }
+                if name.contains("..")
+                    || name.trim_matches(|c: char| c == '.' || c == ' ').is_empty()
+                {
+                    return Err(format!("Invalid Core wallet name: '{}'", name));
+                }
                 format!("{}/wallet/{}", base, name)
             }
             _ => base,

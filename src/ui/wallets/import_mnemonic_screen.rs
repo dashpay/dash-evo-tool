@@ -153,7 +153,7 @@ impl ImportMnemonicScreen {
         wallet.core_wallet_name = self
             .core_wallets
             .as_ref()
-            .map(|ws| ws[self.selected_core_wallet_index].clone());
+            .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
         let key_hash = wallet.key_hash();
 
@@ -262,7 +262,7 @@ impl ImportMnemonicScreen {
                 core_wallet_name: self
                     .core_wallets
                     .as_ref()
-                    .map(|ws| ws[self.selected_core_wallet_index].clone()),
+                    .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned()),
             };
 
             self.app_context

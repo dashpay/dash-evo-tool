@@ -548,6 +548,7 @@ fn process_banner(ui: &mut egui::Ui, state: &mut BannerState) -> BannerStatus {
         state.suggestion.as_deref(),
         state.details.as_deref(),
         &mut state.details_expanded,
+        state.key,
     ) {
         return BannerStatus::Dismissed;
     }
@@ -559,6 +560,7 @@ fn process_banner(ui: &mut egui::Ui, state: &mut BannerState) -> BannerStatus {
 
 /// Shared rendering logic for both global and per-instance banners.
 /// Returns `true` if the dismiss button was clicked.
+#[allow(clippy::too_many_arguments)]
 fn render_banner(
     ui: &mut egui::Ui,
     text: &str,
@@ -567,6 +569,7 @@ fn render_banner(
     suggestion: Option<&str>,
     details: Option<&str>,
     details_expanded: &mut bool,
+    banner_key: u64,
 ) -> bool {
     let dark_mode = ui.ctx().style().visuals.dark_mode;
     let fg_color = DashColors::message_color(message_type, dark_mode);
@@ -679,6 +682,7 @@ fn render_banner(
                         .corner_radius(Shape::RADIUS_SM as f32)
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
+                                .id_salt(banner_key)
                                 .max_height(DETAILS_MAX_HEIGHT)
                                 .show(ui, |ui| {
                                     ui.add(

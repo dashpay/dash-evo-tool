@@ -1157,20 +1157,23 @@ impl App for AppState {
                     }
                 }
                 TaskResult::Error(err) => {
-                    // Let the screen handle specific error types first
-                    self.visible_screen_mut().display_task_error(&err);
+                    // Let the screen handle specific error types first.
+                    // If handled, skip the generic error banner.
+                    let handled = self.visible_screen_mut().display_task_error(&err);
 
-                    let msg = err.to_string();
-                    let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
-                    if self.current_app_context().is_developer_mode() {
-                        // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
-                        // in developer mode. This is a local UI app — no third parties
-                        // see this output. Ensure inner error types don't expose secrets
-                        // (see #667).
-                        handle.with_details(&err);
+                    if !handled {
+                        let msg = err.to_string();
+                        let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
+                        if self.current_app_context().is_developer_mode() {
+                            // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
+                            // in developer mode. This is a local UI app — no third parties
+                            // see this output. Ensure inner error types don't expose secrets
+                            // (see #667).
+                            handle.with_details(&err);
+                        }
+                        self.visible_screen_mut()
+                            .display_message(&msg, MessageType::Error);
                     }
-                    self.visible_screen_mut()
-                        .display_message(&msg, MessageType::Error);
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();

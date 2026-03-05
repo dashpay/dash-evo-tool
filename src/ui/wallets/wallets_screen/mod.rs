@@ -2061,7 +2061,7 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
-    fn display_task_error(&mut self, error: &TaskError) {
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
         if let TaskError::CoreWalletNotConfigured { wallet_seed_hash } = error {
             self.refreshing = false;
             match self.app_context.list_core_wallets() {
@@ -2091,6 +2091,9 @@ impl ScreenLike for WalletsBalancesScreen {
                     .with_details(e);
                 }
             }
+            true // Suppress generic error banner
+        } else {
+            false
         }
     }
 

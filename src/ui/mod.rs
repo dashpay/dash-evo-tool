@@ -860,8 +860,10 @@ pub trait ScreenLike {
     /// Called by `AppState` when a backend task fails with a typed error.
     ///
     /// Override to handle specific error variants (e.g., `CoreWalletNotConfigured`).
-    /// The default is a no-op; the global error banner is set by `AppState`.
-    fn display_task_error(&mut self, _error: &TaskError) {}
+    /// Return `true` to suppress the default error banner in `AppState`.
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        false
+    }
 
     fn pop_on_success(&mut self) {}
 }
@@ -1512,7 +1514,7 @@ impl ScreenLike for Screen {
         }
     }
 
-    fn display_task_error(&mut self, error: &TaskError) {
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
         match self {
             Screen::IdentitiesScreen(screen) => screen.display_task_error(error),
             Screen::DPNSScreen(screen) => screen.display_task_error(error),

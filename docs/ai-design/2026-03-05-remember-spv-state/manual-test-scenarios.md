@@ -47,9 +47,10 @@
 
 1. Connect SPV
 2. Disable developer mode in settings
-3. Close and reopen app
-4. Re-enable developer mode
-5. Switch to SPV mode
+3. Verify SPV has stopped and auto-start checkbox is no longer visible
+4. Close and reopen app
+5. Re-enable developer mode
+6. Switch to SPV mode
 
 **Expected:** SPV does not auto-start (was cleared when dev mode was disabled).
 

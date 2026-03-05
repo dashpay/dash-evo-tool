@@ -799,7 +799,10 @@ impl AppContext {
         // at 200ms intervals and picks up the Stopped transition quickly.
         self.connection_status.reset_timer();
 
-        // Remember that SPV was stopped so it doesn't auto-start on next launch.
+        // Note: stop_spv() must not be called from the shutdown path.
+        // During shutdown, save_spv_running_state() in app.rs handles persistence
+        // based on the current SPV status. Calling stop_spv() during shutdown would
+        // overwrite that state with false.
         if let Err(e) = self.db.update_auto_start_spv(false) {
             tracing::warn!("Failed to save auto_start_spv: {}", e);
         }

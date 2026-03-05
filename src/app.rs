@@ -734,7 +734,16 @@ impl AppState {
             // TODO: SPV auto-start is gated behind developer mode while SPV is in development.
             // Remove the is_developer_mode() check once SPV is production-ready.
             let current_context = app_state.current_app_context();
-            let auto_start_spv = db.get_auto_start_spv().unwrap_or(false);
+            let auto_start_spv = db.get_auto_start_spv().unwrap_or_else(|e| {
+                tracing::debug!("Failed to read auto_start_spv setting: {}", e);
+                false
+            });
+            // Clear auto_start_spv at startup so that if the app crashes during SPV
+            // startup, the next launch won't create a crash loop. The flag will be
+            // re-enabled by start_spv() if SPV successfully begins connecting.
+            if auto_start_spv && let Err(e) = db.update_auto_start_spv(false) {
+                tracing::debug!("Failed to clear auto_start_spv at startup: {}", e);
+            }
             if auto_start_spv
                 && current_context.is_developer_mode()
                 && current_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv
@@ -804,15 +813,23 @@ impl AppState {
 
     /// Persist SPV running state so the app auto-starts SPV on next launch
     /// if it was active when the user closed the window.
+    ///
+    /// This is a safety-net for abnormal shutdowns. During normal operation,
+    /// `start_spv()` and `stop_spv()` eagerly persist the state on every
+    /// connect/disconnect.
     fn save_spv_running_state(&self) {
         let ctx = self.current_app_context();
-        if ctx.core_backend_mode() != CoreBackendMode::Spv {
-            return;
-        }
-        let spv_active = matches!(
-            ctx.spv_manager().status().status,
-            SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running
-        );
+        // In non-SPV modes, save false as defence-in-depth. Mode-switch already
+        // persists false via stop_spv(), but this ensures consistency even if
+        // that path was somehow skipped.
+        let spv_active = if ctx.core_backend_mode() != CoreBackendMode::Spv {
+            false
+        } else {
+            matches!(
+                ctx.spv_manager().status().status,
+                SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running
+            )
+        };
         if let Err(e) = ctx.db.update_auto_start_spv(spv_active) {
             tracing::warn!("Failed to save SPV running state: {}", e);
         } else {

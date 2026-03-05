@@ -1303,10 +1303,13 @@ impl NetworkChooserScreen {
                             .clicked()
                         {
                             // Save to database
-                            let _ = self
+                            if let Err(e) = self
                                 .mainnet_app_context
                                 .db
-                                .update_auto_start_spv(self.auto_start_spv);
+                                .update_auto_start_spv(self.auto_start_spv)
+                            {
+                                tracing::warn!("Failed to save auto_start_spv: {}", e);
+                            }
                         }
                         ui.label(
                             egui::RichText::new(if self.auto_start_spv {

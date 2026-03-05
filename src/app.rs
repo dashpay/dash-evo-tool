@@ -12,7 +12,7 @@ use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
-use crate::spv::CoreBackendMode;
+use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
@@ -802,6 +802,24 @@ impl AppState {
         }
     }
 
+    /// Persist SPV running state so the app auto-starts SPV on next launch
+    /// if it was active when the user closed the window.
+    fn save_spv_running_state(&self) {
+        let ctx = self.current_app_context();
+        if ctx.core_backend_mode() != CoreBackendMode::Spv {
+            return;
+        }
+        let spv_active = matches!(
+            ctx.spv_manager().status().status,
+            SpvStatus::Starting | SpvStatus::Syncing | SpvStatus::Running
+        );
+        if let Err(e) = ctx.db.update_auto_start_spv(spv_active) {
+            tracing::warn!("Failed to save SPV running state: {}", e);
+        } else {
+            tracing::debug!("Saved SPV running state: auto_start_spv={}", spv_active);
+        }
+    }
+
     fn context_available_for_network(&self, network: Network) -> bool {
         match network {
             Network::Dash => true, // Mainnet is always available
@@ -1075,6 +1093,10 @@ impl App for AppState {
                 MessageType::Warning,
             );
             tracing::debug!("Close requested, starting async shutdown");
+
+            // Remember SPV running state so it auto-starts on next launch.
+            self.save_spv_running_state();
+
             self.shutdown_receiver = Some(self.subtasks.shutdown_async());
             self.shutdown_started = Some(std::time::Instant::now());
             ctx.request_repaint();
@@ -1445,6 +1467,7 @@ impl App for AppState {
             return;
         }
         tracing::debug!("on_exit: fallback blocking shutdown");
+        self.save_spv_running_state();
         if let Err(e) = self.subtasks.shutdown() {
             tracing::error!("Error during task shutdown: {}", e);
         }

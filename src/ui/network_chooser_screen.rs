@@ -308,6 +308,7 @@ impl NetworkChooserScreen {
                                     let ctx = self.current_app_context();
                                     ctx.set_core_backend_mode(CoreBackendMode::Rpc);
                                     ctx.stop_spv();
+                                    self.auto_start_spv = false;
                                 }
                             });
 
@@ -549,6 +550,7 @@ impl NetworkChooserScreen {
                             .clicked()
                         {
                             self.current_app_context().stop_spv();
+                            self.auto_start_spv = false;
                         }
 
                         // Show sync status next to button
@@ -616,6 +618,8 @@ impl NetworkChooserScreen {
                                 if let Err(err) = self.current_app_context().start_spv() {
                                     app_action =
                                         AppAction::Custom(format!("Failed to start SPV: {}", err));
+                                } else {
+                                    self.auto_start_spv = true;
                                 }
                             } else {
                                 // Core mode connect
@@ -1084,6 +1088,8 @@ impl NetworkChooserScreen {
                                 }
                                 self.backend_modes.insert(Network::Regtest, CoreBackendMode::Rpc);
                             }
+                            // stop_spv() already persisted auto_start_spv=false; sync the UI field.
+                            self.auto_start_spv = false;
                         }
                     }
                     ui.label(

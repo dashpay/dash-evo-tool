@@ -77,6 +77,12 @@ impl AppContext {
         self.connection_status
             .set_spv_status(self.spv_manager.status().status);
         self.connection_status.refresh_state();
+
+        // Remember that SPV was started so it auto-starts on next launch.
+        if let Err(e) = self.db.update_auto_start_spv(true) {
+            tracing::warn!("Failed to save auto_start_spv: {}", e);
+        }
+
         Ok(())
     }
 
@@ -792,5 +798,10 @@ impl AppContext {
         // Reset the throttle timer so trigger_refresh() starts polling
         // at 200ms intervals and picks up the Stopped transition quickly.
         self.connection_status.reset_timer();
+
+        // Remember that SPV was stopped so it doesn't auto-start on next launch.
+        if let Err(e) = self.db.update_auto_start_spv(false) {
+            tracing::warn!("Failed to save auto_start_spv: {}", e);
+        }
     }
 }

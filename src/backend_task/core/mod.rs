@@ -7,6 +7,7 @@ mod start_dash_qt;
 
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
@@ -206,8 +207,6 @@ impl AppContext {
                 )))
             }
             CoreTask::RefreshWalletInfo(wallet, sync_platform) => {
-                // Get wallet seed hash and first address for Platform balance refresh
-                // and potential Core wallet auto-detection
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
 
                 if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
@@ -215,7 +214,6 @@ impl AppContext {
                         .await
                         .map_err(|e| format!("Error refreshing wallet via SPV: {}", e))?;
                 } else {
-                    // Run blocking RPC calls on a dedicated thread pool to avoid freezing the UI
                     let ctx = self.clone();
                     if let Err(e) =
                         tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
@@ -226,13 +224,12 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified(&msg, &seed_hash, first_addr.as_ref())
                         {
-                            return result;
+                            return result.map_err(|e: TaskError| e.to_string());
                         }
                         return Err(msg);
                     }
                 }
 
-                // Also refresh Platform address balances if requested
                 let warning = if sync_platform {
                     match self.fetch_platform_address_balances(seed_hash).await {
                         Ok(_) => None,
@@ -262,7 +259,7 @@ impl AppContext {
                     if let Some(result) =
                         self.check_wallet_not_specified_single_key(&msg, &key_hash, &address)
                     {
-                        return result;
+                        return result.map_err(|e: TaskError| e.to_string());
                     }
                     return Err(msg);
                 }
@@ -284,7 +281,7 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified(&msg, &seed_hash, first_addr.as_ref())
                         {
-                            return result;
+                            return result.map_err(|e: TaskError| e.to_string());
                         }
                         Err(msg)
                     }
@@ -302,7 +299,7 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified(&msg, &seed_hash, first_addr.as_ref())
                         {
-                            return result;
+                            return result.map_err(|e: TaskError| e.to_string());
                         }
                         Err(msg)
                     }
@@ -316,7 +313,7 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified(&e, &seed_hash, first_addr.as_ref())
                         {
-                            return result;
+                            return result.map_err(|e: TaskError| e.to_string());
                         }
                         Err(e)
                     }
@@ -333,7 +330,7 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified_single_key(&e, &key_hash, &address)
                         {
-                            return result;
+                            return result.map_err(|e: TaskError| e.to_string());
                         }
                         Err(e)
                     }
@@ -351,7 +348,7 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified(&e, &seed_hash, first_addr.as_ref())
                         {
-                            return result;
+                            return result.map_err(|e: TaskError| e.to_string());
                         }
                         Err(e)
                     }
@@ -391,29 +388,28 @@ impl AppContext {
     }
 
     /// If error indicates "Wallet file not specified" (Core error -19),
-    /// try to auto-detect the correct Core wallet by address, falling back
-    /// to listing loaded wallets and returning `CoreWalletSelectionNeeded`.
+    /// try to auto-detect the correct Core wallet by address. On success
+    /// returns `Ok(CoreWalletAutoDetected)`. On failure returns
+    /// `Err(TaskError::CoreWalletNotConfigured)` so the wallets screen
+    /// can catch it and show a selection dialog.
     fn check_wallet_not_specified(
         &self,
         error_msg: &str,
         wallet_seed_hash: &[u8; 32],
         first_address: Option<&Address>,
-    ) -> Option<Result<BackendTaskSuccessResult, String>> {
+    ) -> Option<Result<BackendTaskSuccessResult, TaskError>> {
         // INTENTIONAL(RUST-002): String matching for error -19; typed error codes not exposed by dashcore_rpc
         if !error_msg.contains("Wallet file not specified") {
             return None;
         }
         tracing::info!("RPC error -19: wallet not specified, attempting auto-detection");
 
-        // Try auto-detection first
         if let Some(address) = first_address {
             match self.try_detect_core_wallet_for_address(address) {
                 Ok(Some(wallet_name)) => {
-                    // Persist to DB
                     let _ = self
                         .db
                         .set_wallet_core_wallet_name(wallet_seed_hash, Some(&wallet_name));
-                    // Update in-memory
                     if let Ok(wallets) = self.wallets.read()
                         && let Some(w) = wallets.get(wallet_seed_hash)
                         && let Ok(mut g) = w.write()
@@ -432,16 +428,9 @@ impl AppContext {
             }
         }
 
-        match self.list_core_wallets() {
-            Ok(wallets) if wallets.is_empty() => {
-                Some(Err("No wallets loaded in Dash Core".to_string()))
-            }
-            Ok(wallets) => Some(Ok(BackendTaskSuccessResult::CoreWalletSelectionNeeded {
-                wallet_seed_hash: *wallet_seed_hash,
-                core_wallets: wallets,
-            })),
-            Err(e) => Some(Err(format!("Failed to list Dash Core wallets: {e}"))),
-        }
+        Some(Err(TaskError::CoreWalletNotConfigured {
+            wallet_seed_hash: *wallet_seed_hash,
+        }))
     }
 
     /// Single-key wallet variant of `check_wallet_not_specified`.
@@ -450,7 +439,7 @@ impl AppContext {
         error_msg: &str,
         key_hash: &[u8; 32],
         address: &Address,
-    ) -> Option<Result<BackendTaskSuccessResult, String>> {
+    ) -> Option<Result<BackendTaskSuccessResult, TaskError>> {
         // INTENTIONAL(RUST-002): String matching for error -19; typed error codes not exposed by dashcore_rpc
         if !error_msg.contains("Wallet file not specified") {
             return None;
@@ -461,11 +450,9 @@ impl AppContext {
 
         match self.try_detect_core_wallet_for_address(address) {
             Ok(Some(wallet_name)) => {
-                // Persist to DB
                 let _ = self
                     .db
                     .set_single_key_wallet_core_wallet_name(key_hash, Some(&wallet_name));
-                // Update in-memory
                 if let Ok(skw) = self.single_key_wallets.read()
                     && let Some(w) = skw.get(key_hash)
                     && let Ok(mut g) = w.write()
@@ -486,16 +473,9 @@ impl AppContext {
             Err(e) => tracing::warn!("Auto-detection failed: {}", e),
         }
 
-        match self.list_core_wallets() {
-            Ok(wallets) if wallets.is_empty() => {
-                Some(Err("No wallets loaded in Dash Core".to_string()))
-            }
-            Ok(wallets) => Some(Ok(BackendTaskSuccessResult::CoreWalletSelectionNeeded {
-                wallet_seed_hash: *key_hash,
-                core_wallets: wallets,
-            })),
-            Err(e) => Some(Err(format!("Failed to list Dash Core wallets: {e}"))),
-        }
+        Some(Err(TaskError::CoreWalletNotConfigured {
+            wallet_seed_hash: *key_hash,
+        }))
     }
 
     fn get_best_chain_lock(

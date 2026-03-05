@@ -352,6 +352,18 @@ impl MessageBanner {
         }
     }
 
+    /// Set a global error banner from any error type that implements `Display` + `Debug`.
+    ///
+    /// Uses `Display` for the user-facing message and attaches `Debug` as details.
+    pub fn set_global_error<E: fmt::Debug + fmt::Display>(
+        ctx: &egui::Context,
+        err: E,
+    ) -> BannerHandle {
+        let handle = Self::set_global(ctx, err.to_string(), MessageType::Error);
+        handle.with_details(err);
+        handle
+    }
+
     /// Finds a message by `old_text` and replaces it with `new_text`.
     /// If `old_text` is not found, falls back to adding `new_text` as a new
     /// message (with dedup check). This fallback is intentional: callers use
@@ -601,17 +613,16 @@ fn render_banner(
 
                 // Right-aligned: annotation + dismiss
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    let dismiss_response = ui.add(
-                        egui::Label::new(
-                            egui::RichText::new("\u{274C}")
-                                .color(fg_color)
-                                .font(Typography::body_small()),
+                    let dismiss_response = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new("\u{274C}")
+                                    .color(fg_color)
+                                    .font(Typography::body_small()),
+                            )
+                            .sense(egui::Sense::click()),
                         )
-                        .sense(egui::Sense::click()),
-                    );
-                    if dismiss_response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if dismiss_response.clicked() {
                         dismissed = true;
                     }
@@ -648,7 +659,7 @@ fn render_banner(
                 } else {
                     "Show details"
                 };
-                if ui
+                let toggle_response = ui
                     .add(
                         egui::Label::new(
                             egui::RichText::new(toggle_text)
@@ -658,8 +669,8 @@ fn render_banner(
                         )
                         .sense(egui::Sense::click()),
                     )
-                    .clicked()
-                {
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if toggle_response.clicked() {
                     *details_expanded = !*details_expanded;
                 }
 

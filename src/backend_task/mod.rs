@@ -276,12 +276,6 @@ pub enum BackendTaskSuccessResult {
     CoreWalletAutoDetected {
         wallet_name: String,
     },
-
-    /// Dash Core has multiple wallets; UI should show selection dialog.
-    CoreWalletSelectionNeeded {
-        wallet_seed_hash: [u8; 32],
-        core_wallets: Vec<String>,
-    },
 }
 
 impl BackendTaskSuccessResult {}

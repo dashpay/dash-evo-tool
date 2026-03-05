@@ -141,6 +141,28 @@ impl SelectionDialog {
         self.is_open = open;
         self
     }
+
+    /// Render the dialog as a modal overlay using its own `egui::Area`.
+    ///
+    /// Returns `Some(SelectionStatus)` when the user confirms or cancels,
+    /// `None` while the dialog is still open.
+    pub fn show_modal(&mut self, ctx: &egui::Context) -> Option<SelectionStatus> {
+        use crate::ui::components::component_trait::{Component, ComponentResponse};
+
+        let mut selection_result: Option<SelectionStatus> = None;
+        egui::Area::new(egui::Id::new("selection_dialog_modal_area"))
+            .fixed_pos(egui::Pos2::ZERO)
+            .order(egui::Order::Middle)
+            .interactable(true)
+            .show(ctx, |ui| {
+                ui.set_min_size(ctx.content_rect().size());
+                let response = self.show(ui);
+                if let Some(status) = response.inner.changed_value() {
+                    selection_result = Some(status.clone());
+                }
+            });
+        selection_result
+    }
 }
 
 impl SelectionDialog {

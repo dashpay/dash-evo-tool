@@ -210,10 +210,16 @@ impl BannerHandle {
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
         // Skip if details would just repeat the primary text (exact match or
         // Debug-quoted match, e.g. `"same text"` vs `same text`).
-        if details == b.text
-            || details.strip_prefix('"').and_then(|s| s.strip_suffix('"')) == Some(&b.text)
-        {
-            return Some(self);
+        let is_redundant = details == b.text
+            || details
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                == Some(b.text.as_str());
+
+        if is_redundant {
+            b.details = None;
+        } else {
+            b.details = Some(details);
         }
         b.details = Some(details);
         set_banners(&self.ctx, banners);

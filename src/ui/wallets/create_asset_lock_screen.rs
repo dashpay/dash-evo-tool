@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -586,7 +587,7 @@ impl ScreenLike for CreateAssetLockScreen {
                                 egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
                                 |ui| {
                                     if let Err(e) = self.render_qr_code(ui) {
-                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                        MessageBanner::set_global(ui.ctx(), TaskError::user_message(&e), MessageType::Error);
                                     }
 
                                     ui.add_space(20.0);

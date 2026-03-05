@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
@@ -128,7 +129,11 @@ impl TopUpIdentityScreen {
             if let Ok(amount_dash) = self.funding_amount.parse::<f64>() {
                 if amount_dash > 0.0 {
                     if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            TaskError::user_message(&e),
+                            MessageType::Error,
+                        );
                     }
                 } else {
                     ui.label("Please enter an amount greater than 0");

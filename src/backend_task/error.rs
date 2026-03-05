@@ -48,6 +48,18 @@ pub enum TaskError {
     },
 }
 
+impl TaskError {
+    /// Convert a raw error string into a user-friendly message.
+    ///
+    /// Uses the same detection logic as `From<String>`: known error patterns
+    /// (e.g. RPC error -19) are replaced with human-readable text. Unknown
+    /// errors pass through unchanged. Useful in UI code that shows errors
+    /// via `MessageBanner` without going through the backend task system.
+    pub fn user_message(raw: &str) -> String {
+        TaskError::from(raw.to_string()).to_string()
+    }
+}
+
 impl From<String> for TaskError {
     fn from(s: String) -> Self {
         if s.contains("Wallet file not specified") {

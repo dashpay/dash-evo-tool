@@ -17,7 +17,7 @@ impl AppContext {
         &self,
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, String> {
-        let (known_addresses, seed_hash, already_tracked_txids) = {
+        let (known_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
             let addresses: Vec<Address> = wallet_guard.known_addresses.keys().cloned().collect();
             let tracked: HashSet<_> = wallet_guard
@@ -25,7 +25,12 @@ impl AppContext {
                 .iter()
                 .map(|(tx, _, _, _, _)| tx.txid())
                 .collect();
-            (addresses, wallet_guard.seed_hash(), tracked)
+            (
+                addresses,
+                wallet_guard.seed_hash(),
+                tracked,
+                wallet_guard.core_wallet_name.clone(),
+            )
         };
 
         tracing::info!(
@@ -43,9 +48,8 @@ impl AppContext {
         }
 
         let client = self
-            .core_client
-            .read()
-            .expect("Core client lock was poisoned");
+            .core_client_for_wallet(core_wallet_name.as_deref())
+            .map_err(|e| format!("Failed to create Core RPC client: {e}"))?;
 
         let mut recovered_count = 0;
         let mut total_amount = 0u64;

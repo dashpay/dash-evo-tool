@@ -216,7 +216,6 @@ impl DerivationPathHelpers for DerivationPath {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
@@ -739,23 +738,15 @@ impl Wallet {
                 known_public_key = Some(public_key);
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
-                    app_context
-                        .core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
-                        .import_address(
-                            &address,
-                            Some(
-                                format!(
-                                    "Managed by Dash Evo Tool {} {}",
-                                    self.alias.clone().unwrap_or_default(),
-                                    derivation_path
-                                )
-                                .as_str(),
-                            ),
-                            Some(false),
-                        )
-                        .map_err(|e| e.to_string())?;
+                    app_context.try_import_address(
+                        &address,
+                        self.core_wallet_name.as_deref(),
+                        Some(&format!(
+                            "Managed by Dash Evo Tool {} {}",
+                            self.alias.clone().unwrap_or_default(),
+                            derivation_path
+                        )),
+                    );
 
                     self.register_address(
                         address,
@@ -946,10 +937,8 @@ impl Wallet {
             },
         );
 
-        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc
-            && let Ok(client) = app_context.core_client.read()
-        {
-            let _ = client.import_address(&address, None, Some(false));
+        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc {
+            app_context.try_import_address(&address, self.core_wallet_name.as_deref(), None);
         }
 
         tracing::trace!(

@@ -8,6 +8,7 @@ mod wallet_lifecycle;
 pub(crate) use transaction_processing::get_transaction_info;
 
 use crate::app_dir::core_cookie_path;
+use crate::backend_task::error::TaskError;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
@@ -607,6 +608,35 @@ impl AppContext {
             Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
         )
         .map_err(|e| format!("Failed to create Core RPC client: {e}"))
+    }
+
+    /// Import an address into the correct Core wallet if it's not already known.
+    /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
+    /// No-op if the address is already watched/mine.
+    pub fn ensure_address_imported(
+        &self,
+        address: &Address,
+        core_wallet_name: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<(), TaskError> {
+        let client = self.core_client_for_wallet(core_wallet_name)?;
+        let info = client.get_address_info(address)?;
+        if !(info.is_watchonly || info.is_mine) {
+            client.import_address(address, label, Some(false))?;
+        }
+        Ok(())
+    }
+
+    /// Import address into Core, ignoring errors. For best-effort registration.
+    pub fn try_import_address(
+        &self,
+        address: &Address,
+        core_wallet_name: Option<&str>,
+        label: Option<&str>,
+    ) {
+        if let Ok(client) = self.core_client_for_wallet(core_wallet_name) {
+            let _ = client.import_address(address, label, Some(false));
+        }
     }
 
     /// List wallets currently loaded in Dash Core.

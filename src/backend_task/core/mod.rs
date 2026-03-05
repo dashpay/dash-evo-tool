@@ -163,7 +163,7 @@ impl AppContext {
     pub async fn run_core_task(
         self: &Arc<Self>,
         task: CoreTask,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             CoreTask::GetBestChainLock => self
                 .core_client
@@ -176,10 +176,11 @@ impl AppContext {
                         self.network,
                     ))
                 })
-                .map_err(|e| e.to_string()),
+                .map_err(|e| TaskError::from(e.to_string())),
             CoreTask::GetBestChainLocks => {
                 // Load configs
-                let config = Config::load().map_err(|e| format!("Failed to load config: {}", e))?;
+                let config = Config::load()
+                    .map_err(|e| TaskError::from(format!("Failed to load config: {}", e)))?;
 
                 let maybe_mainnet_config = config.config_for_network(Network::Dash);
                 let maybe_testnet_config = config.config_for_network(Network::Testnet);
@@ -210,23 +211,23 @@ impl AppContext {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
 
                 if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-                    self.reconcile_spv_wallets()
-                        .await
-                        .map_err(|e| format!("Error refreshing wallet via SPV: {}", e))?;
+                    self.reconcile_spv_wallets().await.map_err(|e| {
+                        TaskError::from(format!("Error refreshing wallet via SPV: {}", e))
+                    })?;
                 } else {
                     let ctx = self.clone();
                     if let Err(e) =
                         tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
                             .await
-                            .map_err(|e| format!("Task join error: {}", e))?
+                            .map_err(|e| TaskError::from(format!("Task join error: {}", e)))?
                     {
                         let msg = format!("Error refreshing wallet: {}", e);
                         if let Some(result) =
                             self.check_wallet_not_specified(&msg, &seed_hash, first_addr.as_ref())
                         {
-                            return result.map_err(|e: TaskError| e.to_string());
+                            return result;
                         }
-                        return Err(msg);
+                        return Err(TaskError::from(msg));
                     }
                 }
 
@@ -246,28 +247,28 @@ impl AppContext {
             }
             CoreTask::RefreshSingleKeyWalletInfo(wallet) => {
                 let (key_hash, address) = {
-                    let g = wallet.read().map_err(|e| e.to_string())?;
+                    let g = wallet.read().map_err(|e| TaskError::from(e.to_string()))?;
                     (g.key_hash, g.address.clone())
                 };
                 let ctx = self.clone();
                 if let Err(e) =
                     tokio::task::spawn_blocking(move || ctx.refresh_single_key_wallet_info(wallet))
                         .await
-                        .map_err(|e| format!("Task join error: {}", e))?
+                        .map_err(|e| TaskError::from(format!("Task join error: {}", e)))?
                 {
                     let msg = format!("Error refreshing wallet: {}", e);
                     if let Some(result) =
                         self.check_wallet_not_specified_single_key(&msg, &key_hash, &address)
                     {
-                        return result.map_err(|e: TaskError| e.to_string());
+                        return result;
                     }
-                    return Err(msg);
+                    return Err(TaskError::from(msg));
                 }
                 Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
-                .map_err(|e| e.to_string())
+                .map_err(|e| TaskError::from(e.to_string()))
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
@@ -281,9 +282,9 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified(&msg, &seed_hash, first_addr.as_ref())
                         {
-                            return result.map_err(|e: TaskError| e.to_string());
+                            return result;
                         }
-                        Err(msg)
+                        Err(TaskError::from(msg))
                     }
                 }
             }
@@ -299,9 +300,9 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified(&msg, &seed_hash, first_addr.as_ref())
                         {
-                            return result.map_err(|e: TaskError| e.to_string());
+                            return result;
                         }
-                        Err(msg)
+                        Err(TaskError::from(msg))
                     }
                 }
             }
@@ -313,15 +314,15 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified(&e, &seed_hash, first_addr.as_ref())
                         {
-                            return result.map_err(|e: TaskError| e.to_string());
+                            return result;
                         }
-                        Err(e)
+                        Err(TaskError::from(e))
                     }
                 }
             }
             CoreTask::SendSingleKeyWalletPayment { wallet, request } => {
                 let (key_hash, address) = {
-                    let g = wallet.read().map_err(|e| e.to_string())?;
+                    let g = wallet.read().map_err(|e| TaskError::from(e.to_string()))?;
                     (g.key_hash, g.address.clone())
                 };
                 match self.send_single_key_wallet_payment(wallet, request).await {
@@ -330,9 +331,9 @@ impl AppContext {
                         if let Some(result) =
                             self.check_wallet_not_specified_single_key(&e, &key_hash, &address)
                         {
-                            return result.map_err(|e: TaskError| e.to_string());
+                            return result;
                         }
-                        Err(e)
+                        Err(TaskError::from(e))
                     }
                 }
             }
@@ -341,16 +342,16 @@ impl AppContext {
                 let ctx = self.clone();
                 match tokio::task::spawn_blocking(move || ctx.recover_asset_locks(wallet))
                     .await
-                    .map_err(|e| format!("Task join error: {}", e))?
+                    .map_err(|e| TaskError::from(format!("Task join error: {}", e)))?
                 {
                     Ok(result) => Ok(result),
                     Err(e) => {
                         if let Some(result) =
                             self.check_wallet_not_specified(&e, &seed_hash, first_addr.as_ref())
                         {
-                            return result.map_err(|e: TaskError| e.to_string());
+                            return result;
                         }
-                        Err(e)
+                        Err(TaskError::from(e))
                     }
                 }
             }
@@ -360,18 +361,22 @@ impl AppContext {
                 wallet,
             } => {
                 if !matches!(self.network, Network::Regtest | Network::Devnet) {
-                    return Err("Mining is only available on Regtest and Devnet".to_string());
+                    return Err(TaskError::from(
+                        "Mining is only available on Regtest and Devnet".to_string(),
+                    ));
                 }
                 let ctx = self.clone();
                 let mined = tokio::task::spawn_blocking(move || {
                     ctx.core_client
                         .read()
-                        .map_err(|e| format!("Core client lock was poisoned: {}", e))?
+                        .map_err(|e| {
+                            TaskError::from(format!("Core client lock was poisoned: {}", e))
+                        })?
                         .generate_to_address(block_count, &address)
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| TaskError::from(e.to_string()))
                 })
                 .await
-                .map_err(|e| format!("Task join error: {}", e))??;
+                .map_err(|e| TaskError::from(format!("Task join error: {}", e)))??;
 
                 let mined_count = mined.len() as u64;
 
@@ -379,8 +384,10 @@ impl AppContext {
                 let refresh_ctx = self.clone();
                 tokio::task::spawn_blocking(move || refresh_ctx.refresh_wallet_info(wallet))
                     .await
-                    .map_err(|e| format!("Task join error: {}", e))?
-                    .map_err(|e| format!("Error refreshing wallet after mining: {}", e))?;
+                    .map_err(|e| TaskError::from(format!("Task join error: {}", e)))?
+                    .map_err(|e| {
+                        TaskError::from(format!("Error refreshing wallet after mining: {}", e))
+                    })?;
 
                 Ok(BackendTaskSuccessResult::MineBlocksSuccess(mined_count))
             }

@@ -282,7 +282,8 @@ pub async fn send_payment_to_contact_impl(
             wallet: wallet.clone(),
             request,
         })
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Extract txid from result
     let txid = match &result {

@@ -2,6 +2,7 @@
 reviews:
   auto_review:
     enabled: true
+    drafts: false
     base_branches:
       - master
       - v1.0-dev

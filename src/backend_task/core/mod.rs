@@ -351,7 +351,7 @@ impl AppContext {
             return result;
         };
 
-        tracing::info!(
+        tracing::debug!(
             "RPC error -19{}: wallet not specified, attempting auto-detection",
             if is_single_key { " (single-key)" } else { "" }
         );
@@ -396,7 +396,7 @@ impl AppContext {
                     return Ok(BackendTaskSuccessResult::CoreWalletAutoDetected { wallet_name });
                 }
                 Ok(None) => {
-                    tracing::info!("Auto-detection inconclusive, manual selection needed");
+                    tracing::debug!("Auto-detection inconclusive, manual selection needed");
                 }
                 Err(e) => tracing::warn!("Auto-detection failed: {}", e),
             }

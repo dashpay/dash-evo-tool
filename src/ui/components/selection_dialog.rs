@@ -92,7 +92,7 @@ impl Component for SelectionDialog {
         if self.is_open {
             None
         } else {
-            Some(SelectionStatus::Canceled)
+            self.status.clone()
         }
     }
 }
@@ -265,9 +265,10 @@ impl SelectionDialog {
                                 .min_size(egui::Vec2::new(80.0, 32.0));
 
                             if ui
-                                .add(confirm_button)
+                                .add_enabled(!self.options.is_empty(), confirm_button)
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
+                                && !self.options.is_empty()
                             {
                                 final_response =
                                     Some(SelectionStatus::Selected(self.selected_index));
@@ -317,15 +318,20 @@ impl SelectionDialog {
 
         // Handle Enter key (skip if ComboBox dropdown is open)
         let combo_open = combo_popup_id.is_some_and(|id| egui::Popup::is_id_open(ui.ctx(), id));
-        if final_response.is_none() && !combo_open && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        if final_response.is_none()
+            && !self.options.is_empty()
+            && !combo_open
+            && ui.input(|i| i.key_pressed(egui::Key::Enter))
         {
             final_response = Some(SelectionStatus::Selected(self.selected_index));
         }
 
-        // Update state
-        self.is_open = is_open;
+        // Update state: record status before closing so current_value() sees it
         if final_response.is_some() {
             self.status = final_response.clone();
+            self.is_open = false;
+        } else {
+            self.is_open = is_open;
         }
 
         if let Some(window_response) = window_response {

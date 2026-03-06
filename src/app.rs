@@ -1150,6 +1150,8 @@ impl App for AppState {
                 }
                 TaskResult::Error(TaskError::MustRetry(msg)) => {
                     MessageBanner::set_global(ctx, &msg, MessageType::Success);
+                    self.visible_screen_mut()
+                        .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
                 }
                 TaskResult::Error(err) => {

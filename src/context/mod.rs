@@ -53,8 +53,6 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 pub struct AppContext {
     pub(crate) network: Network,
     developer_mode: AtomicBool,
-    #[allow(dead_code)] // May be used for devnet identification
-    pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
     // Context providers for SDK, so we can switch when backend mode changes
@@ -288,7 +286,6 @@ impl AppContext {
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
-            devnet_name: None,
             db,
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
@@ -587,7 +584,7 @@ impl AppContext {
             }
             _ => base,
         };
-        Self::create_core_rpc_client(&url, self.network, &self.devnet_name, &cfg)
+        Self::create_core_rpc_client(&url, self.network, &cfg.devnet_name, &cfg)
     }
 
     /// Import an address into the correct Core wallet if it's not already known.

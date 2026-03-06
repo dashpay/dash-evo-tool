@@ -2025,7 +2025,10 @@ impl ScreenLike for WalletsBalancesScreen {
                             Ok(()) => {
                                 MessageBanner::set_global(
                                     ctx,
-                                    format!("Dash Core wallet '{}' assigned", wallet_name),
+                                    format!(
+                                        "Dash Core wallet '{}' assigned — refreshing wallet. If you were performing another operation, please retry it.",
+                                        wallet_name
+                                    ),
                                     MessageType::Success,
                                 );
                                 self.refresh();
@@ -2108,7 +2111,10 @@ impl ScreenLike for WalletsBalancesScreen {
                             Ok(()) => {
                                 MessageBanner::set_global(
                                     self.app_context.egui_ctx(),
-                                    format!("Auto-selected Core wallet '{}'", wallets[0]),
+                                    format!(
+                                        "Auto-selected Core wallet '{}' — refreshing wallet. If you were performing another operation, please retry it.",
+                                        wallets[0]
+                                    ),
                                     MessageType::Success,
                                 );
                                 self.refresh();

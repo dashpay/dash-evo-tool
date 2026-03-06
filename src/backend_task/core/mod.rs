@@ -252,12 +252,24 @@ impl AppContext {
                     let g = wallet.read().map_err(|e| TaskError::from(e.to_string()))?;
                     (g.key_hash, g.address.clone())
                 };
+                let wallet_for_retry = wallet.clone();
                 let ctx = self.clone();
                 let result =
                     tokio::task::spawn_blocking(move || ctx.refresh_single_key_wallet_info(wallet))
                         .await?
                         .map(|()| BackendTaskSuccessResult::RefreshedWallet { warning: None });
-                self.with_wallet_recovery(&key_hash, Some(&address), true, result)
+                match self.with_wallet_recovery(&key_hash, Some(&address), true, result) {
+                    Err(TaskError::MustRetry(_)) => {
+                        // Wallet was auto-configured; retry the refresh.
+                        let ctx = self.clone();
+                        tokio::task::spawn_blocking(move || {
+                            ctx.refresh_single_key_wallet_info(wallet_for_retry)
+                        })
+                        .await??;
+                        Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
+                    }
+                    other => other,
+                }
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)

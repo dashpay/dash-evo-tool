@@ -2127,9 +2127,6 @@ impl ScreenLike for WalletsBalancesScreen {
         backend_task_success_result: crate::ui::BackendTaskSuccessResult,
     ) {
         match backend_task_success_result {
-            crate::ui::BackendTaskSuccessResult::CoreWalletAutoDetected { .. } => {
-                self.refreshing = false;
-            }
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
                 // Refresh the cached platform sync info so the panel shows

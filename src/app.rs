@@ -1140,14 +1140,6 @@ impl App for AppState {
                             );
                             self.visible_screen_mut().refresh();
                         }
-                        BackendTaskSuccessResult::CoreWalletAutoDetected { wallet_name } => {
-                            MessageBanner::set_global(
-                                ctx,
-                                format!("Auto-detected Dash Core wallet '{}'", wallet_name),
-                                MessageType::Success,
-                            );
-                            self.visible_screen_mut().refresh();
-                        }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
@@ -1155,6 +1147,10 @@ impl App for AppState {
                                 .display_task_result(unboxed_message);
                         }
                     }
+                }
+                TaskResult::Error(TaskError::MustRetry(msg)) => {
+                    MessageBanner::set_global(ctx, &msg, MessageType::Success);
+                    self.visible_screen_mut().refresh();
                 }
                 TaskResult::Error(err) => {
                     // Let the screen handle specific error types first.

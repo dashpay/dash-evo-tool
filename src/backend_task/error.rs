@@ -55,6 +55,11 @@ pub enum TaskError {
         "Core wallet not configured for this wallet. Go to the Wallets screen and refresh to auto-detect the Core wallet association."
     )]
     CoreWalletNotConfigured,
+
+    /// The operation's prerequisite was auto-fixed (e.g., Core wallet detected).
+    /// Callers should retry the failed operation.
+    #[error("{0}")]
+    MustRetry(String),
 }
 
 impl From<String> for TaskError {
@@ -106,6 +111,12 @@ mod tests {
         let msg = TaskError::CoreWalletNotConfigured.to_string();
         assert!(msg.contains("Wallets screen"));
         assert!(msg.contains("refresh"));
+    }
+
+    #[test]
+    fn must_retry_displays_inner_message() {
+        let err = TaskError::MustRetry("Auto-detected Core wallet 'mywallet'".to_string());
+        assert_eq!(err.to_string(), "Auto-detected Core wallet 'mywallet'");
     }
 
     #[test]

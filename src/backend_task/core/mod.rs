@@ -213,16 +213,23 @@ impl AppContext {
                     self.reconcile_spv_wallets().await?;
                 } else {
                     let ctx = self.clone();
+                    let wallet_for_retry = wallet.clone();
                     let result =
                         tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
                             .await?;
-                    let recovered =
-                        self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)?;
-                    if matches!(
-                        recovered,
-                        BackendTaskSuccessResult::CoreWalletAutoDetected { .. }
-                    ) {
-                        return Ok(recovered);
+                    match self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
+                    {
+                        Err(TaskError::MustRetry(_)) => {
+                            // Wallet was auto-configured; retry the refresh.
+                            let ctx = self.clone();
+                            tokio::task::spawn_blocking(move || {
+                                ctx.refresh_wallet_info(wallet_for_retry)
+                            })
+                            .await??;
+                        }
+                        other => {
+                            other?;
+                        }
                     }
                 }
 
@@ -337,7 +344,8 @@ impl AppContext {
 
     /// If `result` is `Err(CoreWalletNotConfigured)`, attempt auto-detection
     /// of the correct Core wallet by address. On success returns
-    /// `Ok(CoreWalletAutoDetected)`. On failure returns the original
+    /// `Err(MustRetry)` so callers can retry the original operation with
+    /// the newly configured wallet. On failure returns the original
     /// `Err(CoreWalletNotConfigured)` so the wallets screen can show a
     /// selection dialog. Non-wallet errors pass through unchanged.
     fn with_wallet_recovery(
@@ -357,7 +365,9 @@ impl AppContext {
         );
 
         if let Some(addr) = address {
-            match self.try_detect_core_wallet_for_address(addr) {
+            let detection_result =
+                tokio::task::block_in_place(|| self.try_detect_core_wallet_for_address(addr));
+            match detection_result {
                 Ok(Some(wallet_name)) => {
                     if is_single_key {
                         if !self
@@ -393,7 +403,9 @@ impl AppContext {
                         }
                     }
                     tracing::info!("Auto-detected Core wallet '{}'", wallet_name);
-                    return Ok(BackendTaskSuccessResult::CoreWalletAutoDetected { wallet_name });
+                    return Err(TaskError::MustRetry(format!(
+                        "Auto-detected Core wallet '{wallet_name}'"
+                    )));
                 }
                 Ok(None) => {
                     tracing::debug!("Auto-detection inconclusive, manual selection needed");

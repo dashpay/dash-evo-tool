@@ -271,11 +271,6 @@ pub enum BackendTaskSuccessResult {
 
     // Mining results (dev mode, Regtest/Devnet only)
     MineBlocksSuccess(u64),
-
-    /// A Core wallet was auto-detected for the DET wallet.
-    CoreWalletAutoDetected {
-        wallet_name: String,
-    },
 }
 
 impl BackendTaskSuccessResult {}

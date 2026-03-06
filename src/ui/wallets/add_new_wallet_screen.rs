@@ -129,7 +129,7 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
-            core_wallets: app_context.list_core_wallets().ok().filter(|w| w.len() > 1),
+            core_wallets: app_context.list_core_wallets().ok(),
             selected_core_wallet_index: 0,
         }
     }
@@ -868,7 +868,12 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    let save_step = if let Some(ref core_wallets) = self.core_wallets {
+                    let save_step = if self
+                        .core_wallets
+                        .as_ref()
+                        .is_some_and(|w| w.len() > 1)
+                    {
+                        let core_wallets = self.core_wallets.as_ref().unwrap();
                         ui.heading(
                             "6. Select the Dash Core wallet to use for RPC operations.",
                         );

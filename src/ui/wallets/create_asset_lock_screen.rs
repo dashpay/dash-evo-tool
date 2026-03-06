@@ -568,7 +568,12 @@ impl ScreenLike for CreateAssetLockScreen {
                                 egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
                                 |ui| {
                                     if let Err(e) = self.render_qr_code(ui) {
-                                        MessageBanner::set_global(ui.ctx(), e.to_string(), MessageType::Error);
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
+                                            "Failed to render QR code",
+                                            MessageType::Error,
+                                        )
+                                        .with_details(e);
                                     }
 
                                     ui.add_space(20.0);

@@ -89,7 +89,7 @@ impl ImportMnemonicScreen {
             // Identity discovery options
             identity_scan_count: 5,
 
-            core_wallets: app_context.list_core_wallets().ok().filter(|w| w.len() > 1),
+            core_wallets: app_context.list_core_wallets().ok(),
             selected_core_wallet_index: 0,
         }
     }
@@ -726,7 +726,12 @@ impl ScreenLike for ImportMnemonicScreen {
 
                     step += 1;
 
-                    if let Some(ref core_wallets) = self.core_wallets {
+                    if self
+                        .core_wallets
+                        .as_ref()
+                        .is_some_and(|w| w.len() > 1)
+                    {
+                        let core_wallets = self.core_wallets.as_ref().unwrap();
                         ui.add_space(10.0);
                         ui.separator();
                         ui.add_space(10.0);

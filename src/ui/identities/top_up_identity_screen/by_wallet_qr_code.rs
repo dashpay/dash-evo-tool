@@ -113,7 +113,12 @@ impl TopUpIdentityScreen {
             if let Ok(amount_dash) = self.funding_amount.parse::<f64>() {
                 if amount_dash > 0.0 {
                     if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                        MessageBanner::set_global(ui.ctx(), e.to_string(), MessageType::Error);
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Failed to render QR code",
+                            MessageType::Error,
+                        )
+                        .with_details(e);
                     }
                 } else {
                     ui.label("Please enter an amount greater than 0");

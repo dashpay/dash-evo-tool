@@ -116,6 +116,8 @@ pub struct WalletsBalancesScreen {
     pending_core_wallet_seed_hash: Option<[u8; 32]>,
     /// Core wallet options for the pending selection
     pending_core_wallet_options: Option<Vec<String>>,
+    /// Whether the pending Core wallet selection is for a single-key wallet
+    pending_core_wallet_is_single_key: bool,
 }
 
 impl WalletsBalancesScreen {
@@ -213,6 +215,7 @@ impl WalletsBalancesScreen {
             core_wallet_dialog: None,
             pending_core_wallet_seed_hash: None,
             pending_core_wallet_options: None,
+            pending_core_wallet_is_single_key: false,
         }
     }
 
@@ -243,15 +246,9 @@ impl WalletsBalancesScreen {
         &mut self,
         wallet_hash: &[u8; 32],
         wallet_name: &str,
+        is_single_key: bool,
     ) -> Result<(), String> {
-        // Try HD wallets first
-        let found_hd = self
-            .app_context
-            .wallets
-            .read()
-            .is_ok_and(|w| w.contains_key(wallet_hash));
-
-        if found_hd {
+        if !is_single_key {
             match self
                 .app_context
                 .db
@@ -2019,7 +2016,12 @@ impl ScreenLike for WalletsBalancesScreen {
                         && let Some(wallets) = self.pending_core_wallet_options.take()
                         && let Some(wallet_name) = wallets.get(idx).cloned()
                     {
-                        match self.apply_core_wallet_selection(&wallet_hash, &wallet_name) {
+                        let is_single_key = self.pending_core_wallet_is_single_key;
+                        match self.apply_core_wallet_selection(
+                            &wallet_hash,
+                            &wallet_name,
+                            is_single_key,
+                        ) {
                             Ok(()) => {
                                 MessageBanner::set_global(
                                     ctx,
@@ -2042,6 +2044,7 @@ impl ScreenLike for WalletsBalancesScreen {
                 SelectionStatus::Canceled => {
                     self.pending_core_wallet_seed_hash = None;
                     self.pending_core_wallet_options = None;
+                    self.pending_core_wallet_is_single_key = false;
                     MessageBanner::set_global(
                         ctx,
                         "Dash Core wallet not selected. Some operations may fail until a wallet is assigned.",
@@ -2077,20 +2080,49 @@ impl ScreenLike for WalletsBalancesScreen {
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         if matches!(error, TaskError::CoreWalletNotConfigured) {
             self.refreshing = false;
+            self.asset_lock_search_banner.take_and_clear();
 
-            // Determine the wallet hash from the currently selected wallet
-            let wallet_hash = self
+            // Determine the wallet hash and whether it is a single-key wallet
+            let (wallet_hash, is_single_key) = if let Some(hash) = self
                 .selected_wallet
                 .as_ref()
                 .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-                .or_else(|| {
-                    self.selected_single_key_wallet
-                        .as_ref()
-                        .and_then(|w| w.read().ok().map(|g| g.key_hash))
-                });
+            {
+                (Some(hash), false)
+            } else if let Some(hash) = self
+                .selected_single_key_wallet
+                .as_ref()
+                .and_then(|w| w.read().ok().map(|g| g.key_hash))
+            {
+                (Some(hash), true)
+            } else {
+                (None, false)
+            };
 
             match self.app_context.list_core_wallets() {
-                Ok(wallets) if !wallets.is_empty() => {
+                Ok(wallets) if wallets.len() == 1 => {
+                    if let Some(hash) = wallet_hash {
+                        match self.apply_core_wallet_selection(&hash, &wallets[0], is_single_key) {
+                            Ok(()) => {
+                                MessageBanner::set_global(
+                                    self.app_context.egui_ctx(),
+                                    format!("Auto-selected Core wallet '{}'", wallets[0]),
+                                    MessageType::Success,
+                                );
+                                self.refresh();
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    self.app_context.egui_ctx(),
+                                    "Failed to save Core wallet selection",
+                                    MessageType::Error,
+                                )
+                                .with_details(e);
+                            }
+                        }
+                    }
+                }
+                Ok(wallets) if wallets.len() > 1 => {
                     let dialog = SelectionDialog::new(
                         "Select Dash Core Wallet",
                         "Multiple wallets loaded in Dash Core. Select the one to use:",
@@ -2099,6 +2131,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     self.core_wallet_dialog = Some(dialog);
                     self.pending_core_wallet_seed_hash = wallet_hash;
                     self.pending_core_wallet_options = Some(wallets);
+                    self.pending_core_wallet_is_single_key = is_single_key;
                 }
                 Ok(_) => {
                     MessageBanner::set_global(

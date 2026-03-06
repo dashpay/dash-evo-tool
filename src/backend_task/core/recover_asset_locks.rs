@@ -48,9 +48,7 @@ impl AppContext {
             });
         }
 
-        let client = self
-            .core_client_for_wallet(core_wallet_name.as_deref())
-            .map_err(|e| format!("Failed to create Core RPC client: {e}"))?;
+        let client = self.core_client_for_wallet(core_wallet_name.as_deref())?;
 
         let mut recovered_count = 0;
         let mut total_amount = 0u64;

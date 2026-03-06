@@ -124,7 +124,7 @@ impl Wallet {
 
         let core_client = app_context
             .core_client_for_wallet(self.core_wallet_name.as_deref())
-            .map_err(|e| format!("Failed to create Core RPC client: {e}"))?;
+            .map_err(|e| e.to_string())?;
 
         // Collect Core chain addresses for which we want to load UTXOs.
         // Platform addresses are NOT valid on Core chain and must be excluded.

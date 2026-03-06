@@ -25,9 +25,7 @@ impl AppContext {
         };
 
         // Build an RPC client targeting the wallet's Core wallet (if set)
-        let client = self
-            .core_client_for_wallet(core_wallet_name.as_deref())
-            .map_err(|e| format!("Failed to create Core RPC client: {}", e))?;
+        let client = self.core_client_for_wallet(core_wallet_name.as_deref())?;
 
         // Step 2: Import address to Core (needed for UTXO queries)
         if let Err(e) = client.import_address(&address, None, Some(false)) {

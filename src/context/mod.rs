@@ -200,35 +200,16 @@ impl AppContext {
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
         );
-        let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(?network, "Failed to get core cookie path: {e}");
-                return None;
-            }
-        };
-
-        // Try cookie authentication first, then user/password
-        let core_client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
+        let core_client = match Self::create_core_rpc_client(
+            &addr,
+            network,
+            &network_config.devnet_name,
+            &network_config,
+        ) {
             Ok(client) => client,
-            Err(_) => {
-                tracing::info!(
-                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
-                    cookie_path,
-                );
-                match Client::new(
-                    &addr,
-                    Auth::UserPass(
-                        network_config.core_rpc_user.to_string(),
-                        network_config.core_rpc_password.to_string(),
-                    ),
-                ) {
-                    Ok(client) => client,
-                    Err(e) => {
-                        tracing::error!(?network, "Failed to create CoreClient: {e}");
-                        return None;
-                    }
-                }
+            Err(e) => {
+                tracing::error!(?network, "Failed to create CoreClient: {e}");
+                return None;
             }
         };
 
@@ -564,9 +545,33 @@ impl AppContext {
         Ok(())
     }
 
+    /// Create a Core RPC client for the given URL, trying cookie authentication
+    /// first and falling back to user/password credentials.
+    fn create_core_rpc_client(
+        url: &str,
+        network: Network,
+        devnet_name: &Option<String>,
+        cfg: &NetworkConfig,
+    ) -> Result<Client, TaskError> {
+        if let Ok(cookie_path) = core_cookie_path(network, devnet_name) {
+            if let Ok(client) = Client::new(url, Auth::CookieFile(cookie_path.clone())) {
+                return Ok(client);
+            }
+            tracing::debug!(
+                "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+                cookie_path,
+            );
+        }
+        Client::new(
+            url,
+            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
+        )
+        .map_err(|e| format!("Failed to create Core RPC client: {e}").into())
+    }
+
     /// Build an RPC client targeting a specific Core wallet by name.
     /// Returns the base (no-wallet) client if `wallet_name` is `None`.
-    pub fn core_client_for_wallet(&self, wallet_name: Option<&str>) -> Result<Client, String> {
+    pub fn core_client_for_wallet(&self, wallet_name: Option<&str>) -> Result<Client, TaskError> {
         let cfg = self
             .config
             .read()
@@ -575,18 +580,14 @@ impl AppContext {
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
                 if name.contains("..") {
-                    return Err(format!("Invalid Core wallet name: '{}'", name));
+                    return Err(format!("Invalid Core wallet name: '{}'", name).into());
                 }
                 let encoded = urlencoding::encode(name);
                 format!("{}/wallet/{}", base, encoded)
             }
             _ => base,
         };
-        Client::new(
-            &url,
-            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
-        )
-        .map_err(|e| format!("Failed to create Core RPC client: {e}"))
+        Self::create_core_rpc_client(&url, self.network, &self.devnet_name, &cfg)
     }
 
     /// Import an address into the correct Core wallet if it's not already known.
@@ -619,11 +620,11 @@ impl AppContext {
     }
 
     /// List wallets currently loaded in Dash Core.
-    pub fn list_core_wallets(&self) -> Result<Vec<String>, String> {
+    pub fn list_core_wallets(&self) -> Result<Vec<String>, TaskError> {
         let client = self.core_client_for_wallet(None)?;
         client
             .list_wallets()
-            .map_err(|e| format!("Failed to list Core wallets: {e}"))
+            .map_err(|e| format!("Failed to list Core wallets: {e}").into())
     }
 
     /// Try to detect which loaded Core wallet owns the given address.
@@ -633,10 +634,10 @@ impl AppContext {
     pub fn try_detect_core_wallet_for_address(
         &self,
         address: &Address,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<String>, TaskError> {
         let core_wallets = self.list_core_wallets()?;
         if core_wallets.is_empty() {
-            return Err("No wallets loaded in Dash Core".to_string());
+            return Err("No wallets loaded in Dash Core".to_string().into());
         }
         if core_wallets.len() == 1 {
             return Ok(Some(core_wallets.into_iter().next().unwrap()));

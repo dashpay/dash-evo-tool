@@ -4,6 +4,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::ResultBannerExt;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
@@ -1065,13 +1066,11 @@ impl ScreenLike for ContactsList {
 
                     // Clear all existing contacts for this identity from database first
                     // This prevents stale contacts from persisting
-                    if let Err(e) = self
-                        .app_context
+                    self.app_context
                         .db
                         .clear_dashpay_contacts(&owner_id, &network_str)
-                    {
-                        tracing::warn!("Failed to clear dashpay contacts from database: {}", e);
-                    }
+                        .or_show_error(self.app_context.egui_ctx())
+                        .ok();
 
                     // Convert ContactData to Contact structs and save to database
                     for contact_data in contacts_data {
@@ -1103,33 +1102,34 @@ impl ScreenLike for ContactsList {
                         self.contacts.insert(contact_data.identity_id, contact);
 
                         // Save to database
-                        if let Err(e) = self.app_context.db.save_dashpay_contact(
-                            &owner_id,
-                            &contact_data.identity_id,
-                            &network_str,
-                            contact_data.username.as_deref(),
-                            contact_data.display_name.as_deref(),
-                            contact_data.avatar_url.as_deref(),
-                            None,       // public_message - not yet fetched
-                            "accepted", // Only accepted contacts are returned from load_contacts
-                        ) {
-                            tracing::warn!("Failed to save dashpay contact to database: {}", e);
-                        }
-
-                        // Save private info if present
-                        if let Some(nickname) = &contact_data.nickname
-                            && let Err(e) = self.app_context.db.save_contact_private_info(
+                        self.app_context
+                            .db
+                            .save_dashpay_contact(
                                 &owner_id,
                                 &contact_data.identity_id,
-                                nickname,
-                                &contact_data.note.unwrap_or_default(),
-                                contact_data.is_hidden,
+                                &network_str,
+                                contact_data.username.as_deref(),
+                                contact_data.display_name.as_deref(),
+                                contact_data.avatar_url.as_deref(),
+                                None,       // public_message - not yet fetched
+                                "accepted", // Only accepted contacts are returned from load_contacts
                             )
-                        {
-                            tracing::warn!(
-                                "Failed to save contact private info to database: {}",
-                                e
-                            );
+                            .or_show_error(self.app_context.egui_ctx())
+                            .ok();
+
+                        // Save private info if present
+                        if let Some(nickname) = &contact_data.nickname {
+                            self.app_context
+                                .db
+                                .save_contact_private_info(
+                                    &owner_id,
+                                    &contact_data.identity_id,
+                                    nickname,
+                                    &contact_data.note.unwrap_or_default(),
+                                    contact_data.is_hidden,
+                                )
+                                .or_show_error(self.app_context.egui_ctx())
+                                .ok();
                         }
                     }
                 } else {

@@ -3,15 +3,17 @@ use crate::app_dir::app_user_data_file_path;
 use crate::app_dir::{copy_env_file_if_not_exists, create_app_user_data_directory_if_not_exists};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
-use crate::context::connection_status::ConnectionStatus;
+use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::Settings;
-use crate::ui::components::MessageBanner;
+use crate::spv::CoreBackendMode;
+use crate::ui::components::{BannerHandle, MessageBanner};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -50,11 +52,11 @@ use tokio::sync::mpsc as tokiompsc;
 pub enum TaskResult {
     Refresh,
     Success(Box<BackendTaskSuccessResult>),
-    Error(String),
+    Error(TaskError),
 }
 
-impl From<Result<BackendTaskSuccessResult, String>> for TaskResult {
-    fn from(value: Result<BackendTaskSuccessResult, String>) -> Self {
+impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
+    fn from(value: Result<BackendTaskSuccessResult, TaskError>) -> Self {
         match value {
             Ok(value) => TaskResult::Success(Box::new(value)),
             Err(e) => TaskResult::Error(e),
@@ -91,6 +93,17 @@ pub struct AppState {
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)
     pub welcome_screen: Option<WelcomeScreen>,
+    /// Previous connection state, used to detect transitions and update banners.
+    /// `None` on startup / after network switch to force the first evaluation.
+    previous_connection_state: Option<OverallConnectionState>,
+    /// Handle to the current connection status banner, if one is displayed
+    connection_banner_handle: Option<BannerHandle>,
+    /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
+    /// the viewport is closed once the receiver resolves.
+    shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
+    /// Timestamp when the async shutdown was initiated, used as a hard deadline
+    /// to force-close the viewport if the shutdown task stalls.
+    shutdown_started: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -705,6 +718,10 @@ impl AppState {
             subtasks,
             show_welcome_screen: !onboarding_completed,
             welcome_screen: None,
+            previous_connection_state: None,
+            connection_banner_handle: None,
+            shutdown_receiver: None,
+            shutdown_started: None,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
@@ -873,12 +890,96 @@ impl AppState {
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
 
+        // INTENTIONAL(SEC-004): Clear stale banners from the previous network context.
+        // A backend task completing after the switch could set a new banner in the new
+        // network context — accepted risk for a local desktop app (cosmetic only).
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
         }
 
         self.connection_status
             .reset(app_context.core_backend_mode());
+
+        // Reset connection banner tracking so the next frame re-evaluates
+        // the new network's state (even if it matches the old state).
+        if let Some(handle) = self.connection_banner_handle.take() {
+            handle.clear();
+        }
+        self.previous_connection_state = None;
+    }
+
+    /// Update the connection status banner when the overall connection state
+    /// transitions between Disconnected, Connecting, Syncing, and Synced.
+    ///
+    /// Also re-evaluates the banner text while in `Connecting` state each frame
+    /// because the degraded-peer timeout can fire without a state transition.
+    fn update_connection_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+        let connection_status = app_context.connection_status();
+        let current_state = connection_status.overall_state();
+        let state_changed = self.previous_connection_state != Some(current_state);
+
+        // In Connecting state the banner text can change (normal → degraded)
+        // without a state transition, so we must re-evaluate every frame.
+        // For all other states, skip if nothing changed.
+        if !state_changed && current_state != OverallConnectionState::Connecting {
+            return;
+        }
+
+        // Clear old banner on state transitions
+        if state_changed && let Some(handle) = self.connection_banner_handle.take() {
+            handle.clear();
+        }
+
+        // Display new banner based on current state
+        let backend_mode = connection_status.backend_mode();
+        match current_state {
+            OverallConnectionState::Disconnected => {
+                let msg = match backend_mode {
+                    CoreBackendMode::Rpc => "Disconnected — check that Dash Core is running",
+                    CoreBackendMode::Spv => "Disconnected — check your internet connection",
+                };
+                self.connection_banner_handle =
+                    Some(MessageBanner::set_global(ctx, msg, MessageType::Error));
+            }
+            OverallConnectionState::Connecting => {
+                // SPV active but no peers connected yet. The degraded flag
+                // flips after 30 s — `set_global` is idempotent for same text,
+                // so calling it every frame while Connecting is cheap.
+                let msg = if connection_status.spv_peer_degraded() {
+                    "Having trouble finding peers. Check your connection."
+                } else {
+                    "Looking for peers…"
+                };
+                // Replace the banner when the text changes (normal → degraded).
+                if let Some(handle) = &self.connection_banner_handle {
+                    handle.set_message(msg);
+                } else {
+                    self.connection_banner_handle =
+                        Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
+                }
+            }
+            OverallConnectionState::Syncing => {
+                let msg = match backend_mode {
+                    CoreBackendMode::Rpc => "Syncing with Dash Core…",
+                    CoreBackendMode::Spv => "SPV sync in progress…",
+                };
+                self.connection_banner_handle =
+                    Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
+            }
+            OverallConnectionState::Error => {
+                self.connection_banner_handle = Some(MessageBanner::set_global(
+                    ctx,
+                    "SPV sync error — check connection status for details",
+                    MessageType::Error,
+                ));
+            }
+            OverallConnectionState::Synced => {
+                // No banner needed for fully synced state
+            }
+        }
+        self.previous_connection_state = Some(current_state);
     }
 
     pub fn visible_screen_mut(&mut self) -> &mut Screen {
@@ -927,6 +1028,66 @@ impl AppState {
 
 impl App for AppState {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ── Graceful shutdown: intercept window close so the UI stays responsive ──
+        // When the user closes the window we cancel the native close, show a banner,
+        // and start an async shutdown. Once all tasks have finished (or timed out)
+        // we issue Close ourselves.
+        if let Some(rx) = &mut self.shutdown_receiver {
+            // Shutdown already in progress — check if it's done.
+            let should_close = match rx.try_recv() {
+                Ok(()) => {
+                    tracing::debug!("Async shutdown finished, closing viewport");
+                    true
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    // Sender dropped without sending — shutdown task likely panicked.
+                    tracing::warn!("Shutdown channel closed unexpectedly (possible panic)");
+                    true
+                }
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    // Still waiting — check hard deadline to prevent infinite loop.
+                    if let Some(started) = self.shutdown_started {
+                        let grace = crate::utils::tasks::SHUTDOWN_TIMEOUT
+                            + std::time::Duration::from_secs(5);
+                        if started.elapsed() > grace {
+                            tracing::warn!(
+                                "Shutdown hard deadline exceeded, force-closing viewport"
+                            );
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                }
+            };
+            if should_close {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint();
+            }
+            // Render a minimal UI that shows the shutdown banner.
+            crate::ui::theme::apply_theme(ctx, self.theme_preference);
+            crate::ui::components::styled::island_central_panel(ctx, |_ui| {});
+            return;
+        }
+
+        if ctx.input(|i| i.viewport().close_requested()) {
+            // Prevent the window from closing immediately.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            MessageBanner::set_global(
+                ctx,
+                "Shutting down background tasks — please wait…",
+                MessageType::Warning,
+            );
+            tracing::debug!("Close requested, starting async shutdown");
+            self.shutdown_receiver = Some(self.subtasks.shutdown_async());
+            self.shutdown_started = Some(std::time::Instant::now());
+            ctx.request_repaint();
+            return;
+        }
+
         // Apply Dash theme with user preference
         crate::ui::theme::apply_theme(ctx, self.theme_preference);
 
@@ -948,9 +1109,13 @@ impl App for AppState {
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();
                         }
-                        BackendTaskSuccessResult::Message(ref _msg) => {
-                            // Let the screen handle Message via display_task_result
-                            // so it can do custom handling (like clearing spinners)
+                        BackendTaskSuccessResult::Message(ref msg) => {
+                            // TODO(RUST-002): Some screens inspect Message text for error
+                            // keywords and may override with an Error banner, causing a
+                            // brief green-then-red flash. Refactor to pass structured error
+                            // types through task results instead of string messages.
+                            // See https://github.com/dashpay/dash-evo-tool/issues/660 .
+                            MessageBanner::set_global(ctx, msg, MessageType::Success);
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
@@ -990,10 +1155,18 @@ impl App for AppState {
                         }
                     }
                 }
-                TaskResult::Error(message) => {
-                    MessageBanner::set_global(ctx, &message, MessageType::Error);
+                TaskResult::Error(err) => {
+                    let msg = err.to_string();
+                    let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
+                    if self.current_app_context().is_developer_mode() {
+                        // INTENTIONAL(SEC-003): TaskError Debug output is shown to users
+                        // in developer mode. This is a local UI app — no third parties
+                        // see this output. Ensure inner error types don't expose secrets
+                        // (see #667).
+                        handle.with_details(&err);
+                    }
                     self.visible_screen_mut()
-                        .display_message(&message, MessageType::Error);
+                        .display_message(&msg, MessageType::Error);
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();
@@ -1163,6 +1336,8 @@ impl App for AppState {
                 .trigger_refresh(active_context.as_ref()),
         );
 
+        self.update_connection_banner(ctx, &active_context);
+
         for action in actions {
             match action {
                 AppAction::None => {}
@@ -1268,10 +1443,15 @@ impl App for AppState {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        // Gracefully shutdown all background tasks, waiting for them to complete
-        // This ensures tasks like the dash-qt handler have time to check their settings
-        // and decide whether to terminate the process or leave it running
-        tracing::debug!("App received on_exit event, initiating graceful shutdown");
+        // If shutdown_receiver is Some, the async shutdown was already initiated
+        // in update(). Skip the blocking fallback to avoid double-shutdown.
+        // The blocking path only runs when the window was force-closed without
+        // going through update() (e.g., OS-level kill, alt-F4 on some platforms).
+        if self.shutdown_receiver.is_some() {
+            tracing::debug!("on_exit: async shutdown was initiated, skipping blocking fallback");
+            return;
+        }
+        tracing::debug!("on_exit: fallback blocking shutdown");
         if let Err(e) = self.subtasks.shutdown() {
             tracing::error!("Error during task shutdown: {}", e);
         }

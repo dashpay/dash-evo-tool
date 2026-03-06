@@ -41,9 +41,36 @@ impl TaskManager {
         tokio::spawn(spawn_subtask(subtasks, name, future));
     }
 
-    /// Shutdown all subtasks gracefully.
+    /// Start an asynchronous graceful shutdown of all subtasks.
+    ///
+    /// Cancels all tasks and returns a `oneshot::Receiver` that resolves when
+    /// shutdown is complete (or timed out). This does **not** block the calling
+    /// thread, so the UI can keep repainting while tasks wind down.
+    pub fn shutdown_async(&self) -> tokio::sync::oneshot::Receiver<()> {
+        let cancel = self.cancellation_token.clone();
+        let subtasks = self.tasks.clone();
+        let active_names = self.active_names.clone();
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        tokio::task::spawn(async move {
+            let completed = shutdown_inner(&cancel, &subtasks, &active_names, "async").await;
+
+            tracing::debug!(
+                "Async shutdown complete, {} subtasks finished cleanly",
+                completed
+            );
+
+            let _ = tx.send(());
+        });
+
+        rx
+    }
+
+    /// Shutdown all subtasks gracefully (blocking).
     ///
     /// Wait for all subtasks to finish within a specified timeout, and then abort them.
+    /// Blocks the calling thread. Prefer [`shutdown_async`] when the UI must stay responsive.
     ///
     /// This is an equivalent of `Runtime::shutdown_timeout` but for subtasks.
     pub fn shutdown(&self) -> Result<(), String> {
@@ -52,108 +79,117 @@ impl TaskManager {
         let active_names = self.active_names.clone();
 
         // a bit naive synchronization to wait for shutdown
-        let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
-        // counter for logging
-        let completed = Arc::new(AtomicUsize::new(0));
+        let (tx, mut rx) = tokio::sync::oneshot::channel::<usize>();
 
-        let counter = completed.clone();
-        let counter_for_timeout = completed.clone();
         // we need to run this task in separate task to avoid cancelling it during shutdown
         tokio::task::spawn(async move {
-            // Cancel all background tasks
-            tracing::trace!("shutdown: cancelling all tasks");
-            cancel.cancel();
-
-            // Wait for all subtasks to finish within SHUTDOWN_TIMEOUT
-
-            let tasks_list = subtasks.clone();
-            let names_for_join = active_names.clone();
-            let timed_out = timeout(SHUTDOWN_TIMEOUT, async move {
-                let mut tasks = tasks_list.lock().await;
-                let total = tasks.len();
-                tracing::trace!(total, "shutdown: joining tasks");
-                let start = std::time::Instant::now();
-                while let Some(handle) = tasks.join_next().await {
-                    let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                    match &handle {
-                        Ok(name) => {
-                            // Remove one instance of this name from active list
-                            if let Ok(mut names) = names_for_join.lock()
-                                && let Some(pos) = names.iter().position(|n| *n == *name)
-                            {
-                                names.swap_remove(pos);
-                            }
-                            tracing::trace!(
-                                task = name,
-                                task_num = i,
-                                total,
-                                elapsed_ms = start.elapsed().as_millis() as u64,
-                                "shutdown: task joined OK"
-                            );
-                        }
-                        Err(e) => tracing::trace!(
-                            task_num = i,
-                            total,
-                            elapsed_ms = start.elapsed().as_millis() as u64,
-                            error = %e,
-                            "shutdown: task joined with error"
-                        ),
-                    }
-                }
-            })
-            .await;
-
-            if timed_out.is_err() {
-                let done = counter_for_timeout.load(std::sync::atomic::Ordering::Relaxed);
-                let remaining: Vec<&str> =
-                    active_names.lock().map(|n| n.clone()).unwrap_or_default();
-                tracing::trace!(
-                    completed = done,
-                    remaining_count = remaining.len(),
-                    remaining_tasks = ?remaining,
-                    "shutdown: timed out waiting for tasks, aborting remaining"
-                );
-
-                #[cfg(tokio_unstable)]
-                {
-                    let handle = tokio::runtime::Handle::current();
-                    let dump = handle.dump().await;
-                    for (i, task) in dump.tasks().iter().enumerate() {
-                        tracing::trace!(
-                            task_num = i,
-                            trace = %task.trace(),
-                            "shutdown: active tokio task"
-                        );
-                    }
-                }
-            }
-
-            // now abort all tasks
-            subtasks.lock().await.shutdown().await;
+            let completed = shutdown_inner(&cancel, &subtasks, &active_names, "blocking").await;
 
             // notify that shutdown is complete
-            if tx.send(()).is_err() {
+            if tx.send(completed).is_err() {
                 tracing::error!("Failed to send shutdown completion signal");
             }
         });
 
         // wait for the shutdown task to finish
         const WAIT_TIME: Duration = Duration::from_millis(100);
+        let mut completed = 0;
         for _ in 0..SHUTDOWN_TIMEOUT.as_millis() / WAIT_TIME.as_millis() {
-            if rx.try_recv().is_ok() {
+            if let Ok(count) = rx.try_recv() {
+                completed = count;
                 break;
             }
             // wait for a short time to avoid busy waiting
             std::thread::sleep(WAIT_TIME);
         }
 
-        tracing::debug!(
-            "Shutdown complete, {} subtasks finished cleanly",
-            completed.load(std::sync::atomic::Ordering::Relaxed)
-        );
+        tracing::debug!("Shutdown complete, {} subtasks finished cleanly", completed);
 
         Ok(())
     }
+}
+
+/// Shared shutdown logic: cancel all tasks, join with timeout, abort remaining.
+///
+/// Returns the number of tasks that completed cleanly within the timeout.
+/// The `label` is used in log messages to distinguish async vs blocking callers.
+async fn shutdown_inner(
+    cancel: &CancellationToken,
+    subtasks: &Arc<tokio::sync::Mutex<tokio::task::JoinSet<&'static str>>>,
+    active_names: &Arc<Mutex<Vec<&'static str>>>,
+    label: &str,
+) -> usize {
+    tracing::trace!("{label}: cancelling all tasks");
+    cancel.cancel();
+
+    let completed = Arc::new(AtomicUsize::new(0));
+
+    let counter = completed.clone();
+    let tasks_list = subtasks.clone();
+    let names_for_join = active_names.clone();
+    let timed_out = timeout(SHUTDOWN_TIMEOUT, async move {
+        let mut tasks = tasks_list.lock().await;
+        let total = tasks.len();
+        tracing::trace!(total, "{label}: joining tasks");
+        let start = std::time::Instant::now();
+        while let Some(handle) = tasks.join_next().await {
+            let i = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            match &handle {
+                Ok(name) => {
+                    // Remove one instance of this name from active list
+                    if let Ok(mut names) = names_for_join.lock()
+                        && let Some(pos) = names.iter().position(|n| *n == *name)
+                    {
+                        names.swap_remove(pos);
+                    }
+                    tracing::trace!(
+                        task = name,
+                        task_num = i,
+                        total,
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "{label}: task joined OK"
+                    );
+                }
+                Err(e) => tracing::trace!(
+                    task_num = i,
+                    total,
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    error = %e,
+                    "{label}: task joined with error"
+                ),
+            }
+        }
+    })
+    .await;
+
+    if timed_out.is_err() {
+        let done = completed.load(std::sync::atomic::Ordering::Relaxed);
+        let remaining: Vec<&str> = active_names.lock().map(|n| n.clone()).unwrap_or_default();
+        tracing::trace!(
+            completed = done,
+            remaining_count = remaining.len(),
+            remaining_tasks = ?remaining,
+            "{label}: timed out waiting for tasks, aborting remaining"
+        );
+
+        #[cfg(tokio_unstable)]
+        {
+            let handle = tokio::runtime::Handle::current();
+            let dump = handle.dump().await;
+            for (i, task) in dump.tasks().iter().enumerate() {
+                tracing::trace!(
+                    task_num = i,
+                    trace = %task.trace(),
+                    "{label}: active tokio task"
+                );
+            }
+        }
+    }
+
+    // Abort all remaining tasks
+    subtasks.lock().await.shutdown().await;
+
+    completed.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[inline(always)]

@@ -10,7 +10,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::version::PlatformVersion;
-use eframe::egui::{self, Context, Frame, Margin, RichText, ScrollArea, Ui};
+use eframe::egui::{self, Context, ScrollArea, Ui};
 use std::sync::Arc;
 
 pub struct PlatformInfoScreen {
@@ -21,7 +21,6 @@ pub struct PlatformInfoScreen {
     current_result: Option<String>,
     current_result_title: Option<String>,
     active_tasks: std::collections::HashSet<String>,
-    error_message: Option<String>,
 }
 
 impl PlatformInfoScreen {
@@ -34,7 +33,6 @@ impl PlatformInfoScreen {
             current_result: None,
             current_result_title: None,
             active_tasks: std::collections::HashSet::new(),
-            error_message: None,
         }
     }
 
@@ -45,7 +43,6 @@ impl PlatformInfoScreen {
     ) -> AppAction {
         if !self.active_tasks.contains(task_name) {
             self.active_tasks.insert(task_name.to_string());
-            self.error_message = None;
             let task = BackendTask::PlatformInfo(task_type);
             return AppAction::BackendTask(task);
         }
@@ -129,27 +126,6 @@ impl PlatformInfoScreen {
             return;
         }
 
-        // Check for errors and display them in the results area
-        if let Some(error) = &self.error_message {
-            let error_color = DashColors::ERROR;
-            let error = error.clone();
-            Frame::new()
-                .fill(error_color.gamma_multiply(0.1))
-                .inner_margin(Margin::symmetric(10, 8))
-                .corner_radius(5.0)
-                .stroke(egui::Stroke::new(1.0, error_color))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Error: {}", error)).color(error_color));
-                        ui.add_space(10.0);
-                        if ui.small_button("Dismiss").clicked() {
-                            self.error_message = None;
-                        }
-                    });
-                });
-            return;
-        }
-
         // Display normal results
         if let Some(result) = &self.current_result {
             if let Some(title) = &self.current_result_title {
@@ -176,7 +152,6 @@ impl ScreenLike for PlatformInfoScreen {
         self.current_result = None;
         self.current_result_title = None;
         self.active_tasks.clear();
-        self.error_message = None;
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -247,10 +222,9 @@ impl ScreenLike for PlatformInfoScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if message_type == MessageType::Error {
-            self.error_message = Some(message.to_string());
-            // Clear loading states for all tasks
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.active_tasks.clear();
         }
     }
@@ -295,7 +269,7 @@ impl ScreenLike for PlatformInfoScreen {
                     self.current_result = Some(basic_info);
                     self.current_result_title = Some("Basic Platform Information".to_string());
                     self.active_tasks.remove("basic_info");
-                    self.error_message = None;
+                    // Error state cleared on success
                 }
                 PlatformInfoTaskResult::TextResult(text) => {
                     // Find which task this result is for and set the title appropriately
@@ -322,7 +296,7 @@ impl ScreenLike for PlatformInfoScreen {
                     self.current_result = Some(text);
                     self.current_result_title = Some(title);
                     self.active_tasks.clear(); // Clear any remaining active tasks
-                    self.error_message = None;
+                    // Error state cleared on success
                 }
                 PlatformInfoTaskResult::AddressBalance { .. } => {
                     // This result is handled by AddressBalanceScreen, not here

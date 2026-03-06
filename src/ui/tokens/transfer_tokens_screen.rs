@@ -17,6 +17,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -24,45 +25,48 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use dash_sdk::dpp::prelude::TimestampMillis;
+
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use eframe::egui::{Frame, Margin};
 use egui::{Color32, RichText};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ui::identities::get_selected_wallet;
+use crate::ui::tokens::validate_signing_key;
 
 use super::tokens_screen::IdentityTokenBalance;
 
 #[derive(PartialEq)]
 pub enum TransferTokensStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
-    ErrorMessage(String),
+    WaitingForResult,
+    Error,
     Complete,
 }
 
 pub struct TransferTokensScreen {
-    pub identity: QualifiedIdentity,
+    identity: Option<QualifiedIdentity>,
     pub identity_token_balance: IdentityTokenBalance,
     known_identities: Vec<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     show_advanced_options: bool,
-    pub public_note: Option<String>,
-    pub receiver_identity_id: String,
-    pub amount: Option<Amount>,
-    pub amount_input: Option<AmountInput>,
+    public_note: Option<String>,
+    receiver_identity_id: String,
+    amount: Option<Amount>,
+    amount_input: Option<AmountInput>,
     transfer_tokens_status: TransferTokensStatus,
     max_amount: Amount,
     pub app_context: Arc<AppContext>,
     confirmation_dialog: Option<ConfirmationDialog>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     // Fee result from completed operation
     completed_fee_result: Option<FeeResult>,
+    // Banner handle for elapsed time display
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl TransferTokensScreen {
@@ -72,24 +76,38 @@ impl TransferTokensScreen {
     ) -> Self {
         let known_identities = app_context
             .load_local_qualified_identities()
-            .expect("Identities not loaded");
+            .or_show_error(app_context.egui_ctx())
+            .unwrap_or_default();
 
         let identity = known_identities
             .iter()
             .find(|identity| identity.identity.id() == identity_token_balance.identity_id)
-            .expect("Identity not found")
-            .clone();
+            .cloned()
+            .or_else(|| {
+                MessageBanner::set_global(
+                    app_context.egui_ctx(),
+                    "Identity not found in local store — cannot open Transfer screen",
+                    MessageType::Error,
+                );
+                None
+            });
+
         let max_amount = Amount::from(&identity_token_balance);
-        let identity_clone = identity.identity.clone();
-        let selected_key = identity_clone.get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let mut error_message = None;
-        let selected_wallet =
-            get_selected_wallet(&identity, None, selected_key, &mut error_message);
+        let selected_key: Option<IdentityPublicKey> = identity.as_ref().and_then(|id| {
+            id.identity
+                .get_first_public_key_matching(
+                    Purpose::AUTHENTICATION,
+                    HashSet::from([SecurityLevel::CRITICAL]),
+                    KeyType::all_key_types().into(),
+                    false,
+                )
+                .cloned()
+        });
+        let selected_wallet = identity.as_ref().and_then(|id| {
+            get_selected_wallet(id, None, selected_key.as_ref())
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None)
+        });
 
         let amount = Some(Amount::from(&identity_token_balance).with_value(0));
 
@@ -97,7 +115,7 @@ impl TransferTokensScreen {
             identity,
             identity_token_balance,
             known_identities,
-            selected_key: selected_key.cloned(),
+            selected_key,
             show_advanced_options: false,
             public_note: None,
             receiver_identity_id: String::new(),
@@ -109,7 +127,9 @@ impl TransferTokensScreen {
             confirmation_dialog: None,
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
@@ -139,8 +159,8 @@ impl TransferTokensScreen {
 
         // Check if input should be disabled when operation is in progress
         let enabled = match self.transfer_tokens_status {
-            TransferTokensStatus::WaitingForResult(_) | TransferTokensStatus::Complete => false,
-            TransferTokensStatus::NotStarted | TransferTokensStatus::ErrorMessage(_) => {
+            TransferTokensStatus::WaitingForResult | TransferTokensStatus::Complete => false,
+            TransferTokensStatus::NotStarted | TransferTokensStatus::Error => {
                 amount_input.set_max_amount(Some(self.max_amount.value()));
                 true
             }
@@ -153,6 +173,12 @@ impl TransferTokensScreen {
     }
 
     fn render_to_identity_input(&mut self, ui: &mut Ui) {
+        let exclude: Vec<_> = self
+            .identity
+            .as_ref()
+            .map(|id| id.identity.id())
+            .into_iter()
+            .collect();
         let _response = ui.add(
             IdentitySelector::new(
                 "transfer_recipient_selector",
@@ -161,7 +187,7 @@ impl TransferTokensScreen {
             )
             .width(300.0)
             .label("Recipient:")
-            .exclude(&[self.identity.identity.id()]),
+            .exclude(&exclude),
         );
     }
 
@@ -193,52 +219,74 @@ impl TransferTokensScreen {
     }
 
     fn confirmation_ok(&mut self) -> AppAction {
-        let signing_key = match self.selected_key.clone() {
-            Some(key) => key,
-            None => {
-                self.transfer_tokens_status =
-                    TransferTokensStatus::ErrorMessage("No signing key selected".into());
-                return AppAction::None;
-            }
-        };
-
         if self.amount.is_none() || self.amount == Some(Amount::new(0, 0)) {
-            self.transfer_tokens_status =
-                TransferTokensStatus::ErrorMessage("Invalid amount".into());
+            self.transfer_tokens_status = TransferTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Invalid amount",
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
-        let receiver_id = match Identifier::from_string_try_encodings(
+        let Ok(receiver_id) = Identifier::from_string_try_encodings(
             &self.receiver_identity_id,
             &[
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
                 dash_sdk::dpp::platform_value::string_encoding::Encoding::Hex,
             ],
-        ) {
-            Ok(id) => id,
-            Err(_) => {
-                self.transfer_tokens_status =
-                    TransferTokensStatus::ErrorMessage("Invalid receiver".into());
+        ) else {
+            self.transfer_tokens_status = TransferTokensStatus::Error;
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Invalid receiver",
+                MessageType::Error,
+            );
+            return AppAction::None;
+        };
+
+        // Validate signing key before transitioning to waiting state
+        let Some(signing_key) = validate_signing_key(&self.app_context, self.selected_key.as_ref())
+        else {
+            return AppAction::None;
+        };
+
+        let data_contract = match self
+            .app_context
+            .get_unqualified_contract_by_id(&self.identity_token_balance.data_contract_id)
+        {
+            Ok(Some(contract)) => Arc::new(contract),
+            _ => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Data contract not found",
+                    MessageType::Error,
+                );
                 return AppAction::None;
             }
         };
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.transfer_tokens_status = TransferTokensStatus::WaitingForResult(now);
+        let Some(identity) = self.identity.clone() else {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No identity loaded — cannot transfer tokens",
+                MessageType::Error,
+            );
+            return AppAction::None;
+        };
 
-        let data_contract = Arc::new(
-            self.app_context
-                .get_unqualified_contract_by_id(&self.identity_token_balance.data_contract_id)
-                .expect("Failed to get data contract")
-                .expect("Data contract not found"),
+        self.transfer_tokens_status = TransferTokensStatus::WaitingForResult;
+        let handle = MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            "Transferring tokens...",
+            MessageType::Info,
         );
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
 
         AppAction::BackendTask(BackendTask::TokenTask(Box::new(
             TokenTask::TransferTokens {
-                sending_identity: self.identity.clone(),
+                sending_identity: identity,
                 recipient_id: receiver_id,
                 amount: self.amount.clone().unwrap_or(Amount::new(0, 0)).value(),
                 data_contract,
@@ -259,15 +307,18 @@ impl TransferTokensScreen {
 }
 
 impl ScreenLike for TransferTokensScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        if let MessageType::Error = message_type {
-            self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(message.to_string());
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
+            self.refresh_banner.take_and_clear();
+            self.transfer_tokens_status = TransferTokensStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::TransferredTokens(fee_result) = backend_task_success_result
         {
+            self.refresh_banner.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.transfer_tokens_status = TransferTokensStatus::Complete;
         }
@@ -275,23 +326,55 @@ impl ScreenLike for TransferTokensScreen {
 
     fn refresh(&mut self) {
         // Refresh the identity because there might be new keys
-        self.identity = self
-            .app_context
-            .load_local_qualified_identities()
-            .unwrap()
-            .into_iter()
-            .find(|identity| identity.identity.id() == self.identity.identity.id())
-            .unwrap();
-        let token_balances = self
-            .app_context
-            .db
-            .get_identity_token_balances(&self.app_context)
-            .expect("Token balances not loaded");
-        self.max_amount = token_balances
-            .values()
-            .find(|balance| balance.identity_id == self.identity.identity.id())
-            .map(Amount::from)
-            .unwrap_or_default();
+        if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
+            let all_ids = self
+                .app_context
+                .load_local_qualified_identities()
+                .unwrap_or_else(|e| {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Failed to load local identities",
+                        MessageType::Error,
+                    )
+                    .with_details(e);
+                    vec![]
+                });
+            if let Some(refreshed) = all_ids
+                .into_iter()
+                .find(|identity| identity.identity.id() == current_id)
+            {
+                self.identity = Some(refreshed);
+            }
+        }
+        if let Some(current_id) = self.identity.as_ref().map(|id| id.identity.id()) {
+            match self
+                .app_context
+                .db
+                .get_identity_token_balances(&self.app_context)
+            {
+                Ok(token_balances) => {
+                    self.max_amount = token_balances
+                        .values()
+                        .find(|balance| {
+                            balance.identity_id == current_id
+                                && balance.data_contract_id
+                                    == self.identity_token_balance.data_contract_id
+                                && balance.token_position
+                                    == self.identity_token_balance.token_position
+                        })
+                        .map(Amount::from)
+                        .unwrap_or_default();
+                }
+                Err(e) => {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Failed to load token balances",
+                        MessageType::Error,
+                    )
+                    .with_details(e);
+                }
+            }
+        }
     }
 
     /// Renders the UI components for the withdrawal screen
@@ -328,6 +411,16 @@ impl ScreenLike for TransferTokensScreen {
                 return self.show_success(ui);
             }
 
+            // Guard: require a loaded identity before rendering interactive content.
+            // Use as_ref() to avoid a per-frame clone of the full QualifiedIdentity.
+            let Some(identity) = self.identity.as_ref() else {
+                ui.colored_label(
+                    DashColors::error_color(dark_mode),
+                    "No identity loaded. Please load an identity and reopen this screen.",
+                );
+                return AppAction::None;
+            };
+
             ui.heading(format!(
                 "Transfer {}",
                 self.identity_token_balance.token_alias
@@ -335,36 +428,41 @@ impl ScreenLike for TransferTokensScreen {
             ui.add_space(10.0);
 
             let has_keys = if self.app_context.is_developer_mode() {
-                !self.identity.identity.public_keys().is_empty()
+                !identity.identity.public_keys().is_empty()
             } else {
-                !self
-                    .identity
+                !identity
                     .available_authentication_keys_with_critical_security_level()
                     .is_empty()
             };
 
             if !has_keys {
+                let identity_type = identity.identity_type;
+                // Extract key data before releasing the borrow (needed for click handlers).
+                let key = identity
+                    .identity
+                    .get_first_public_key_matching(
+                        Purpose::AUTHENTICATION,
+                        HashSet::from([SecurityLevel::CRITICAL]),
+                        KeyType::all_key_types().into(),
+                        false,
+                    )
+                    .cloned();
                 ui.colored_label(
                     DashColors::error_color(dark_mode),
                     format!(
                         "You do not have any authentication keys with CRITICAL security level loaded for this {} identity.",
-                        self.identity.identity_type
+                        identity_type
                     ),
                 );
                 ui.add_space(10.0);
 
-                let key = self.identity.identity.get_first_public_key_matching(
-                    Purpose::AUTHENTICATION,
-                    HashSet::from([SecurityLevel::CRITICAL]),
-                    KeyType::all_key_types().into(),
-                    false,
-                );
-
                 if let Some(key) = key {
                     if ui.button("Check Keys").clicked() {
+                        // Clone only on button click, not every frame.
+                        let identity = self.identity.clone().expect("checked above");
                         return AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
-                            self.identity.clone(),
-                            key.clone(),
+                            identity,
+                            key,
                             None,
                             &self.app_context,
                         )));
@@ -373,15 +471,20 @@ impl ScreenLike for TransferTokensScreen {
                 }
 
                 if ui.button("Add key").clicked() {
+                    // Clone only on button click, not every frame.
+                    let identity = self.identity.clone().expect("checked above");
                     return AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        self.identity.clone(),
+                        identity,
                         &self.app_context,
                     )));
                 }
             } else {
                 if let Some(wallet) = &self.selected_wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -410,10 +513,12 @@ impl ScreenLike for TransferTokensScreen {
                 if self.show_advanced_options {
                     ui.heading("1. Select the key to sign the transaction with");
                     ui.add_space(10.0);
+                    // Reborrow identity as ref for add_key_chooser; selected_key is &mut self.
+                    let identity = self.identity.as_ref().expect("checked above");
                     add_key_chooser(
                         ui,
                         &self.app_context,
-                        &self.identity,
+                        identity,
                         &mut self.selected_key,
                         TransactionType::TokenTransfer,
                     );
@@ -490,7 +595,8 @@ impl ScreenLike for TransferTokensScreen {
 
                 // Transfer button
 
-                let has_enough_balance = self.identity.identity.balance() > estimated_fee;
+                let identity = self.identity.as_ref().expect("checked above");
+                let has_enough_balance = identity.identity.balance() > estimated_fee;
                 let ready = self.amount.is_some()
                     && !self.receiver_identity_id.is_empty()
                     && self.selected_key.is_some()
@@ -518,12 +624,18 @@ impl ScreenLike for TransferTokensScreen {
                 {
                     // Use the amount value directly since it's already parsed
                     if self.amount.as_ref().is_some_and(|v| v > &self.max_amount) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                            "Amount exceeds available balance".to_string(),
+                        self.transfer_tokens_status = TransferTokensStatus::Error;
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Amount exceeds available balance",
+                            MessageType::Error,
                         );
                     } else if self.amount.as_ref().is_none_or(|a| a.value() == 0) {
-                        self.transfer_tokens_status = TransferTokensStatus::ErrorMessage(
-                            "Amount must be greater than zero".to_string(),
+                        self.transfer_tokens_status = TransferTokensStatus::Error;
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Amount must be greater than zero",
+                            MessageType::Error,
                         );
                     } else {
                         let msg = format!(
@@ -549,41 +661,11 @@ impl ScreenLike for TransferTokensScreen {
                     TransferTokensStatus::NotStarted => {
                         // Do nothing
                     }
-                    TransferTokensStatus::WaitingForResult(start_time) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let elapsed_seconds = now - start_time;
-
-                        let display_time = if elapsed_seconds < 60 {
-                            format!(
-                                "{} second{}",
-                                elapsed_seconds,
-                                if elapsed_seconds == 1 { "" } else { "s" }
-                            )
-                        } else {
-                            let minutes = elapsed_seconds / 60;
-                            let seconds = elapsed_seconds % 60;
-                            format!(
-                                "{} minute{} and {} second{}",
-                                minutes,
-                                if minutes == 1 { "" } else { "s" },
-                                seconds,
-                                if seconds == 1 { "" } else { "s" }
-                            )
-                        };
-
-                        ui.label(format!(
-                            "Transferring... Time taken so far: {}",
-                            display_time
-                        ));
+                    TransferTokensStatus::WaitingForResult => {
+                        // Elapsed display is handled by the global MessageBanner
                     }
-                    TransferTokensStatus::ErrorMessage(msg) => {
-                        ui.colored_label(
-                            DashColors::error_color(dark_mode),
-                            format!("Error: {}", msg),
-                        );
+                    TransferTokensStatus::Error => {
+                        // Error display is handled by the global MessageBanner
                     }
                     TransferTokensStatus::Complete => {
                         // Handled above

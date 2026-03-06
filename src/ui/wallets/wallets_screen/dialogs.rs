@@ -5,6 +5,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::model::amount::Amount;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use crate::ui::MessageType;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -1238,7 +1239,11 @@ impl WalletsBalancesScreen {
 
     pub(super) fn open_mine_dialog(&mut self) {
         let Some(wallet) = self.selected_wallet.clone() else {
-            self.set_message("Select a wallet first".to_string(), MessageType::Error);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Select a wallet first",
+                MessageType::Error,
+            );
             return;
         };
 

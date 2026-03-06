@@ -324,6 +324,15 @@ impl DashColors {
         }
     }
 
+    /// Magenta-red for sync/connection error state (distinct from disconnected red).
+    pub fn sync_error_color(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            Color32::from_rgb(230, 80, 180)
+        } else {
+            Color32::from_rgb(200, 50, 150)
+        }
+    }
+
     pub fn info_color(dark_mode: bool) -> Color32 {
         if dark_mode {
             Color32::from_rgb(100, 180, 255) // Lighter blue for dark mode

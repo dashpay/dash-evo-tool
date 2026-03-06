@@ -10,23 +10,21 @@ use crate::ui::components::contract_chooser_panel::{
     ContractChooserState, add_contract_chooser_panel,
 };
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
-use chrono::{DateTime, Utc};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::dpp::prelude::TimestampMillis;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use egui::{CentralPanel, Color32, Context, Frame, Margin, ScrollArea, Stroke, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A list of Dash-specific fields that do not appear in the
 /// normal document_type properties.
@@ -47,7 +45,6 @@ pub const DOCUMENT_PRIVATE_FIELDS: &[&str] = &[
 
 pub struct DocumentQueryScreen {
     pub app_context: Arc<AppContext>,
-    error_message: Option<(String, MessageType, DateTime<Utc>)>,
     contract_search_term: String,
     document_search_term: String,
     document_query: String,
@@ -70,14 +67,15 @@ pub struct DocumentQueryScreen {
     previous_cursors: Vec<Start>,
     // Contract chooser state
     contract_chooser_state: ContractChooserState,
+    query_banner: Option<BannerHandle>,
 }
 
 #[derive(PartialEq, Eq, Clone)]
 pub enum DocumentQueryStatus {
     NotStarted,
-    WaitingForResult(TimestampMillis),
+    WaitingForResult,
     Complete,
-    ErrorMessage(String),
+    Error,
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -112,7 +110,6 @@ impl DocumentQueryScreen {
 
         Self {
             app_context: app_context.clone(),
-            error_message: None,
             contract_search_term: String::new(),
             document_search_term: String::new(),
             document_query: format!("SELECT * FROM {}", selected_document_type.name()),
@@ -134,22 +131,7 @@ impl DocumentQueryScreen {
             has_next_page: false,
             previous_cursors: Vec::new(),
             contract_chooser_state: ContractChooserState::default(),
-        }
-    }
-
-    fn dismiss_error(&mut self) {
-        self.error_message = None;
-    }
-
-    fn check_error_expiration(&mut self) {
-        if let Some((_, _, timestamp)) = &self.error_message {
-            let now = Utc::now();
-            let elapsed = now.signed_duration_since(*timestamp);
-
-            // Automatically dismiss the error message after 10 seconds
-            if elapsed.num_seconds() > 10 {
-                self.dismiss_error();
-            }
+            query_banner: None,
         }
     }
 
@@ -208,12 +190,16 @@ impl DocumentQueryScreen {
                     DocumentQueryTextInputParser::new(self.selected_data_contract.contract.clone());
                 match parser.parse_input(&self.document_query) {
                     Ok(parsed_query) => {
-                        // Set the status to waiting and capture the current time
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        self.document_query_status = DocumentQueryStatus::WaitingForResult(now);
+                        // Set the status to waiting
+                        self.query_banner.take_and_clear();
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Querying documents...",
+                            MessageType::Info,
+                        );
+                        handle.with_elapsed();
+                        self.query_banner = Some(handle);
+                        self.document_query_status = DocumentQueryStatus::WaitingForResult;
                         self.current_page = 1; // Reset to first page
                         self.next_cursors = vec![]; // Reset cursor
                         self.previous_cursors.clear(); // Clear previous cursors
@@ -222,15 +208,13 @@ impl DocumentQueryScreen {
                         )));
                     }
                     Err(e) => {
-                        self.document_query_status = DocumentQueryStatus::ErrorMessage(format!(
-                            "Failed to parse query properly: {}",
-                            e
-                        ));
-                        self.error_message = Some((
+                        self.query_banner.take_and_clear();
+                        self.document_query_status = DocumentQueryStatus::Error;
+                        MessageBanner::set_global(
+                            ui.ctx(),
                             format!("Failed to parse query properly: {}", e),
                             MessageType::Error,
-                            Utc::now(),
-                        ));
+                        );
                     }
                 }
             }
@@ -241,7 +225,6 @@ impl DocumentQueryScreen {
 
     fn show_output(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
         ui.separator();
         ui.add_space(10.0);
 
@@ -343,19 +326,8 @@ impl DocumentQueryScreen {
                 ui.set_width(ui.available_width());
 
                 match self.document_query_status {
-                    DocumentQueryStatus::WaitingForResult(start_time) => {
-                        let time_elapsed = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs()
-                            - start_time;
-                        ui.horizontal(|ui| {
-                            ui.label(format!(
-                                "Fetching documents... Time taken so far: {} seconds",
-                                time_elapsed
-                            ));
-                            ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
-                        });
+                    DocumentQueryStatus::WaitingForResult => {
+                        // Elapsed time is shown in the global banner
                     }
                     DocumentQueryStatus::Complete => match self.document_display_mode {
                         DocumentDisplayMode::Json => {
@@ -366,10 +338,8 @@ impl DocumentQueryScreen {
                         }
                     },
 
-                    DocumentQueryStatus::ErrorMessage(ref message) => {
-                        self.error_message =
-                            Some((message.to_string(), MessageType::Error, Utc::now()));
-                        ui.colored_label(DashColors::error_color(dark_mode), message);
+                    DocumentQueryStatus::Error => {
+                        // Error message is displayed globally via MessageBanner
                     }
                     _ => {
                         // Nothing
@@ -387,12 +357,15 @@ impl DocumentQueryScreen {
                 if self.current_page > 1 && ui.button("Previous Page").clicked() {
                     // Handle Previous Page
                     if let Some(prev_cursor) = self.get_previous_cursor() {
-                        self.document_query_status = DocumentQueryStatus::WaitingForResult(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
+                        self.query_banner.take_and_clear();
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Querying documents...",
+                            MessageType::Info,
                         );
+                        handle.with_elapsed();
+                        self.query_banner = Some(handle);
+                        self.document_query_status = DocumentQueryStatus::WaitingForResult;
                         self.current_page -= 1;
                         self.next_cursors.pop();
                         let parsed_query = self.build_document_query_with_cursor(&prev_cursor);
@@ -400,12 +373,15 @@ impl DocumentQueryScreen {
                             DocumentTask::FetchDocumentsPage(parsed_query),
                         )));
                     } else {
-                        self.document_query_status = DocumentQueryStatus::WaitingForResult(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
+                        self.query_banner.take_and_clear();
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Querying documents...",
+                            MessageType::Info,
                         );
+                        handle.with_elapsed();
+                        self.query_banner = Some(handle);
+                        self.document_query_status = DocumentQueryStatus::WaitingForResult;
                         self.current_page = 1;
                         let next_cursor =
                             self.get_next_cursor().unwrap_or(Start::StartAfter(vec![])); // Doesn't matter what the value is
@@ -421,12 +397,15 @@ impl DocumentQueryScreen {
                 if self.has_next_page && ui.button("Next Page").clicked() {
                     // Handle Next Page
                     if let Some(next_cursor) = &self.get_next_cursor() {
-                        self.document_query_status = DocumentQueryStatus::WaitingForResult(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
+                        self.query_banner.take_and_clear();
+                        let handle = MessageBanner::set_global(
+                            ui.ctx(),
+                            "Querying documents...",
+                            MessageType::Info,
                         );
+                        handle.with_elapsed();
+                        self.query_banner = Some(handle);
+                        self.document_query_status = DocumentQueryStatus::WaitingForResult;
                         if self.current_page > 1 {
                             self.previous_cursors.push(
                                 self.next_cursors
@@ -539,7 +518,6 @@ impl ScreenLike for DocumentQueryScreen {
 
     fn refresh(&mut self) {
         // Reset the screen state
-        self.error_message = None;
         self.contract_search_term.clear();
         self.document_search_term.clear();
         self.document_query.clear();
@@ -563,16 +541,19 @@ impl ScreenLike for DocumentQueryScreen {
     }
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Only display the error message resulting from FetchDocuments backend task
-        if message.contains("Error fetching documents") {
-            self.document_query_status = DocumentQueryStatus::ErrorMessage(message.to_string());
-            self.error_message = Some((message.to_string(), message_type, Utc::now()));
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if message.contains("Error fetching documents")
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
+            self.query_banner.take_and_clear();
+            self.document_query_status = DocumentQueryStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::Documents(documents) => {
+                self.query_banner.take_and_clear();
                 self.matching_documents = documents
                     .iter()
                     .filter_map(|(_, doc)| doc.clone())
@@ -580,6 +561,7 @@ impl ScreenLike for DocumentQueryScreen {
                 self.document_query_status = DocumentQueryStatus::Complete;
             }
             BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor) => {
+                self.query_banner.take_and_clear();
                 self.matching_documents = page_docs
                     .iter()
                     .filter_map(|(_, doc)| doc.clone())
@@ -597,7 +579,6 @@ impl ScreenLike for DocumentQueryScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        self.check_error_expiration();
         let load_contract_button = (
             "Load Contracts",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::AddContracts)),
@@ -727,6 +708,7 @@ impl ScreenLike for DocumentQueryScreen {
                     .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
                     .shadow(Shadow::elevated())
                     .show(ui, |ui| {
+                        MessageBanner::show_global(ui);
                         let mut inner_action = AppAction::None;
 
                         // Use a vertical layout that allocates space properly

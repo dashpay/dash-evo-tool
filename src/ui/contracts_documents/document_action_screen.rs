@@ -15,6 +15,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{
     TransactionType, add_contract_doc_type_chooser_with_filtering, add_key_chooser_with_doc_type,
     show_success_screen_with_info,
@@ -51,7 +52,6 @@ use eframe::epaint::Color32;
 use egui::{Context, Frame, Margin, RichText, Ui};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocumentActionType {
@@ -79,9 +79,9 @@ impl DocumentActionType {
 #[derive(Clone, PartialEq)]
 pub enum BroadcastStatus {
     NotBroadcasted,
-    Fetching(u64),
+    Fetching,
     Fetched,
-    Broadcasting(u64),
+    Broadcasting,
     Broadcasted,
 }
 
@@ -90,12 +90,13 @@ pub struct DocumentActionScreen {
     pub action_type: DocumentActionType,
 
     // Common fields
-    pub backend_message: Option<String>,
+    no_documents_found: bool,
     pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     pub selected_key: Option<IdentityPublicKey>,
     show_advanced_options: bool,
     pub wallet: Option<Arc<RwLock<Wallet>>>,
+    wallet_open_attempted: bool,
     pub wallet_unlock_popup: WalletUnlockPopup,
     pub wallet_failure: Option<String>,
     pub broadcast_status: BroadcastStatus,
@@ -127,6 +128,9 @@ pub struct DocumentActionScreen {
 
     // Fee tracking
     pub completed_fee_result: Option<FeeResult>,
+
+    // Banner for in-progress operations
+    refresh_banner: Option<BannerHandle>,
 }
 
 impl DocumentActionScreen {
@@ -159,12 +163,13 @@ impl DocumentActionScreen {
         Self {
             app_context,
             action_type,
-            backend_message: None,
+            no_documents_found: false,
             selected_identity,
             selected_identity_string,
             selected_key: None,
             show_advanced_options: false,
             wallet: None,
+            wallet_open_attempted: false,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_failure: None,
             broadcast_status: BroadcastStatus::NotBroadcasted,
@@ -180,16 +185,26 @@ impl DocumentActionScreen {
             recipient_id_input: String::new(),
             fetched_documents: IndexMap::new(),
             completed_fee_result: None,
+            refresh_banner: None,
         }
     }
 
+    fn set_fetching_banner(&mut self, ctx: &egui::Context, text: &str) {
+        self.refresh_banner.take_and_clear();
+        let handle = MessageBanner::set_global(ctx, text, crate::ui::MessageType::Info);
+        handle.with_elapsed();
+        self.refresh_banner = Some(handle);
+    }
+
     fn reset_screen(&mut self) {
-        self.backend_message = None;
+        self.refresh_banner.take_and_clear();
+        self.no_documents_found = false;
         self.selected_identity = None;
         self.selected_identity_string = String::new();
         self.selected_key = None;
         self.show_advanced_options = false;
         self.wallet = None;
+        self.wallet_open_attempted = false;
         self.wallet_unlock_popup = WalletUnlockPopup::new();
         self.wallet_failure = None;
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
@@ -209,6 +224,12 @@ impl DocumentActionScreen {
         ui.heading("1. Select a contract and document type:");
         ui.add_space(10.0);
 
+        let prev_contract_id = self.selected_contract.as_ref().map(|c| c.contract.id());
+        let prev_doc_type = self
+            .selected_document_type
+            .as_ref()
+            .map(|d| d.name().to_owned());
+
         add_contract_doc_type_chooser_with_filtering(
             ui,
             &mut self.contract_search,
@@ -216,6 +237,19 @@ impl DocumentActionScreen {
             &mut self.selected_contract,
             &mut self.selected_document_type,
         );
+
+        let contract_changed =
+            prev_contract_id != self.selected_contract.as_ref().map(|c| c.contract.id());
+        let doc_type_changed = prev_doc_type
+            != self
+                .selected_document_type
+                .as_ref()
+                .map(|d| d.name().to_owned());
+        if contract_changed || doc_type_changed {
+            self.no_documents_found = false;
+            self.fetched_documents.clear();
+        }
+
         ui.add_space(10.0);
     }
 
@@ -246,6 +280,8 @@ impl DocumentActionScreen {
 
         // Handle identity change - auto-select key and update wallet
         if response.changed() {
+            self.no_documents_found = false;
+            self.fetched_documents.clear();
             if let Some(identity) = &self.selected_identity {
                 // Auto-select a suitable key for document actions
                 // Note: MASTER keys cannot be used for document operations,
@@ -267,15 +303,14 @@ impl DocumentActionScreen {
                     .cloned();
 
                 // Update wallet
-                self.wallet = get_selected_wallet(
-                    identity,
-                    Some(&self.app_context),
-                    None,
-                    &mut self.backend_message,
-                );
+                self.wallet = get_selected_wallet(identity, Some(&self.app_context), None)
+                    .or_show_error(self.app_context.egui_ctx())
+                    .unwrap_or(None);
+                self.wallet_open_attempted = false;
             } else {
                 self.selected_key = None;
                 self.wallet = None;
+                self.wallet_open_attempted = false;
             }
         }
 
@@ -380,12 +415,8 @@ impl DocumentActionScreen {
                     ui.label("This document type has an index on $ownerId, so you can fetch owned documents to view and select.");
                     ui.add_space(10.0);
                     if ui.button("Fetch Owned Documents").clicked() {
-                        self.broadcast_status = BroadcastStatus::Fetching(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                        );
+                        self.broadcast_status = BroadcastStatus::Fetching;
+                        self.set_fetching_banner(ui.ctx(), "Fetching owned documents...");
                         action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocuments(query),
                         )));
@@ -453,22 +484,15 @@ impl DocumentActionScreen {
             }
         }
 
-        if let Some(backend_message) = &self.backend_message
-            && backend_message.contains("No owned documents found")
-        {
+        if self.no_documents_found {
             ui.add_space(10.0);
             ui.label("No owned documents found.");
         }
 
         // Show fetching status
-        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
-            let elapsed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                - start;
+        if self.broadcast_status == BroadcastStatus::Fetching {
             ui.add_space(10.0);
-            ui.label(format!("Fetching documents... {}s", elapsed));
+            ui.spinner();
         }
 
         ui.add_space(10.0);
@@ -504,30 +528,25 @@ impl DocumentActionScreen {
                         .expect("Failed to create document query");
                     query = query.with_document_id(&doc_id);
 
-                    self.broadcast_status = BroadcastStatus::Fetching(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                    );
+                    self.broadcast_status = BroadcastStatus::Fetching;
+                    self.set_fetching_banner(ui.ctx(), "Fetching document price...");
                     action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                         DocumentTask::FetchDocuments(query),
                     )));
                 }
             } else {
-                self.backend_message = Some("Invalid Document ID format".to_string());
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Invalid Document ID format",
+                    crate::ui::MessageType::Error,
+                );
             }
         }
 
         // Show fetching status
-        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
-            let elapsed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                - start;
+        if self.broadcast_status == BroadcastStatus::Fetching {
             ui.add_space(10.0);
-            ui.label(format!("Fetching document price... {}s", elapsed));
+            ui.spinner();
         }
 
         if let Some(price) = self.fetched_price {
@@ -569,31 +588,26 @@ impl DocumentActionScreen {
                                 .expect("Failed to create document query");
                         query = query.with_document_id(&doc_id);
 
-                        self.broadcast_status = BroadcastStatus::Fetching(
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                        );
+                        self.broadcast_status = BroadcastStatus::Fetching;
+                        self.set_fetching_banner(ui.ctx(), "Fetching document...");
                         action = AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                             DocumentTask::FetchDocuments(query),
                         )));
                     }
                 } else {
-                    self.backend_message = Some("Invalid Document ID format".to_string());
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Invalid Document ID format",
+                        crate::ui::MessageType::Error,
+                    );
                 }
             }
         });
 
         // Show fetching status
-        if let BroadcastStatus::Fetching(start) = &self.broadcast_status {
-            let elapsed = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                - start;
+        if self.broadcast_status == BroadcastStatus::Fetching {
             ui.add_space(10.0);
-            ui.label(format!("Fetching document... {}s", elapsed));
+            ui.spinner();
         }
 
         if let Some(_original_doc) = &self.original_doc {
@@ -919,38 +933,19 @@ impl DocumentActionScreen {
             .min_size(egui::vec2(100.0, 30.0));
 
         if ui.add(button).clicked() && self.can_broadcast() {
-            self.backend_message = None;
             let task = self.create_document_action();
             if task != BackendTask::None {
-                self.broadcast_status = BroadcastStatus::Broadcasting(
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs(),
-                );
+                self.broadcast_status = BroadcastStatus::Broadcasting;
+                self.set_fetching_banner(ui.ctx(), "Broadcasting...");
                 action = AppAction::BackendTask(task);
             }
         }
 
         // Status display
         match &self.broadcast_status {
-            BroadcastStatus::Broadcasting(start_time) => {
+            BroadcastStatus::Broadcasting | BroadcastStatus::Fetching => {
                 ui.add_space(10.0);
-                let elapsed = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    - start_time;
-                ui.label(format!("Broadcasting... {}s", elapsed));
-            }
-            BroadcastStatus::Fetching(start_time) => {
-                ui.add_space(10.0);
-                let elapsed = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    - start_time;
-                ui.label(format!("Fetching... {}s", elapsed));
+                ui.spinner();
             }
             _ => {}
         }
@@ -999,7 +994,11 @@ impl DocumentActionScreen {
                 )))
             }
             Err(e) => {
-                self.backend_message = Some(format!("Failed to build document: {}", e));
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    format!("Failed to build document: {}", e),
+                    crate::ui::MessageType::Error,
+                );
                 BackendTask::None
             }
         }
@@ -1094,7 +1093,11 @@ impl DocumentActionScreen {
                     )))
                 }
                 Err(e) => {
-                    self.backend_message = Some(format!("Failed to build updated document: {}", e));
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        format!("Failed to build updated document: {}", e),
+                        crate::ui::MessageType::Error,
+                    );
                     BackendTask::None
                 }
             }
@@ -1629,12 +1632,20 @@ impl ScreenLike for DocumentActionScreen {
         // Backend messages are handled via display_message
     }
 
-    fn display_message(&mut self, message: &str, _message_type: crate::ui::MessageType) {
-        self.backend_message = Some(message.to_string());
+    fn display_message(&mut self, _message: &str, message_type: crate::ui::MessageType) {
+        if matches!(
+            message_type,
+            crate::ui::MessageType::Error | crate::ui::MessageType::Warning
+        ) {
+            self.refresh_banner.take_and_clear();
+        }
+        // Banner display is handled globally by AppState; this is only for side-effects.
         self.broadcast_status = BroadcastStatus::NotBroadcasted;
     }
 
     fn display_task_result(&mut self, result: crate::ui::BackendTaskSuccessResult) {
+        // Clear the progress banner on any completed task
+        self.refresh_banner.take_and_clear();
         match result {
             BackendTaskSuccessResult::BroadcastedDocument(_) => {
                 self.broadcast_status = BroadcastStatus::Broadcasted;
@@ -1703,28 +1714,34 @@ impl ScreenLike for DocumentActionScreen {
                                     self.fetched_price = Some(price);
                                 }
                                 Ok(None) => {
-                                    self.backend_message =
-                                        Some("Document has no price set".to_string());
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        "Document has no price set",
+                                        crate::ui::MessageType::Error,
+                                    );
                                     self.fetched_price = None;
                                 }
                                 Err(_) => {
-                                    self.backend_message =
-                                        Some("Failed to get document price".to_string());
+                                    MessageBanner::set_global(
+                                        self.app_context.egui_ctx(),
+                                        "Failed to get document price",
+                                        crate::ui::MessageType::Error,
+                                    );
                                     self.fetched_price = None;
                                 }
                             }
                         } else {
-                            self.backend_message = Some("No document found".to_string());
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                "No document found",
+                                crate::ui::MessageType::Error,
+                            );
                             self.fetched_price = None;
                         }
                     }
                     DocumentActionType::Delete => {
                         // For delete, store the fetched documents
-                        if documents.is_empty() {
-                            self.backend_message = Some("No owned documents found".to_string());
-                        } else {
-                            self.backend_message = None;
-                        }
+                        self.no_documents_found = documents.is_empty();
                         self.fetched_documents = documents;
                     }
                     _ => {}
@@ -1765,16 +1782,31 @@ impl DocumentActionScreen {
 
                 // Wallet unlock
                 if let Some(selected_identity) = &self.selected_identity {
-                    self.wallet = get_selected_wallet(
-                        selected_identity,
-                        Some(&self.app_context),
-                        None,
-                        &mut self.backend_message,
-                    );
+                    let new_wallet =
+                        get_selected_wallet(selected_identity, Some(&self.app_context), None)
+                            .or_show_error(self.app_context.egui_ctx())
+                            .unwrap_or(None);
+                    let wallet_changed = match (&self.wallet, &new_wallet) {
+                        (Some(a), Some(b)) => !Arc::ptr_eq(a, b),
+                        (None, None) => false,
+                        _ => true,
+                    };
+                    if wallet_changed {
+                        self.wallet_open_attempted = false;
+                    }
+                    self.wallet = new_wallet;
                 }
                 if let Some(wallet) = &self.wallet {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        self.backend_message = Some(e);
+                    if !self.wallet_open_attempted {
+                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                "Unable to open wallet. Please unlock it and try again.",
+                                crate::ui::MessageType::Error,
+                            )
+                            .with_details(e);
+                        }
+                        self.wallet_open_attempted = true;
                     }
                     if wallet_needs_unlock(wallet) {
                         ui.add_space(10.0);
@@ -1795,26 +1827,6 @@ impl DocumentActionScreen {
                     DocumentActionType::Create => self.render_create_inputs(ui),
                     _ => self.render_action_specific_inputs(ui),
                 };
-
-                if let Some(ref msg) = self.backend_message {
-                    ui.add_space(10.0);
-                    let error_color = DashColors::error_color(ui.visuals().dark_mode);
-                    let msg = msg.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&msg).color(error_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.backend_message = None;
-                                }
-                            });
-                        });
-                }
 
                 action
             })

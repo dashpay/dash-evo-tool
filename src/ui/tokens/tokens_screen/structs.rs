@@ -441,7 +441,7 @@ pub fn get_available_token_actions_for_identity(
     let identity_id = identity.identity.id();
     let solo_action_taker = ActionTaker::SingleIdentity(identity_id);
 
-    let can_transfer = known_balance.is_some() && known_balance.unwrap() > 0;
+    let can_transfer = known_balance.is_some_and(|b| b > 0);
 
     let is_authorized = |takers: &AuthorizedActionTakers| {
         takers.allowed_for_action_taker(

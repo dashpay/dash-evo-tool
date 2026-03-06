@@ -20,7 +20,7 @@ use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, Ui};
+use eframe::egui::{self, Context, Ui};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -90,7 +90,6 @@ pub struct NetworkChooserScreen {
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
     custom_dash_qt_path: Option<PathBuf>,
-    custom_dash_qt_error_message: Option<String>,
     overwrite_dash_conf: bool,
     disable_zmq: bool,
     developer_mode: bool,
@@ -189,7 +188,6 @@ impl NetworkChooserScreen {
             current_network,
             recheck_time: None,
             custom_dash_qt_path,
-            custom_dash_qt_error_message: None,
             overwrite_dash_conf,
             disable_zmq,
             developer_mode,
@@ -898,11 +896,9 @@ impl NetworkChooserScreen {
                     if ui.button("Select File").clicked()
                         && let Some(path) = rfd::FileDialog::new().pick_file()
                     {
+                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
                         let file_name = path.file_name().and_then(|f| f.to_str());
                         if let Some(file_name) = file_name {
-                            self.custom_dash_qt_path = None;
-                            self.custom_dash_qt_error_message = None;
-
                             // Handle macOS .app bundles
                             let resolved_path = if cfg!(target_os = "macos")
                                 && path.extension().and_then(|s| s.to_str()) == Some("app")
@@ -925,8 +921,15 @@ impl NetworkChooserScreen {
 
                             if is_valid {
                                 self.custom_dash_qt_path = Some(resolved_path);
-                                self.custom_dash_qt_error_message = None;
-                                self.save().expect("Expected to save db settings");
+                                if let Err(e) = self.save() {
+                                    tracing::warn!("Failed to save Dash-Qt path setting: {}", e);
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        "Failed to save Dash-Qt path setting. Please try again.",
+                                        MessageType::Error,
+                                    );
+                                    self.custom_dash_qt_path = previous_custom_dash_qt_path;
+                                }
                             } else {
                                 let required_file_name = if cfg!(target_os = "windows") {
                                     "dash-qt.exe"
@@ -935,49 +938,44 @@ impl NetworkChooserScreen {
                                 } else {
                                     "dash-qt"
                                 };
-                                self.custom_dash_qt_error_message = Some(format!(
-                                    "Invalid file: Please select a valid '{}'.",
-                                    required_file_name
-                                ));
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    format!(
+                                        "Invalid file: Please select a valid '{}'.",
+                                        required_file_name
+                                    ),
+                                    MessageType::Error,
+                                );
                             }
                         }
                     }
 
                     if self.custom_dash_qt_path.is_some() && ui.button("Clear").clicked() {
+                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
                         self.custom_dash_qt_path = Some(PathBuf::new());
-                        self.custom_dash_qt_error_message = None;
-                        self.save().expect("Expected to save db settings");
+                        if let Err(e) = self.save() {
+                            tracing::warn!("Failed to save cleared Dash-Qt path setting: {}", e);
+                            MessageBanner::set_global(
+                                ui.ctx(),
+                                "Failed to clear Dash-Qt path setting. Please try again.",
+                                MessageType::Error,
+                            );
+                            self.custom_dash_qt_path = previous_custom_dash_qt_path;
+                        }
                     }
                 });
 
-                if let Some(ref file) = self.custom_dash_qt_path {
-                    if !file.as_os_str().is_empty() {
-                        ui.horizontal(|ui| {
-                            ui.label("Path:");
-                            ui.label(
-                                egui::RichText::new(format_path_for_display(file))
-                                    .color(DashColors::SUCCESS)
-                                    .italics(),
-                            );
-                        });
-                    }
-                } else if let Some(ref error) = self.custom_dash_qt_error_message {
-                    let error_color = Color32::from_rgb(255, 100, 100);
-                    let error = error.clone();
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(&error).color(error_color));
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.custom_dash_qt_error_message = None;
-                                }
-                            });
-                        });
+                if let Some(ref file) = self.custom_dash_qt_path
+                    && !file.as_os_str().is_empty()
+                {
+                    ui.horizontal(|ui| {
+                        ui.label("Path:");
+                        ui.label(
+                            egui::RichText::new(format_path_for_display(file))
+                                .color(DashColors::SUCCESS)
+                                .italics(),
+                        );
+                    });
                 }
 
                 // Configuration Options
@@ -992,11 +990,19 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
+                    let previous_overwrite_dash_conf = self.overwrite_dash_conf;
                     if StyledCheckbox::new(&mut self.overwrite_dash_conf, "Overwrite dash.conf")
                         .show(ui)
                         .clicked()
+                        && let Err(e) = self.save()
                     {
-                        self.save().expect("Expected to save db settings");
+                        tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Failed to save overwrite dash.conf setting. Please try again.",
+                            MessageType::Error,
+                        );
+                        self.overwrite_dash_conf = previous_overwrite_dash_conf;
                     }
                     ui.label(
                         egui::RichText::new("Auto-configure required settings")
@@ -2006,12 +2012,12 @@ impl NetworkChooserScreen {
             "Sync complete".to_string()
         } else {
             match progress.state() {
-                SyncState::WaitingForConnections => "Connecting to peers".to_string(),
+                SyncState::Initializing | SyncState::WaitingForConnections => {
+                    "Connecting to peers".to_string()
+                }
                 SyncState::WaitForEvents => "Querying peer heights".to_string(),
                 SyncState::Error => "Sync error".to_string(),
-                SyncState::Initializing | SyncState::Syncing | SyncState::Synced => {
-                    "Syncing...".to_string()
-                }
+                SyncState::Syncing | SyncState::Synced => "Syncing...".to_string(),
             }
         };
 

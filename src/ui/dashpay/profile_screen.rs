@@ -13,6 +13,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
+use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -84,7 +85,6 @@ pub struct ProfileScreen {
     edit_display_name: String,
     edit_bio: String,
     edit_avatar_url: String,
-    message: Option<(String, MessageType)>,
     loading: bool,
     saving: bool, // Track if we're saving vs loading
     profile_load_attempted: bool,
@@ -101,6 +101,7 @@ pub struct ProfileScreen {
     show_avatar_url_popup: bool, // Show avatar URL when clicking on avatar in view mode
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
+    wallet_open_attempted: bool,
     show_success: bool,
     was_creating_new: bool, // Track if we were creating vs updating
     confirmation_dialog: Option<ConfirmationDialog>,
@@ -117,7 +118,6 @@ impl ProfileScreen {
             edit_display_name: String::new(),
             edit_bio: String::new(),
             edit_avatar_url: String::new(),
-            message: None,
             loading: false,
             saving: false,
             profile_load_attempted: false,
@@ -134,6 +134,7 @@ impl ProfileScreen {
             show_avatar_url_popup: false,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
+            wallet_open_attempted: false,
             show_success: false,
             was_creating_new: false,
             confirmation_dialog: None,
@@ -202,13 +203,10 @@ impl ProfileScreen {
             );
 
             // Get wallet for the selected identity
-            let mut error_message = None;
-            new_self.selected_wallet = get_selected_wallet(
-                &identities[selected_idx],
-                Some(&app_context),
-                None,
-                &mut error_message,
-            );
+            new_self.selected_wallet =
+                get_selected_wallet(&identities[selected_idx], Some(&app_context), None)
+                    .or_show_error(app_context.egui_ctx())
+                    .unwrap_or(None);
 
             // Load profile from database for this identity
             new_self.load_profile_from_database();
@@ -346,9 +344,6 @@ impl ProfileScreen {
         // This prevents stuck loading states
         self.loading = false;
 
-        // Clear any old messages
-        self.message = None;
-
         // Auto-select first identity if none selected
         if self.selected_identity.is_none()
             && let Ok(identities) = self.app_context.load_local_qualified_identities()
@@ -392,14 +387,17 @@ impl ProfileScreen {
         self.editing = true;
         self.has_unsaved_changes = false;
         self.validation_errors.clear();
-        self.message = None;
     }
 
     fn save_profile(&mut self) -> AppAction {
         self.validate_profile();
 
         if !self.is_valid() {
-            self.display_message(&self.validation_errors[0].message(), MessageType::Error);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                self.validation_errors[0].message(),
+                MessageType::Error,
+            );
             return AppAction::None;
         }
 
@@ -437,7 +435,11 @@ impl ProfileScreen {
                 },
             )))
         } else {
-            self.display_message("No identity selected", MessageType::Error);
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "No identity selected",
+                MessageType::Error,
+            );
             AppAction::None
         }
     }
@@ -449,7 +451,6 @@ impl ProfileScreen {
         self.edit_avatar_url.clear();
         self.validation_errors.clear();
         self.has_unsaved_changes = false;
-        self.message = None;
     }
 
     /// Load avatar texture from network (fetches bytes and processes them)
@@ -626,22 +627,19 @@ impl ProfileScreen {
                         self.editing = false;
                         self.validation_errors.clear();
                         self.has_unsaved_changes = false;
-                        self.message = None;
                         self.avatar_loading = false;
                         // Don't clear avatar_textures - they're keyed by URL so can be reused
 
                         // Update wallet for the newly selected identity
                         if let Some(identity) = &self.selected_identity {
-                            let mut error_message = None;
-                            self.selected_wallet = get_selected_wallet(
-                                identity,
-                                Some(&self.app_context),
-                                None,
-                                &mut error_message,
-                            );
+                            self.selected_wallet =
+                                get_selected_wallet(identity, Some(&self.app_context), None)
+                                    .or_show_error(self.app_context.egui_ctx())
+                                    .unwrap_or(None);
                         } else {
                             self.selected_wallet = None;
                         }
+                        self.wallet_open_attempted = false;
 
                         // Load profile from database for the newly selected identity
                         self.load_profile_from_database();
@@ -654,18 +652,6 @@ impl ProfileScreen {
 
         if identities.is_empty() {
             return super::render_no_identities_card(ui, &self.app_context);
-        }
-
-        // Show message if any
-        if let Some((message, message_type)) = &self.message {
-            let color = match message_type {
-                MessageType::Success => egui::Color32::DARK_GREEN,
-                MessageType::Error => egui::Color32::DARK_RED,
-                MessageType::Warning => DashColors::WARNING,
-                MessageType::Info => egui::Color32::LIGHT_BLUE,
-            };
-            ui.colored_label(color, message);
-            ui.separator();
         }
 
         if self.selected_identity.is_none() {
@@ -884,8 +870,11 @@ impl ProfileScreen {
 
                                 // Check wallet lock status before showing save button
                                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
-                                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                                        self.message = Some((e, MessageType::Error));
+                                    if !self.wallet_open_attempted {
+                                        if let Err(e) = try_open_wallet_no_password(wallet) {
+                                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                        }
+                                        self.wallet_open_attempted = true;
                                     }
                                     wallet_needs_unlock(wallet)
                                 } else {
@@ -1348,7 +1337,8 @@ impl ProfileScreen {
                             ui.horizontal(|ui| {
                                 if ui.button("Copy URL").clicked() {
                                     ui.ctx().copy_text(avatar_url.clone());
-                                    self.display_message(
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
                                         "Avatar URL copied to clipboard",
                                         MessageType::Info,
                                     );
@@ -1394,10 +1384,9 @@ impl ProfileScreen {
         action
     }
 
-    pub fn display_message(&mut self, message: &str, message_type: MessageType) {
-        self.message = Some((message.to_string(), message_type));
-        // Clear loading/saving states on error
-        if message_type == MessageType::Error {
+    pub fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // Banner display is handled globally by AppState; this is only for side-effects.
+        if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.loading = false;
             self.saving = false;
         }

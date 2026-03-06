@@ -883,10 +883,21 @@ pub trait ScreenLike {
         self.refresh()
     }
     fn ui(&mut self, ctx: &Context) -> AppAction;
+    /// Called by `AppState` **after** the global banner has already been set.
+    ///
+    /// Override **only for side-effects** such as clearing a progress banner
+    /// (`self.refresh_banner.take_and_clear()`) or updating an internal status enum.
+    /// Do **not** set your own banner here — `AppState` already did that.
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
-    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {
-        self.display_message("Success", MessageType::Success)
-    }
+
+    /// Called by `AppState` when a backend task completes successfully.
+    ///
+    /// Global success/error banners are handled centrally by `AppState::update()`.
+    /// Override this to perform screen-specific side-effects (e.g., storing a
+    /// result, transitioning status, clearing a progress banner).
+    /// The default is a **no-op** — screens that dispatch backend tasks should
+    /// override this for their expected result variants.
+    fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
 
     fn pop_on_success(&mut self) {}
 }

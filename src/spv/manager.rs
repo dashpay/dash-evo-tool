@@ -3,12 +3,14 @@ use crate::app_dir::app_user_data_dir_path;
 use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
-use dash_sdk::dash_spv::client::interface::{DashSpvClientCommand, DashSpvClientInterface};
+use arc_swap::ArcSwapOption;
+use dash_sdk::dash_spv::client::interface::DashSpvClientCommand;
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
 use dash_sdk::dash_spv::sync::SyncEvent;
 use dash_sdk::dash_spv::sync::SyncProgress as SpvSyncProgress;
+use dash_sdk::dash_spv::sync::SyncState;
 use dash_sdk::dash_spv::types::ValidationMode;
 use dash_sdk::dash_spv::{ClientConfig, DashSpvClient, Hash, LLMQType, QuorumHash};
 use dash_sdk::dpp::dashcore::{Address, InstantLock, Network, Transaction, Txid};
@@ -21,7 +23,6 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
 use dash_sdk::dpp::key_wallet_manager::WalletEvent;
 use dash_sdk::dpp::key_wallet_manager::wallet_interface::WalletInterface;
 use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
-// use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey; // not needed directly here
 use std::fmt;
 use std::fs;
 use std::net::ToSocketAddrs;
@@ -149,8 +150,9 @@ pub struct SpvManager {
     wallet: Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
     // Storage manager for direct access to SPV data (shared component from client)
     storage: Arc<Mutex<Option<Arc<tokio::sync::Mutex<DiskStorageManager>>>>>,
-    // Interface for sending commands to the running SPV client (quorum lookups, etc.)
-    client_interface: Arc<RwLock<Option<DashSpvClientInterface>>>,
+    // Shared reference to the running SPV client (for quorum lookups, etc.)
+    // ArcSwapOption gives wait-free reads (quorum lookups) and atomic set/clear on start/stop.
+    spv_client: ArcSwapOption<SpvClient>,
     status: Arc<RwLock<SpvStatus>>,
     last_error: Arc<RwLock<Option<String>>>,
     started_at: Arc<RwLock<Option<SystemTime>>>,
@@ -297,7 +299,7 @@ impl SpvManager {
                 network,
             ))),
             storage: Arc::new(Mutex::new(None)),
-            client_interface: Arc::new(RwLock::new(None)),
+            spv_client: ArcSwapOption::empty(),
             status: Arc::new(RwLock::new(SpvStatus::Idle)),
             last_error: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
@@ -551,9 +553,7 @@ impl SpvManager {
             *storage_guard = None;
         }
 
-        if let Ok(mut interface_guard) = self.client_interface.write() {
-            *interface_guard = None;
-        }
+        // spv_client is cleared asynchronously when the client stops; no action needed here.
 
         if let Ok(mut request_guard) = self.request_tx.lock() {
             *request_guard = None;
@@ -606,8 +606,8 @@ impl SpvManager {
 
     /// Attempt to resolve a quorum public key via the SPV client's masternode/quorum state.
     ///
-    /// This method sends a request through the DashSpvClientInterface to query the running
-    /// SPV client. If SPV is not running or the key is not known, an error is returned.
+    /// Queries the running SPV client directly. If SPV is not running or the key is not
+    /// known, an error is returned.
     pub fn get_quorum_public_key(
         &self,
         quorum_type: u32,
@@ -621,16 +621,6 @@ impl SpvManager {
             core_chain_locked_height
         );
 
-        let interface = {
-            let guard = self
-                .client_interface
-                .read()
-                .map_err(|e| format!("client_interface lock poisoned: {e}"))?;
-            guard
-                .clone()
-                .ok_or_else(|| "SPV client not initialized".to_string())?
-        };
-
         let llmq_type = LLMQType::from(quorum_type as u8);
         let qh = QuorumHash::from_byte_array(quorum_hash).reverse();
 
@@ -641,10 +631,15 @@ impl SpvManager {
             core_chain_locked_height
         );
 
+        let client = self
+            .spv_client
+            .load_full()
+            .ok_or_else(|| "SPV client not initialized".to_string())?;
+
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                interface
-                    .get_quorum_by_height(core_chain_locked_height, llmq_type, qh)
+                client
+                    .get_quorum_at_height(core_chain_locked_height, llmq_type, qh)
                     .await
                     .map(|q| {
                         tracing::debug!(
@@ -825,13 +820,9 @@ impl SpvManager {
             }
         }
 
-        // Build and start the client
+        // Build the client and wrap in Arc for shared access
         let has_wallets = expected_wallet_count > 0;
-        let mut client = self.build_client(has_wallets).await?;
-        client
-            .start()
-            .await
-            .map_err(|e| format!("SPV start failed: {e}"))?;
+        let client = Arc::new(self.build_client(has_wallets).await?);
 
         // Store the shared storage reference for later access
         {
@@ -840,6 +831,9 @@ impl SpvManager {
                 *storage_guard = Some(storage);
             }
         }
+
+        // Store the client reference for quorum lookups (wait-free reads via ArcSwap)
+        self.spv_client.store(Some(Arc::clone(&client)));
 
         // Subscribe to sync events (broadcast)
         let sync_rx = client.subscribe_sync_events();
@@ -871,35 +865,13 @@ impl SpvManager {
         // Spawn request handler in a separate task
         self.spawn_request_handler(request_rx, stop_token.clone());
 
-        // Create command channel for the DashSpvClientInterface
-        // Note: Unbounded channel is required by SDK's DashSpvClientInterface API.
-        // Memory usage is bounded in practice by SPV command processing speed.
-        let (command_tx, command_receiver) = tokio::sync::mpsc::unbounded_channel();
-
-        // Store the interface for external queries (quorum lookups, etc.)
-        {
-            let interface = DashSpvClientInterface::new(command_tx);
-            let mut guard = self
-                .client_interface
-                .write()
-                .map_err(|e| format!("client_interface lock poisoned: {e}"))?;
-            *guard = Some(interface);
-        }
-
         let _ = self.write_status(SpvStatus::Syncing);
 
-        // Run sync and monitor with the client owned in this scope
-        let result = self
-            .clone()
-            .run_sync_and_monitor(client, command_receiver, stop_token)
-            .await;
+        // Run the client — handles start, monitoring, and stop internally
+        let result = self.clone().run_client(client, stop_token).await;
 
-        // Clear the interface and network manager since the client is done
-        {
-            if let Ok(mut guard) = self.client_interface.write() {
-                *guard = None;
-            }
-        }
+        // Clear the client reference and network manager since the client is done
+        self.spv_client.store(None);
         {
             let mut nm_guard = self.network_manager.write().await;
             *nm_guard = None;
@@ -920,69 +892,39 @@ impl SpvManager {
         result
     }
 
-    async fn run_sync_and_monitor(
+    async fn run_client(
         self: Arc<Self>,
-        mut client: SpvClient,
-        command_receiver: mpsc::UnboundedReceiver<DashSpvClientCommand>,
+        client: Arc<SpvClient>,
         stop_token: CancellationToken,
     ) -> Result<(), String> {
-        // Monitor network continuously - this handles initial sync and ongoing monitoring
-        // Requests are handled through the DashSpvClientInterface command channel
-        enum Outcome {
-            MonitorCompleted(Result<(), dash_sdk::dash_spv::SpvError>),
-            Cancelled,
-        }
+        // Create command channel for DashSpvClient (used for quorum lookups etc.)
+        let (_command_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<DashSpvClientCommand>();
 
-        let outcome = {
-            let monitor_cancel = CancellationToken::new();
-            let monitor_future = client.monitor_network(command_receiver, monitor_cancel.clone());
-            tokio::pin!(monitor_future);
+        // client.run() takes ownership (mut self), so unwrap the Arc.
+        let client = Arc::try_unwrap(client)
+            .map_err(|_| "Cannot unwrap SpvClient Arc: other references still held".to_string())?;
 
-            // stop_token is a child of global_cancel, so it fires on either
-            // explicit SpvManager::stop() or application-wide shutdown.
-            tokio::select! {
-                result = &mut monitor_future => Outcome::MonitorCompleted(result),
-                _ = stop_token.cancelled() => {
-                    monitor_cancel.cancel();
-                    Outcome::Cancelled
-                },
-            }
-        }; // monitor_future is dropped here, releasing the mutable borrow
+        let result = client
+            .run(command_rx, stop_token)
+            .await
+            .map_err(|e| format!("SPV client error: {e}"));
 
         tracing::info!(
-            "run_sync_and_monitor: outcome = {}",
-            match &outcome {
-                Outcome::MonitorCompleted(Ok(())) => "MonitorCompleted(Ok)",
-                Outcome::MonitorCompleted(Err(_)) => "MonitorCompleted(Err)",
-                Outcome::Cancelled => "Cancelled",
-            }
+            "run_client: outcome = {}",
+            if result.is_ok() { "Ok" } else { "Err" }
         );
 
-        // Stop the client after monitoring completes or is cancelled
-        tracing::info!("run_sync_and_monitor: calling client.stop()...");
-        let stop_start = std::time::Instant::now();
-        let _ = client.stop().await;
-        tracing::info!(
-            "run_sync_and_monitor: client.stop() took {:?}",
-            stop_start.elapsed()
-        );
-
-        match outcome {
-            Outcome::MonitorCompleted(Ok(())) => {
+        match &result {
+            Ok(()) => {
                 let _ = self.write_status(SpvStatus::Stopped);
-                Ok(())
             }
-            Outcome::MonitorCompleted(Err(err)) => {
-                let message = format!("monitor_network failed: {err}");
+            Err(message) => {
                 let _ = self.write_last_error(Some(message.clone()));
                 let _ = self.write_status(SpvStatus::Error);
-                Err(message)
-            }
-            Outcome::Cancelled => {
-                let _ = self.write_status(SpvStatus::Stopped);
-                Ok(())
             }
         }
+        result
     }
 
     fn spawn_request_handler(
@@ -992,6 +934,10 @@ impl SpvManager {
     ) {
         tracing::info!("SPV request handler started");
         let network_manager = Arc::clone(&self.network_manager);
+        // TODO(workaround): Remove wallet + reconcile_tx captures once
+        // dashpay/rust-dashcore#487 is fixed upstream.
+        let wallet = Arc::clone(&self.wallet);
+        let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         self.subtasks.spawn_sync("spv_request_handler", async move {
             loop {
                 tokio::select! {
@@ -1030,6 +976,19 @@ impl SpvManager {
                                         Err("SPV network manager not available".to_string())
                                     }
                                 };
+                                // TODO(workaround): Remove once dashpay/rust-dashcore#487
+                                // is fixed. Upstream broadcast does not call
+                                // process_mempool_transaction(), so the wallet doesn't
+                                // know about its own outgoing tx until a block is mined.
+                                if result.is_ok() {
+                                    notify_wallet_after_broadcast(
+                                        &wallet,
+                                        &tx,
+                                        reconcile_tx.as_ref(),
+                                    )
+                                    .await;
+                                }
+
                                 let _ = response_tx.send(result);
                             }
                             None => {
@@ -1044,11 +1003,49 @@ impl SpvManager {
         });
     }
 
+    /// Identify which sync manager phase is in Error state, if any.
+    /// Checks masternodes first as the most common failure point,
+    /// rather than pipeline execution order used by `spv_phase_summary()`.
+    fn failed_manager_name(progress: &SpvSyncProgress) -> &'static str {
+        if progress
+            .masternodes()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
+            return "Masternodes";
+        }
+        if progress
+            .headers()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
+            return "Headers";
+        }
+        if progress
+            .filter_headers()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
+            return "Filter headers";
+        }
+        if progress
+            .filters()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
+            return "Filters";
+        }
+        if progress
+            .blocks()
+            .is_ok_and(|p| p.state() == SyncState::Error)
+        {
+            return "Blocks";
+        }
+        "unknown phase"
+    }
+
     fn spawn_progress_watcher(
         &self,
         mut progress_rx: tokio::sync::watch::Receiver<SpvSyncProgress>,
     ) {
         let status = Arc::clone(&self.status);
+        let last_error = Arc::clone(&self.last_error);
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
@@ -1063,6 +1060,12 @@ impl SpvManager {
                         }
                         let watch_progress = progress_rx.borrow().clone();
                         let is_synced = watch_progress.is_synced();
+                        let is_error = watch_progress.state() == SyncState::Error;
+                        let failed_phase = if is_error {
+                            Some(Self::failed_manager_name(&watch_progress))
+                        } else {
+                            None
+                        };
 
                         // Update sync progress state
                         if let Ok(mut stored_sync) = sync_progress_state.write() {
@@ -1076,9 +1079,26 @@ impl SpvManager {
                         if let Ok(mut status_guard) = status.write() {
                             if is_synced {
                                 *status_guard = SpvStatus::Running;
+                            } else if is_error {
+                                *status_guard = SpvStatus::Error;
                             } else if !matches!(*status_guard, SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error) {
                                 *status_guard = SpvStatus::Syncing;
                             }
+                        }
+                        // Write last_error outside status lock to maintain
+                        // consistent lock ordering (status → release → last_error).
+                        if is_error
+                            && let Ok(mut err_guard) = last_error.write()
+                            && err_guard.is_none()
+                        {
+                            // Note: this path is currently unreachable due to upstream
+                            // bug dashpay/rust-dashcore#469 (progress channel never
+                            // receives SyncState::Error). Once fixed, this will fire.
+                            let phase = failed_phase.unwrap_or("unknown phase");
+                            *err_guard = Some(format!(
+                                "Sync failed: {} (reported by SPV progress channel)",
+                                phase
+                            ));
                         }
                     }
                 }
@@ -1091,6 +1111,7 @@ impl SpvManager {
         let reconcile_tx = self.reconcile_tx.lock().ok().and_then(|g| g.clone());
         let finality_tx = self.finality_tx.lock().ok().and_then(|g| g.clone());
         let status = Arc::clone(&self.status);
+        let last_error = Arc::clone(&self.last_error);
         let cancel = self.subtasks.cancellation_token.clone();
 
         self.subtasks.spawn_sync("spv_sync_event_handler", async move {
@@ -1135,6 +1156,31 @@ impl SpvManager {
                                 {
                                     *guard = SpvStatus::Running;
                                 }
+
+                                // Transition to Error when a sync manager reports a
+                                // fatal failure. The dash-spv library emits this event
+                                // but does NOT update the progress channel on the error
+                                // path, so we must react to the event directly.
+                                if let SyncEvent::ManagerError { ref manager, ref error } = event {
+                                    tracing::error!("SPV manager {} reported error: {}", manager, error);
+                                    if let Ok(mut guard) = status.write() {
+                                        *guard = SpvStatus::Error;
+                                        drop(guard); // Maintain lock ordering: status → release → last_error
+                                    }
+
+                                    // Truncate error before formatting to avoid
+                                    // large transient allocations from adversarial peers.
+                                    let limit = error.floor_char_boundary(100);
+                                    let msg = format!("Sync manager {} failed: {}", manager, &error[..limit]);
+                                    if let Ok(mut err_guard) = last_error.write() {
+                                        if err_guard.is_none() {
+                                            *err_guard = Some(msg);
+                                        } else {
+                                            tracing::warn!(%manager, error, "SPV last_error already set, ignoring subsequent: {}", msg);
+                                        }
+                                    }
+                                }
+
                                 if should_signal
                                     && let Some(ref tx) = reconcile_tx
                                 {
@@ -1341,6 +1387,28 @@ fn build_spv_data_dir(network: Network, config: &NetworkConfig) -> Result<PathBu
     };
 
     Ok(base.join(network_dir))
+}
+
+/// Workaround for [dashpay/rust-dashcore#487]: upstream `broadcast_transaction()` does not
+/// call `process_mempool_transaction()` on the local wallet, so spent UTXOs stay unmarked
+/// and the balance is stale until a block is mined.
+///
+/// Remove this function once the upstream fix lands.
+///
+/// [dashpay/rust-dashcore#487]: https://github.com/dashpay/rust-dashcore/issues/487
+async fn notify_wallet_after_broadcast(
+    wallet: &Arc<AsyncRwLock<WalletManager<ManagedWalletInfo>>>,
+    tx: &Transaction,
+    reconcile_tx: Option<&mpsc::Sender<()>>,
+) {
+    {
+        let mut wm = wallet.write().await;
+        wm.process_mempool_transaction(tx).await;
+    }
+    if let Some(ch) = reconcile_tx {
+        let _ = ch.try_send(());
+    }
+    tracing::debug!("Notified wallet about broadcast tx {}", tx.txid());
 }
 
 impl fmt::Debug for SpvManager {

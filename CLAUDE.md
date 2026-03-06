@@ -58,13 +58,10 @@ scripts/safe-cargo.sh +nightly fmt --all
 
 ## Coding Conventions
 
-### Parameter ordering
+### General rules
 
-When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`. Example:
-
-```rust
-fn remove_selected_utxos(&mut self, context: Option<&AppContext>, selected: &BTreeMap<...>) -> Result<(), String>
-```
+* When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`.
+* Screen constructors handle errors internally via `MessageBanner` and return `Self` with degraded state. Keep `create_screen()` clean — no error handling at callsites.
 
 
 ## Architecture Overview
@@ -123,6 +120,8 @@ Screen::ui() → AppAction::BackendTask(task)
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
+**Error handling**: Backend tasks return `Result<T, TaskError>` (`src/backend_task/error.rs`). `TaskError` is a typed error envelope — `Display` produces user-friendly text for `MessageBanner`, `Debug` provides technical details for logs. `From<String>` ensures backwards compatibility: existing `Result<T, String>` code works unchanged. Domain errors (`DashPayError`, `SpvError`, etc.) are wired as `#[from]` variants for automatic conversion via `?`. When adding new backend error types, add a `#[from]` variant to `TaskError` rather than converting to `String`.
+
 ## Screen Pattern
 
 All screens implement the `ScreenLike` trait:
@@ -175,11 +174,21 @@ response.inner.update(&mut self.amount);
 
 ## Message Display
 
-User-facing messages use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.
+User-facing messages (errors, warnings, success, infos) use `MessageBanner` (`src/ui/components/message_banner.rs`). Global banners are rendered centrally by `island_central_panel()` — `AppState::update()` sets them automatically for backend task results. When using `MessageBanner::set_global()`, no guard is needed — it is idempotent and automatically logs at the appropriate level (error/warn/debug). Screens only override `display_message()` for side-effects. See the component's doc comments and `docs/ai-design/2026-02-17-unified-messages/` for details.
+
+**BannerHandle lifecycle**: Screens that run backend tasks typically store a `refresh_banner: Option<BannerHandle>` field. On task dispatch, set it via `MessageBanner::set_global()` with an info/progress message. In `display_message()` (called as a side-effect by AppState), dismiss the progress banner via `self.refresh_banner.take_and_clear()` (from `OptionBannerExt`). Simply setting the field to `None` would leak the banner — `take_and_clear()` removes it from the egui context. AppState handles displaying the actual result banner.
+
+**Logging**: MessageBanner logs all displayed messages (with details) automatically. Additional logging is unnecessary.
+
+**Error banners**: Never expose raw backend/database errors to users. Use a generic user-friendly message in the banner and attach technical details via `BannerHandle::with_details()`. When the error implements `Display` and its text is user-appropriate, pass it directly to `set_global`; otherwise use a descriptive generic message:
+```rust
+MessageBanner::set_global(ctx, "Failed to load token balances", MessageType::Error)
+    .with_details(e);
+```
 
 ## Database
 
-Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors are `Result<T, String>` — string errors display directly to users.
+Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `database/initialization.rs`. Domain modules provide typed CRUD methods. Backend task errors use `TaskError` (`src/backend_task/error.rs`) — see App Task System section above.
 
 ## Platform Targets
 

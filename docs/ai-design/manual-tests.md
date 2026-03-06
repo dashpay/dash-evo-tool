@@ -4,6 +4,20 @@ End-to-end manual test scenarios for Dash Evo Tool. Each scenario exercises
 multiple features across screens and backend systems. Designed for Testnet
 unless stated otherwise.
 
+## Table of Contents
+
+- [Global Preconditions](#global-preconditions)
+- [Scenario 1: Fresh Wallet Setup & SPV Sync Lifecycle](#scenario-1-fresh-wallet-setup--spv-sync-lifecycle)
+- [Scenario 2: Platform Address Sync & Address Table](#scenario-2-platform-address-sync--address-table)
+- [Scenario 3: Identity Registration with Dynamic Fee](#scenario-3-identity-registration-with-dynamic-fee)
+- [Scenario 4: Identity Top-Up & Nonce Tracking](#scenario-4-identity-top-up--nonce-tracking)
+- [Scenario 5: Mining Blocks on Regtest](#scenario-5-mining-blocks-on-regtest)
+- [Scenario 6: Network Switching & State Isolation](#scenario-6-network-switching--state-isolation)
+- [Scenario 7: SPV Error Handling & Degraded Mode](#scenario-7-spv-error-handling--degraded-mode)
+- [Scenario 8: Error Banners & Details Display](#scenario-8-error-banners--details-display)
+- [Scenario 9: Developer Mode & Local Network Configuration](#scenario-9-developer-mode--local-network-configuration)
+- [Scenario 10: Locked Wallet, Insufficient Funds & Visual Edge Cases](#scenario-10-locked-wallet-insufficient-funds--visual-edge-cases)
+
 ---
 
 ## Global Preconditions

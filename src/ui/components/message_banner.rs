@@ -364,7 +364,7 @@ impl MessageBanner {
     /// Set a global error banner from any error type that implements `Display` + `Debug`.
     ///
     /// Uses `Display` for the user-facing message and attaches `Debug` as details.
-    pub fn set_global_error<E: fmt::Debug + fmt::Display>(
+    pub fn set_global_with_error<E: fmt::Debug + fmt::Display>(
         ctx: &egui::Context,
         err: E,
     ) -> BannerHandle {

@@ -56,17 +56,25 @@ impl Database {
     }
 
     /// Update the Dash Core wallet name for an HD wallet.
+    ///
+    /// Returns `Ok(true)` if exactly one row was updated, `Ok(false)` if no
+    /// matching wallet was found (0 rows), or `Err` on database errors
+    /// (including the unexpected case of >1 rows affected).
     pub fn set_wallet_core_wallet_name(
         &self,
         seed_hash: &[u8; 32],
         core_wallet_name: Option<&str>,
-    ) -> rusqlite::Result<()> {
+    ) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let rows = conn.execute(
             "UPDATE wallet SET core_wallet_name = ? WHERE seed_hash = ?",
             params![core_wallet_name, seed_hash],
         )?;
-        Ok(())
+        match rows {
+            0 => Ok(false),
+            1 => Ok(true),
+            n => Err(rusqlite::Error::StatementChangedRows(n)),
+        }
     }
 
     /// Update the alias of a wallet based on the seed.

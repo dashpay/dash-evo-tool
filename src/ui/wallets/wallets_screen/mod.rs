@@ -236,14 +236,14 @@ impl WalletsBalancesScreen {
             .update_selected_single_key_hash(hash.as_ref());
     }
 
-    /// Persist the selected Core wallet name to the DB and in-memory wallet,
-    /// then trigger a refresh.
+    /// Persist the selected Core wallet name to the DB and in-memory wallet.
+    ///
+    /// Returns `Ok(())` on success or `Err` with a user-facing message on failure.
     fn apply_core_wallet_selection(
         &mut self,
-        ctx: &Context,
         wallet_hash: &[u8; 32],
         wallet_name: &str,
-    ) {
+    ) -> Result<(), String> {
         // Try HD wallets first
         let found_hd = self
             .app_context
@@ -252,18 +252,18 @@ impl WalletsBalancesScreen {
             .is_ok_and(|w| w.contains_key(wallet_hash));
 
         if found_hd {
-            if let Err(e) = self
+            match self
                 .app_context
                 .db
                 .set_wallet_core_wallet_name(wallet_hash, Some(wallet_name))
             {
-                MessageBanner::set_global(
-                    ctx,
-                    "Failed to save Dash Core wallet",
-                    MessageType::Error,
-                )
-                .with_details(e);
-                return;
+                Ok(false) => {
+                    return Err("Wallet not found in database".to_string());
+                }
+                Err(e) => {
+                    return Err(format!("Failed to save Dash Core wallet: {e}"));
+                }
+                Ok(true) => {}
             }
             if let Ok(wallets) = self.app_context.wallets.read()
                 && let Some(w) = wallets.get(wallet_hash)
@@ -272,18 +272,18 @@ impl WalletsBalancesScreen {
                 guard.core_wallet_name = Some(wallet_name.to_string());
             }
         } else {
-            if let Err(e) = self
+            match self
                 .app_context
                 .db
                 .set_single_key_wallet_core_wallet_name(wallet_hash, Some(wallet_name))
             {
-                MessageBanner::set_global(
-                    ctx,
-                    "Failed to save Dash Core wallet",
-                    MessageType::Error,
-                )
-                .with_details(e);
-                return;
+                Ok(false) => {
+                    return Err("Wallet not found in database".to_string());
+                }
+                Err(e) => {
+                    return Err(format!("Failed to save Dash Core wallet: {e}"));
+                }
+                Ok(true) => {}
             }
             if let Ok(skw) = self.app_context.single_key_wallets.read()
                 && let Some(w) = skw.get(wallet_hash)
@@ -293,11 +293,7 @@ impl WalletsBalancesScreen {
             }
         }
 
-        MessageBanner::set_global(
-            ctx,
-            format!("Dash Core wallet '{}' assigned", wallet_name),
-            MessageType::Success,
-        );
+        Ok(())
     }
 
     /// Refresh the cached platform sync info from the database.
@@ -2023,8 +2019,24 @@ impl ScreenLike for WalletsBalancesScreen {
                         && let Some(wallets) = self.pending_core_wallet_options.take()
                         && let Some(wallet_name) = wallets.get(idx).cloned()
                     {
-                        self.apply_core_wallet_selection(ctx, &wallet_hash, &wallet_name);
-                        self.refresh();
+                        match self.apply_core_wallet_selection(&wallet_hash, &wallet_name) {
+                            Ok(()) => {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    format!("Dash Core wallet '{}' assigned", wallet_name),
+                                    MessageType::Success,
+                                );
+                                self.refresh();
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Failed to save Dash Core wallet",
+                                    MessageType::Error,
+                                )
+                                .with_details(e);
+                            }
+                        }
                     }
                 }
                 SelectionStatus::Canceled => {
@@ -2061,6 +2073,7 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
+    /// Intercept Core-wallet-not-configured errors and show the wallet selection dialog.
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         if matches!(error, TaskError::CoreWalletNotConfigured) {
             self.refreshing = false;

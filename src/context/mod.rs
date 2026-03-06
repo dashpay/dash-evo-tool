@@ -574,20 +574,11 @@ impl AppContext {
         let base = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
-                if !name
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '))
-                {
-                    return Err(
-                        "Invalid Core wallet name: contains disallowed characters".to_string()
-                    );
-                }
-                if name.contains("..")
-                    || name.trim_matches(|c: char| c == '.' || c == ' ').is_empty()
-                {
+                if name.contains("..") {
                     return Err(format!("Invalid Core wallet name: '{}'", name));
                 }
-                format!("{}/wallet/{}", base, name)
+                let encoded = urlencoding::encode(name);
+                format!("{}/wallet/{}", base, encoded)
             }
             _ => base,
         };
@@ -680,5 +671,18 @@ pub(crate) const fn default_platform_version(network: &Network) -> &'static Plat
         Network::Devnet => &PLATFORM_V11,
         Network::Regtest => &PLATFORM_V11,
         _ => panic!("Unsupported network for default_platform_version"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn wallet_name_with_spaces_is_url_encoded() {
+        let base = "http://127.0.0.1:9998";
+        let name = "my test wallet";
+        let encoded = urlencoding::encode(name);
+        let url = format!("{}/wallet/{}", base, encoded);
+        assert_eq!(url, "http://127.0.0.1:9998/wallet/my%20test%20wallet");
+        assert!(!url.contains(' '));
     }
 }

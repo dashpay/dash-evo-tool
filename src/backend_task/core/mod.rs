@@ -176,11 +176,10 @@ impl AppContext {
                         self.network,
                     ))
                 })
-                .map_err(|e| TaskError::from(e.to_string())),
+                .map_err(TaskError::from),
             CoreTask::GetBestChainLocks => {
                 // Load configs
-                let config = Config::load()
-                    .map_err(|e| TaskError::from(format!("Failed to load config: {}", e)))?;
+                let config = Config::load()?;
 
                 let maybe_mainnet_config = config.config_for_network(Network::Dash);
                 let maybe_testnet_config = config.config_for_network(Network::Testnet);
@@ -211,15 +210,12 @@ impl AppContext {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
 
                 if self.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-                    self.reconcile_spv_wallets().await.map_err(|e| {
-                        TaskError::from(format!("Error refreshing wallet via SPV: {}", e))
-                    })?;
+                    self.reconcile_spv_wallets().await?;
                 } else {
                     let ctx = self.clone();
                     let result =
                         tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
-                            .await
-                            .map_err(|e| TaskError::from(format!("Task join error: {}", e)))?;
+                            .await?;
                     let recovered =
                         self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)?;
                     if matches!(
@@ -252,8 +248,7 @@ impl AppContext {
                 let ctx = self.clone();
                 let result =
                     tokio::task::spawn_blocking(move || ctx.refresh_single_key_wallet_info(wallet))
-                        .await
-                        .map_err(|e| TaskError::from(format!("Task join error: {}", e)))?
+                        .await?
                         .map(|()| BackendTaskSuccessResult::RefreshedWallet { warning: None });
                 self.with_wallet_recovery(&key_hash, Some(&address), true, result)
             }
@@ -299,9 +294,8 @@ impl AppContext {
             CoreTask::RecoverAssetLocks(wallet) => {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
                 let ctx = self.clone();
-                let result = tokio::task::spawn_blocking(move || ctx.recover_asset_locks(wallet))
-                    .await
-                    .map_err(|e| TaskError::from(format!("Task join error: {}", e)))?;
+                let result =
+                    tokio::task::spawn_blocking(move || ctx.recover_asset_locks(wallet)).await?;
                 self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
             }
             CoreTask::MineBlocks {
@@ -322,18 +316,16 @@ impl AppContext {
                             TaskError::from(format!("Core client lock was poisoned: {}", e))
                         })?
                         .generate_to_address(block_count, &address)
-                        .map_err(|e| TaskError::from(e.to_string()))
+                        .map_err(TaskError::from)
                 })
-                .await
-                .map_err(|e| TaskError::from(format!("Task join error: {}", e)))??;
+                .await??;
 
                 let mined_count = mined.len() as u64;
 
                 // Refresh wallet balances via RPC so the UI reflects the new coins
                 let refresh_ctx = self.clone();
                 tokio::task::spawn_blocking(move || refresh_ctx.refresh_wallet_info(wallet))
-                    .await
-                    .map_err(|e| TaskError::from(format!("Task join error: {}", e)))?
+                    .await?
                     .map_err(|e| {
                         TaskError::from(format!("Error refreshing wallet after mining: {}", e))
                     })?;
@@ -368,11 +360,14 @@ impl AppContext {
             match self.try_detect_core_wallet_for_address(addr) {
                 Ok(Some(wallet_name)) => {
                     if is_single_key {
-                        if let Err(e) = self
+                        if !self
                             .db
-                            .set_single_key_wallet_core_wallet_name(wallet_id, Some(&wallet_name))
+                            .set_single_key_wallet_core_wallet_name(wallet_id, Some(&wallet_name))?
                         {
-                            tracing::warn!("Failed to persist Core wallet name: {}", e);
+                            return Err(TaskError::from(
+                                "Wallet not found in database when persisting Core wallet name"
+                                    .to_string(),
+                            ));
                         }
                         if let Ok(skw) = self.single_key_wallets.read()
                             && let Some(w) = skw.get(wallet_id)
@@ -381,11 +376,14 @@ impl AppContext {
                             g.core_wallet_name = Some(wallet_name.clone());
                         }
                     } else {
-                        if let Err(e) = self
+                        if !self
                             .db
-                            .set_wallet_core_wallet_name(wallet_id, Some(&wallet_name))
+                            .set_wallet_core_wallet_name(wallet_id, Some(&wallet_name))?
                         {
-                            tracing::warn!("Failed to persist Core wallet name: {}", e);
+                            return Err(TaskError::from(
+                                "Wallet not found in database when persisting Core wallet name"
+                                    .to_string(),
+                            ));
                         }
                         if let Ok(wallets) = self.wallets.read()
                             && let Some(w) = wallets.get(wallet_id)

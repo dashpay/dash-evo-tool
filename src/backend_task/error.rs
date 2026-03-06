@@ -42,6 +42,14 @@ pub enum TaskError {
     #[error(transparent)]
     Wallet(#[from] crate::database::WalletError),
 
+    /// SQLite errors.
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// Tokio task join errors.
+    #[error(transparent)]
+    JoinError(#[from] tokio::task::JoinError),
+
     /// Core wallet not configured for this wallet on a multi-wallet Core node.
     #[error(
         "Core wallet not configured for this wallet. Go to the Wallets screen and refresh to auto-detect the Core wallet association."

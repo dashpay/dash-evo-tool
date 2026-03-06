@@ -844,14 +844,29 @@ impl Database {
 
     /// Migration: Add core_wallet_name column to wallet and single_key_wallet tables (version 28).
     fn add_core_wallet_name_column(&self, conn: &Connection) -> rusqlite::Result<()> {
-        conn.execute(
-            "ALTER TABLE wallet ADD COLUMN core_wallet_name TEXT DEFAULT NULL",
+        let wallet_has_column: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='core_wallet_name'",
             [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
-        conn.execute(
-            "ALTER TABLE single_key_wallet ADD COLUMN core_wallet_name TEXT DEFAULT NULL",
+        if !wallet_has_column {
+            conn.execute(
+                "ALTER TABLE wallet ADD COLUMN core_wallet_name TEXT DEFAULT NULL",
+                [],
+            )?;
+        }
+
+        let single_key_wallet_has_column: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('single_key_wallet') WHERE name='core_wallet_name'",
             [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
+        if !single_key_wallet_has_column {
+            conn.execute(
+                "ALTER TABLE single_key_wallet ADD COLUMN core_wallet_name TEXT DEFAULT NULL",
+                [],
+            )?;
+        }
         Ok(())
     }
 

@@ -229,8 +229,7 @@ impl SelectionDialog {
                         .unwrap_or_default();
 
                     let salt = ui.id().with("selection_dialog_combo");
-                    let widget_id = ui.make_persistent_id(egui::Id::new(salt));
-                    combo_popup_id = Some(widget_id.with("popup"));
+                    combo_popup_id = Some(ui.make_persistent_id(salt).with("popup"));
                     egui::ComboBox::from_id_salt(salt)
                         .selected_text(selected_text)
                         .width(ui.available_width() - 8.0)

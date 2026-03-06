@@ -129,6 +129,8 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
+            // TODO(CMT-007): Move list_core_wallets() off the UI thread — synchronous RPC
+            // can block screen construction. Fetch via backend task or cache.
             core_wallets: app_context.list_core_wallets().ok(),
             selected_core_wallet_index: 0,
         }

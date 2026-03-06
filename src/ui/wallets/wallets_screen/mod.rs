@@ -2099,6 +2099,8 @@ impl ScreenLike for WalletsBalancesScreen {
                 (None, false)
             };
 
+            // TODO(CMT-004): Move list_core_wallets() off the UI thread — synchronous RPC
+            // can block rendering if Core is slow/unreachable. Fetch via backend task instead.
             match self.app_context.list_core_wallets() {
                 Ok(wallets) if wallets.len() == 1 => {
                     if let Some(hash) = wallet_hash {

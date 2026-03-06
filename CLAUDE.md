@@ -39,10 +39,8 @@ Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 
 ### Manual test scenarios
 
-You MUST identify manual tests needed for the changes and write a manual test scenarios. Use the `claudius:qa-engineer` agent if available.
-Skip the manual test file only for non-functional changes (CI, docs, formatting, pure refactoring) — state why in the PR description.
-Put tests in docs directory, as described in "Documentation" section below. Reference the file in the PR description under "Test plan".
-Before creating a PR, re-review test scenarios and update them if needed.
+End-to-end manual test scenarios live in `docs/ai-design/manual-tests.md` (max 10 scenarios covering multiple features each). When a PR changes user-visible behavior, verify it's covered by an existing scenario or update the file. Reference applicable scenario numbers in the PR description under "Test plan".
+Skip manual test updates only for non-functional changes (CI, docs, formatting, pure refactoring) — state why in the PR description.
 
 ## CI: Safe Cargo Wrapper
 

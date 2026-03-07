@@ -1,5 +1,6 @@
 //! Refresh Single Key Wallet Info - Reload UTXOs and balances for a single key wallet
 
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -12,35 +13,28 @@ impl AppContext {
     pub fn refresh_single_key_wallet_info(
         &self,
         wallet: Arc<RwLock<SingleKeyWallet>>,
-    ) -> Result<(), String> {
+    ) -> Result<(), TaskError> {
         // Step 1: Get the address from the wallet
-        let (address, key_hash) = {
+        let (address, key_hash, core_wallet_name) = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-            (wallet_guard.address.clone(), wallet_guard.key_hash)
+            (
+                wallet_guard.address.clone(),
+                wallet_guard.key_hash,
+                wallet_guard.core_wallet_name.clone(),
+            )
         };
 
-        // Step 2: Import address to Core (needed for UTXO queries)
-        {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
+        // Build an RPC client targeting the wallet's Core wallet (if set)
+        let client = self.core_client_for_wallet(core_wallet_name.as_deref())?;
 
-            if let Err(e) = client.import_address(&address, None, Some(false)) {
-                tracing::debug!(?e, address = %address, "import_address failed during single key refresh");
-            }
+        // Step 2: Import address to Core (needed for UTXO queries)
+        if let Err(e) = client.import_address(&address, None, Some(false)) {
+            tracing::debug!(?e, address = %address, "import_address failed during single key refresh");
         }
 
         // Step 3: Get UTXOs for this address
         let utxo_map = {
-            let client = self
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned");
-
-            let utxos = client
-                .list_unspent(Some(0), None, Some(&[&address]), None, None)
-                .map_err(|e| format!("Failed to list UTXOs: {}", e))?;
+            let utxos = client.list_unspent(Some(0), None, Some(&[&address]), None, None)?;
 
             let mut map: HashMap<OutPoint, TxOut> = HashMap::new();
             for utxo in utxos {

@@ -55,6 +55,11 @@ pub struct ImportMnemonicScreen {
 
     // Identity discovery options
     identity_scan_count: u32,
+
+    /// Cached list of Core wallets (fetched once on screen init)
+    core_wallets: Option<Vec<String>>,
+    /// Index of selected Core wallet in the ComboBox
+    selected_core_wallet_index: usize,
 }
 
 impl ImportMnemonicScreen {
@@ -83,6 +88,11 @@ impl ImportMnemonicScreen {
 
             // Identity discovery options
             identity_scan_count: 5,
+
+            // TODO(CMT-008): Move list_core_wallets() off the UI thread — synchronous RPC
+            // can block screen construction. Fetch via backend task or cache.
+            core_wallets: app_context.list_core_wallets().ok(),
+            selected_core_wallet_index: 0,
         }
     }
 
@@ -137,9 +147,15 @@ impl ImportMnemonicScreen {
         };
 
         // Try WIF first, then hex
-        let wallet = SingleKeyWallet::from_wif(input, password, alias.clone()).or_else(|_| {
-            SingleKeyWallet::from_hex(input, self.app_context.network, password, alias)
-        })?;
+        let mut wallet =
+            SingleKeyWallet::from_wif(input, password, alias.clone()).or_else(|_| {
+                SingleKeyWallet::from_hex(input, self.app_context.network, password, alias)
+            })?;
+
+        wallet.core_wallet_name = self
+            .core_wallets
+            .as_ref()
+            .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
         let key_hash = wallet.key_hash();
 
@@ -165,6 +181,7 @@ impl ImportMnemonicScreen {
         self.wallet_imported = true;
         Ok(AppAction::None)
     }
+
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
@@ -244,6 +261,10 @@ impl ImportMnemonicScreen {
                 unconfirmed_balance: 0,
                 total_balance: 0,
                 platform_address_info: Default::default(),
+                core_wallet_name: self
+                    .core_wallets
+                    .as_ref()
+                    .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned()),
             };
 
             self.app_context
@@ -706,6 +727,40 @@ impl ScreenLike for ImportMnemonicScreen {
                     // }
 
                     step += 1;
+
+                    if self
+                        .core_wallets
+                        .as_ref()
+                        .is_some_and(|w| w.len() > 1)
+                    {
+                        let core_wallets = self.core_wallets.as_ref().unwrap();
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        ui.heading(format!(
+                            "{}. Select the Dash Core wallet to use for RPC operations.",
+                            step
+                        ));
+                        step += 1;
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Dash Core Wallet:");
+                            let selected_name = &core_wallets[self.selected_core_wallet_index];
+                            ComboBox::from_id_salt("import_core_wallet_selector")
+                                .selected_text(selected_name)
+                                .show_ui(ui, |ui| {
+                                    for (i, name) in core_wallets.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut self.selected_core_wallet_index,
+                                            i,
+                                            name,
+                                        );
+                                    }
+                                });
+                        });
+                    }
 
                     ui.add_space(10.0);
                     ui.separator();

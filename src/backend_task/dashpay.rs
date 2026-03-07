@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use dash_sdk::Sdk;
 use std::sync::Arc;
@@ -99,76 +100,76 @@ impl AppContext {
         self: &Arc<Self>,
         task: DashPayTask,
         sdk: &Sdk,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             DashPayTask::LoadProfile { identity } => {
-                profile::load_profile(self, sdk, identity).await
+                Ok(profile::load_profile(self, sdk, identity).await?)
             }
             DashPayTask::UpdateProfile {
                 identity,
                 display_name,
                 bio,
                 avatar_url,
-            } => profile::update_profile(self, sdk, identity, display_name, bio, avatar_url).await,
+            } => Ok(
+                profile::update_profile(self, sdk, identity, display_name, bio, avatar_url).await?,
+            ),
             DashPayTask::LoadContacts { identity } => {
-                contacts::load_contacts(self, sdk, identity).await
+                Ok(contacts::load_contacts(self, sdk, identity).await?)
             }
             DashPayTask::LoadContactRequests { identity } => {
-                contact_requests::load_contact_requests(self, sdk, identity).await
+                Ok(contact_requests::load_contact_requests(self, sdk, identity).await?)
             }
             DashPayTask::FetchContactProfile {
                 identity,
                 contact_id,
-            } => profile::fetch_contact_profile(self, sdk, identity, contact_id).await,
+            } => Ok(profile::fetch_contact_profile(self, sdk, identity, contact_id).await?),
             DashPayTask::SearchProfiles { search_query } => {
-                profile::search_profiles(self, sdk, search_query).await
+                Ok(profile::search_profiles(self, sdk, search_query).await?)
             }
             DashPayTask::SendContactRequest {
                 identity,
                 signing_key,
                 to_username,
                 account_label,
-            } => {
-                contact_requests::send_contact_request(
-                    self,
-                    sdk,
-                    identity,
-                    signing_key,
-                    to_username,
-                    account_label,
-                )
-                .await
-            }
+            } => Ok(contact_requests::send_contact_request(
+                self,
+                sdk,
+                identity,
+                signing_key,
+                to_username,
+                account_label,
+            )
+            .await?),
             DashPayTask::SendContactRequestWithProof {
                 identity,
                 signing_key,
                 to_identity_id,
                 account_label,
                 qr_auto_accept,
-            } => {
-                contact_requests::send_contact_request_with_proof(
-                    self,
-                    sdk,
-                    identity,
-                    signing_key,
-                    to_identity_id.to_string(
-                        dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                    ),
-                    account_label,
-                    Some(qr_auto_accept),
-                )
-                .await
-            }
+            } => Ok(contact_requests::send_contact_request_with_proof(
+                self,
+                sdk,
+                identity,
+                signing_key,
+                to_identity_id
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                account_label,
+                Some(qr_auto_accept),
+            )
+            .await?),
             DashPayTask::AcceptContactRequest {
                 identity,
                 request_id,
-            } => contact_requests::accept_contact_request(self, sdk, identity, request_id).await,
+            } => Ok(
+                contact_requests::accept_contact_request(self, sdk, identity, request_id).await?,
+            ),
             DashPayTask::RejectContactRequest {
                 identity,
                 request_id,
-            } => contact_requests::reject_contact_request(self, sdk, identity, request_id).await,
+            } => Ok(
+                contact_requests::reject_contact_request(self, sdk, identity, request_id).await?,
+            ),
             DashPayTask::LoadPaymentHistory { identity } => {
-                // Reuse the shared payment history loader to avoid duplicating logic.
                 let identity_id = identity.identity.id();
                 let records = payments::load_payment_history(self, &identity_id, None).await?;
 
@@ -236,19 +237,17 @@ impl AppContext {
                 note,
                 is_hidden,
                 accepted_accounts,
-            } => {
-                contact_info::create_or_update_contact_info(
-                    self,
-                    sdk,
-                    identity,
-                    contact_id,
-                    nickname,
-                    note,
-                    is_hidden,
-                    accepted_accounts,
-                )
-                .await
-            }
+            } => Ok(contact_info::create_or_update_contact_info(
+                self,
+                sdk,
+                identity,
+                contact_id,
+                nickname,
+                note,
+                is_hidden,
+                accepted_accounts,
+            )
+            .await?),
             DashPayTask::RegisterDashPayAddresses { identity } => {
                 let result =
                     incoming_payments::register_dashpay_addresses_for_identity(self, &identity)

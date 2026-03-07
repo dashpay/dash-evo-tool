@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -856,6 +857,14 @@ pub trait ScreenLike {
     /// override this for their expected result variants.
     fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
 
+    /// Called by `AppState` when a backend task fails with a typed error.
+    ///
+    /// Override to handle specific error variants (e.g., `CoreWalletNotConfigured`).
+    /// Return `true` to suppress the default error banner in `AppState`.
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        false
+    }
+
     fn pop_on_success(&mut self) {}
 }
 
@@ -1502,6 +1511,72 @@ impl ScreenLike for Screen {
             Screen::DashPayProfileSearchScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+        }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        match self {
+            Screen::IdentitiesScreen(screen) => screen.display_task_error(error),
+            Screen::DPNSScreen(screen) => screen.display_task_error(error),
+            Screen::DocumentQueryScreen(screen) => screen.display_task_error(error),
+            Screen::AddNewWalletScreen(screen) => screen.display_task_error(error),
+            Screen::ImportMnemonicScreen(screen) => screen.display_task_error(error),
+            Screen::AddNewIdentityScreen(screen) => screen.display_task_error(error),
+            Screen::TopUpIdentityScreen(screen) => screen.display_task_error(error),
+            Screen::AddExistingIdentityScreen(screen) => screen.display_task_error(error),
+            Screen::KeyInfoScreen(screen) => screen.display_task_error(error),
+            Screen::KeysScreen(screen) => screen.display_task_error(error),
+            Screen::RegisterDpnsNameScreen(screen) => screen.display_task_error(error),
+            Screen::RegisterDataContractScreen(screen) => screen.display_task_error(error),
+            Screen::UpdateDataContractScreen(screen) => screen.display_task_error(error),
+            Screen::DocumentActionScreen(screen) => screen.display_task_error(error),
+            Screen::GroupActionsScreen(screen) => screen.display_task_error(error),
+            Screen::WithdrawalScreen(screen) => screen.display_task_error(error),
+            Screen::TransferScreen(screen) => screen.display_task_error(error),
+            Screen::AddKeyScreen(screen) => screen.display_task_error(error),
+            Screen::TransitionVisualizerScreen(screen) => screen.display_task_error(error),
+            Screen::NetworkChooserScreen(screen) => screen.display_task_error(error),
+            Screen::WalletsBalancesScreen(screen) => screen.display_task_error(error),
+            Screen::WalletSendScreen(screen) => screen.display_task_error(error),
+            Screen::SingleKeyWalletSendScreen(screen) => screen.display_task_error(error),
+            Screen::ProofLogScreen(screen) => screen.display_task_error(error),
+            Screen::AddContractsScreen(screen) => screen.display_task_error(error),
+            Screen::ProofVisualizerScreen(screen) => screen.display_task_error(error),
+            Screen::MasternodeListDiffScreen(screen) => screen.display_task_error(error),
+            Screen::DocumentVisualizerScreen(screen) => screen.display_task_error(error),
+            Screen::ContractVisualizerScreen(screen) => screen.display_task_error(error),
+            Screen::PlatformInfoScreen(screen) => screen.display_task_error(error),
+            Screen::GroveSTARKScreen(screen) => screen.display_task_error(error),
+            Screen::AddressBalanceScreen(screen) => screen.display_task_error(error),
+
+            // Token Screens
+            Screen::TokensScreen(screen) => screen.display_task_error(error),
+            Screen::TransferTokensScreen(screen) => screen.display_task_error(error),
+            Screen::MintTokensScreen(screen) => screen.display_task_error(error),
+            Screen::BurnTokensScreen(screen) => screen.display_task_error(error),
+            Screen::DestroyFrozenFundsScreen(screen) => screen.display_task_error(error),
+            Screen::FreezeTokensScreen(screen) => screen.display_task_error(error),
+            Screen::UnfreezeTokensScreen(screen) => screen.display_task_error(error),
+            Screen::PauseTokensScreen(screen) => screen.display_task_error(error),
+            Screen::ResumeTokensScreen(screen) => screen.display_task_error(error),
+            Screen::ClaimTokensScreen(screen) => screen.display_task_error(error),
+            Screen::ViewTokenClaimsScreen(screen) => screen.display_task_error(error),
+            Screen::UpdateTokenConfigScreen(screen) => screen.display_task_error(error),
+            Screen::AddTokenById(screen) => screen.display_task_error(error),
+            Screen::PurchaseTokenScreen(screen) => screen.display_task_error(error),
+            Screen::SetTokenPriceScreen(screen) => screen.display_task_error(error),
+            Screen::AssetLockDetailScreen(screen) => screen.display_task_error(error),
+            Screen::CreateAssetLockScreen(screen) => screen.display_task_error(error),
+
+            // DashPay Screens
+            Screen::DashPayScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayAddContactScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayContactDetailsScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayContactProfileViewerScreen(screen) => screen.display_task_error(error),
+            Screen::DashPaySendPaymentScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayContactInfoEditorScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayQRGeneratorScreen(screen) => screen.display_task_error(error),
+            Screen::DashPayProfileSearchScreen(screen) => screen.display_task_error(error),
         }
     }
 

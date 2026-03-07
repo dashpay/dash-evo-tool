@@ -10,6 +10,7 @@ pub mod info_popup;
 pub mod left_panel;
 pub mod left_wallet_panel;
 pub mod message_banner;
+pub mod selection_dialog;
 pub mod styled;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;

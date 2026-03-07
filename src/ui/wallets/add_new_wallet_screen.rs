@@ -101,6 +101,10 @@ pub struct AddNewWalletScreen {
     receive_qr_texture: Option<TextureHandle>,
     show_receive_popup: bool,
     funds_received: bool,
+    /// Cached list of Core wallets (fetched once on screen init)
+    core_wallets: Option<Vec<String>>,
+    /// Index of selected Core wallet in the ComboBox
+    selected_core_wallet_index: usize,
 }
 
 impl AddNewWalletScreen {
@@ -125,6 +129,10 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
+            // TODO(CMT-007): Move list_core_wallets() off the UI thread — synchronous RPC
+            // can block screen construction. Fetch via backend task or cache.
+            core_wallets: app_context.list_core_wallets().ok(),
+            selected_core_wallet_index: 0,
         }
     }
 
@@ -269,6 +277,10 @@ impl AddNewWalletScreen {
                 unconfirmed_balance: 0,
                 total_balance: 0,
                 platform_address_info: Default::default(),
+                core_wallet_name: self
+                    .core_wallets
+                    .as_ref()
+                    .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned()),
             };
 
             self.app_context
@@ -858,7 +870,43 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading("6. Save the wallet.");
+                    let save_step = if self
+                        .core_wallets
+                        .as_ref()
+                        .is_some_and(|w| w.len() > 1)
+                    {
+                        let core_wallets = self.core_wallets.as_ref().unwrap();
+                        ui.heading(
+                            "6. Select the Dash Core wallet to use for RPC operations.",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Dash Core Wallet:");
+                            let selected_name =
+                                &core_wallets[self.selected_core_wallet_index];
+                            ComboBox::from_id_salt("core_wallet_selector")
+                                .selected_text(selected_name.as_str())
+                                .show_ui(ui, |ui| {
+                                    for (i, name) in core_wallets.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut self.selected_core_wallet_index,
+                                            i,
+                                            name,
+                                        );
+                                    }
+                                });
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        "7"
+                    } else {
+                        "6"
+                    };
+
+                    ui.heading(format!("{save_step}. Save the wallet."));
                     ui.add_space(10.0);
 
                     // Save Wallet button styled like Load Identity button

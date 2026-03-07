@@ -1,6 +1,7 @@
 use super::encryption::decrypt_extended_public_key;
 use super::hd_derivation::derive_payment_address;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -210,7 +211,7 @@ pub async fn send_payment_to_contact(
     to_contact_id: Identifier,
     amount_dash: f64,
     memo: Option<String>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     send_payment_to_contact_impl(
         app_context,
         sdk,
@@ -231,7 +232,7 @@ pub async fn send_payment_to_contact_impl(
     to_contact_id: Identifier,
     amount_dash: f64,
     memo: Option<String>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
@@ -250,7 +251,9 @@ pub async fn send_payment_to_contact_impl(
     {
         let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
         if !wallet_guard.is_open() {
-            return Err("Wallet must be unlocked to send a payment".to_string());
+            return Err("Wallet must be unlocked to send a payment"
+                .to_string()
+                .into());
         }
     }
 

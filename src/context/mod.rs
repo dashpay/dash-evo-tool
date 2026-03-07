@@ -8,6 +8,7 @@ mod wallet_lifecycle;
 pub(crate) use transaction_processing::get_transaction_info;
 
 use crate::app_dir::core_cookie_path;
+use crate::backend_task::error::TaskError;
 use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider::Provider as RpcProvider;
@@ -24,8 +25,8 @@ use arc_swap::ArcSwap;
 use connection_status::ConnectionStatus;
 use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::dashcore::{Network, Txid};
+use dash_sdk::dashcore_rpc::{Auth, Client, RpcApi};
+use dash_sdk::dpp::dashcore::{Address, Network, Txid};
 use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
@@ -52,8 +53,6 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 pub struct AppContext {
     pub(crate) network: Network,
     developer_mode: AtomicBool,
-    #[allow(dead_code)] // May be used for devnet identification
-    pub(crate) devnet_name: Option<String>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
     // Context providers for SDK, so we can switch when backend mode changes
@@ -199,35 +198,16 @@ impl AppContext {
             "http://{}:{}",
             network_config.core_host, network_config.core_rpc_port
         );
-        let cookie_path = match core_cookie_path(network, &network_config.devnet_name) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(?network, "Failed to get core cookie path: {e}");
-                return None;
-            }
-        };
-
-        // Try cookie authentication first, then user/password
-        let core_client = match Client::new(&addr, Auth::CookieFile(cookie_path.clone())) {
+        let core_client = match Self::create_core_rpc_client(
+            &addr,
+            network,
+            &network_config.devnet_name,
+            &network_config,
+        ) {
             Ok(client) => client,
-            Err(_) => {
-                tracing::info!(
-                    "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
-                    cookie_path,
-                );
-                match Client::new(
-                    &addr,
-                    Auth::UserPass(
-                        network_config.core_rpc_user.to_string(),
-                        network_config.core_rpc_password.to_string(),
-                    ),
-                ) {
-                    Ok(client) => client,
-                    Err(e) => {
-                        tracing::error!(?network, "Failed to create CoreClient: {e}");
-                        return None;
-                    }
-                }
+            Err(e) => {
+                tracing::error!(?network, "Failed to create CoreClient: {e}");
+                return None;
             }
         };
 
@@ -306,7 +286,6 @@ impl AppContext {
         let app_context = AppContext {
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
-            devnet_name: None,
             db,
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
@@ -562,6 +541,123 @@ impl AppContext {
 
         Ok(())
     }
+
+    /// Create a Core RPC client for the given URL, trying cookie authentication
+    /// first and falling back to user/password credentials.
+    fn create_core_rpc_client(
+        url: &str,
+        network: Network,
+        devnet_name: &Option<String>,
+        cfg: &NetworkConfig,
+    ) -> Result<Client, TaskError> {
+        if let Ok(cookie_path) = core_cookie_path(network, devnet_name) {
+            if let Ok(client) = Client::new(url, Auth::CookieFile(cookie_path.clone())) {
+                return Ok(client);
+            }
+            tracing::debug!(
+                "Failed to authenticate using .cookie file at {:?}, falling back to user/pass",
+                cookie_path,
+            );
+        }
+        Client::new(
+            url,
+            Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
+        )
+        .map_err(|e| format!("Failed to create Core RPC client: {e}").into())
+    }
+
+    /// Build an RPC client targeting a specific Core wallet by name.
+    /// Returns the base (no-wallet) client if `wallet_name` is `None`.
+    pub fn core_client_for_wallet(&self, wallet_name: Option<&str>) -> Result<Client, TaskError> {
+        let cfg = self
+            .config
+            .read()
+            .map_err(|_| "Config lock poisoned".to_string())?;
+        let base = format!("http://{}:{}", cfg.core_host, cfg.core_rpc_port);
+        let url = match wallet_name {
+            Some(name) if !name.is_empty() => {
+                if name.contains("..") {
+                    return Err(format!("Invalid Core wallet name: '{}'", name).into());
+                }
+                let encoded = urlencoding::encode(name);
+                format!("{}/wallet/{}", base, encoded)
+            }
+            _ => base,
+        };
+        Self::create_core_rpc_client(&url, self.network, &cfg.devnet_name, &cfg)
+    }
+
+    /// Import an address into the correct Core wallet if it's not already known.
+    /// Uses `core_wallet_name` to target the right wallet on multi-wallet nodes.
+    /// No-op if the address is already watched/mine.
+    pub fn ensure_address_imported(
+        &self,
+        address: &Address,
+        core_wallet_name: Option<&str>,
+        label: Option<&str>,
+    ) -> Result<(), TaskError> {
+        let client = self.core_client_for_wallet(core_wallet_name)?;
+        let info = client.get_address_info(address)?;
+        if !(info.is_watchonly || info.is_mine) {
+            client.import_address(address, label, Some(false))?;
+        }
+        Ok(())
+    }
+
+    /// Import address into Core, ignoring errors. For best-effort registration.
+    pub fn try_import_address(
+        &self,
+        address: &Address,
+        core_wallet_name: Option<&str>,
+        label: Option<&str>,
+    ) {
+        if let Ok(client) = self.core_client_for_wallet(core_wallet_name) {
+            let _ = client.import_address(address, label, Some(false));
+        }
+    }
+
+    /// List wallets currently loaded in Dash Core.
+    pub fn list_core_wallets(&self) -> Result<Vec<String>, TaskError> {
+        let client = self.core_client_for_wallet(None)?;
+        client
+            .list_wallets()
+            .map_err(|e| format!("Failed to list Core wallets: {e}").into())
+    }
+
+    /// Try to detect which loaded Core wallet owns the given address.
+    ///
+    /// Returns `Ok(Some(name))` if exactly one wallet recognizes it,
+    /// `Ok(None)` if ambiguous (0 or >1 matches).
+    pub fn try_detect_core_wallet_for_address(
+        &self,
+        address: &Address,
+    ) -> Result<Option<String>, TaskError> {
+        let core_wallets = self.list_core_wallets()?;
+        if core_wallets.is_empty() {
+            return Err("No wallets loaded in Dash Core".to_string().into());
+        }
+        if core_wallets.len() == 1 {
+            return Ok(Some(core_wallets.into_iter().next().unwrap()));
+        }
+        // Multiple wallets — check which one recognizes the address
+        let mut matches = Vec::new();
+        for wallet_name in &core_wallets {
+            let client = self.core_client_for_wallet(Some(wallet_name))?;
+            match client.get_address_info(address) {
+                Ok(info) if info.is_mine || info.is_watchonly => {
+                    matches.push(wallet_name.clone());
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::debug!(?e, wallet_name, "get_address_info failed");
+                }
+            }
+        }
+        match matches.len() {
+            1 => Ok(Some(matches.into_iter().next().unwrap())),
+            _ => Ok(None), // 0 or >1 matches — ambiguous
+        }
+    }
 }
 
 /// Returns the default platform version for the given network.
@@ -573,5 +669,18 @@ pub(crate) const fn default_platform_version(network: &Network) -> &'static Plat
         Network::Devnet => &PLATFORM_V11,
         Network::Regtest => &PLATFORM_V11,
         _ => panic!("Unsupported network for default_platform_version"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn wallet_name_with_spaces_is_url_encoded() {
+        let base = "http://127.0.0.1:9998";
+        let name = "my test wallet";
+        let encoded = urlencoding::encode(name);
+        let url = format!("{}/wallet/{}", base, encoded);
+        assert_eq!(url, "http://127.0.0.1:9998/wallet/my%20test%20wallet");
+        assert!(!url.contains(' '));
     }
 }

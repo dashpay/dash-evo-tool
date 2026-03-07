@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
@@ -16,7 +17,6 @@ use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::identities::funding_common::{self, WalletFundedScreenStep, generate_qr_code_image};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::{Address, OutPoint, TxOut};
 use eframe::egui::{self, Context, Ui};
 use egui::{Button, RichText, Vec2};
@@ -97,49 +97,31 @@ impl CreateAssetLockScreen {
         }
     }
 
-    fn generate_funding_address(&mut self) -> Result<(), String> {
+    fn generate_funding_address(&mut self) -> Result<(), TaskError> {
         let mut wallet = self.wallet.write().unwrap();
 
         // Generate a new asset lock funding address
         let receive_address =
             wallet.receive_address(self.app_context.network, true, Some(&self.app_context))?;
+        let core_wallet_name = wallet.core_wallet_name.clone();
+        drop(wallet);
 
         // Import address to core if needed
         if let Some(has_address) = self.core_has_funding_address {
             if !has_address {
-                self.app_context
-                    .core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
-                    .import_address(
-                        &receive_address,
-                        Some("Managed by Dash Evo Tool - Asset Lock"),
-                        Some(false),
-                    )
-                    .map_err(|e| e.to_string())?;
+                self.app_context.ensure_address_imported(
+                    &receive_address,
+                    core_wallet_name.as_deref(),
+                    Some("Managed by Dash Evo Tool - Asset Lock"),
+                )?;
             }
             self.funding_address = Some(receive_address);
         } else {
-            let info = self
-                .app_context
-                .core_client
-                .read()
-                .expect("Core client lock was poisoned")
-                .get_address_info(&receive_address)
-                .map_err(|e| e.to_string())?;
-
-            if !(info.is_watchonly || info.is_mine) {
-                self.app_context
-                    .core_client
-                    .read()
-                    .expect("Core client lock was poisoned")
-                    .import_address(
-                        &receive_address,
-                        Some("Managed by Dash Evo Tool - Asset Lock"),
-                        Some(false),
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
+            self.app_context.ensure_address_imported(
+                &receive_address,
+                core_wallet_name.as_deref(),
+                Some("Managed by Dash Evo Tool - Asset Lock"),
+            )?;
             self.funding_address = Some(receive_address);
             self.core_has_funding_address = Some(true);
         }
@@ -147,7 +129,7 @@ impl CreateAssetLockScreen {
         Ok(())
     }
 
-    fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), String> {
+    fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), TaskError> {
         if self.funding_address.is_none() {
             self.generate_funding_address()?
         }
@@ -586,7 +568,12 @@ impl ScreenLike for CreateAssetLockScreen {
                                 egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
                                 |ui| {
                                     if let Err(e) = self.render_qr_code(ui) {
-                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
+                                            "Failed to render QR code",
+                                            MessageType::Error,
+                                        )
+                                        .with_details(e);
                                     }
 
                                     ui.add_space(20.0);

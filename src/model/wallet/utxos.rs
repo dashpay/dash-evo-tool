@@ -123,9 +123,8 @@ impl Wallet {
         }
 
         let core_client = app_context
-            .core_client
-            .read()
-            .map_err(|e| format!("Core client lock was poisoned: {}", e))?;
+            .core_client_for_wallet(self.core_wallet_name.as_deref())
+            .map_err(|e| e.to_string())?;
 
         // Collect Core chain addresses for which we want to load UTXOs.
         // Platform addresses are NOT valid on Core chain and must be excluded.
@@ -151,9 +150,6 @@ impl Wallet {
                 .list_unspent(None, None, Some(&addresses), Some(false), None)
                 .map_err(|e| e.to_string())?
         };
-
-        // Drop the RPC client guard before the rest of the bookkeeping
-        drop(core_client);
 
         // Initialize the HashMap to store the new UTXOs.
         let mut new_utxo_map = HashMap::new();

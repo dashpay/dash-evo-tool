@@ -361,6 +361,18 @@ impl MessageBanner {
         }
     }
 
+    /// Set a global error banner from any error type that implements `Display` + `Debug`.
+    ///
+    /// Uses `Display` for the user-facing message and attaches `Debug` as details.
+    pub fn set_global_with_error<E: fmt::Debug + fmt::Display>(
+        ctx: &egui::Context,
+        err: E,
+    ) -> BannerHandle {
+        let handle = Self::set_global(ctx, err.to_string(), MessageType::Error);
+        handle.with_details(err);
+        handle
+    }
+
     /// Finds a message by `old_text` and replaces it with `new_text`.
     /// If `old_text` is not found, falls back to adding `new_text` as a new
     /// message (with dedup check). This fallback is intentional: callers use

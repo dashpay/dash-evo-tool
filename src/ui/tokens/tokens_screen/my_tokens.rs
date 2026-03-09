@@ -196,9 +196,7 @@ impl TokensScreen {
 
                                     ui.separator();
                                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                    if ui
-                                        .add(ComponentStyles::secondary_button("Close", dark_mode))
-                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
                                         .clicked()
                                     {
                                         close_popup = true;
@@ -619,9 +617,7 @@ impl TokensScreen {
 
                             ui.separator();
                             let dark_mode = ui.ctx().style().visuals.dark_mode;
-                            if ui
-                                .add(ComponentStyles::secondary_button("Close", dark_mode))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
                                 .clicked()
                             {
                                 self.show_explanation_popup = None;

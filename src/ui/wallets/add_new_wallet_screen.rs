@@ -531,10 +531,7 @@ impl AddNewWalletScreen {
                     if let Some(address) = &self.receive_address_string {
                         ui.label(address);
                         ui.add_space(4.0);
-                        if ui
-                            .add(ComponentStyles::primary_button("Copy Address"))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
+                        if ComponentStyles::add_primary_button(ui, "Copy Address").clicked()
                             && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address)
                         {
                             tracing::warn!("Failed to copy address: {}", err);
@@ -956,11 +953,7 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.label(error_message);
                     ui.add_space(10.0);
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    if ui
-                        .add(ComponentStyles::secondary_button("Close", dark_mode))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
+                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                         self.error = None;
                     }
                 });

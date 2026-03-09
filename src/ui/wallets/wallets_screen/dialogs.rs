@@ -246,9 +246,7 @@ impl WalletsBalancesScreen {
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
                 ui.horizontal(|ui| {
                     let has_address_error = self.send_dialog.address_error.is_some();
-                    if ui
-                        .add_enabled(!has_address_error, ComponentStyles::primary_button("Send"))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    if ComponentStyles::add_primary_button_enabled(ui, !has_address_error, "Send")
                         .clicked()
                     {
                         match self.prepare_send_action() {
@@ -259,11 +257,7 @@ impl WalletsBalancesScreen {
                             Err(err) => self.send_dialog.error = Some(err),
                         }
                     }
-                    if ui
-                        .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
+                    if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
                         self.send_dialog = SendDialogState::default();
                     }
                 });
@@ -463,9 +457,7 @@ impl WalletsBalancesScreen {
                                 let mut generate_new = false;
 
                                 ui.horizontal(|ui| {
-                                    if ui
-                                        .add(ComponentStyles::primary_button("Copy Address"))
-                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    if ComponentStyles::add_primary_button(ui, "Copy Address")
                                         .clicked()
                                     {
                                         if let Err(err) = copy_text_to_clipboard(&address) {
@@ -475,10 +467,12 @@ impl WalletsBalancesScreen {
                                         }
                                     }
 
-                                    if ui
-                                        .add(ComponentStyles::secondary_button("New Address", dark_mode))
-                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                        .clicked()
+                                    if ComponentStyles::add_secondary_button(
+                                        ui,
+                                        "New Address",
+                                        dark_mode,
+                                    )
+                                    .clicked()
                                     {
                                         generate_new = true;
                                     }
@@ -590,9 +584,7 @@ impl WalletsBalancesScreen {
                                 let mut new_addr_result: Option<Result<String, String>> = None;
 
                                 ui.horizontal(|ui| {
-                                    if ui
-                                        .add(ComponentStyles::primary_button("Copy Address"))
-                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    if ComponentStyles::add_primary_button(ui, "Copy Address")
                                         .clicked()
                                     {
                                         if let Err(err) = copy_text_to_clipboard(&address) {
@@ -604,10 +596,12 @@ impl WalletsBalancesScreen {
 
                                     // Button to add new Platform address
                                     if let Some(wallet) = &self.selected_wallet
-                                        && ui
-                                            .add(ComponentStyles::secondary_button("New Address", dark_mode))
-                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                            .clicked()
+                                        && ComponentStyles::add_secondary_button(
+                                            ui,
+                                            "New Address",
+                                            dark_mode,
+                                        )
+                                        .clicked()
                                     {
                                         new_addr_result = Some(self.generate_platform_address(wallet));
                                     }
@@ -810,9 +804,7 @@ impl WalletsBalancesScreen {
                             && !self.fund_platform_dialog.is_processing;
 
                         // Cancel button
-                        if ui
-                            .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
                             .clicked()
                         {
                             self.fund_platform_dialog.is_open = false;
@@ -927,9 +919,7 @@ impl WalletsBalancesScreen {
                     ui.add_space(5.0);
 
                     // Copy address button
-                    if ui
-                        .add(ComponentStyles::secondary_button("Copy Address", dark_mode))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    if ComponentStyles::add_secondary_button(ui, "Copy Address", dark_mode)
                         .clicked()
                     {
                         let _ = copy_text_to_clipboard(&self.private_key_dialog.address);
@@ -971,19 +961,13 @@ impl WalletsBalancesScreen {
                         } else {
                             "Show Key"
                         };
-                        if ui
-                            .add(ComponentStyles::secondary_button(toggle_label, dark_mode))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        if ComponentStyles::add_secondary_button(ui, toggle_label, dark_mode)
                             .clicked()
                         {
                             self.private_key_dialog.show_key = !self.private_key_dialog.show_key;
                         }
 
-                        if ui
-                            .add(ComponentStyles::primary_button("Copy Key"))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
+                        if ComponentStyles::add_primary_button(ui, "Copy Key").clicked() {
                             let _ =
                                 copy_text_to_clipboard(&self.private_key_dialog.private_key_wif);
                         }
@@ -1449,21 +1433,14 @@ impl WalletsBalancesScreen {
 
                     // Buttons
                     ui.horizontal(|ui| {
-                        if ui
-                            .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
+                        if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked()
                         {
                             self.mine_dialog = MineDialogState::default();
                         }
 
                         ui.add_space(8.0);
 
-                        if ui
-                            .add(ComponentStyles::primary_button("Mine"))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
+                        if ComponentStyles::add_primary_button(ui, "Mine").clicked() {
                             // Validate and dispatch
                             const MAX_MINE_BLOCKS: u64 = 1_000;
                             let block_count: u64 =

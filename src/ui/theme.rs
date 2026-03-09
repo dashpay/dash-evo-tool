@@ -1,6 +1,6 @@
 use egui::{
-    Button, Color32, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke, Vec2,
-    WidgetText,
+    Button, Color32, CursorIcon, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke,
+    Vec2, WidgetText,
 };
 
 /// Theme mode enumeration
@@ -825,6 +825,38 @@ impl ComponentStyles {
             .stroke(egui::Stroke::NONE)
             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
             .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+    }
+
+    /// Add a primary button to the UI with pointer cursor on hover.
+    pub fn add_primary_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
+        ui.add(Self::primary_button(label))
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Add a primary button (conditionally enabled) with pointer cursor on hover.
+    pub fn add_primary_button_enabled(
+        ui: &mut egui::Ui,
+        enabled: bool,
+        label: impl Into<WidgetText>,
+    ) -> egui::Response {
+        ui.add_enabled(enabled, Self::primary_button(label))
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Add a secondary button to the UI with pointer cursor on hover.
+    pub fn add_secondary_button(
+        ui: &mut egui::Ui,
+        label: impl Into<WidgetText>,
+        dark_mode: bool,
+    ) -> egui::Response {
+        ui.add(Self::secondary_button(label, dark_mode))
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Add a danger button to the UI with pointer cursor on hover.
+    pub fn add_danger_button(ui: &mut egui::Ui, label: impl Into<WidgetText>) -> egui::Response {
+        ui.add(Self::danger_button(label))
+            .on_hover_cursor(CursorIcon::PointingHand)
     }
 }
 

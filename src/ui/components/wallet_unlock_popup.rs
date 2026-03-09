@@ -126,6 +126,8 @@ impl WalletUnlockPopup {
 
                 ui.add_space(12.0);
 
+                // TODO(#707): Replace manual password input + show/hide toggle with
+                // PasswordInput component once available.
                 // Password input
                 let mut attempt_unlock = false;
 
@@ -167,19 +169,12 @@ impl WalletUnlockPopup {
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Unlock button (right side)
-                        if ui
-                            .add(ComponentStyles::primary_button("Unlock"))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
+                        if ComponentStyles::add_primary_button(ui, "Unlock").clicked() {
                             attempt_unlock = true;
                         }
 
                         // Cancel button (left side)
-                        if ui
-                            .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
+                        if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked()
                         {
                             result = WalletUnlockResult::Cancelled;
                             self.close();

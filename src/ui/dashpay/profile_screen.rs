@@ -1345,11 +1345,7 @@ impl ProfileScreen {
 
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if ui
-                                    .add(ComponentStyles::primary_button("Copy URL"))
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked()
-                                {
+                                if ComponentStyles::add_primary_button(ui, "Copy URL").clicked() {
                                     ui.ctx().copy_text(avatar_url.clone());
                                     MessageBanner::set_global(
                                         ui.ctx(),
@@ -1358,9 +1354,7 @@ impl ProfileScreen {
                                     );
                                     self.show_avatar_url_popup = false;
                                 }
-                                if ui
-                                    .add(ComponentStyles::secondary_button("Close", dark_mode))
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
                                     .clicked()
                                 {
                                     self.show_avatar_url_popup = false;

@@ -970,11 +970,7 @@ impl IdentitiesScreen {
 
                 ui.horizontal(|ui| {
                     // Cancel button
-                    if ui
-                        .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
+                    if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
                         self.editing_alias_identity = None;
                         self.editing_alias_value.clear();
                     }
@@ -982,12 +978,7 @@ impl IdentitiesScreen {
                     ui.add_space(8.0);
 
                     // Save button
-                    if ui
-                        .add(ComponentStyles::primary_button("Save"))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                        || submit
-                    {
+                    if ComponentStyles::add_primary_button(ui, "Save").clicked() || submit {
                         // Update the alias
                         let new_alias = if self.editing_alias_value.trim().is_empty() {
                             None

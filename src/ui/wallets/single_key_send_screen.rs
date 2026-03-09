@@ -635,11 +635,7 @@ impl SingleKeyWalletSendScreen {
                 ui.add_space(15.0);
 
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
+                    if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
                         self.fee_dialog.is_open = false;
                         self.fee_dialog.pending_request = None;
                         self.sending = false;
@@ -647,11 +643,7 @@ impl SingleKeyWalletSendScreen {
 
                     ui.add_space(20.0);
 
-                    if ui
-                        .add(ComponentStyles::primary_button("Confirm & Send"))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
+                    if ComponentStyles::add_primary_button(ui, "Confirm & Send").clicked() {
                         if let Some(mut request) = self.fee_dialog.pending_request.take() {
                             // Update the request to use the higher fee
                             request.override_fee = Some(self.fee_dialog.required_fee);

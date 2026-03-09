@@ -1720,9 +1720,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            if ui
-                                .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
                                 .clicked()
                             {
                                 self.show_rename_dialog = false;
@@ -1731,11 +1729,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                             ui.add_space(8.0);
 
-                            if ui
-                                .add(ComponentStyles::primary_button("Save"))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
+                            if ComponentStyles::add_primary_button(ui, "Save").clicked() {
                                 // Limit the alias length to 64 characters
                                 if self.rename_input.len() > 64 {
                                     self.rename_input.truncate(64);
@@ -1916,9 +1910,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            if ui
-                                .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
                                 .clicked()
                             {
                                 close_dialog = true;
@@ -1926,11 +1918,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                             ui.add_space(8.0);
 
-                            if ui
-                                .add(ComponentStyles::primary_button("Unlock"))
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
+                            if ComponentStyles::add_primary_button(ui, "Unlock").clicked() {
                                 attempt_unlock = true;
                             }
                         });

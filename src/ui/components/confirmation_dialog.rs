@@ -194,30 +194,25 @@ impl ConfirmationDialog {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Confirm button (only if text is provided)
                         if let Some(confirm_text) = &self.confirm_text {
-                            let confirm_button = if self.danger_mode {
-                                ComponentStyles::danger_button(confirm_text.clone())
+                            let response = if self.danger_mode {
+                                ComponentStyles::add_danger_button(ui, confirm_text.clone())
                             } else {
-                                ComponentStyles::primary_button(confirm_text.clone())
+                                ComponentStyles::add_primary_button(ui, confirm_text.clone())
                             };
 
-                            if ui
-                                .add(confirm_button)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
+                            if response.clicked() {
                                 final_response = Some(ConfirmationStatus::Confirmed);
                             }
                         }
 
                         // Cancel button (only if text is provided)
                         if let Some(cancel_text) = &self.cancel_text {
-                            let cancel_button =
-                                ComponentStyles::secondary_button(cancel_text.clone(), dark_mode);
-
-                            if ui
-                                .add(cancel_button)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
+                            if ComponentStyles::add_secondary_button(
+                                ui,
+                                cancel_text.clone(),
+                                dark_mode,
+                            )
+                            .clicked()
                             {
                                 final_response = Some(ConfirmationStatus::Canceled);
                             }

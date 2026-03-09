@@ -377,18 +377,13 @@ impl ScreenLike for AssetLockDetailScreen {
                     let mut close_popup = false;
                     ui.horizontal(|ui| {
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        if ui
-                            .add(ComponentStyles::primary_button("Copy"))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
+                        if ComponentStyles::add_primary_button(ui, "Copy").clicked()
                             && let Some(ref wif) = self.private_key_wif
                         {
                             ui.ctx().copy_text(wif.as_str().to_string());
                             MessageBanner::set_global(ctx, "Private key copied to clipboard", MessageType::Success);
                         }
-                        if ui
-                            .add(ComponentStyles::secondary_button("Close", dark_mode))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
                             .clicked()
                         {
                             close_popup = true;

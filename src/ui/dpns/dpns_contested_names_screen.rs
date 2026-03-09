@@ -1284,11 +1284,7 @@ impl DPNSScreen {
             ui.colored_label(Color32::DARK_RED, "No masternode identities loaded. Please go to the Identities screen to load your masternodes.");
             ui.add_space(10.0);
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            if ui
-                .add(ComponentStyles::secondary_button("Close", dark_mode))
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
+            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                 self.show_bulk_schedule_popup = false;
             }
             return action;
@@ -1300,11 +1296,7 @@ impl DPNSScreen {
             ui.colored_label(Color32::DARK_RED, "No votes selected. Please click the votes you want to cast or schedule in the Active Contests screen.");
             ui.add_space(10.0);
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            if ui
-                .add(ComponentStyles::secondary_button("Close", dark_mode))
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
+            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                 self.show_bulk_schedule_popup = false;
             }
             return action;
@@ -1546,11 +1538,7 @@ impl DPNSScreen {
         }
 
         // "Apply Votes" button
-        if ui
-            .add(ComponentStyles::primary_button("Apply Votes"))
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-        {
+        if ComponentStyles::add_primary_button(ui, "Apply Votes").clicked() {
             action = self.bulk_apply_votes();
             if self.bulk_vote_handling_status == VoteHandlingStatus::CastingVotes {
                 self.vote_banner.take_and_clear();
@@ -1563,11 +1551,7 @@ impl DPNSScreen {
 
         ui.add_space(5.0);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        if ui
-            .add(ComponentStyles::secondary_button("Cancel", dark_mode))
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
-        {
+        if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
             self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
             self.bulk_schedule_message = None;
@@ -1756,13 +1740,7 @@ impl DPNSScreen {
 
             ui.add_space(20.0);
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            if ui
-                .add(ComponentStyles::primary_button(
-                    "Go back to Active Contests",
-                ))
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
+            if ComponentStyles::add_primary_button(ui, "Go back to Active Contests").clicked() {
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;
                 action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -1770,12 +1748,7 @@ impl DPNSScreen {
                 ))
             }
             ui.add_space(5.0);
-            if ui
-                .add(ComponentStyles::secondary_button(
-                    "Go to Scheduled Votes Screen",
-                    dark_mode,
-                ))
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
+            if ComponentStyles::add_secondary_button(ui, "Go to Scheduled Votes Screen", dark_mode)
                 .clicked()
             {
                 self.show_bulk_schedule_popup = false;

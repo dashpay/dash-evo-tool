@@ -245,31 +245,27 @@ impl SelectionDialog {
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Confirm button
-                        if let Some(confirm_text) = &self.confirm_text {
-                            let confirm_button =
-                                ComponentStyles::primary_button(confirm_text.clone());
-
-                            if ui
-                                .add_enabled(!self.options.is_empty(), confirm_button)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                                && !self.options.is_empty()
-                            {
-                                final_response =
-                                    Some(SelectionStatus::Selected(self.selected_index));
-                            }
+                        if let Some(confirm_text) = &self.confirm_text
+                            && ComponentStyles::add_primary_button_enabled(
+                                ui,
+                                !self.options.is_empty(),
+                                confirm_text.clone(),
+                            )
+                            .clicked()
+                            && !self.options.is_empty()
+                        {
+                            final_response = Some(SelectionStatus::Selected(self.selected_index));
                         }
 
                         // Cancel button
                         if let Some(cancel_text) = &self.cancel_text {
                             let dark_mode = ui.ctx().style().visuals.dark_mode;
-                            let cancel_button =
-                                ComponentStyles::secondary_button(cancel_text.clone(), dark_mode);
-
-                            if ui
-                                .add(cancel_button)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
+                            if ComponentStyles::add_secondary_button(
+                                ui,
+                                cancel_text.clone(),
+                                dark_mode,
+                            )
+                            .clicked()
                             {
                                 final_response = Some(SelectionStatus::Canceled);
                             }

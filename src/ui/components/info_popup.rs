@@ -133,11 +133,7 @@ impl InfoPopup {
                 // Close button
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close_button = ComponentStyles::primary_button(self.close_text.clone());
-
-                        if ui
-                            .add(close_button)
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        if ComponentStyles::add_primary_button(ui, self.close_text.clone())
                             .clicked()
                         {
                             was_closed = true;

@@ -5,8 +5,16 @@ use std::ops::Range;
 use egui::TextBuffer;
 use zeroize::{Zeroize, Zeroizing};
 
-/// Default pre-allocation size for `Secret` buffers. Set to one memory page
-/// to minimize reallocations (which would leak the old buffer contents).
+/// Default pre-allocation size for `Secret` buffers.
+///
+/// Set to one memory page (4096 bytes on most platforms) because:
+/// - `mlock` operates on page granularity — locking less than a page still
+///   locks the entire page, so smaller buffers waste no memory.
+/// - A full page is large enough for any human-entered password or WIF key,
+///   making `String` reallocation virtually impossible during normal use.
+/// - When reallocation *does* happen, the old buffer is freed by the system
+///   allocator without zeroing — a residual leak we cannot prevent without
+///   a custom allocator. Pre-allocating one page avoids this entirely.
 const PAGE_SIZE: usize = 4096;
 
 /// Zeroize-on-drop wrapper for sensitive strings (passwords, WIF keys, private key inputs).

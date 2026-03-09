@@ -30,7 +30,7 @@ use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
@@ -589,11 +589,7 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.add_space(10.0);
 
-                let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 0))
-                    .corner_radius(3.0);
-
-                if ui.add(button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Claim").clicked() {
                     if self.distribution_type.is_none() {
                         MessageBanner::set_global(
                             ctx,

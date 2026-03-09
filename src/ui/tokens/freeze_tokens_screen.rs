@@ -21,7 +21,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_t
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -604,12 +604,7 @@ impl ScreenLike for FreezeTokensScreen {
                 // Freeze button
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);
-                    let button =
-                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(DashColors::ACTION_BUTTON_BLUE)
-                            .corner_radius(3.0);
-
-                    if ui.add(button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, button_text).clicked() {
                         // Initialize confirmation dialog when button is clicked
                         self.confirmation_dialog = None; // Reset for fresh dialog
                     }

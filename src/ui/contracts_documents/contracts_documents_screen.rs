@@ -23,7 +23,7 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
-use egui::{CentralPanel, Color32, Context, Frame, Margin, ScrollArea, Stroke, Ui};
+use egui::{CentralPanel, Context, Frame, Margin, ScrollArea, Stroke, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -176,14 +176,7 @@ impl DocumentQueryScreen {
 
             ui.add_space(spacing);
 
-            let button_fetch =
-                egui::Button::new(egui::RichText::new("Fetch Documents").color(Color32::WHITE))
-                    .fill(DashColors::ACTION_BUTTON_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0)
-                    .min_size(egui::vec2(button_width - spacing, 0.0));
-
-            if ui.add(button_fetch).clicked() {
+            if ComponentStyles::add_primary_button(ui, "Fetch Documents").clicked() {
                 self.selected_document_type = self.pending_document_type.clone();
                 self.document_fields_selection = self.pending_fields_selection.clone();
 

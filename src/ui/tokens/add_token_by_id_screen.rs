@@ -8,7 +8,9 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Color32, Context, RichText, Ui};
+use eframe::egui::{self, Context, Ui};
+
+use crate::ui::theme::ComponentStyles;
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::contract::ContractTask;
@@ -132,12 +134,7 @@ impl AddTokenByIdScreen {
 
     fn render_add_button(&mut self, ui: &mut Ui) -> AppAction {
         if let (Some(contract), Some(tok)) = (&self.fetched_contract, &self.selected_token)
-            && ui
-                .add(
-                    egui::Button::new(RichText::new("Add Token").color(Color32::WHITE))
-                        .fill(Color32::from_rgb(0, 120, 0)),
-                )
-                .clicked()
+            && ComponentStyles::add_primary_button(ui, "Add Token").clicked()
         {
             let insert_mode = InsertTokensToo::SomeTokensShouldBeAdded(vec![tok.token_position]);
 

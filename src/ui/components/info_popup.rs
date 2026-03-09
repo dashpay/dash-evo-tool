@@ -1,3 +1,4 @@
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use egui::{InnerResponse, Ui, WidgetText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
@@ -137,6 +138,7 @@ impl InfoPopup {
                             rich_text.clone()
                         } else {
                             egui::RichText::new(self.close_text.text())
+                                .strong()
                                 .color(ComponentStyles::primary_button_text())
                                 .into()
                         };
@@ -145,7 +147,7 @@ impl InfoPopup {
                             .fill(ComponentStyles::primary_button_fill())
                             .stroke(ComponentStyles::primary_button_stroke())
                             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(egui::Vec2::new(80.0, 32.0));
+                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
                         if ui
                             .add(close_button)
@@ -165,6 +167,19 @@ impl InfoPopup {
 
         // Handle Escape key press
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            was_closed = true;
+        }
+
+        // Handle Enter key press
+        if !was_closed && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            was_closed = true;
+        }
+
+        // Handle click outside window
+        if let Some(ref wr) = window_response
+            && !was_closed
+            && clicked_outside_window(ui.ctx(), wr.response.rect)
+        {
             was_closed = true;
         }
 

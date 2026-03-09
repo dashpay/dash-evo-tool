@@ -10,7 +10,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -635,7 +635,21 @@ impl SingleKeyWalletSendScreen {
                 ui.add_space(15.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    let cancel_btn = egui::Button::new(
+                        RichText::new("Cancel")
+                            .strong()
+                            .color(ComponentStyles::secondary_button_text(dark_mode)),
+                    )
+                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+
+                    if ui
+                        .add(cancel_btn)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         self.fee_dialog.is_open = false;
                         self.fee_dialog.pending_request = None;
                         self.sending = false;
@@ -645,12 +659,19 @@ impl SingleKeyWalletSendScreen {
 
                     let confirm_button = egui::Button::new(
                         RichText::new("Confirm & Send")
-                            .color(Color32::WHITE)
-                            .strong(),
+                            .strong()
+                            .color(ComponentStyles::primary_button_text()),
                     )
-                    .fill(DashColors::DASH_BLUE);
+                    .fill(ComponentStyles::primary_button_fill())
+                    .stroke(ComponentStyles::primary_button_stroke())
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                    if ui.add(confirm_button).clicked() {
+                    if ui
+                        .add(confirm_button)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         if let Some(mut request) = self.fee_dialog.pending_request.take() {
                             // Update the request to use the higher fee
                             request.override_fee = Some(self.fee_dialog.required_fee);

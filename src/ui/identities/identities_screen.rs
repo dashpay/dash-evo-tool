@@ -9,6 +9,7 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
@@ -19,7 +20,7 @@ use crate::ui::identities::register_dpns_name_screen::{
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -30,7 +31,7 @@ use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Context};
 use eframe::emath::Align;
-use egui::{Color32, Frame, Margin, RichText, Ui};
+use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
@@ -852,7 +853,7 @@ impl IdentitiesScreen {
             ));
             painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
-            egui::Window::new("Confirm Removal")
+            let window_response = egui::Window::new("Confirm Removal")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -900,30 +901,40 @@ impl IdentitiesScreen {
                     ui.horizontal(|ui| {
                         // No button
                         let no_button = egui::Button::new(
-                            RichText::new("No").color(DashColors::text_primary(dark_mode)),
+                            RichText::new("No")
+                                .strong()
+                                .color(ComponentStyles::secondary_button_text(dark_mode)),
                         )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            DashColors::text_secondary(dark_mode),
-                        ))
-                        .corner_radius(egui::CornerRadius::same(4))
-                        .min_size(egui::Vec2::new(80.0, 32.0));
+                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                        if ui.add(no_button).clicked() {
+                        if ui
+                            .add(no_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             self.identity_to_remove = None;
                         }
 
                         ui.add_space(8.0);
 
                         // Yes button
-                        let yes_button =
-                            egui::Button::new(RichText::new("Yes").color(Color32::WHITE))
-                                .fill(DashColors::DANGER_RED)
-                                .corner_radius(egui::CornerRadius::same(4))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
+                        let yes_button = egui::Button::new(
+                            RichText::new("Yes")
+                                .strong()
+                                .color(ComponentStyles::primary_button_text()),
+                        )
+                        .fill(DashColors::DANGER_RED)
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                        if ui.add(yes_button).clicked() {
+                        if ui
+                            .add(yes_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             let identity_id = identity_to_remove.identity.id();
 
                             match self
@@ -967,6 +978,13 @@ impl IdentitiesScreen {
                         }
                     });
                 });
+
+            if let Some(ref resp) = window_response
+                && clicked_outside_window(ctx, resp.response.rect)
+            {
+                self.identity_to_remove = None;
+            }
+
             action
         } else {
             AppAction::None
@@ -988,7 +1006,7 @@ impl IdentitiesScreen {
         ));
         painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
-        egui::Window::new("Update Alias")
+        let window_response = egui::Window::new("Update Alias")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -1030,17 +1048,20 @@ impl IdentitiesScreen {
                 ui.horizontal(|ui| {
                     // Cancel button
                     let cancel_button = egui::Button::new(
-                        RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
+                        RichText::new("Cancel")
+                            .strong()
+                            .color(ComponentStyles::secondary_button_text(dark_mode)),
                     )
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        DashColors::text_secondary(dark_mode),
-                    ))
-                    .corner_radius(egui::CornerRadius::same(4))
-                    .min_size(egui::Vec2::new(80.0, 32.0));
+                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                    if ui.add(cancel_button).clicked() {
+                    if ui
+                        .add(cancel_button)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         self.editing_alias_identity = None;
                         self.editing_alias_value.clear();
                     }
@@ -1048,13 +1069,22 @@ impl IdentitiesScreen {
                     ui.add_space(8.0);
 
                     // Save button
-                    let save_button =
-                        egui::Button::new(RichText::new("Save").color(Color32::WHITE))
-                            .fill(DashColors::DASH_BLUE)
-                            .corner_radius(egui::CornerRadius::same(4))
-                            .min_size(egui::Vec2::new(80.0, 32.0));
+                    let save_button = egui::Button::new(
+                        RichText::new("Save")
+                            .strong()
+                            .color(ComponentStyles::primary_button_text()),
+                    )
+                    .fill(ComponentStyles::primary_button_fill())
+                    .stroke(ComponentStyles::primary_button_stroke())
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                    if ui.add(save_button).clicked() || submit {
+                    if ui
+                        .add(save_button)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                        || submit
+                    {
                         // Update the alias
                         let new_alias = if self.editing_alias_value.trim().is_empty() {
                             None
@@ -1083,6 +1113,13 @@ impl IdentitiesScreen {
                     }
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            self.editing_alias_identity = None;
+            self.editing_alias_value.clear();
+        }
 
         AppAction::None
     }

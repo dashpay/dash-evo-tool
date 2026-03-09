@@ -12,7 +12,7 @@ use crate::ui::components::contract_chooser_panel::{
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::{DashColors, Shadow, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
 use dash_sdk::dpp::dashcore::Network;
@@ -300,7 +300,21 @@ impl DocumentQueryScreen {
                         });
 
                         ui.separator();
-                        if ui.button("Close").clicked() {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let close_btn = egui::Button::new(
+                            egui::RichText::new("Close")
+                                .strong()
+                                .color(ComponentStyles::secondary_button_text(dark_mode)),
+                        )
+                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                        if ui
+                            .add(close_btn)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             self.show_fields_dropdown = false;
                         }
                     });

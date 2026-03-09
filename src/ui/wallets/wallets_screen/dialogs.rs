@@ -8,9 +8,10 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
@@ -314,7 +315,7 @@ impl WalletsBalancesScreen {
             Self::draw_modal_overlay(ctx, "receive_dialog_overlay");
         }
 
-        egui::Window::new("Receive")
+        let window_response = egui::Window::new("Receive")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -436,7 +437,20 @@ impl WalletsBalancesScreen {
                                 let mut generate_new = false;
 
                                 ui.horizontal(|ui| {
-                                    if ui.button("Copy Address").clicked() {
+                                    let copy_btn = egui::Button::new(
+                                        RichText::new("Copy Address")
+                                            .strong()
+                                            .color(ComponentStyles::primary_button_text()),
+                                    )
+                                    .fill(ComponentStyles::primary_button_fill())
+                                    .stroke(ComponentStyles::primary_button_stroke())
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                                    if ui
+                                        .add(copy_btn)
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .clicked()
+                                    {
                                         if let Err(err) = copy_text_to_clipboard(&address) {
                                             copy_status = Some(format!("Error: {}", err));
                                         } else {
@@ -444,7 +458,22 @@ impl WalletsBalancesScreen {
                                         }
                                     }
 
-                                    if ui.button("New Address").clicked() {
+                                    let new_btn = egui::Button::new(
+                                        RichText::new("New Address")
+                                            .strong()
+                                            .color(ComponentStyles::secondary_button_text(
+                                                dark_mode,
+                                            )),
+                                    )
+                                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                                    if ui
+                                        .add(new_btn)
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .clicked()
+                                    {
                                         generate_new = true;
                                     }
                                 });
@@ -555,7 +584,20 @@ impl WalletsBalancesScreen {
                                 let mut new_addr_result: Option<Result<String, String>> = None;
 
                                 ui.horizontal(|ui| {
-                                    if ui.button("Copy Address").clicked() {
+                                    let copy_btn = egui::Button::new(
+                                        RichText::new("Copy Address")
+                                            .strong()
+                                            .color(ComponentStyles::primary_button_text()),
+                                    )
+                                    .fill(ComponentStyles::primary_button_fill())
+                                    .stroke(ComponentStyles::primary_button_stroke())
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                                    if ui
+                                        .add(copy_btn)
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .clicked()
+                                    {
                                         if let Err(err) = copy_text_to_clipboard(&address) {
                                             copy_status = Some(format!("Error: {}", err));
                                         } else {
@@ -564,8 +606,22 @@ impl WalletsBalancesScreen {
                                     }
 
                                     // Button to add new Platform address
+                                    let new_btn = egui::Button::new(
+                                        RichText::new("New Address")
+                                            .strong()
+                                            .color(ComponentStyles::secondary_button_text(
+                                                dark_mode,
+                                            )),
+                                    )
+                                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
                                     if let Some(wallet) = &self.selected_wallet
-                                        && ui.button("New Address").clicked()
+                                        && ui
+                                            .add(new_btn)
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .clicked()
                                     {
                                         new_addr_result = Some(self.generate_platform_address(wallet));
                                     }
@@ -615,6 +671,12 @@ impl WalletsBalancesScreen {
                     }
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         self.receive_dialog.is_open = open;
         if !self.receive_dialog.is_open {
@@ -672,7 +734,7 @@ impl WalletsBalancesScreen {
         // Draw dark overlay behind the popup
         Self::draw_modal_overlay(ctx, "fund_platform_dialog_overlay");
 
-        egui::Window::new("Fund Platform Address from Asset Lock")
+        let window_response = egui::Window::new("Fund Platform Address from Asset Lock")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -763,14 +825,20 @@ impl WalletsBalancesScreen {
 
                         // Cancel button
                         let cancel_button = egui::Button::new(
-                            RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
+                            RichText::new("Cancel")
+                                .strong()
+                                .color(ComponentStyles::secondary_button_text(dark_mode)),
                         )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(1.0, DashColors::text_secondary(dark_mode)))
-                        .corner_radius(egui::CornerRadius::same(4))
-                        .min_size(egui::Vec2::new(80.0, 32.0));
+                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                        if ui.add(cancel_button).clicked() {
+                        if ui
+                            .add(cancel_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             self.fund_platform_dialog.is_open = false;
                         }
 
@@ -783,17 +851,23 @@ impl WalletsBalancesScreen {
                             } else {
                                 "Fund Address"
                             })
-                            .color(egui::Color32::WHITE),
+                            .strong()
+                            .color(ComponentStyles::primary_button_text()),
                         )
                         .fill(if can_fund {
-                            DashColors::DASH_BLUE
+                            ComponentStyles::primary_button_fill()
                         } else {
                             DashColors::text_secondary(dark_mode)
                         })
-                        .corner_radius(egui::CornerRadius::same(4))
-                        .min_size(egui::Vec2::new(100.0, 32.0));
+                        .stroke(ComponentStyles::primary_button_stroke())
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                        if ui.add_enabled(can_fund, fund_button).clicked() {
+                        if ui
+                            .add_enabled(can_fund, fund_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             // Check if wallet is locked
                             let is_locked = self
                                 .selected_wallet
@@ -823,6 +897,12 @@ impl WalletsBalancesScreen {
                     );
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         // Only update from `open` if we didn't manually close via cancel button
         if self.fund_platform_dialog.is_open {
@@ -877,7 +957,20 @@ impl WalletsBalancesScreen {
                     ui.add_space(5.0);
 
                     // Copy address button
-                    if ui.button("Copy Address").clicked() {
+                    let copy_addr_btn = egui::Button::new(
+                        RichText::new("Copy Address")
+                            .strong()
+                            .color(ComponentStyles::secondary_button_text(dark_mode)),
+                    )
+                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                    if ui
+                        .add(copy_addr_btn)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         let _ = copy_text_to_clipboard(&self.private_key_dialog.address);
                     }
 
@@ -912,18 +1005,42 @@ impl WalletsBalancesScreen {
 
                     // Show/Hide and Copy buttons
                     ui.horizontal(|ui| {
+                        let toggle_label = if self.private_key_dialog.show_key {
+                            "Hide Key"
+                        } else {
+                            "Show Key"
+                        };
+                        let toggle_btn = egui::Button::new(
+                            RichText::new(toggle_label)
+                                .strong()
+                                .color(ComponentStyles::secondary_button_text(dark_mode)),
+                        )
+                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
                         if ui
-                            .button(if self.private_key_dialog.show_key {
-                                "Hide Key"
-                            } else {
-                                "Show Key"
-                            })
+                            .add(toggle_btn)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {
                             self.private_key_dialog.show_key = !self.private_key_dialog.show_key;
                         }
 
-                        if ui.button("Copy Key").clicked() {
+                        let copy_key_btn = egui::Button::new(
+                            RichText::new("Copy Key")
+                                .strong()
+                                .color(ComponentStyles::primary_button_text()),
+                        )
+                        .fill(ComponentStyles::primary_button_fill())
+                        .stroke(ComponentStyles::primary_button_stroke())
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                        if ui
+                            .add(copy_key_btn)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             let _ =
                                 copy_text_to_clipboard(&self.private_key_dialog.private_key_wif);
                         }
@@ -1292,7 +1409,7 @@ impl WalletsBalancesScreen {
 
         Self::draw_modal_overlay(ctx, "mine_dialog_overlay");
 
-        egui::Window::new("Mine Blocks")
+        let window_response = egui::Window::new("Mine Blocks")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -1390,29 +1507,40 @@ impl WalletsBalancesScreen {
                     // Buttons
                     ui.horizontal(|ui| {
                         let cancel_button = egui::Button::new(
-                            RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
+                            RichText::new("Cancel")
+                                .strong()
+                                .color(ComponentStyles::secondary_button_text(dark_mode)),
                         )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            DashColors::text_secondary(dark_mode),
-                        ))
-                        .corner_radius(egui::CornerRadius::same(4))
-                        .min_size(egui::Vec2::new(80.0, 32.0));
+                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                        if ui.add(cancel_button).clicked() {
+                        if ui
+                            .add(cancel_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             self.mine_dialog = MineDialogState::default();
                         }
 
                         ui.add_space(8.0);
 
-                        let mine_button =
-                            egui::Button::new(RichText::new("Mine").color(egui::Color32::WHITE))
-                                .fill(DashColors::DASH_BLUE)
-                                .corner_radius(egui::CornerRadius::same(4))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
+                        let mine_button = egui::Button::new(
+                            RichText::new("Mine")
+                                .strong()
+                                .color(ComponentStyles::primary_button_text()),
+                        )
+                        .fill(ComponentStyles::primary_button_fill())
+                        .stroke(ComponentStyles::primary_button_stroke())
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                        if ui.add(mine_button).clicked() {
+                        if ui
+                            .add(mine_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             // Validate and dispatch
                             const MAX_MINE_BLOCKS: u64 = 1_000;
                             let block_count: u64 =
@@ -1471,6 +1599,12 @@ impl WalletsBalancesScreen {
                     });
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         // X button sets `open` to false; Cancel/Mine reset dialog state
         // (which sets is_open to false) inside the closure.

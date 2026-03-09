@@ -7,11 +7,12 @@ use crate::model::wallet::{
 };
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -508,7 +509,7 @@ impl AddNewWalletScreen {
         }
 
         let mut open = self.show_receive_popup;
-        egui::Window::new("Fund Wallet")
+        let window_response = egui::Window::new("Fund Wallet")
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
@@ -530,7 +531,19 @@ impl AddNewWalletScreen {
                     if let Some(address) = &self.receive_address_string {
                         ui.label(address);
                         ui.add_space(4.0);
-                        if ui.button("Copy Address").clicked()
+                        let copy_btn = egui::Button::new(
+                            egui::RichText::new("Copy Address")
+                                .strong()
+                                .color(ComponentStyles::primary_button_text()),
+                        )
+                        .fill(ComponentStyles::primary_button_fill())
+                        .stroke(ComponentStyles::primary_button_stroke())
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                        if ui
+                            .add(copy_btn)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
                             && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address)
                         {
                             tracing::warn!("Failed to copy address: {}", err);
@@ -542,6 +555,12 @@ impl AddNewWalletScreen {
                     ui.label("Waiting for funds...");
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         self.show_receive_popup = open;
         AppAction::None
@@ -945,8 +964,22 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ctx, |ui| {
                     ui.label(error_message);
                     ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
-                        self.error = None; // Clear the error to close the popup
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let close_btn = egui::Button::new(
+                        egui::RichText::new("Close")
+                            .strong()
+                            .color(ComponentStyles::secondary_button_text(dark_mode)),
+                    )
+                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                    if ui
+                        .add(close_btn)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        self.error = None;
                     }
                 });
         }

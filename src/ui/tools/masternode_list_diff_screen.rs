@@ -8,7 +8,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::QuorumType;
@@ -2168,11 +2168,38 @@ impl MasternodeListDiffScreen {
                     ui.label("This operation will take about 10 seconds. Are you sure you wish to continue?");
 
                     ui.horizontal(|ui| {
-                        if ui.button("Yes").clicked() {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let yes_btn = egui::Button::new(
+                            egui::RichText::new("Yes")
+                                .strong()
+                                .color(ComponentStyles::primary_button_text()),
+                        )
+                        .fill(ComponentStyles::primary_button_fill())
+                        .stroke(ComponentStyles::primary_button_stroke())
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                        if ui
+                            .add(yes_btn)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             self.save_masternode_list_engine();
                             self.ui_state.show_popup_for_render_masternode_list_engine = false;
                         }
-                        if ui.button("Cancel").clicked() {
+                        let cancel_btn = egui::Button::new(
+                            egui::RichText::new("Cancel")
+                                .strong()
+                                .color(ComponentStyles::secondary_button_text(dark_mode)),
+                        )
+                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                        if ui
+                            .add(cancel_btn)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
                             self.ui_state.show_popup_for_render_masternode_list_engine = false;
                         }
                     });

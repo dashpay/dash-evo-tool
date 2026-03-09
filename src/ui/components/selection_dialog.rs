@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use egui::{InnerResponse, Ui, WidgetText};
 
@@ -250,19 +251,22 @@ impl SelectionDialog {
                             let fill_color = ComponentStyles::primary_button_fill();
                             let text_color = ComponentStyles::primary_button_text();
 
-                            let confirm_label = if let WidgetText::RichText(rich_text) =
-                                confirm_text
-                            {
-                                rich_text.clone()
-                            } else {
-                                Arc::new(egui::RichText::new(confirm_text.text()).color(text_color))
-                            };
+                            let confirm_label =
+                                if let WidgetText::RichText(rich_text) = confirm_text {
+                                    rich_text.clone()
+                                } else {
+                                    Arc::new(
+                                        egui::RichText::new(confirm_text.text())
+                                            .strong()
+                                            .color(text_color),
+                                    )
+                                };
 
                             let confirm_button = egui::Button::new(confirm_label)
                                 .fill(fill_color)
                                 .stroke(ComponentStyles::primary_button_stroke())
                                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
+                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
                             if ui
                                 .add_enabled(!self.options.is_empty(), confirm_button)
@@ -277,20 +281,22 @@ impl SelectionDialog {
 
                         // Cancel button
                         if let Some(cancel_text) = &self.cancel_text {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             let cancel_label = if let WidgetText::RichText(rich_text) = cancel_text
                             {
                                 rich_text.clone()
                             } else {
                                 egui::RichText::new(cancel_text.text())
-                                    .color(ComponentStyles::secondary_button_text())
+                                    .strong()
+                                    .color(ComponentStyles::secondary_button_text(dark_mode))
                                     .into()
                             };
 
                             let cancel_button = egui::Button::new(cancel_label)
-                                .fill(ComponentStyles::secondary_button_fill())
-                                .stroke(ComponentStyles::secondary_button_stroke())
+                                .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                                .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
                                 .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
+                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
                             if ui
                                 .add(cancel_button)
@@ -324,6 +330,14 @@ impl SelectionDialog {
             && ui.input(|i| i.key_pressed(egui::Key::Enter))
         {
             final_response = Some(SelectionStatus::Selected(self.selected_index));
+        }
+
+        // Handle click outside window
+        if let Some(ref wr) = window_response
+            && final_response.is_none()
+            && clicked_outside_window(ui.ctx(), wr.response.rect)
+        {
+            final_response = Some(SelectionStatus::Canceled);
         }
 
         // Update state: record status before closing so current_value() sees it

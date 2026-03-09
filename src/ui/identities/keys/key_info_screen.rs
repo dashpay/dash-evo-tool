@@ -13,7 +13,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::{MessageType, ScreenLike};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -789,11 +789,37 @@ impl KeyInfoScreen {
                 ui.add_space(10.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let cancel_btn = egui::Button::new(
+                        egui::RichText::new("Cancel")
+                            .strong()
+                            .color(ComponentStyles::secondary_button_text(dark_mode)),
+                    )
+                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                    if ui
+                        .add(cancel_btn)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         self.show_confirm_remove_private_key = false;
                     }
                     ui.add_space(3.0);
-                    if ui.button("Remove").clicked() {
+                    let remove_btn = egui::Button::new(
+                        egui::RichText::new("Remove")
+                            .strong()
+                            .color(ComponentStyles::primary_button_text()),
+                    )
+                    .fill(DashColors::DANGER_RED)
+                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                    if ui
+                        .add(remove_btn)
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         self.private_key_data = None;
                         self.identity
                             .private_keys

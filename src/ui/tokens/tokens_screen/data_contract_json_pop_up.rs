@@ -1,3 +1,4 @@
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use egui::Ui;
@@ -14,13 +15,9 @@ impl TokensScreen {
                 egui::Order::Background,
                 egui::Id::new("json_popup_overlay"),
             ));
-            painter.rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_rgba_unmultiplied(0, 0, 0, 120), // Semi-transparent black overlay
-            );
+            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
-            egui::Window::new("Data Contract JSON")
+            let window_response = egui::Window::new("Data Contract JSON")
                 .collapsible(false)
                 .resizable(true)
                 .max_height(600.0)
@@ -36,13 +33,10 @@ impl TokensScreen {
                         offset: [0, 8],
                         blur: 16,
                         spread: 0,
-                        color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 100),
+                        color: DashColors::popup_shadow(),
                     },
                     fill: ui.style().visuals.window_fill,
-                    stroke: egui::Stroke::new(
-                        1.0,
-                        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 30),
-                    ),
+                    stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
                 })
                 .show(ui.ctx(), |ui| {
                     // Display the JSON in a multiline text box
@@ -75,12 +69,13 @@ impl TokensScreen {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let close_button = egui::Button::new(
                                 egui::RichText::new("Close")
-                                    .color(ComponentStyles::secondary_button_text()),
+                                    .strong()
+                                    .color(ComponentStyles::primary_button_text()),
                             )
-                            .fill(ComponentStyles::secondary_button_fill())
-                            .stroke(ComponentStyles::secondary_button_stroke())
+                            .fill(ComponentStyles::primary_button_fill())
+                            .stroke(ComponentStyles::primary_button_stroke())
                             .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(egui::Vec2::new(80.0, 32.0));
+                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
                             if ui
                                 .add(close_button)
@@ -93,8 +88,20 @@ impl TokensScreen {
                     });
                 });
 
+            // Handle Escape key
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.show_json_popup = false;
+            }
+
+            // Handle click outside window
+            if let Some(ref wr) = window_response
+                && self.show_json_popup
+                && clicked_outside_window(ui.ctx(), wr.response.rect)
+            {
+                self.show_json_popup = false;
+            }
+
             // If the user closed the window via the "x" in the corner
-            // we should reflect that in `show_json_popup`.
             if !is_open {
                 self.show_json_popup = false;
             }

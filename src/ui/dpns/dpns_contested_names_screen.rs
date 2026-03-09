@@ -25,7 +25,7 @@ use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_ch
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 /// Which DPNS sub-screen is currently showing.
@@ -1283,7 +1283,21 @@ impl DPNSScreen {
             ui.add_space(5.0);
             ui.colored_label(Color32::DARK_RED, "No masternode identities loaded. Please go to the Identities screen to load your masternodes.");
             ui.add_space(10.0);
-            if ui.button("Close").clicked() {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let close_btn = egui::Button::new(
+                RichText::new("Close")
+                    .strong()
+                    .color(ComponentStyles::secondary_button_text(dark_mode)),
+            )
+            .fill(ComponentStyles::secondary_button_fill(dark_mode))
+            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+            if ui
+                .add(close_btn)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
                 self.show_bulk_schedule_popup = false;
             }
             return action;
@@ -1294,7 +1308,21 @@ impl DPNSScreen {
             ui.add_space(5.0);
             ui.colored_label(Color32::DARK_RED, "No votes selected. Please click the votes you want to cast or schedule in the Active Contests screen.");
             ui.add_space(10.0);
-            if ui.button("Close").clicked() {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let close_btn = egui::Button::new(
+                RichText::new("Close")
+                    .strong()
+                    .color(ComponentStyles::secondary_button_text(dark_mode)),
+            )
+            .fill(ComponentStyles::secondary_button_fill(dark_mode))
+            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+            if ui
+                .add(close_btn)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
                 self.show_bulk_schedule_popup = false;
             }
             return action;
@@ -1536,10 +1564,20 @@ impl DPNSScreen {
         }
 
         // "Apply Votes" button
-        let button = egui::Button::new(RichText::new("Apply Votes").color(Color32::WHITE))
-            .fill(DashColors::ACTION_BUTTON_BLUE)
-            .corner_radius(3.0);
-        if ui.add(button).clicked() {
+        let button = egui::Button::new(
+            RichText::new("Apply Votes")
+                .strong()
+                .color(ComponentStyles::primary_button_text()),
+        )
+        .fill(ComponentStyles::primary_button_fill())
+        .stroke(ComponentStyles::primary_button_stroke())
+        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+        if ui
+            .add(button)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
             action = self.bulk_apply_votes();
             if self.bulk_vote_handling_status == VoteHandlingStatus::CastingVotes {
                 self.vote_banner.take_and_clear();
@@ -1551,7 +1589,21 @@ impl DPNSScreen {
         }
 
         ui.add_space(5.0);
-        if ui.button("Cancel").clicked() {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let cancel_btn = egui::Button::new(
+            RichText::new("Cancel")
+                .strong()
+                .color(ComponentStyles::secondary_button_text(dark_mode)),
+        )
+        .fill(ComponentStyles::secondary_button_fill(dark_mode))
+        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+        if ui
+            .add(cancel_btn)
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
             self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
             self.bulk_schedule_message = None;
@@ -1739,7 +1791,21 @@ impl DPNSScreen {
             }
 
             ui.add_space(20.0);
-            if ui.button("Go back to Active Contests").clicked() {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let go_back_btn = egui::Button::new(
+                RichText::new("Go back to Active Contests")
+                    .strong()
+                    .color(ComponentStyles::primary_button_text()),
+            )
+            .fill(ComponentStyles::primary_button_fill())
+            .stroke(ComponentStyles::primary_button_stroke())
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+            if ui
+                .add(go_back_btn)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;
                 action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -1747,7 +1813,20 @@ impl DPNSScreen {
                 ))
             }
             ui.add_space(5.0);
-            if ui.button("Go to Scheduled Votes Screen").clicked() {
+            let sched_btn = egui::Button::new(
+                RichText::new("Go to Scheduled Votes Screen")
+                    .strong()
+                    .color(ComponentStyles::secondary_button_text(dark_mode)),
+            )
+            .fill(ComponentStyles::secondary_button_fill(dark_mode))
+            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+            if ui
+                .add(sched_btn)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
                 self.show_bulk_schedule_popup = false;
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 action = AppAction::SetMainScreenThenPopScreen(

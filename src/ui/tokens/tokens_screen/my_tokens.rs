@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
 use crate::ui::components::MessageBanner;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -194,7 +194,21 @@ impl TokensScreen {
                                     self.render_token_info_popup_content(ui, &token_info);
 
                                     ui.separator();
-                                    if ui.button("Close").clicked() {
+                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let close_btn = egui::Button::new(
+                                        egui::RichText::new("Close").strong().color(
+                                            ComponentStyles::secondary_button_text(dark_mode),
+                                        ),
+                                    )
+                                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                                    if ui
+                                        .add(close_btn)
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .clicked()
+                                    {
                                         close_popup = true;
                                     }
                                 });

@@ -10,12 +10,13 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, Frame, Margin, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
 use std::collections::HashMap;
@@ -1306,7 +1307,7 @@ impl ProfileScreen {
             if let Some(profile) = &self.profile {
                 let avatar_url = profile.avatar_url.clone();
                 let texture_id = format!("avatar_{}", avatar_url);
-                egui::Window::new("Avatar")
+                let window_response = egui::Window::new("Avatar")
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -1335,7 +1336,20 @@ impl ProfileScreen {
 
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if ui.button("Copy URL").clicked() {
+                                let copy_btn = egui::Button::new(
+                                    egui::RichText::new("Copy URL")
+                                        .strong()
+                                        .color(ComponentStyles::primary_button_text()),
+                                )
+                                .fill(ComponentStyles::primary_button_fill())
+                                .stroke(ComponentStyles::primary_button_stroke())
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                                if ui
+                                    .add(copy_btn)
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
                                     ui.ctx().copy_text(avatar_url.clone());
                                     MessageBanner::set_global(
                                         ui.ctx(),
@@ -1344,12 +1358,31 @@ impl ProfileScreen {
                                     );
                                     self.show_avatar_url_popup = false;
                                 }
-                                if ui.button("Close").clicked() {
+                                let close_btn = egui::Button::new(
+                                    egui::RichText::new("Close")
+                                        .strong()
+                                        .color(ComponentStyles::secondary_button_text(dark_mode)),
+                                )
+                                .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                                .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                                if ui
+                                    .add(close_btn)
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
                                     self.show_avatar_url_popup = false;
                                 }
                             });
                         });
                     });
+
+                if let Some(ref resp) = window_response
+                    && clicked_outside_window(ui.ctx(), resp.response.rect)
+                {
+                    self.show_avatar_url_popup = false;
+                }
             } else {
                 self.show_avatar_url_popup = false;
             }

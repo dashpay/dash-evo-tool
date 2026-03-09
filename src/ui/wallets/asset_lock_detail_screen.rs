@@ -6,7 +6,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, InstantLock, Transaction};
 use dash_sdk::dpp::fee::Credits;
@@ -372,11 +372,38 @@ impl ScreenLike for AssetLockDetailScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            if ui.button("Copy").clicked() {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let copy_btn = egui::Button::new(
+                                egui::RichText::new("Copy")
+                                    .strong()
+                                    .color(ComponentStyles::primary_button_text()),
+                            )
+                            .fill(ComponentStyles::primary_button_fill())
+                            .stroke(ComponentStyles::primary_button_stroke())
+                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                            if ui
+                                .add(copy_btn)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
                                 ui.ctx().copy_text(wif.clone());
                                 MessageBanner::set_global(ctx, "Private key copied to clipboard", MessageType::Success);
                             }
-                            if ui.button("Close").clicked() {
+                            let close_btn = egui::Button::new(
+                                egui::RichText::new("Close")
+                                    .strong()
+                                    .color(ComponentStyles::secondary_button_text(dark_mode)),
+                            )
+                            .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                            if ui
+                                .add(close_btn)
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
                                 self.show_private_key_popup = false;
                                 self.private_key_wif = None;
                             }

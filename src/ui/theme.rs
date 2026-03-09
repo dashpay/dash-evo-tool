@@ -418,6 +418,14 @@ impl DashColors {
         Color32::from_rgba_unmultiplied(255, 255, 255, 30)
     }
 
+    // Secondary button colors (theme-aware)
+    pub const SECONDARY_BUTTON_FILL_LIGHT: Color32 = Color32::from_rgb(235, 238, 243);
+    pub const SECONDARY_BUTTON_FILL_DARK: Color32 = Color32::from_rgb(55, 55, 60);
+    pub const SECONDARY_BUTTON_TEXT_LIGHT: Color32 = Color32::from_rgb(60, 70, 85);
+    pub const SECONDARY_BUTTON_TEXT_DARK: Color32 = Color32::from_rgb(210, 215, 222);
+    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(200, 206, 215);
+    pub const SECONDARY_BUTTON_STROKE_DARK: Color32 = Color32::from_rgb(80, 82, 88);
+
     /// Popup fill color adapting to dark/light mode
     pub fn popup_fill(dark_mode: bool) -> Color32 {
         if dark_mode {
@@ -689,6 +697,9 @@ pub struct ComponentStyles;
 
 #[allow(dead_code)]
 impl ComponentStyles {
+    /// Standard minimum size for dialog buttons (width × height)
+    pub const DIALOG_BUTTON_MIN_SIZE: Vec2 = Vec2::new(96.0, 36.0);
+
     pub fn primary_button_fill() -> Color32 {
         DashColors::DASH_BLUE
     }
@@ -701,16 +712,28 @@ impl ComponentStyles {
         Stroke::new(1.0, DashColors::DASH_BLUE)
     }
 
-    pub fn secondary_button_fill() -> Color32 {
-        DashColors::WHITE
+    pub fn secondary_button_fill(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            DashColors::SECONDARY_BUTTON_FILL_DARK
+        } else {
+            DashColors::SECONDARY_BUTTON_FILL_LIGHT
+        }
     }
 
-    pub fn secondary_button_text() -> Color32 {
-        DashColors::DASH_BLUE
+    pub fn secondary_button_text(dark_mode: bool) -> Color32 {
+        if dark_mode {
+            DashColors::SECONDARY_BUTTON_TEXT_DARK
+        } else {
+            DashColors::SECONDARY_BUTTON_TEXT_LIGHT
+        }
     }
 
-    pub fn secondary_button_stroke() -> Stroke {
-        Stroke::new(1.0, DashColors::DASH_BLUE)
+    pub fn secondary_button_stroke(dark_mode: bool) -> Stroke {
+        if dark_mode {
+            Stroke::new(1.0, DashColors::SECONDARY_BUTTON_STROKE_DARK)
+        } else {
+            Stroke::new(1.0, DashColors::SECONDARY_BUTTON_STROKE_LIGHT)
+        }
     }
 
     pub fn danger_button_fill() -> Color32 {

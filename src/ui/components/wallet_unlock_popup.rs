@@ -1,5 +1,6 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::styled::StyledCheckbox;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use egui;
@@ -93,7 +94,7 @@ impl WalletUnlockPopup {
 
         let mut is_open = true;
 
-        egui::Window::new("Unlock Wallet")
+        let window_response = egui::Window::new("Unlock Wallet")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -164,45 +165,48 @@ impl WalletUnlockPopup {
 
                 // Buttons
                 ui.horizontal(|ui| {
-                    // Cancel button
-                    let cancel_button = egui::Button::new(
-                        egui::RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
-                    )
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        DashColors::text_secondary(dark_mode),
-                    ))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(egui::Vec2::new(80.0, 32.0));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Unlock button (right side)
+                        let unlock_button = egui::Button::new(
+                            egui::RichText::new("Unlock")
+                                .strong()
+                                .color(ComponentStyles::primary_button_text()),
+                        )
+                        .fill(ComponentStyles::primary_button_fill())
+                        .stroke(ComponentStyles::primary_button_stroke())
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                    if ui
-                        .add(cancel_button)
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        result = WalletUnlockResult::Cancelled;
-                        self.close();
-                    }
+                        if ui
+                            .add(unlock_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            attempt_unlock = true;
+                        }
 
-                    ui.add_space(8.0);
+                        // Cancel button (left side)
+                        let cancel_button = egui::Button::new(
+                            egui::RichText::new("Cancel")
+                                .strong()
+                                .color(ComponentStyles::secondary_button_text(dark_mode)),
+                        )
+                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
-                    // Unlock button
-                    let unlock_button = egui::Button::new(
-                        egui::RichText::new("Unlock").color(ComponentStyles::primary_button_text()),
-                    )
-                    .fill(ComponentStyles::primary_button_fill())
-                    .stroke(ComponentStyles::primary_button_stroke())
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(egui::Vec2::new(80.0, 32.0));
+                        if ui
+                            .add(cancel_button)
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .clicked()
+                        {
+                            result = WalletUnlockResult::Cancelled;
+                            self.close();
+                        }
 
-                    if ui
-                        .add(unlock_button)
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        attempt_unlock = true;
-                    }
+                        ui.add_space(8.0);
+                    });
                 });
 
                 // Attempt unlock if requested
@@ -238,6 +242,15 @@ impl WalletUnlockPopup {
 
         // Handle Escape key
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            result = WalletUnlockResult::Cancelled;
+            self.close();
+        }
+
+        // Handle click outside window
+        if let Some(ref wr) = window_response
+            && result == WalletUnlockResult::Pending
+            && clicked_outside_window(ctx, wr.response.rect)
+        {
             result = WalletUnlockResult::Cancelled;
             self.close();
         }

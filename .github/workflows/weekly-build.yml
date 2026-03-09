@@ -9,6 +9,10 @@ on:
     - cron: "0 2 * * 6" # Every Saturday at 02:00 UTC
   workflow_dispatch: {}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   actions: write # Trigger workflows via gh workflow run
   contents: read
@@ -17,6 +21,7 @@ jobs:
   weekly-build:
     name: Trigger builds and report results
     runs-on: ubuntu-24.04
+    timeout-minutes: 180
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       TARGET_BRANCH: v1.0-dev
@@ -46,21 +51,16 @@ jobs:
             IFS='|' read -r name file <<< "$entry"
             echo "Triggering: ${name} (${file}) on ${TARGET_BRANCH}"
 
-            gh workflow run "$file" --ref "${TARGET_BRANCH}"
+            # Dispatch and capture run ID directly (no race condition)
+            run_id=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${file}/dispatches" \
+              -X POST \
+              -f ref="${TARGET_BRANCH}" \
+              -F return_run_details=true \
+              --jq '.workflow_run_id')
 
-            # Brief pause so GitHub registers the run before we query it
-            sleep 5
-
-            # Find the run we just triggered (most recent run on the branch)
-            run_id=$(gh run list \
-              -w "$name" \
-              -b "${TARGET_BRANCH}" \
-              --limit 1 \
-              --json databaseId \
-              --jq '.[0].databaseId')
-
-            if [ -z "$run_id" ]; then
-              echo "::error::Could not find triggered run for ${name}"
+            if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+              echo "::error::Could not get run ID for ${name}"
               exit 1
             fi
 
@@ -153,6 +153,7 @@ jobs:
           FAILED: ${{ steps.results.outputs.FAILED }}
           PASSED: ${{ steps.results.outputs.PASSED }}
           ARTIFACTS: ${{ steps.results.outputs.ARTIFACTS }}
+          RESULTS_OUTCOME: ${{ steps.results.outcome }}
         run: |
           set -euo pipefail
 
@@ -174,7 +175,10 @@ jobs:
             done <<< "$ARTIFACTS"
           fi
 
-          if [ -n "$FAILED" ]; then
+          if [ "${RESULTS_OUTCOME}" != "success" ]; then
+            # Orchestration itself failed -- don't send false success
+            TEXT=":x: *Weekly build orchestration for \`${REPO}\` failed before results could be collected.* Check the <https://github.com/${REPO}/actions|Actions tab> for details."
+          elif [ -n "$FAILED" ]; then
             # Build failure list
             BLOCKS=""
             while IFS='|' read -r name url conclusion; do

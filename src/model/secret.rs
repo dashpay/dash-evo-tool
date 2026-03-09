@@ -1,6 +1,9 @@
+use std::any::TypeId;
 use std::fmt;
+use std::ops::Range;
 
-use zeroize::Zeroizing;
+use egui::TextBuffer;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Zeroize-on-drop wrapper for sensitive strings (passwords, WIF keys, private key inputs).
 ///
@@ -8,39 +11,60 @@ use zeroize::Zeroizing;
 /// being swapped to disk. The lock is released automatically when the value is dropped.
 ///
 /// `Display`, `Deref`, and `DerefMut` are intentionally **not** implemented to
-/// prevent accidental leakage. Use [`expose_secret`](Self::expose_secret) or
-/// [`expose_secret_mut`](Self::expose_secret_mut) for explicit access.
+/// prevent accidental leakage. Use [`expose_secret`](Self::expose_secret) for
+/// explicit read access, or pass `&mut Secret` directly to `TextEdit::singleline`
+/// (via the [`TextBuffer`] impl) for mutable editing.
 pub struct Secret {
     /// Dropped first -- zeroes the bytes.
     inner: Zeroizing<String>,
     /// Dropped second -- unlocks the page.
     _lock: Option<region::LockGuard>,
+    /// Tracks the heap pointer so we can re-lock after reallocation.
+    locked_ptr: *const u8,
 }
+
+// SAFETY: `locked_ptr` is only used for pointer comparison (never dereferenced).
+// The actual data lives in `inner` (Send+Sync via Zeroizing<String>) and `_lock`
+// (Send+Sync via region::LockGuard's unsafe impls).
+unsafe impl Send for Secret {}
+unsafe impl Sync for Secret {}
 
 impl Secret {
     /// Wrap a string in a `Secret`, locking its backing memory on a best-effort basis.
     pub fn new(s: impl Into<String>) -> Self {
         let mut s: String = s.into();
-        // Pre-allocate so later pushes are less likely to reallocate (which would
-        // leave copies of the secret in freed pages).
         let target_cap = s.len().max(128);
         if s.capacity() < target_cap {
             s.reserve(target_cap - s.capacity());
         }
-        let lock = region::lock(s.as_ptr(), s.capacity()).ok();
+        let lock = region::lock(s.as_ptr(), s.capacity())
+            .map_err(|e| {
+                tracing::debug!("mlock failed for Secret: {e}");
+                e
+            })
+            .ok();
+        let locked_ptr = s.as_ptr();
         Self {
             inner: Zeroizing::new(s),
             _lock: lock,
+            locked_ptr,
         }
     }
 
     /// Create an empty `Secret` with a pre-allocated, locked buffer.
     pub fn with_capacity(cap: usize) -> Self {
         let s = String::with_capacity(cap);
-        let lock = region::lock(s.as_ptr(), s.capacity()).ok();
+        let lock = region::lock(s.as_ptr(), s.capacity())
+            .map_err(|e| {
+                tracing::debug!("mlock failed for Secret: {e}");
+                e
+            })
+            .ok();
+        let locked_ptr = s.as_ptr();
         Self {
             inner: Zeroizing::new(s),
             _lock: lock,
+            locked_ptr,
         }
     }
 
@@ -54,14 +78,65 @@ impl Secret {
         &self.inner
     }
 
-    /// Mutably borrow the backing `String` (needed for egui `TextEdit` binding).
-    pub fn expose_secret_mut(&mut self) -> &mut String {
-        &mut self.inner
-    }
-
     /// Whether the secret is empty.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    /// If the backing allocation moved (e.g. after a `String` reallocation),
+    /// drop the old mlock guard and create a new one for the current buffer.
+    fn relock_if_moved(&mut self) {
+        if self.inner.as_ptr() != self.locked_ptr {
+            self._lock = region::lock(self.inner.as_ptr(), self.inner.capacity())
+                .map_err(|e| {
+                    tracing::debug!("mlock re-lock failed after reallocation: {e}");
+                    e
+                })
+                .ok();
+            self.locked_ptr = self.inner.as_ptr();
+        }
+    }
+}
+
+// -- TextBuffer impl (allows `TextEdit::singleline(&mut secret)`) -----------
+
+impl TextBuffer for Secret {
+    fn is_mutable(&self) -> bool {
+        true
+    }
+
+    fn as_str(&self) -> &str {
+        self.inner.as_str()
+    }
+
+    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
+        let n = <String as TextBuffer>::insert_text(&mut *self.inner, text, char_index);
+        self.relock_if_moved();
+        n
+    }
+
+    fn delete_char_range(&mut self, char_range: Range<usize>) {
+        <String as TextBuffer>::delete_char_range(&mut *self.inner, char_range);
+    }
+
+    fn clear(&mut self) {
+        Zeroize::zeroize(&mut *self.inner);
+    }
+
+    fn replace_with(&mut self, text: &str) {
+        Zeroize::zeroize(&mut *self.inner);
+        self.inner.push_str(text);
+        self.relock_if_moved();
+    }
+
+    fn take(&mut self) -> String {
+        let copy = self.inner.to_string();
+        Zeroize::zeroize(&mut *self.inner);
+        copy
+    }
+
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
     }
 }
 
@@ -69,7 +144,22 @@ impl Secret {
 
 impl Clone for Secret {
     fn clone(&self) -> Self {
-        Self::new(self.inner.as_str().to_string())
+        let src = self.inner.as_str();
+        let cap = src.len().max(128);
+        let mut s = String::with_capacity(cap);
+        s.push_str(src);
+        let lock = region::lock(s.as_ptr(), s.capacity())
+            .map_err(|e| {
+                tracing::debug!("mlock failed for cloned Secret: {e}");
+                e
+            })
+            .ok();
+        let locked_ptr = s.as_ptr();
+        Self {
+            inner: Zeroizing::new(s),
+            _lock: lock,
+            locked_ptr,
+        }
     }
 }
 
@@ -86,14 +176,15 @@ impl fmt::Debug for Secret {
 }
 
 impl PartialEq for Secret {
-    /// Constant-time comparison to prevent timing side-channel attacks (CWE-208).
+    /// Best-effort timing-resistant comparison. Note: length differences cause
+    /// an early return, which leaks length information through timing. Acceptable
+    /// for this application's local threat model.
     fn eq(&self, other: &Self) -> bool {
         let a = self.expose_secret().as_bytes();
         let b = other.expose_secret().as_bytes();
         if a.len() != b.len() {
             return false;
         }
-        // XOR all bytes; any difference sets bits in `diff`.
         let diff = a
             .iter()
             .zip(b.iter())
@@ -112,7 +203,21 @@ impl From<String> for Secret {
 
 impl From<&str> for Secret {
     fn from(s: &str) -> Self {
-        Self::new(s.to_string())
+        let cap = s.len().max(128);
+        let mut buf = String::with_capacity(cap);
+        buf.push_str(s);
+        let lock = region::lock(buf.as_ptr(), buf.capacity())
+            .map_err(|e| {
+                tracing::debug!("mlock failed for Secret: {e}");
+                e
+            })
+            .ok();
+        let locked_ptr = buf.as_ptr();
+        Self {
+            inner: Zeroizing::new(buf),
+            _lock: lock,
+            locked_ptr,
+        }
     }
 }
 
@@ -140,10 +245,40 @@ mod tests {
     }
 
     #[test]
-    fn test_expose_secret_mut() {
+    fn test_text_buffer_insert_and_delete() {
         let mut secret = Secret::new("hello");
-        secret.expose_secret_mut().push_str(" world");
+
+        // insert_text appends " world"
+        let inserted = secret.insert_text(" world", 5);
+        assert_eq!(inserted, 6);
         assert_eq!(secret.expose_secret(), "hello world");
+
+        // delete_char_range removes " world"
+        secret.delete_char_range(5..11);
+        assert_eq!(secret.expose_secret(), "hello");
+    }
+
+    #[test]
+    fn test_text_buffer_clear() {
+        let mut secret = Secret::new("sensitive");
+        TextBuffer::clear(&mut secret);
+        assert!(secret.is_empty());
+        assert_eq!(secret.expose_secret(), "");
+    }
+
+    #[test]
+    fn test_text_buffer_replace_with() {
+        let mut secret = Secret::new("old content");
+        secret.replace_with("new content");
+        assert_eq!(secret.expose_secret(), "new content");
+    }
+
+    #[test]
+    fn test_text_buffer_take() {
+        let mut secret = Secret::new("take me");
+        let taken = TextBuffer::take(&mut secret);
+        assert_eq!(taken, "take me");
+        assert!(secret.is_empty());
     }
 
     #[test]

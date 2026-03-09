@@ -118,7 +118,7 @@ impl PasswordInput {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         // -- TextEdit --------------------------------------------------------
-        let mut text_edit = egui::TextEdit::singleline(self.secret.expose_secret_mut())
+        let mut text_edit = egui::TextEdit::singleline(&mut self.secret)
             .password(!self.revealing)
             .hint_text(&self.hint_text)
             .margin(egui::Margin {

@@ -191,14 +191,14 @@ jobs:
               done <<< "$PASSED"
             fi
 
-            TEXT=":pirate_flag: *Arrr! Weekly builds for \`${REPO}\` be takin' on water!*${NL}${NL}${BLOCKS}"
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, cannot overcome every limitation of your rudimentary build infrastructure.* Here's what broke on \`${REPO}\`:${NL}${NL}${BLOCKS}"
 
             # Append any artifacts that survived from passing workflows
             if [ -n "$DOWNLOAD_SECTION" ]; then
-              TEXT="${TEXT}${NL}Some artifacts survived the storm:${DOWNLOAD_SECTION}"
+              TEXT="${TEXT}${NL}Despite the chaos, my magnificence preserved these artifacts:${DOWNLOAD_SECTION}"
             fi
           else
-            TEXT=":white_check_mark: *Weekly builds for \`${REPO}\` all passed on \`${TARGET_BRANCH}\`.*"
+            TEXT=":sparkles: *I, Claudius the Magnificent, have blessed \`${REPO}\` with another week of perfect builds.* You're welcome — artifacts below:"
             TEXT="${TEXT}${DOWNLOAD_SECTION}"
           fi
 

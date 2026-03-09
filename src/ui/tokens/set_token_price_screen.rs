@@ -22,7 +22,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::balances::credits::Credits;
@@ -1129,20 +1129,11 @@ impl ScreenLike for SetTokenPriceScreen {
                 let validation_result = self.validate_pricing_configuration();
                 let button_active = validation_result.is_ok() && !matches!(self.status, SetTokenPriceStatus::WaitingForResult);
 
-                let button_color = if validation_result.is_ok() {
-                    DashColors::ACTION_BUTTON_BLUE
-                } else {
-                    DashColors::BUTTON_DISABLED
-                };
-
-                let button = egui::Button::new(RichText::new(set_price_text).color(Color32::WHITE))
-                    .fill(button_color)
-                    .corner_radius(3.0);
-
-                let button_response = ui.add_enabled(button_active, button);
+                let button_response =
+                    ComponentStyles::add_primary_button_enabled(ui, button_active, set_price_text);
 
                 if let Err(hover_message) = validation_result {
-                                    button_response.on_disabled_hover_text(hover_message);
+                    button_response.on_disabled_hover_text(hover_message);
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }

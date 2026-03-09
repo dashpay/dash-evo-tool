@@ -23,7 +23,7 @@ use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use eframe::egui::{Context, TextureHandle, TextureOptions};
 use eframe::emath::Align;
 use egui::load::SizedTexture;
-use egui::{Color32, ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
+use egui::{ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use tracing::error;
@@ -646,17 +646,7 @@ impl AddNewWalletScreen {
 
                 ui.add_space(10.0);
 
-                let generate_button = egui::Button::new(
-                    RichText::new("Generate")
-                        .strong()
-                        .size(12.0)
-                        .color(Color32::WHITE),
-                )
-                .min_size(Vec2::new(100.0, 20.0))
-                .fill(DashColors::ACTION_BUTTON_BLUE) // Blue background
-                .corner_radius(5.0);
-
-                if ui.add(generate_button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Generate").clicked() {
                     self.generate_seed_phrase();
                 }
             });
@@ -920,14 +910,7 @@ impl ScreenLike for AddNewWalletScreen {
                     let mut new_style = (**ui.style()).clone();
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                     ui.set_style(new_style);
-                    let save_button = egui::Button::new(
-                        RichText::new("Save Wallet").color(Color32::WHITE),
-                    )
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-
-                    if ui.add(save_button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, "Save Wallet").clicked() {
                         match self.save_wallet() {
                             Ok(save_wallet_action) => {
                                 inner_action = save_wallet_action;

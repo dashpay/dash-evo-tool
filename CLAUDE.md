@@ -69,6 +69,7 @@ scripts/safe-cargo.sh +nightly fmt --all
 
 - **docs/ai-design** should contain architecture, technical design and manual testing scenarios files, grouped in subdirectories prefixed with ISO-formatted date
 - **docs/personas** contains user personas (Everyday User, Power User, Platform Developer) that define the three target user archetypes and the progressive disclosure model for UI complexity. Consult these when making UX decisions about what to show/hide or how to structure wallet features.
+- **docs/user-stories.md** catalogs 98 user stories across 10 feature areas, tagged by persona and marked `[Implemented]` or `[Gap]`. Reference when planning new features or verifying coverage.
 - end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
 ### Core Module Structure

@@ -113,6 +113,7 @@ jobs:
         with:
           name: dash-evo-tool-linux-${{ matrix.arch }}-flatpak
           path: dash-evo-tool-linux-${{ matrix.arch }}.flatpak
+          retention-days: 14
 
       - name: Attach bundle to release
         if: github.event_name == 'release'

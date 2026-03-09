@@ -133,21 +133,16 @@ impl InfoPopup {
                 // Close button
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close_label = if let WidgetText::RichText(rich_text) = &self.close_text
+                        let close_button = if let WidgetText::RichText(rich_text) = &self.close_text
                         {
-                            rich_text.clone()
+                            egui::Button::new(rich_text.clone())
+                                .fill(ComponentStyles::primary_button_fill())
+                                .stroke(ComponentStyles::primary_button_stroke())
+                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE)
                         } else {
-                            egui::RichText::new(self.close_text.text())
-                                .strong()
-                                .color(ComponentStyles::primary_button_text())
-                                .into()
+                            ComponentStyles::primary_button(self.close_text.text())
                         };
-
-                        let close_button = egui::Button::new(close_label)
-                            .fill(ComponentStyles::primary_button_fill())
-                            .stroke(ComponentStyles::primary_button_stroke())
-                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
                         if ui
                             .add(close_button)
@@ -170,8 +165,11 @@ impl InfoPopup {
             was_closed = true;
         }
 
-        // Handle Enter key press
-        if !was_closed && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        // Handle Enter key press, but only when no widget (e.g., text input) has focus
+        if !was_closed
+            && ui.ctx().memory(|m| m.focused().is_none())
+            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+        {
             was_closed = true;
         }
 

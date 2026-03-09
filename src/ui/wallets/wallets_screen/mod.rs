@@ -22,7 +22,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::copy_text_to_clipboard;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
@@ -34,6 +34,7 @@ use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::model::wallet::single_key::SingleKeyWallet;
 use address_table::{SortColumn, SortOrder};
@@ -1719,18 +1720,19 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            let save_btn = egui::Button::new(
-                                RichText::new("Save")
-                                    .strong()
-                                    .color(ComponentStyles::primary_button_text()),
-                            )
-                            .fill(ComponentStyles::primary_button_fill())
-                            .stroke(ComponentStyles::primary_button_stroke())
-                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
+                            if ui
+                                .add(ComponentStyles::secondary_button("Cancel", dark_mode))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                self.show_rename_dialog = false;
+                                self.rename_input.clear();
+                            }
+
+                            ui.add_space(8.0);
 
                             if ui
-                                .add(save_btn)
+                                .add(ComponentStyles::primary_button("Save"))
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
                             {
@@ -1775,25 +1777,6 @@ impl ScreenLike for WalletsBalancesScreen {
                                 self.show_rename_dialog = false;
                                 self.rename_input.clear();
                             }
-
-                            let cancel_btn = egui::Button::new(
-                                RichText::new("Cancel")
-                                    .strong()
-                                    .color(ComponentStyles::secondary_button_text(dark_mode)),
-                            )
-                            .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
-                            if ui
-                                .add(cancel_btn)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                self.show_rename_dialog = false;
-                                self.rename_input.clear();
-                            }
                         });
                     });
                 });
@@ -1821,7 +1804,7 @@ impl ScreenLike for WalletsBalancesScreen {
                             Ok(key) => {
                                 self.private_key_dialog.is_open = true;
                                 self.private_key_dialog.address = address;
-                                self.private_key_dialog.private_key_wif = key;
+                                self.private_key_dialog.private_key_wif = Zeroizing::new(key);
                                 self.private_key_dialog.show_key = false;
                             }
                             Err(err) => {
@@ -1933,40 +1916,22 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            let unlock_btn = egui::Button::new(
-                                RichText::new("Unlock")
-                                    .strong()
-                                    .color(ComponentStyles::primary_button_text()),
-                            )
-                            .fill(ComponentStyles::primary_button_fill())
-                            .stroke(ComponentStyles::primary_button_stroke())
-                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
                             if ui
-                                .add(unlock_btn)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                attempt_unlock = true;
-                            }
-
-                            let cancel_btn = egui::Button::new(
-                                RichText::new("Cancel")
-                                    .strong()
-                                    .color(ComponentStyles::secondary_button_text(dark_mode)),
-                            )
-                            .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
-                            if ui
-                                .add(cancel_btn)
+                                .add(ComponentStyles::secondary_button("Cancel", dark_mode))
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
                             {
                                 close_dialog = true;
+                            }
+
+                            ui.add_space(8.0);
+
+                            if ui
+                                .add(ComponentStyles::primary_button("Unlock"))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                attempt_unlock = true;
                             }
                         });
 
@@ -1984,7 +1949,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     }
                                 }
                             }
-                            self.sk_wallet_password.clear();
+                            self.sk_wallet_password.zeroize();
                         }
 
                         // Error display is handled by the global MessageBanner.
@@ -1993,7 +1958,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
             if close_dialog {
                 self.show_sk_unlock_dialog = false;
-                self.sk_wallet_password.clear();
+                self.sk_wallet_password.zeroize();
                 // Check if we were trying to refresh the SK wallet
                 if self.pending_refresh_after_unlock {
                     self.pending_refresh_after_unlock = false;

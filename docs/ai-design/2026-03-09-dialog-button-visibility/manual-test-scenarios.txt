@@ -4,18 +4,33 @@ Prerequisites:
 - Application built and running
 - Test in both light mode and dark mode for each scenario
 
+Color Reference (from DashColors / ComponentStyles in src/ui/theme.rs):
+  Primary button fill: DASH_BLUE (0, 141, 228)
+  Primary button text: WHITE (255, 255, 255)
+  Primary button stroke: DASH_BLUE (0, 141, 228)
+  Secondary button fill (light): SECONDARY_BUTTON_FILL_LIGHT (218, 222, 230)
+  Secondary button fill (dark):  SECONDARY_BUTTON_FILL_DARK  (50, 52, 58)
+  Secondary button text (light): BLACK (17, 25, 33)
+  Secondary button text (dark):  DARK_TEXT_PRIMARY (240, 240, 240)
+  Secondary button stroke (light): SECONDARY_BUTTON_STROKE_LIGHT (195, 200, 212)
+  Secondary button stroke (dark):  SECONDARY_BUTTON_STROKE_DARK  (72, 75, 82)
+  Danger button fill: ERROR (235, 87, 87)
+  Danger button text: WHITE (255, 255, 255)
+  Modal overlay: rgba(0, 0, 0, 120)
+  Dialog min button size: 96x36
+
 === 1. Confirmation Dialog ===
 
 1.1 Button Visibility (Light Mode)
 - Trigger any confirmation dialog (e.g., delete wallet, remove identity)
-- VERIFY: Cancel button has light gray fill (rgb 235,238,243), dark text (rgb 60,70,85), subtle border
-- VERIFY: Confirm button uses primary blue fill with white text
+- VERIFY: Cancel button has fill (rgb 218,222,230), dark text (rgb 17,25,33), border (rgb 195,200,212)
+- VERIFY: Confirm button uses primary blue fill (rgb 0,141,228) with white text
 - VERIFY: Both buttons have bold/strong text labels
 - VERIFY: Buttons are visually larger than before (96x36 minimum)
 
 1.2 Button Visibility (Dark Mode)
 - Switch to dark mode and trigger the same confirmation dialog
-- VERIFY: Cancel button has dark fill (rgb 55,55,60), light text (rgb 210,215,222), subtle border
+- VERIFY: Cancel button has fill (rgb 50,52,58), light text (rgb 240,240,240), border (rgb 72,75,82)
 - VERIFY: Confirm button uses primary blue fill with white text
 - VERIFY: Both buttons remain clearly distinguishable from the dialog background
 
@@ -48,7 +63,7 @@ Prerequisites:
 
 2.1 Close Button Appearance
 - Trigger an info popup (e.g., help text, info display)
-- VERIFY: Close button uses primary blue styling with bold text
+- VERIFY: Close button uses primary blue styling (rgb 0,141,228) with bold white text
 - VERIFY: Button size is 96x36
 
 2.2 Click Outside to Close
@@ -56,12 +71,19 @@ Prerequisites:
 - Click outside the popup window
 - VERIFY: Popup closes
 
-2.3 Enter Key Closes
+2.3 Enter Key Closes (No Widget Focused)
 - Open an info popup
+- Ensure no text field is focused
 - Press Enter
 - VERIFY: Popup closes
 
-2.4 Escape Key Still Works
+2.4 Enter Key With Widget Focused
+- Open an info popup that contains interactive elements
+- Click on a text field or other focusable widget
+- Press Enter
+- VERIFY: Popup does NOT close (Enter is consumed by the focused widget)
+
+2.5 Escape Key Still Works
 - Open an info popup
 - Press Escape
 - VERIFY: Popup closes
@@ -70,14 +92,14 @@ Prerequisites:
 
 3.1 Button Visibility (Light Mode)
 - Trigger a selection dialog (e.g., Core RPC selection)
-- VERIFY: Cancel button uses theme-aware secondary styling (same as confirmation dialog)
+- VERIFY: Cancel button uses theme-aware secondary styling (fill rgb 218,222,230, text rgb 17,25,33)
 - VERIFY: Select/Confirm button uses primary blue styling
 - VERIFY: Both buttons have bold text and 96x36 minimum size
 
 3.1a Button Visibility (Dark Mode)
 - Switch to dark mode
 - Trigger a selection dialog (e.g., Core RPC selection)
-- VERIFY: Cancel button has dark fill (rgb 55,55,60), light text (rgb 210,215,222)
+- VERIFY: Cancel button has fill (rgb 50,52,58), text (rgb 240,240,240), border (rgb 72,75,82)
 - VERIFY: Cancel button is clearly distinguishable from the dialog background
 - VERIFY: Select/Confirm button remains primary blue with white text
 
@@ -105,7 +127,7 @@ Prerequisites:
 4.2 Button Visibility (Dark Mode)
 - Switch to dark mode
 - Open wallet unlock popup
-- VERIFY: Cancel button is clearly visible with dark fill and light text
+- VERIFY: Cancel button is clearly visible with fill (rgb 50,52,58) and text (rgb 240,240,240)
 - VERIFY: Cancel button is NOT transparent (previous behavior was transparent)
 
 4.3 Click Outside to Close
@@ -145,27 +167,142 @@ Prerequisites:
 
 5.5 Overlay Appearance
 - Open JSON popup
-- VERIFY: Overlay uses DashColors constants (consistent semi-transparent overlay,
-  not a noticeably different shade than other dialog overlays)
+- VERIFY: Semi-transparent overlay rgba(0,0,0,120) covers background
 - VERIFY: Dialog shadow and border glow are consistent with other popups
 
-=== 6. Cross-Cutting ===
+=== 6. Send Dash Dialog ===
 
-6.1 Theme Switching
+6.1 Modal Overlay
+- Open the Send Dash dialog (Wallets screen > Send)
+- VERIFY: Semi-transparent overlay appears behind the dialog
+- VERIFY: Background content is dimmed (same overlay as other dialogs)
+
+6.2 Button Layout
+- VERIFY: Send button uses primary blue styling
+- VERIFY: Cancel button uses secondary styling and is next to Send
+- VERIFY: Both buttons are clearly visible in light and dark modes
+
+6.3 X Button and Cancel
+- Click Cancel button
+- VERIFY: Dialog closes, no action is taken
+- Open again, click X button in title bar
+- VERIFY: Dialog closes
+
+=== 7. Receive Dialog ===
+
+7.1 Modal Overlay
+- Open the Receive dialog (Wallets screen > Receive)
+- VERIFY: Semi-transparent overlay appears behind the dialog
+- VERIFY: Dialog is centered with consistent styling
+
+7.2 Close Button
+- VERIFY: Close button uses secondary styling and is visible
+- Click Close
+- VERIFY: Dialog closes
+
+7.3 X Button
+- Open Receive dialog, click X button
+- VERIFY: Dialog closes
+
+=== 8. Fund Platform Dialog ===
+
+8.1 Modal Overlay
+- Open Fund Platform dialog (from identity or wallet context)
+- VERIFY: Semi-transparent overlay appears behind the dialog
+
+8.2 Button Visibility
+- VERIFY: Fund/Confirm button uses primary blue styling
+- VERIFY: Cancel button uses secondary styling, clearly visible in both themes
+
+=== 9. Mine Blocks Dialog (Devnet/Regtest) ===
+
+9.1 Modal Overlay
+- Switch to devnet or regtest network
+- Open Mine Blocks dialog
+- VERIFY: Semi-transparent overlay appears behind the dialog
+
+9.2 Button Visibility
+- VERIFY: Mine/Confirm button uses primary styling
+- VERIFY: Cancel button uses secondary styling, visible against dialog background
+
+=== 10. Private Key Display Dialog ===
+
+10.1 Overlay and Presentation (Wallets Screen)
+- Navigate to a wallet address list, click "Show Private Key"
+- Unlock wallet if needed
+- VERIFY: Semi-transparent overlay appears behind the dialog
+- VERIFY: Copy button uses primary styling, Close button uses secondary styling
+
+10.2 Overlay and Presentation (Asset Lock Detail)
+- Navigate to an asset lock detail screen, click View for private key
+- VERIFY: Semi-transparent overlay appears behind the popup
+- VERIFY: Copy button uses primary styling, Close button uses secondary styling
+- VERIFY: Private key value is displayed in monospace font
+
+10.3 Close Behavior
+- Click Close button
+- VERIFY: Dialog closes and private key is cleared from display
+
+=== 11. Rename Wallet Dialog ===
+
+11.1 Button Visibility
+- Right-click a wallet or use rename option
+- VERIFY: Rename/Save button uses primary styling
+- VERIFY: Cancel button uses secondary styling, visible in both themes
+
+11.2 Close Behavior
+- Press Escape
+- VERIFY: Dialog closes without renaming
+
+=== 12. Avatar / Profile Image Popup (DashPay) ===
+
+12.1 Overlay
+- Navigate to DashPay profile, click on avatar/profile image
+- VERIFY: Semi-transparent overlay appears behind the enlarged image popup
+
+12.2 Close Behavior
+- Click outside the popup
+- VERIFY: Popup closes
+- Open again, press Escape
+- VERIFY: Popup closes
+
+=== 13. Reward Calculation Explanation Popup ===
+
+13.1 Modal Overlay
+- Navigate to Tokens > My Tokens, click reward calculation info for a token
+- VERIFY: Semi-transparent overlay appears behind the popup (was previously missing)
+
+13.2 Click Outside to Close
+- Click anywhere outside the popup window on the overlay
+- VERIFY: Popup closes
+
+13.3 Escape Key
+- Open the popup again
+- Press Escape
+- VERIFY: Popup closes
+
+13.4 Close Button and X Button
+- VERIFY: Close button uses secondary styling and is visible
+- Click Close or X button
+- VERIFY: Popup closes
+
+=== 14. Cross-Cutting ===
+
+14.1 Theme Switching
 - Open any dialog in light mode, note button appearance
 - Close dialog, switch to dark mode
 - Open the same dialog
 - VERIFY: Secondary buttons adapt to dark mode colors
 - VERIFY: Primary buttons remain consistent (blue fill, white text)
 
-6.2 No Visual Regression
+14.2 No Visual Regression
 - Navigate through the application normally
 - VERIFY: No buttons elsewhere are affected by the changes
 - VERIFY: Primary button styling is unchanged throughout the app
 
-=== 7. Edge Cases ===
+=== 15. Edge Cases ===
 
-7.1 Drag From Inside to Outside
+15.1 Drag From Inside to Outside
 - Open any non-danger dialog (e.g., Info Popup, Selection Dialog)
 - Press and hold mouse button INSIDE the dialog window
 - While holding, drag the pointer outside the dialog onto the overlay
@@ -173,20 +310,20 @@ Prerequisites:
 - VERIFY: Dialog does NOT close (click-outside only triggers on press outside,
   not on release outside)
 
-7.2 Rapid Double-Click on Overlay
+15.2 Rapid Double-Click on Overlay
 - Open any non-danger dialog
 - Rapidly double-click on the overlay (outside the dialog)
 - VERIFY: Dialog closes on the first click
 - VERIFY: The second click does not trigger any action on the UI behind the dialog
 
-7.3 Click Near Edge of Resizable Popup
+15.3 Click Near Edge of Resizable Popup
 - Open the Data Contract JSON popup (resizable)
 - Click on the overlay area just outside the popup border (within a few pixels)
 - VERIFY: Popup closes (the click is outside the window rect)
 - Open again, click on the resize handle at the popup edge
 - VERIFY: Popup does NOT close (the click is inside the window rect)
 
-7.4 Enter Key With ComboBox Dropdown Open (Selection Dialog)
+15.4 Enter Key With ComboBox Dropdown Open (Selection Dialog)
 - Open a selection dialog that uses a ComboBox for selection
 - Click the ComboBox to open its dropdown
 - While the dropdown is open, press Enter

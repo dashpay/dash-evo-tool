@@ -3,7 +3,8 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
 use crate::ui::components::MessageBanner;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::components::modal_overlay::clicked_outside_window;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -195,17 +196,8 @@ impl TokensScreen {
 
                                     ui.separator();
                                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                    let close_btn = egui::Button::new(
-                                        egui::RichText::new("Close").strong().color(
-                                            ComponentStyles::secondary_button_text(dark_mode),
-                                        ),
-                                    )
-                                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
                                     if ui
-                                        .add(close_btn)
+                                        .add(ComponentStyles::secondary_button("Close", dark_mode))
                                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                                         .clicked()
                                     {
@@ -557,7 +549,16 @@ impl TokensScreen {
         if let Some(identity_token_id) = self.show_explanation_popup {
             if let Some(explanation) = self.reward_explanations.get(&identity_token_id) {
                 let mut is_open = true;
-                egui::Window::new("Reward Calculation Explanation")
+
+                // Draw dark overlay behind the popup
+                let screen_rect = ui.ctx().content_rect();
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Background,
+                    egui::Id::new("reward_explanation_overlay"),
+                ));
+                painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+
+                let window_response = egui::Window::new("Reward Calculation Explanation")
                     .resizable(true)
                     .collapsible(false)
                     .default_width(600.0)
@@ -613,7 +614,12 @@ impl TokensScreen {
                             }
 
                             ui.separator();
-                            if ui.button("Close").clicked() {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            if ui
+                                .add(ComponentStyles::secondary_button("Close", dark_mode))
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
                                 self.show_explanation_popup = None;
                             }
                         });
@@ -621,6 +627,19 @@ impl TokensScreen {
 
                 // If the window was closed via the X button
                 if !is_open {
+                    self.show_explanation_popup = None;
+                }
+
+                // Handle Escape key
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.show_explanation_popup = None;
+                }
+
+                // Handle click outside window
+                if let Some(ref wr) = window_response
+                    && self.show_explanation_popup.is_some()
+                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                {
                     self.show_explanation_popup = None;
                 }
             } else {

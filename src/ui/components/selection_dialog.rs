@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
@@ -248,25 +246,16 @@ impl SelectionDialog {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Confirm button
                         if let Some(confirm_text) = &self.confirm_text {
-                            let fill_color = ComponentStyles::primary_button_fill();
-                            let text_color = ComponentStyles::primary_button_text();
-
-                            let confirm_label =
+                            let confirm_button =
                                 if let WidgetText::RichText(rich_text) = confirm_text {
-                                    rich_text.clone()
+                                    egui::Button::new(rich_text.clone())
+                                        .fill(ComponentStyles::primary_button_fill())
+                                        .stroke(ComponentStyles::primary_button_stroke())
+                                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE)
                                 } else {
-                                    Arc::new(
-                                        egui::RichText::new(confirm_text.text())
-                                            .strong()
-                                            .color(text_color),
-                                    )
+                                    ComponentStyles::primary_button(confirm_text.text())
                                 };
-
-                            let confirm_button = egui::Button::new(confirm_label)
-                                .fill(fill_color)
-                                .stroke(ComponentStyles::primary_button_stroke())
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
                             if ui
                                 .add_enabled(!self.options.is_empty(), confirm_button)
@@ -282,21 +271,16 @@ impl SelectionDialog {
                         // Cancel button
                         if let Some(cancel_text) = &self.cancel_text {
                             let dark_mode = ui.ctx().style().visuals.dark_mode;
-                            let cancel_label = if let WidgetText::RichText(rich_text) = cancel_text
+                            let cancel_button = if let WidgetText::RichText(rich_text) = cancel_text
                             {
-                                rich_text.clone()
+                                egui::Button::new(rich_text.clone())
+                                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
+                                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
+                                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE)
                             } else {
-                                egui::RichText::new(cancel_text.text())
-                                    .strong()
-                                    .color(ComponentStyles::secondary_button_text(dark_mode))
-                                    .into()
+                                ComponentStyles::secondary_button(cancel_text.text(), dark_mode)
                             };
-
-                            let cancel_button = egui::Button::new(cancel_label)
-                                .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                                .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
 
                             if ui
                                 .add(cancel_button)

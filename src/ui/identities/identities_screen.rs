@@ -20,7 +20,7 @@ use crate::ui::identities::register_dpns_name_screen::{
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -894,12 +894,10 @@ impl IdentitiesScreen {
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                if let Err(e) =
-                                    self.app_context.db.delete_local_qualified_identity(
-                                        &voter_identity_id,
-                                        &self.app_context,
-                                    )
-                                {
+                                if let Err(e) = self.app_context.db.delete_local_qualified_identity(
+                                    &voter_identity_id,
+                                    &self.app_context,
+                                ) {
                                     tracing::warn!(
                                         "Failed to delete voter identity from database: {}",
                                         e
@@ -973,18 +971,8 @@ impl IdentitiesScreen {
 
                 ui.horizontal(|ui| {
                     // Cancel button
-                    let cancel_button = egui::Button::new(
-                        RichText::new("Cancel")
-                            .strong()
-                            .color(ComponentStyles::secondary_button_text(dark_mode)),
-                    )
-                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
                     if ui
-                        .add(cancel_button)
+                        .add(ComponentStyles::secondary_button("Cancel", dark_mode))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
@@ -995,18 +983,8 @@ impl IdentitiesScreen {
                     ui.add_space(8.0);
 
                     // Save button
-                    let save_button = egui::Button::new(
-                        RichText::new("Save")
-                            .strong()
-                            .color(ComponentStyles::primary_button_text()),
-                    )
-                    .fill(ComponentStyles::primary_button_fill())
-                    .stroke(ComponentStyles::primary_button_stroke())
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
                     if ui
-                        .add(save_button)
+                        .add(ComponentStyles::primary_button("Save"))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                         || submit

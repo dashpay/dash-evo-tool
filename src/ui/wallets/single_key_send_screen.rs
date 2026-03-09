@@ -10,7 +10,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -635,18 +635,8 @@ impl SingleKeyWalletSendScreen {
                 ui.add_space(15.0);
 
                 ui.horizontal(|ui| {
-                    let cancel_btn = egui::Button::new(
-                        RichText::new("Cancel")
-                            .strong()
-                            .color(ComponentStyles::secondary_button_text(dark_mode)),
-                    )
-                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
                     if ui
-                        .add(cancel_btn)
+                        .add(ComponentStyles::secondary_button("Cancel", dark_mode))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
@@ -657,18 +647,8 @@ impl SingleKeyWalletSendScreen {
 
                     ui.add_space(20.0);
 
-                    let confirm_button = egui::Button::new(
-                        RichText::new("Confirm & Send")
-                            .strong()
-                            .color(ComponentStyles::primary_button_text()),
-                    )
-                    .fill(ComponentStyles::primary_button_fill())
-                    .stroke(ComponentStyles::primary_button_stroke())
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
                     if ui
-                        .add(confirm_button)
+                        .add(ComponentStyles::primary_button("Confirm & Send"))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {

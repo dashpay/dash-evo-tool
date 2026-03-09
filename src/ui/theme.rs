@@ -1,4 +1,6 @@
-use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, Stroke, Vec2};
+use egui::{
+    Button, Color32, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke, Vec2,
+};
 
 /// Theme mode enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -757,6 +759,45 @@ impl ComponentStyles {
 
     pub fn input_stroke_error() -> Stroke {
         Stroke::new(2.0, DashColors::ERROR)
+    }
+
+    /// Returns a fully styled primary (action) button with Dash Blue fill and white text.
+    pub fn primary_button(label: &str) -> Button<'static> {
+        Button::new(
+            RichText::new(label.to_string())
+                .strong()
+                .color(Self::primary_button_text()),
+        )
+        .fill(Self::primary_button_fill())
+        .stroke(Self::primary_button_stroke())
+        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+        .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+    }
+
+    /// Returns a fully styled secondary (cancel/close) button with theme-aware colors.
+    pub fn secondary_button(label: &str, dark_mode: bool) -> Button<'static> {
+        Button::new(
+            RichText::new(label.to_string())
+                .strong()
+                .color(Self::secondary_button_text(dark_mode)),
+        )
+        .fill(Self::secondary_button_fill(dark_mode))
+        .stroke(Self::secondary_button_stroke(dark_mode))
+        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+        .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+    }
+
+    /// Returns a fully styled danger (destructive action) button with red fill and white text.
+    pub fn danger_button(label: &str) -> Button<'static> {
+        Button::new(
+            RichText::new(label.to_string())
+                .strong()
+                .color(Self::danger_button_text()),
+        )
+        .fill(Self::danger_button_fill())
+        .stroke(egui::Stroke::NONE)
+        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+        .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
     }
 }
 

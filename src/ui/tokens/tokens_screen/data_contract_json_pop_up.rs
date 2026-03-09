@@ -1,5 +1,5 @@
 use crate::ui::components::modal_overlay::clicked_outside_window;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use egui::Ui;
 
@@ -67,18 +67,8 @@ impl TokensScreen {
                     // Close button styled like ConfirmationDialog
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let close_button = egui::Button::new(
-                                egui::RichText::new("Close")
-                                    .strong()
-                                    .color(ComponentStyles::primary_button_text()),
-                            )
-                            .fill(ComponentStyles::primary_button_fill())
-                            .stroke(ComponentStyles::primary_button_stroke())
-                            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
                             if ui
-                                .add(close_button)
+                                .add(ComponentStyles::primary_button("Close"))
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
                             {

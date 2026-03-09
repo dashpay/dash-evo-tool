@@ -16,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, Frame, Margin, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
 use std::collections::HashMap;
@@ -1307,6 +1307,15 @@ impl ProfileScreen {
             if let Some(profile) = &self.profile {
                 let avatar_url = profile.avatar_url.clone();
                 let texture_id = format!("avatar_{}", avatar_url);
+
+                // Draw modal overlay
+                let screen_rect = ui.ctx().content_rect();
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Background,
+                    egui::Id::new("avatar_popup_overlay"),
+                ));
+                painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+
                 let window_response = egui::Window::new("Avatar")
                     .collapsible(false)
                     .resizable(false)
@@ -1336,17 +1345,8 @@ impl ProfileScreen {
 
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                let copy_btn = egui::Button::new(
-                                    egui::RichText::new("Copy URL")
-                                        .strong()
-                                        .color(ComponentStyles::primary_button_text()),
-                                )
-                                .fill(ComponentStyles::primary_button_fill())
-                                .stroke(ComponentStyles::primary_button_stroke())
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
                                 if ui
-                                    .add(copy_btn)
+                                    .add(ComponentStyles::primary_button("Copy URL"))
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                                     .clicked()
                                 {
@@ -1358,17 +1358,8 @@ impl ProfileScreen {
                                     );
                                     self.show_avatar_url_popup = false;
                                 }
-                                let close_btn = egui::Button::new(
-                                    egui::RichText::new("Close")
-                                        .strong()
-                                        .color(ComponentStyles::secondary_button_text(dark_mode)),
-                                )
-                                .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                                .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
                                 if ui
-                                    .add(close_btn)
+                                    .add(ComponentStyles::secondary_button("Close", dark_mode))
                                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                                     .clicked()
                                 {

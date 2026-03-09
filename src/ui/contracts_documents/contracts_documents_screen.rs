@@ -301,17 +301,8 @@ impl DocumentQueryScreen {
 
                         ui.separator();
                         let dark_mode = ui.ctx().style().visuals.dark_mode;
-                        let close_btn = egui::Button::new(
-                            egui::RichText::new("Close")
-                                .strong()
-                                .color(ComponentStyles::secondary_button_text(dark_mode)),
-                        )
-                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
                         if ui
-                            .add(close_btn)
+                            .add(ComponentStyles::secondary_button("Close", dark_mode))
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {

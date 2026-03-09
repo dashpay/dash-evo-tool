@@ -12,7 +12,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -531,17 +531,8 @@ impl AddNewWalletScreen {
                     if let Some(address) = &self.receive_address_string {
                         ui.label(address);
                         ui.add_space(4.0);
-                        let copy_btn = egui::Button::new(
-                            egui::RichText::new("Copy Address")
-                                .strong()
-                                .color(ComponentStyles::primary_button_text()),
-                        )
-                        .fill(ComponentStyles::primary_button_fill())
-                        .stroke(ComponentStyles::primary_button_stroke())
-                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
                         if ui
-                            .add(copy_btn)
+                            .add(ComponentStyles::primary_button("Copy Address"))
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                             && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address)
@@ -965,17 +956,8 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.label(error_message);
                     ui.add_space(10.0);
                     let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    let close_btn = egui::Button::new(
-                        egui::RichText::new("Close")
-                            .strong()
-                            .color(ComponentStyles::secondary_button_text(dark_mode)),
-                    )
-                    .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                    .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                    .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
                     if ui
-                        .add(close_btn)
+                        .add(ComponentStyles::secondary_button("Close", dark_mode))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {

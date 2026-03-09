@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::styled::StyledCheckbox;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use egui;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
@@ -167,18 +167,8 @@ impl WalletUnlockPopup {
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Unlock button (right side)
-                        let unlock_button = egui::Button::new(
-                            egui::RichText::new("Unlock")
-                                .strong()
-                                .color(ComponentStyles::primary_button_text()),
-                        )
-                        .fill(ComponentStyles::primary_button_fill())
-                        .stroke(ComponentStyles::primary_button_stroke())
-                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
                         if ui
-                            .add(unlock_button)
+                            .add(ComponentStyles::primary_button("Unlock"))
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {
@@ -186,18 +176,8 @@ impl WalletUnlockPopup {
                         }
 
                         // Cancel button (left side)
-                        let cancel_button = egui::Button::new(
-                            egui::RichText::new("Cancel")
-                                .strong()
-                                .color(ComponentStyles::secondary_button_text(dark_mode)),
-                        )
-                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
                         if ui
-                            .add(cancel_button)
+                            .add(ComponentStyles::secondary_button("Cancel", dark_mode))
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
                             .clicked()
                         {

@@ -25,7 +25,7 @@ use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_ch
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 /// Which DPNS sub-screen is currently showing.
@@ -1284,17 +1284,8 @@ impl DPNSScreen {
             ui.colored_label(Color32::DARK_RED, "No masternode identities loaded. Please go to the Identities screen to load your masternodes.");
             ui.add_space(10.0);
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            let close_btn = egui::Button::new(
-                RichText::new("Close")
-                    .strong()
-                    .color(ComponentStyles::secondary_button_text(dark_mode)),
-            )
-            .fill(ComponentStyles::secondary_button_fill(dark_mode))
-            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
             if ui
-                .add(close_btn)
+                .add(ComponentStyles::secondary_button("Close", dark_mode))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {
@@ -1309,17 +1300,8 @@ impl DPNSScreen {
             ui.colored_label(Color32::DARK_RED, "No votes selected. Please click the votes you want to cast or schedule in the Active Contests screen.");
             ui.add_space(10.0);
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            let close_btn = egui::Button::new(
-                RichText::new("Close")
-                    .strong()
-                    .color(ComponentStyles::secondary_button_text(dark_mode)),
-            )
-            .fill(ComponentStyles::secondary_button_fill(dark_mode))
-            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
             if ui
-                .add(close_btn)
+                .add(ComponentStyles::secondary_button("Close", dark_mode))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {
@@ -1564,17 +1546,8 @@ impl DPNSScreen {
         }
 
         // "Apply Votes" button
-        let button = egui::Button::new(
-            RichText::new("Apply Votes")
-                .strong()
-                .color(ComponentStyles::primary_button_text()),
-        )
-        .fill(ComponentStyles::primary_button_fill())
-        .stroke(ComponentStyles::primary_button_stroke())
-        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
         if ui
-            .add(button)
+            .add(ComponentStyles::primary_button("Apply Votes"))
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked()
         {
@@ -1590,17 +1563,8 @@ impl DPNSScreen {
 
         ui.add_space(5.0);
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let cancel_btn = egui::Button::new(
-            RichText::new("Cancel")
-                .strong()
-                .color(ComponentStyles::secondary_button_text(dark_mode)),
-        )
-        .fill(ComponentStyles::secondary_button_fill(dark_mode))
-        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
         if ui
-            .add(cancel_btn)
+            .add(ComponentStyles::secondary_button("Cancel", dark_mode))
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked()
         {
@@ -1792,17 +1756,10 @@ impl DPNSScreen {
 
             ui.add_space(20.0);
             let dark_mode = ui.ctx().style().visuals.dark_mode;
-            let go_back_btn = egui::Button::new(
-                RichText::new("Go back to Active Contests")
-                    .strong()
-                    .color(ComponentStyles::primary_button_text()),
-            )
-            .fill(ComponentStyles::primary_button_fill())
-            .stroke(ComponentStyles::primary_button_stroke())
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
             if ui
-                .add(go_back_btn)
+                .add(ComponentStyles::primary_button(
+                    "Go back to Active Contests",
+                ))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {
@@ -1813,17 +1770,11 @@ impl DPNSScreen {
                 ))
             }
             ui.add_space(5.0);
-            let sched_btn = egui::Button::new(
-                RichText::new("Go to Scheduled Votes Screen")
-                    .strong()
-                    .color(ComponentStyles::secondary_button_text(dark_mode)),
-            )
-            .fill(ComponentStyles::secondary_button_fill(dark_mode))
-            .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-            .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
             if ui
-                .add(sched_btn)
+                .add(ComponentStyles::secondary_button(
+                    "Go to Scheduled Votes Screen",
+                    dark_mode,
+                ))
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {

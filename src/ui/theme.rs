@@ -774,6 +774,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::primary_button_text()),
+            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::primary_button_text()),
@@ -795,6 +796,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::secondary_button_text(dark_mode)),
+            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::secondary_button_text(dark_mode)),
@@ -816,6 +818,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::danger_button_text()),
+            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::danger_button_text()),
@@ -834,12 +837,37 @@ impl ComponentStyles {
     }
 
     /// Add a primary button (conditionally enabled) with pointer cursor on hover.
+    ///
+    /// When disabled, uses distinct greyed-out fill and text so the button
+    /// visually reads as inactive (egui's default disabled visuals are bypassed
+    /// by the explicit fill/text styling in `primary_button()`).
     pub fn add_primary_button_enabled(
         ui: &mut egui::Ui,
         enabled: bool,
         label: impl Into<WidgetText>,
     ) -> egui::Response {
-        ui.add_enabled(enabled, Self::primary_button(label))
+        let button = if enabled {
+            Self::primary_button(label)
+        } else {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let text = match label.into() {
+                WidgetText::RichText(rt) => rt
+                    .as_ref()
+                    .clone()
+                    .strong()
+                    .color(DashColors::disabled(dark_mode)),
+                // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+                other => RichText::new(other.text().to_string())
+                    .strong()
+                    .color(DashColors::disabled(dark_mode)),
+            };
+            Button::new(text)
+                .fill(DashColors::BUTTON_DISABLED)
+                .stroke(egui::Stroke::NONE)
+                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
+                .min_size(Self::DIALOG_BUTTON_MIN_SIZE)
+        };
+        ui.add_enabled(enabled, button)
             .on_hover_cursor(CursorIcon::PointingHand)
     }
 
@@ -876,6 +904,7 @@ impl ComponentStyles {
     pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
         let text = match label.into() {
             WidgetText::RichText(rt) => rt.as_ref().clone().color(DashColors::WHITE),
+            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
             other => RichText::new(other.text().to_string()).color(DashColors::WHITE),
         };
         Button::new(text)

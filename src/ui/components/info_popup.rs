@@ -152,11 +152,8 @@ impl InfoPopup {
             was_closed = true;
         }
 
-        // Handle Enter key press, but only when no widget (e.g., text input) has focus
-        if !was_closed
-            && ui.ctx().memory(|m| m.focused().is_none())
-            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-        {
+        // Handle Enter key press — no focus guard needed since InfoPopup has no input fields
+        if !was_closed && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             was_closed = true;
         }
 

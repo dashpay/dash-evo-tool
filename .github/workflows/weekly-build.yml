@@ -1,0 +1,211 @@
+name: "Weekly Build Health Check"
+
+# Triggers the Release and Flatpak build workflows weekly, waits for them
+# to complete, and posts a Slack summary with pass/fail status and
+# artifact download links grouped by platform.
+
+on:
+  schedule:
+    - cron: "0 2 * * 6" # Every Saturday at 02:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  actions: write # Trigger workflows via gh workflow run
+  contents: read
+
+jobs:
+  weekly-build:
+    name: Trigger builds and report results
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TARGET_BRANCH: v1.0-dev
+
+    steps:
+      - name: Checkout (gh CLI needs repo context)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: .
+          sparse-checkout-cone-mode: true
+
+      - name: Trigger workflows and collect results
+        id: results
+        run: |
+          set -euo pipefail
+
+          # Workflows to trigger (display name | workflow filename)
+          declare -a WORKFLOWS=(
+            "Release Dash Evo Tool|release.yml"
+            "Build Flatpak|flatpak.yml"
+          )
+
+          declare -A RUN_IDS
+
+          # --- Trigger each workflow ---
+          for entry in "${WORKFLOWS[@]}"; do
+            IFS='|' read -r name file <<< "$entry"
+            echo "Triggering: ${name} (${file}) on ${TARGET_BRANCH}"
+
+            gh workflow run "$file" --ref "${TARGET_BRANCH}"
+
+            # Brief pause so GitHub registers the run before we query it
+            sleep 5
+
+            # Find the run we just triggered (most recent run on the branch)
+            run_id=$(gh run list \
+              -w "$name" \
+              -b "${TARGET_BRANCH}" \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+
+            if [ -z "$run_id" ]; then
+              echo "::error::Could not find triggered run for ${name}"
+              exit 1
+            fi
+
+            echo "  Run ID: ${run_id}"
+            RUN_IDS["$name"]="$run_id"
+          done
+
+          # --- Wait for all runs to complete ---
+          for entry in "${WORKFLOWS[@]}"; do
+            IFS='|' read -r name file <<< "$entry"
+            run_id="${RUN_IDS[$name]}"
+            echo ""
+            echo "Waiting for ${name} (run ${run_id})..."
+            gh run watch "$run_id" --exit-status || true
+          done
+
+          # --- Collect conclusions ---
+          FAILED=""
+          PASSED=""
+          NL=$'\n'
+
+          for entry in "${WORKFLOWS[@]}"; do
+            IFS='|' read -r name file <<< "$entry"
+            run_id="${RUN_IDS[$name]}"
+
+            conclusion=$(gh run view "$run_id" --json conclusion --jq '.conclusion')
+            run_url=$(gh run view "$run_id" --json url --jq '.url')
+
+            echo "${name}: ${conclusion} (${run_url})"
+
+            if [ "$conclusion" = "success" ]; then
+              PASSED="${PASSED}${name}|${run_url}${NL}"
+            else
+              FAILED="${FAILED}${name}|${run_url}|${conclusion}${NL}"
+            fi
+          done
+
+          # --- Collect artifacts from all runs ---
+          # Map artifact names to friendly labels (emoji + platform)
+          declare -A ARTIFACT_LABELS=(
+            ["dash-evo-tool-linux-x86_64.zip"]=":penguin: Linux x86_64 (binary)"
+            ["dash-evo-tool-linux-arm64.zip"]=":penguin: Linux ARM64 (binary)"
+            ["dash-evo-tool-linux-x86_64-flatpak"]=":penguin: Linux x86_64 (Flatpak)"
+            ["dash-evo-tool-linux-aarch64-flatpak"]=":penguin: Linux ARM64 (Flatpak)"
+            ["dash-evo-tool-macos-arm64.dmg"]=":apple: macOS ARM64 (Apple Silicon)"
+            ["dash-evo-tool-macos-x86_64.dmg"]=":apple: macOS x86_64 (Intel)"
+            ["dash-evo-tool-windows.zip"]=":window: Windows x86_64"
+          )
+
+          REPO="${GITHUB_REPOSITORY}"
+          ARTIFACTS=""
+
+          for entry in "${WORKFLOWS[@]}"; do
+            IFS='|' read -r name file <<< "$entry"
+            run_id="${RUN_IDS[$name]}"
+
+            # Fetch artifacts for this run
+            artifacts_json=$(gh api "repos/${REPO}/actions/runs/${run_id}/artifacts" \
+              --jq '.artifacts[] | "\(.name)|\(.id)"' 2>/dev/null || true)
+
+            while IFS='|' read -r art_name art_id; do
+              [ -z "$art_name" ] && continue
+              label="${ARTIFACT_LABELS[$art_name]:-}"
+              if [ -z "$label" ]; then
+                # Unknown artifact -- use name as-is
+                label=":package: ${art_name}"
+              fi
+              art_url="https://github.com/${REPO}/actions/runs/${run_id}/artifacts/${art_id}"
+              ARTIFACTS="${ARTIFACTS}${label}|${art_url}${NL}"
+            done <<< "$artifacts_json"
+          done
+
+          # Export for the Slack notification step
+          {
+            echo "FAILED<<GHEOF"
+            echo -n "$FAILED"
+            echo "GHEOF"
+            echo "PASSED<<GHEOF"
+            echo -n "$PASSED"
+            echo "GHEOF"
+            echo "ARTIFACTS<<GHEOF"
+            echo -n "$ARTIFACTS"
+            echo "GHEOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post Slack notification
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL }}
+          FAILED: ${{ steps.results.outputs.FAILED }}
+          PASSED: ${{ steps.results.outputs.PASSED }}
+          ARTIFACTS: ${{ steps.results.outputs.ARTIFACTS }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_CI_WEBHOOK_URL not set, skipping notification"
+            exit 0
+          fi
+
+          NL=$'\n'
+          REPO="${GITHUB_REPOSITORY}"
+
+          # --- Build artifact download section ---
+          DOWNLOAD_SECTION=""
+          if [ -n "$ARTIFACTS" ]; then
+            DOWNLOAD_SECTION="${NL}*Downloads* (GitHub login required):${NL}"
+            while IFS='|' read -r label url; do
+              [ -z "$label" ] && continue
+              DOWNLOAD_SECTION="${DOWNLOAD_SECTION}    <${url}|${label}>${NL}"
+            done <<< "$ARTIFACTS"
+          fi
+
+          if [ -n "$FAILED" ]; then
+            # Build failure list
+            BLOCKS=""
+            while IFS='|' read -r name url conclusion; do
+              [ -z "$name" ] && continue
+              BLOCKS="${BLOCKS}    :x: *<${url}|${name}>* -- ${conclusion}${NL}"
+            done <<< "$FAILED"
+
+            # Add passing workflows if any
+            if [ -n "$PASSED" ]; then
+              BLOCKS="${BLOCKS}${NL}"
+              while IFS='|' read -r name url; do
+                [ -z "$name" ] && continue
+                BLOCKS="${BLOCKS}    :white_check_mark: *<${url}|${name}>*${NL}"
+              done <<< "$PASSED"
+            fi
+
+            TEXT=":pirate_flag: *Arrr! Weekly builds for \`${REPO}\` be takin' on water!*${NL}${NL}${BLOCKS}"
+
+            # Append any artifacts that survived from passing workflows
+            if [ -n "$DOWNLOAD_SECTION" ]; then
+              TEXT="${TEXT}${NL}Some artifacts survived the storm:${DOWNLOAD_SECTION}"
+            fi
+          else
+            TEXT=":white_check_mark: *Weekly builds for \`${REPO}\` all passed on \`${TARGET_BRANCH}\`.*"
+            TEXT="${TEXT}${DOWNLOAD_SECTION}"
+          fi
+
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$PAYLOAD"
+
+          echo "Slack notification sent."

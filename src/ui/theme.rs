@@ -419,11 +419,11 @@ impl DashColors {
     }
 
     // Secondary button colors (theme-aware)
-    pub const SECONDARY_BUTTON_FILL_LIGHT: Color32 = Color32::from_rgb(215, 220, 228);
+    pub const SECONDARY_BUTTON_FILL_LIGHT: Color32 = Color32::from_rgb(235, 238, 243);
     pub const SECONDARY_BUTTON_FILL_DARK: Color32 = Color32::from_rgb(55, 55, 60);
     pub const SECONDARY_BUTTON_TEXT_LIGHT: Color32 = Color32::from_rgb(45, 55, 72);
     pub const SECONDARY_BUTTON_TEXT_DARK: Color32 = Color32::from_rgb(210, 215, 222);
-    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(185, 192, 205);
+    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(170, 178, 192);
     pub const SECONDARY_BUTTON_STROKE_DARK: Color32 = Color32::from_rgb(80, 82, 88);
 
     /// Popup fill color adapting to dark/light mode

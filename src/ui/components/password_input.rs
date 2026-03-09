@@ -137,6 +137,20 @@ impl PasswordInput {
         }
 
         let text_response = ui.add(text_edit);
+
+        // SEC-001: Disable egui's Undoer to prevent plaintext undo history.
+        if let Some(mut state) =
+            egui::widgets::text_edit::TextEditState::load(ui.ctx(), text_response.id)
+        {
+            state.set_undoer(egui::util::undoer::Undoer::with_settings(
+                egui::util::undoer::Settings {
+                    max_undos: 0,
+                    ..Default::default()
+                },
+            ));
+            state.store(ui.ctx(), text_response.id);
+        }
+
         let changed = text_response.changed();
 
         // -- Eye icon --------------------------------------------------------

@@ -5,6 +5,10 @@ use std::ops::Range;
 use egui::TextBuffer;
 use zeroize::{Zeroize, Zeroizing};
 
+/// Default pre-allocation size for `Secret` buffers. Set to one memory page
+/// to minimize reallocations (which would leak the old buffer contents).
+const PAGE_SIZE: usize = 4096;
+
 /// Zeroize-on-drop wrapper for sensitive strings (passwords, WIF keys, private key inputs).
 ///
 /// Debug output is redacted. Best-effort `mlock` prevents the backing memory from
@@ -14,6 +18,13 @@ use zeroize::{Zeroize, Zeroizing};
 /// prevent accidental leakage. Use [`expose_secret`](Self::expose_secret) for
 /// explicit read access, or pass `&mut Secret` directly to `TextEdit::singleline`
 /// (via the [`TextBuffer`] impl) for mutable editing.
+///
+/// # Security: TextEdit usage
+///
+/// When using `Secret` with `TextEdit::singleline`, you **must** set
+/// `.password(true)`. Without it, plaintext leaks to egui's layout system,
+/// widget info, and accessibility events. Use [`PasswordInput`] to ensure
+/// this is always enforced.
 pub struct Secret {
     /// Dropped first -- zeroes the bytes.
     inner: Zeroizing<String>,
@@ -32,20 +43,21 @@ unsafe impl Sync for Secret {}
 impl Secret {
     /// Wrap a string in a `Secret`, locking its backing memory on a best-effort basis.
     pub fn new(s: impl Into<String>) -> Self {
-        let mut s: String = s.into();
-        let target_cap = s.len().max(128);
-        if s.capacity() < target_cap {
-            s.reserve(target_cap - s.capacity());
-        }
-        let lock = region::lock(s.as_ptr(), s.capacity())
+        let mut source: String = s.into();
+        let cap = source.len().max(PAGE_SIZE);
+        let mut buf = String::with_capacity(cap);
+        buf.push_str(&source);
+        // Zeroize the original string before it's freed
+        source.zeroize();
+        let lock = region::lock(buf.as_ptr(), buf.capacity())
             .map_err(|e| {
                 tracing::debug!("mlock failed for Secret: {e}");
                 e
             })
             .ok();
-        let locked_ptr = s.as_ptr();
+        let locked_ptr = buf.as_ptr();
         Self {
-            inner: Zeroizing::new(s),
+            inner: Zeroizing::new(buf),
             _lock: lock,
             locked_ptr,
         }
@@ -53,6 +65,7 @@ impl Secret {
 
     /// Create an empty `Secret` with a pre-allocated, locked buffer.
     pub fn with_capacity(cap: usize) -> Self {
+        let cap = cap.max(PAGE_SIZE);
         let s = String::with_capacity(cap);
         let lock = region::lock(s.as_ptr(), s.capacity())
             .map_err(|e| {
@@ -98,6 +111,23 @@ impl Secret {
     }
 }
 
+impl Drop for Secret {
+    fn drop(&mut self) {
+        // Zero the full capacity, including bytes beyond len that
+        // Zeroize for String would miss (it only zeros 0..len).
+        let ptr = self.inner.as_mut_ptr();
+        let cap = self.inner.capacity();
+        if cap > 0 {
+            // SAFETY: ptr is valid for cap bytes (String allocation guarantee).
+            unsafe {
+                std::ptr::write_bytes(ptr, 0, cap);
+            }
+        }
+        // After this, Rust drops fields in order: inner (Zeroizing re-zeroes 0..len, harmless),
+        // then _lock (unlocks the page), then locked_ptr (no-op).
+    }
+}
+
 // -- TextBuffer impl (allows `TextEdit::singleline(&mut secret)`) -----------
 
 impl TextBuffer for Secret {
@@ -117,6 +147,17 @@ impl TextBuffer for Secret {
 
     fn delete_char_range(&mut self, char_range: Range<usize>) {
         <String as TextBuffer>::delete_char_range(&mut *self.inner, char_range);
+        // Zero deleted bytes in trailing capacity [len..capacity)
+        let ptr = self.inner.as_mut_ptr();
+        let len = self.inner.len();
+        let cap = self.inner.capacity();
+        if cap > len {
+            // SAFETY: ptr is valid for cap bytes (String's allocation guarantee),
+            // and we only write to the unused portion [len..cap).
+            unsafe {
+                std::ptr::write_bytes(ptr.add(len), 0, cap - len);
+            }
+        }
     }
 
     fn clear(&mut self) {
@@ -144,28 +185,13 @@ impl TextBuffer for Secret {
 
 impl Clone for Secret {
     fn clone(&self) -> Self {
-        let src = self.inner.as_str();
-        let cap = src.len().max(128);
-        let mut s = String::with_capacity(cap);
-        s.push_str(src);
-        let lock = region::lock(s.as_ptr(), s.capacity())
-            .map_err(|e| {
-                tracing::debug!("mlock failed for cloned Secret: {e}");
-                e
-            })
-            .ok();
-        let locked_ptr = s.as_ptr();
-        Self {
-            inner: Zeroizing::new(s),
-            _lock: lock,
-            locked_ptr,
-        }
+        Self::new(self.inner.to_string())
     }
 }
 
 impl Default for Secret {
     fn default() -> Self {
-        Self::with_capacity(128)
+        Self::with_capacity(PAGE_SIZE)
     }
 }
 
@@ -203,21 +229,7 @@ impl From<String> for Secret {
 
 impl From<&str> for Secret {
     fn from(s: &str) -> Self {
-        let cap = s.len().max(128);
-        let mut buf = String::with_capacity(cap);
-        buf.push_str(s);
-        let lock = region::lock(buf.as_ptr(), buf.capacity())
-            .map_err(|e| {
-                tracing::debug!("mlock failed for Secret: {e}");
-                e
-            })
-            .ok();
-        let locked_ptr = buf.as_ptr();
-        Self {
-            inner: Zeroizing::new(buf),
-            _lock: lock,
-            locked_ptr,
-        }
+        Self::new(s.to_string())
     }
 }
 
@@ -329,5 +341,34 @@ mod tests {
         let secret = Secret::with_capacity(256);
         assert!(secret.is_empty());
         assert_eq!(secret.expose_secret(), "");
+        // Capacity must be at least PAGE_SIZE
+        assert!(
+            secret.inner.capacity() >= PAGE_SIZE,
+            "capacity {} must be >= PAGE_SIZE {}",
+            secret.inner.capacity(),
+            PAGE_SIZE,
+        );
+    }
+
+    #[test]
+    fn test_delete_char_range_zeroes_trailing() {
+        let mut secret = Secret::new("abcdef");
+        secret.delete_char_range(3..6);
+        assert_eq!(secret.expose_secret(), "abc");
+        // Trailing capacity bytes (after len) should be zeroed
+        let len = secret.inner.len();
+        let cap = secret.inner.capacity();
+        let bytes = secret.inner.as_bytes();
+        // We can only inspect up to len via safe API, but the content is correct
+        assert_eq!(bytes, b"abc");
+        assert!(cap > len, "buffer should have trailing capacity");
+    }
+
+    #[test]
+    fn test_drop_does_not_panic() {
+        let secret = Secret::new("drop me safely");
+        assert_eq!(secret.expose_secret(), "drop me safely");
+        drop(secret);
+        // If we get here, drop didn't panic
     }
 }

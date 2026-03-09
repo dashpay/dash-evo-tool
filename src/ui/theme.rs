@@ -419,12 +419,13 @@ impl DashColors {
     }
 
     // Secondary button colors (theme-aware)
-    pub const SECONDARY_BUTTON_FILL_LIGHT: Color32 = Color32::from_rgb(235, 238, 243);
-    pub const SECONDARY_BUTTON_FILL_DARK: Color32 = Color32::from_rgb(55, 55, 60);
-    pub const SECONDARY_BUTTON_TEXT_LIGHT: Color32 = Color32::from_rgb(45, 55, 72);
-    pub const SECONDARY_BUTTON_TEXT_DARK: Color32 = Color32::from_rgb(210, 215, 222);
-    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Color32::from_rgb(170, 178, 192);
-    pub const SECONDARY_BUTTON_STROKE_DARK: Color32 = Color32::from_rgb(80, 82, 88);
+    /// Secondary button colors match the default egui widget (column header) styling
+    pub const SECONDARY_BUTTON_FILL_LIGHT: Color32 = Self::BACKGROUND; // (240, 242, 247)
+    pub const SECONDARY_BUTTON_FILL_DARK: Color32 = Self::DARK_BACKGROUND; // (18, 18, 18)
+    pub const SECONDARY_BUTTON_TEXT_LIGHT: Color32 = Self::BLACK; // (17, 25, 33)
+    pub const SECONDARY_BUTTON_TEXT_DARK: Color32 = Self::DARK_TEXT_PRIMARY; // (240, 240, 240)
+    pub const SECONDARY_BUTTON_STROKE_LIGHT: Color32 = Self::BORDER; // (226, 232, 240)
+    pub const SECONDARY_BUTTON_STROKE_DARK: Color32 = Self::DARK_BORDER; // (60, 60, 60)
 
     /// Popup fill color adapting to dark/light mode
     pub fn popup_fill(dark_mode: bool) -> Color32 {

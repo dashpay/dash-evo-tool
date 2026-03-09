@@ -10,7 +10,7 @@ use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedId
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::modal_overlay::clicked_outside_window;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -57,6 +57,7 @@ pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
     pub identity_to_remove: Option<QualifiedIdentity>,
+    remove_confirmation_dialog: Option<ConfirmationDialog>,
     pub wallet_seed_hash_cache: HashMap<WalletSeedHash, String>,
     sort_column: IdentitiesSortColumn,
     sort_order: IdentitiesSortOrder,
@@ -85,6 +86,7 @@ impl IdentitiesScreen {
             identities,
             app_context: app_context.clone(),
             identity_to_remove: None,
+            remove_confirmation_dialog: None,
             wallet_seed_hash_cache: Default::default(),
             sort_column: IdentitiesSortColumn::Alias,
             sort_order: IdentitiesSortOrder::Ascending,
@@ -800,8 +802,21 @@ impl IdentitiesScreen {
 
                                                 // Remove
                                                 if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
+                                                    let message = format!(
+                                                        "Are you sure you want to no longer track this {} identity?\n\nIdentity ID: {}",
+                                                        qualified_identity.identity_type,
+                                                        qualified_identity.identity.id().to_string(
+                                                            qualified_identity.identity_type.default_encoding()
+                                                        )
+                                                    );
                                                     self.identity_to_remove =
                                                         Some(qualified_identity.clone());
+                                                    self.remove_confirmation_dialog = Some(
+                                                        ConfirmationDialog::new("Confirm Removal", message)
+                                                            .confirm_text(Some("Yes"))
+                                                            .cancel_text(Some("No"))
+                                                            .danger_mode(true),
+                                                    );
                                                 }
 
                                                 // Up arrow
@@ -841,100 +856,16 @@ impl IdentitiesScreen {
         action
     }
 
-    fn show_identity_to_remove(&mut self, ctx: &Context) -> AppAction {
-        if let Some(identity_to_remove) = self.identity_to_remove.clone() {
-            let action = AppAction::None;
+    fn show_identity_removal_dialog(&mut self, ui: &mut Ui) -> AppAction {
+        use crate::ui::components::component_trait::Component;
 
-            // Draw dark overlay behind the popup
-            let screen_rect = ctx.content_rect();
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("confirm_removal_overlay"),
-            ));
-            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
-
-            let window_response = egui::Window::new("Confirm Removal")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .frame(egui::Frame {
-                    inner_margin: egui::Margin::same(20),
-                    outer_margin: egui::Margin::same(0),
-                    corner_radius: egui::CornerRadius::same(8),
-                    shadow: egui::epaint::Shadow {
-                        offset: [0, 8],
-                        blur: 16,
-                        spread: 0,
-                        color: DashColors::popup_shadow(),
-                    },
-                    fill: ctx.style().visuals.window_fill,
-                    stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
-                })
-                .show(ctx, |ui| {
-                    ui.set_min_width(350.0);
-
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-
-                    ui.label(
-                        RichText::new(format!(
-                            "Are you sure you want to no longer track this {} identity?",
-                            identity_to_remove.identity_type
-                        ))
-                        .color(DashColors::text_primary(dark_mode)),
-                    );
-
-                    ui.add_space(8.0);
-
-                    ui.label(
-                        RichText::new(format!(
-                            "Identity ID: {}",
-                            identity_to_remove
-                                .identity
-                                .id()
-                                .to_string(identity_to_remove.identity_type.default_encoding())
-                        ))
-                        .color(DashColors::text_secondary(dark_mode)),
-                    );
-
-                    ui.add_space(16.0);
-
-                    ui.horizontal(|ui| {
-                        // No button
-                        let no_button = egui::Button::new(
-                            RichText::new("No")
-                                .strong()
-                                .color(ComponentStyles::secondary_button_text(dark_mode)),
-                        )
-                        .fill(ComponentStyles::secondary_button_fill(dark_mode))
-                        .stroke(ComponentStyles::secondary_button_stroke(dark_mode))
-                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
-                        if ui
-                            .add(no_button)
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
-                            self.identity_to_remove = None;
-                        }
-
-                        ui.add_space(8.0);
-
-                        // Yes button
-                        let yes_button = egui::Button::new(
-                            RichText::new("Yes")
-                                .strong()
-                                .color(ComponentStyles::primary_button_text()),
-                        )
-                        .fill(DashColors::DANGER_RED)
-                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                        .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE);
-
-                        if ui
-                            .add(yes_button)
-                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                            .clicked()
-                        {
+        if let Some(dialog) = self.remove_confirmation_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.remove_confirmation_dialog = None;
+                match result {
+                    ConfirmationStatus::Confirmed => {
+                        if let Some(identity_to_remove) = self.identity_to_remove.take() {
                             let identity_id = identity_to_remove.identity.id();
 
                             match self
@@ -963,32 +894,27 @@ impl IdentitiesScreen {
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                if let Err(e) = self.app_context.db.delete_local_qualified_identity(
-                                    &voter_identity_id,
-                                    &self.app_context,
-                                ) {
+                                if let Err(e) =
+                                    self.app_context.db.delete_local_qualified_identity(
+                                        &voter_identity_id,
+                                        &self.app_context,
+                                    )
+                                {
                                     tracing::warn!(
                                         "Failed to delete voter identity from database: {}",
                                         e
                                     );
                                 }
                             }
-
-                            self.identity_to_remove = None;
                         }
-                    });
-                });
-
-            if let Some(ref resp) = window_response
-                && clicked_outside_window(ctx, resp.response.rect)
-            {
-                self.identity_to_remove = None;
+                    }
+                    ConfirmationStatus::Canceled => {
+                        self.identity_to_remove = None;
+                    }
+                }
             }
-
-            action
-        } else {
-            AppAction::None
         }
+        AppAction::None
     }
 
     fn show_alias_edit_popup(&mut self, ctx: &Context) -> AppAction {
@@ -1241,8 +1167,8 @@ impl ScreenLike for IdentitiesScreen {
             }
 
             // Handle identity removal confirmation dialog
-            if self.identity_to_remove.is_some() {
-                inner_action |= self.show_identity_to_remove(ctx);
+            if self.remove_confirmation_dialog.is_some() {
+                inner_action |= self.show_identity_removal_dialog(ui);
             }
 
             // Handle alias editing popup

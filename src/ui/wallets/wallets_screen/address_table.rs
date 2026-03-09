@@ -446,8 +446,7 @@ impl WalletsBalancesScreen {
                                         Ok(key) => {
                                             self.private_key_dialog.is_open = true;
                                             self.private_key_dialog.address = display_address;
-                                            self.private_key_dialog.private_key_wif =
-                                                zeroize::Zeroizing::new(key);
+                                            self.private_key_dialog.private_key_wif = key;
                                             self.private_key_dialog.show_key = false;
                                         }
                                         Err(err) => {

@@ -35,7 +35,6 @@ use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
-use zeroize::{Zeroize, Zeroizing};
 
 use crate::model::wallet::single_key::SingleKeyWallet;
 use address_table::{SortColumn, SortOrder};
@@ -1797,7 +1796,7 @@ impl ScreenLike for WalletsBalancesScreen {
                             Ok(key) => {
                                 self.private_key_dialog.is_open = true;
                                 self.private_key_dialog.address = address;
-                                self.private_key_dialog.private_key_wif = Zeroizing::new(key);
+                                self.private_key_dialog.private_key_wif = key;
                                 self.private_key_dialog.show_key = false;
                             }
                             Err(err) => {
@@ -1895,6 +1894,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
                             if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
                                 .clicked()
                             {

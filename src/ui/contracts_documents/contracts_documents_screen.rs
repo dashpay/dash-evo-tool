@@ -11,6 +11,7 @@ use crate::ui::components::contract_chooser_panel::{
 };
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
@@ -276,7 +277,7 @@ impl DocumentQueryScreen {
                     }
                 }
 
-                egui::Window::new("Select Properties")
+                let window_response = egui::Window::new("Select Properties")
                     .collapsible(false)
                     .resizable(true)
                     .min_width(400.0)
@@ -309,6 +310,12 @@ impl DocumentQueryScreen {
                             self.show_fields_dropdown = false;
                         }
                     });
+
+                if let Some(ref wr) = window_response
+                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                {
+                    self.show_fields_dropdown = false;
+                }
             }
         } else if matches!(self.document_query_status, DocumentQueryStatus::NotStarted) {
             ui.label("Select a contract and document type on the left and hit \"Fetch Documents\" to query documents.");

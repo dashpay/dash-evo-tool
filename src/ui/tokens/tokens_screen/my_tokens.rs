@@ -179,7 +179,7 @@ impl TokensScreen {
                 let mut close_popup = false;
                 let dark_mode = ui.ctx().style().visuals.dark_mode;
 
-                egui::Window::new("Token Configuration Details")
+                let window_response = egui::Window::new("Token Configuration Details")
                     .resizable(true)
                     .collapsible(false)
                     .default_width(600.0)
@@ -207,8 +207,12 @@ impl TokensScreen {
                             });
                     });
 
-                // Handle close actions
+                // Handle close actions (X button, Close button, or click outside)
                 if !is_open || close_popup {
+                    self.show_token_info_popup = None;
+                } else if let Some(ref wr) = window_response
+                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                {
                     self.show_token_info_popup = None;
                 }
             } else {

@@ -36,7 +36,6 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tracing::error;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IdentitiesSortColumn {
@@ -996,24 +995,28 @@ impl IdentitiesScreen {
                             Some(self.editing_alias_value.trim().to_string())
                         };
 
-                        // Update in memory
-                        {
-                            let mut identities = self.identities.lock().unwrap();
-                            if let Some(identity_to_update) = identities.get_mut(&identity_id) {
-                                identity_to_update.alias = new_alias.clone();
-                            }
-                        }
-
-                        // Update in database
-                        if let Err(e) = self
+                        // Persist to database first — only update in-memory on success
+                        match self
                             .app_context
                             .set_identity_alias(&identity_id, new_alias.as_deref())
                         {
-                            error!("Failed to save alias: {}", e);
+                            Ok(()) => {
+                                let mut identities = self.identities.lock().unwrap();
+                                if let Some(identity_to_update) = identities.get_mut(&identity_id) {
+                                    identity_to_update.alias = new_alias;
+                                }
+                                self.editing_alias_identity = None;
+                                self.editing_alias_value.clear();
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Failed to save alias",
+                                    MessageType::Error,
+                                )
+                                .with_details(e);
+                            }
                         }
-
-                        self.editing_alias_identity = None;
-                        self.editing_alias_value.clear();
                     }
                 });
             });

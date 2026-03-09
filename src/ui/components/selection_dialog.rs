@@ -316,9 +316,10 @@ impl SelectionDialog {
             final_response = Some(SelectionStatus::Selected(self.selected_index));
         }
 
-        // Handle click outside window
+        // Handle click outside window (skip if ComboBox dropdown is open)
         if let Some(ref wr) = window_response
             && final_response.is_none()
+            && !combo_open
             && clicked_outside_window(ui.ctx(), wr.response.rect)
         {
             final_response = Some(SelectionStatus::Canceled);

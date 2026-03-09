@@ -264,6 +264,7 @@ impl ConfirmationDialog {
         // but only when no other widget (e.g., text input) has focus
         if final_response.is_none()
             && !self.danger_mode
+            && self.confirm_text.is_some()
             && ui.ctx().memory(|m| m.focused().is_none())
             && ui.input(|i| i.key_pressed(egui::Key::Enter))
         {

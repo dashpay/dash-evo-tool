@@ -8,7 +8,7 @@ use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::components::modal_overlay::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};

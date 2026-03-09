@@ -15,12 +15,12 @@ use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::selection_dialog::{SelectionDialog, SelectionStatus};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::account_summary::{

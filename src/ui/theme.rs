@@ -858,6 +858,43 @@ impl ComponentStyles {
         ui.add(Self::danger_button(label))
             .on_hover_cursor(CursorIcon::PointingHand)
     }
+
+    /// Add any custom-styled button to the UI with pointer cursor on hover.
+    ///
+    /// Use this for buttons that don't fit the primary/secondary/danger/toolbar helpers.
+    pub fn add_button(ui: &mut egui::Ui, button: Button<'_>) -> egui::Response {
+        ui.add(button).on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    /// Height for toolbar buttons in the top panel.
+    const TOOLBAR_BUTTON_HEIGHT: f32 = 30.0;
+
+    /// Returns a styled toolbar button with white text on the given accent fill.
+    ///
+    /// Used for top-panel action buttons (Register Name, Refresh, Documents, etc.)
+    /// whose fill color depends on the active network.
+    pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
+        let text = match label.into() {
+            WidgetText::RichText(rt) => rt.as_ref().clone().color(DashColors::WHITE),
+            other => RichText::new(other.text().to_string()).color(DashColors::WHITE),
+        };
+        Button::new(text)
+            .fill(fill)
+            .frame(true)
+            .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
+            .stroke(egui::Stroke::NONE)
+            .min_size(Vec2::new(100.0, Self::TOOLBAR_BUTTON_HEIGHT))
+    }
+
+    /// Add a toolbar button to the UI with pointer cursor on hover.
+    pub fn add_toolbar_button(
+        ui: &mut egui::Ui,
+        label: impl Into<WidgetText>,
+        fill: egui::Color32,
+    ) -> egui::Response {
+        ui.add(Self::toolbar_button(label, fill))
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
 }
 
 /// Configure fonts for the application

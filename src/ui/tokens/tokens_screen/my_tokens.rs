@@ -3,7 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::modal_overlay::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;

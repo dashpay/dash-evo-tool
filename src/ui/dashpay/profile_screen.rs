@@ -10,11 +10,11 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::info_popup::InfoPopup;
-use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;

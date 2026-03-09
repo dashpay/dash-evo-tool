@@ -9,10 +9,10 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{

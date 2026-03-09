@@ -1,5 +1,5 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::components::modal_overlay::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 

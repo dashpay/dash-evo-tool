@@ -7,9 +7,9 @@ use crate::model::wallet::{
 };
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};

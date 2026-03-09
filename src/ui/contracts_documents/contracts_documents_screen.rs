@@ -11,8 +11,8 @@ use crate::ui::components::contract_chooser_panel::{
 };
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
-use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};

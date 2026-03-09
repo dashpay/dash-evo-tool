@@ -1,4 +1,4 @@
-use crate::ui::components::modal_overlay::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::tokens_screen::TokensScreen;
 use egui::Ui;

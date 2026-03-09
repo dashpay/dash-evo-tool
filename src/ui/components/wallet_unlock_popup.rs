@@ -1,7 +1,7 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::ui::components::modal_overlay::clicked_outside_window;
 use crate::ui::components::styled::StyledCheckbox;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui;
 use std::sync::{Arc, RwLock};

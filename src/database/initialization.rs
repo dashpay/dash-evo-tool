@@ -53,6 +53,7 @@ impl Database {
         match version {
             28 => {
                 self.add_core_wallet_name_column(tx)?;
+                self.init_contacts_tables(tx)?;
             }
             27 => {
                 self.add_network_indexes(tx)?;

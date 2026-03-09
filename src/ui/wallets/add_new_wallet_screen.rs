@@ -10,9 +10,10 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -23,7 +24,7 @@ use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use eframe::egui::{Context, TextureHandle, TextureOptions};
 use eframe::emath::Align;
 use egui::load::SizedTexture;
-use egui::{Color32, ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
+use egui::{ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use tracing::error;
@@ -509,7 +510,7 @@ impl AddNewWalletScreen {
         }
 
         let mut open = self.show_receive_popup;
-        egui::Window::new("Fund Wallet")
+        let window_response = egui::Window::new("Fund Wallet")
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
@@ -531,7 +532,7 @@ impl AddNewWalletScreen {
                     if let Some(address) = &self.receive_address_string {
                         ui.label(address);
                         ui.add_space(4.0);
-                        if ui.button("Copy Address").clicked()
+                        if ComponentStyles::add_primary_button(ui, "Copy Address").clicked()
                             && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address)
                         {
                             tracing::warn!("Failed to copy address: {}", err);
@@ -543,6 +544,12 @@ impl AddNewWalletScreen {
                     ui.label("Waiting for funds...");
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         self.show_receive_popup = open;
         AppAction::None
@@ -640,17 +647,7 @@ impl AddNewWalletScreen {
 
                 ui.add_space(10.0);
 
-                let generate_button = egui::Button::new(
-                    RichText::new("Generate")
-                        .strong()
-                        .size(12.0)
-                        .color(Color32::WHITE),
-                )
-                .min_size(Vec2::new(100.0, 20.0))
-                .fill(DashColors::ACTION_BUTTON_BLUE) // Blue background
-                .corner_radius(5.0);
-
-                if ui.add(generate_button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Generate").clicked() {
                     self.generate_seed_phrase();
                 }
             });
@@ -915,14 +912,7 @@ impl ScreenLike for AddNewWalletScreen {
                     let mut new_style = (**ui.style()).clone();
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                     ui.set_style(new_style);
-                    let save_button = egui::Button::new(
-                        RichText::new("Save Wallet").color(Color32::WHITE),
-                    )
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-
-                    if ui.add(save_button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, "Save Wallet").clicked() {
                         match self.save_wallet() {
                             Ok(save_wallet_action) => {
                                 inner_action = save_wallet_action;
@@ -947,8 +937,9 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ctx, |ui| {
                     ui.label(error_message);
                     ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
-                        self.error = None; // Clear the error to close the popup
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
+                        self.error = None;
                     }
                 });
         }

@@ -8,7 +8,7 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, InstantLock, Transaction};
 use dash_sdk::dpp::fee::Credits;
@@ -351,25 +351,33 @@ impl ScreenLike for AssetLockDetailScreen {
                     ui.add_space(15.0);
 
                     ui.label("Private Key (WIF):");
-                    if let Some(wif) = &self.private_key_wif {
+                    if let Some(ref wif) = self.private_key_wif {
                         ui.add(egui::TextEdit::multiline(&mut wif.expose_secret().to_owned().as_str())
                             .font(egui::FontId::monospace(12.0))
                             .desired_width(f32::INFINITY)
                             .desired_rows(1));
 
                         ui.add_space(10.0);
+                    }
 
-                        let wif_copy = wif.expose_secret().to_string();
-                        ui.horizontal(|ui| {
-                            if ui.button("Copy").clicked() {
-                                ui.ctx().copy_text(wif_copy);
-                                MessageBanner::set_global(ctx, "Private key copied to clipboard", MessageType::Success);
-                            }
-                            if ui.button("Close").clicked() {
-                                self.show_private_key_popup = false;
-                                self.private_key_wif = None;
-                            }
-                        });
+                    let mut close_popup = false;
+                    ui.horizontal(|ui| {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        if ComponentStyles::add_primary_button(ui, "Copy").clicked()
+                            && let Some(ref wif) = self.private_key_wif
+                        {
+                            ui.ctx().copy_text(wif.expose_secret().to_string());
+                            MessageBanner::set_global(ctx, "Private key copied to clipboard", MessageType::Success);
+                        }
+                        if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
+                            .clicked()
+                        {
+                            close_popup = true;
+                        }
+                    });
+                    if close_popup {
+                        self.show_private_key_popup = false;
+                        self.private_key_wif = None;
                     }
                     ui.add_space(10.0);
                 });

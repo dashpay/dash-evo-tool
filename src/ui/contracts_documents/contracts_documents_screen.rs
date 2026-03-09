@@ -12,7 +12,8 @@ use crate::ui::components::contract_chooser_panel::{
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::{DashColors, Shadow, Shape};
+use crate::ui::helpers::clicked_outside_window;
+use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
 use dash_sdk::dpp::dashcore::Network;
@@ -22,7 +23,7 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
-use egui::{CentralPanel, Color32, Context, Frame, Margin, ScrollArea, Stroke, Ui};
+use egui::{CentralPanel, Context, Frame, Margin, ScrollArea, Stroke, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -175,14 +176,7 @@ impl DocumentQueryScreen {
 
             ui.add_space(spacing);
 
-            let button_fetch =
-                egui::Button::new(egui::RichText::new("Fetch Documents").color(Color32::WHITE))
-                    .fill(DashColors::ACTION_BUTTON_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0)
-                    .min_size(egui::vec2(button_width - spacing, 0.0));
-
-            if ui.add(button_fetch).clicked() {
+            if ComponentStyles::add_primary_button(ui, "Fetch Documents").clicked() {
                 self.selected_document_type = self.pending_document_type.clone();
                 self.document_fields_selection = self.pending_fields_selection.clone();
 
@@ -276,7 +270,7 @@ impl DocumentQueryScreen {
                     }
                 }
 
-                egui::Window::new("Select Properties")
+                let window_response = egui::Window::new("Select Properties")
                     .collapsible(false)
                     .resizable(true)
                     .min_width(400.0)
@@ -300,10 +294,17 @@ impl DocumentQueryScreen {
                         });
 
                         ui.separator();
-                        if ui.button("Close").clicked() {
+                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                             self.show_fields_dropdown = false;
                         }
                     });
+
+                if let Some(ref wr) = window_response
+                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                {
+                    self.show_fields_dropdown = false;
+                }
             }
         } else if matches!(self.document_query_status, DocumentQueryStatus::NotStarted) {
             ui.label("Select a contract and document type on the left and hit \"Fetch Documents\" to query documents.");

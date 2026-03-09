@@ -11,7 +11,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -634,7 +634,7 @@ impl SingleKeyWalletSendScreen {
                 ui.add_space(15.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
                         self.fee_dialog.is_open = false;
                         self.fee_dialog.pending_request = None;
                         self.sending = false;
@@ -642,14 +642,7 @@ impl SingleKeyWalletSendScreen {
 
                     ui.add_space(20.0);
 
-                    let confirm_button = egui::Button::new(
-                        RichText::new("Confirm & Send")
-                            .color(Color32::WHITE)
-                            .strong(),
-                    )
-                    .fill(DashColors::DASH_BLUE);
-
-                    if ui.add(confirm_button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, "Confirm & Send").clicked() {
                         if let Some(mut request) = self.fee_dialog.pending_request.take() {
                             // Update the request to use the higher fee
                             request.override_fee = Some(self.fee_dialog.required_fee);

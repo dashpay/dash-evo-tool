@@ -6,12 +6,12 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::ComponentStyles;
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use eframe::egui::{self, Color32, Context, RichText, Ui};
+use eframe::egui::{self, Color32, Context, Ui};
 use std::sync::Arc;
 
 const MAX_CONTRACTS: usize = 10;
@@ -257,12 +257,7 @@ impl AddContractsScreen {
             }
 
             ui.add_space(20.0);
-            let button =
-                egui::Button::new(RichText::new("Back to Contracts").color(Color32::WHITE))
-                    .fill(DashColors::ACTION_BUTTON_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0);
-            if ui.add(button).clicked() {
+            if ComponentStyles::add_primary_button(ui, "Back to Contracts").clicked() {
                 // Return to previous screen
                 action = AppAction::PopScreenAndRefresh;
                 self.last_alias_result = None;
@@ -338,12 +333,7 @@ impl ScreenLike for AddContractsScreen {
 
                     ui.add_space(10.0);
                     // Add Contracts Button
-                    let button =
-                        egui::Button::new(RichText::new("Add Contracts").color(Color32::WHITE))
-                            .fill(DashColors::ACTION_BUTTON_BLUE)
-                            .frame(true)
-                            .corner_radius(3.0);
-                    if ui.add(button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, "Add Contracts").clicked() {
                         return self.add_contracts_clicked();
                     }
                 }

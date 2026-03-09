@@ -16,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Setters;
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
@@ -248,12 +248,7 @@ impl RegisterDataContractScreen {
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
-                let button =
-                    egui::Button::new(RichText::new("Register Contract").color(Color32::WHITE))
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-                if ui.add(button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Register Contract").clicked() {
                     // Fire off a backend task
                     app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
                         ContractTask::RegisterDataContract(

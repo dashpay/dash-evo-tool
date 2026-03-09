@@ -4,8 +4,9 @@ use crate::backend_task::mnlist::MnListTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
@@ -68,7 +69,7 @@ struct InputState {
 #[derive(Default)]
 struct UiState {
     selected_tab: usize,
-    show_popup_for_render_masternode_list_engine: bool,
+    masternode_engine_confirm_dialog: Option<ConfirmationDialog>,
     error: Option<String>,
 }
 
@@ -2110,8 +2111,14 @@ impl MasternodeListDiffScreen {
                             match index {
                                 7 => {
                                     // Show the popup when "Masternode List Engine" is selected
-                                    self.ui_state.show_popup_for_render_masternode_list_engine =
-                                        true;
+                                    self.ui_state.masternode_engine_confirm_dialog = Some(
+                                        ConfirmationDialog::new(
+                                            "Confirmation",
+                                            "This operation will take about 10 seconds. Are you sure you wish to continue?",
+                                        )
+                                        .confirm_text(Some("Yes"))
+                                        .cancel_text(Some("Cancel")),
+                                    );
                                 }
                                 8 => {
                                     self.load_masternode_list_engine();
@@ -2159,24 +2166,14 @@ impl MasternodeListDiffScreen {
         }
 
         // Render the confirmation popup if needed
-        if self.ui_state.show_popup_for_render_masternode_list_engine {
-            egui::Window::new("Confirmation")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ui.ctx(), |ui| {
-                    ui.label("This operation will take about 10 seconds. Are you sure you wish to continue?");
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Yes").clicked() {
-                            self.save_masternode_list_engine();
-                            self.ui_state.show_popup_for_render_masternode_list_engine = false;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.ui_state.show_popup_for_render_masternode_list_engine = false;
-                        }
-                    });
-                });
+        if let Some(dialog) = self.ui_state.masternode_engine_confirm_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.ui_state.masternode_engine_confirm_dialog = None;
+                if result == ConfirmationStatus::Confirmed {
+                    self.save_masternode_list_engine();
+                }
+            }
         }
     }
 

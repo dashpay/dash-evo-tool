@@ -12,7 +12,7 @@ use eframe::egui::Context;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::password_input::PasswordInput;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::add_new_wallet_screen::{
     DASH_BIP44_ACCOUNT_0_PATH_MAINNET, DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
 };
@@ -21,7 +21,7 @@ use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
-use egui::{Color32, ComboBox, Grid, RichText, Ui, Vec2};
+use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
@@ -778,14 +778,7 @@ impl ScreenLike for ImportMnemonicScreen {
                         ImportType::Mnemonic => "Save Wallet",
                         ImportType::PrivateKey => "Import Key",
                     };
-                    let save_button = egui::Button::new(
-                        RichText::new(button_label).color(Color32::WHITE),
-                    )
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-
-                    if ui.add(save_button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, button_label).clicked() {
                         let result = match self.import_type {
                             ImportType::Mnemonic => self.save_wallet(),
                             ImportType::PrivateKey => self.save_private_key_wallet(),

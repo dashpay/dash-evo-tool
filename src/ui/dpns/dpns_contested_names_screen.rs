@@ -25,7 +25,7 @@ use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_ch
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 /// Which DPNS sub-screen is currently showing.
@@ -1283,7 +1283,8 @@ impl DPNSScreen {
             ui.add_space(5.0);
             ui.colored_label(Color32::DARK_RED, "No masternode identities loaded. Please go to the Identities screen to load your masternodes.");
             ui.add_space(10.0);
-            if ui.button("Close").clicked() {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                 self.show_bulk_schedule_popup = false;
             }
             return action;
@@ -1294,7 +1295,8 @@ impl DPNSScreen {
             ui.add_space(5.0);
             ui.colored_label(Color32::DARK_RED, "No votes selected. Please click the votes you want to cast or schedule in the Active Contests screen.");
             ui.add_space(10.0);
-            if ui.button("Close").clicked() {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                 self.show_bulk_schedule_popup = false;
             }
             return action;
@@ -1536,10 +1538,7 @@ impl DPNSScreen {
         }
 
         // "Apply Votes" button
-        let button = egui::Button::new(RichText::new("Apply Votes").color(Color32::WHITE))
-            .fill(DashColors::ACTION_BUTTON_BLUE)
-            .corner_radius(3.0);
-        if ui.add(button).clicked() {
+        if ComponentStyles::add_primary_button(ui, "Apply Votes").clicked() {
             action = self.bulk_apply_votes();
             if self.bulk_vote_handling_status == VoteHandlingStatus::CastingVotes {
                 self.vote_banner.take_and_clear();
@@ -1551,7 +1550,8 @@ impl DPNSScreen {
         }
 
         ui.add_space(5.0);
-        if ui.button("Cancel").clicked() {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
             self.selected_votes.clear();
             self.show_bulk_schedule_popup = false;
             self.bulk_schedule_message = None;
@@ -1739,7 +1739,8 @@ impl DPNSScreen {
             }
 
             ui.add_space(20.0);
-            if ui.button("Go back to Active Contests").clicked() {
+            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            if ComponentStyles::add_primary_button(ui, "Go back to Active Contests").clicked() {
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 self.show_bulk_schedule_popup = false;
                 action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -1747,7 +1748,9 @@ impl DPNSScreen {
                 ))
             }
             ui.add_space(5.0);
-            if ui.button("Go to Scheduled Votes Screen").clicked() {
+            if ComponentStyles::add_secondary_button(ui, "Go to Scheduled Votes Screen", dark_mode)
+                .clicked()
+            {
                 self.show_bulk_schedule_popup = false;
                 self.bulk_vote_handling_status = VoteHandlingStatus::NotStarted;
                 action = AppAction::SetMainScreenThenPopScreen(

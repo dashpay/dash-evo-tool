@@ -21,8 +21,9 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::wallets::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
@@ -34,6 +35,7 @@ use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::model::wallet::single_key::SingleKeyWallet;
 use address_table::{SortColumn, SortOrder};
@@ -1699,10 +1701,12 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // Rename dialog
         if self.show_rename_dialog {
-            egui::Window::new("Rename Wallet")
+            let window_response = egui::Window::new("Rename Wallet")
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.vertical(|ui| {
                         ui.label("Enter new wallet name:");
                         ui.add_space(5.0);
@@ -1715,7 +1719,16 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            if ui.button("Save").clicked() {
+                            if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
+                                .clicked()
+                            {
+                                self.show_rename_dialog = false;
+                                self.rename_input.clear();
+                            }
+
+                            ui.add_space(8.0);
+
+                            if ComponentStyles::add_primary_button(ui, "Save").clicked() {
                                 // Limit the alias length to 64 characters
                                 if self.rename_input.len() > 64 {
                                     self.rename_input.truncate(64);
@@ -1757,14 +1770,16 @@ impl ScreenLike for WalletsBalancesScreen {
                                 self.show_rename_dialog = false;
                                 self.rename_input.clear();
                             }
-
-                            if ui.button("Cancel").clicked() {
-                                self.show_rename_dialog = false;
-                                self.rename_input.clear();
-                            }
                         });
                     });
                 });
+
+            if let Some(ref resp) = window_response
+                && clicked_outside_window(ctx, resp.response.rect)
+            {
+                self.show_rename_dialog = false;
+                self.rename_input.clear();
+            }
         }
 
         // HD Wallet unlock popup
@@ -1782,7 +1797,7 @@ impl ScreenLike for WalletsBalancesScreen {
                             Ok(key) => {
                                 self.private_key_dialog.is_open = true;
                                 self.private_key_dialog.address = address;
-                                self.private_key_dialog.private_key_wif = key;
+                                self.private_key_dialog.private_key_wif = Zeroizing::new(key);
                                 self.private_key_dialog.show_key = false;
                             }
                             Err(err) => {
@@ -1850,6 +1865,7 @@ impl ScreenLike for WalletsBalancesScreen {
             egui::Window::new("Unlock Wallet")
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {
                         if let Some(wallet_arc) = &self.selected_single_key_wallet
@@ -1879,12 +1895,16 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            if ui.button("Unlock").clicked() {
-                                attempt_unlock = true;
+                            if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
+                                .clicked()
+                            {
+                                close_dialog = true;
                             }
 
-                            if ui.button("Cancel").clicked() {
-                                close_dialog = true;
+                            ui.add_space(8.0);
+
+                            if ComponentStyles::add_primary_button(ui, "Unlock").clicked() {
+                                attempt_unlock = true;
                             }
                         });
 

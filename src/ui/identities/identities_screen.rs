@@ -9,9 +9,10 @@ use crate::model::qualified_identity::PrivateKeyTarget::{
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identities::register_dpns_name_screen::{
@@ -19,7 +20,7 @@ use crate::ui::identities::register_dpns_name_screen::{
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -30,12 +31,11 @@ use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Context};
 use eframe::emath::Align;
-use egui::{Color32, Frame, Margin, RichText, Ui};
+use egui::{Frame, Margin, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use tracing::error;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IdentitiesSortColumn {
@@ -56,6 +56,7 @@ pub struct IdentitiesScreen {
     pub identities: Arc<Mutex<IndexMap<Identifier, QualifiedIdentity>>>,
     pub app_context: Arc<AppContext>,
     pub identity_to_remove: Option<QualifiedIdentity>,
+    remove_confirmation_dialog: Option<ConfirmationDialog>,
     pub wallet_seed_hash_cache: HashMap<WalletSeedHash, String>,
     sort_column: IdentitiesSortColumn,
     sort_order: IdentitiesSortOrder,
@@ -84,6 +85,7 @@ impl IdentitiesScreen {
             identities,
             app_context: app_context.clone(),
             identity_to_remove: None,
+            remove_confirmation_dialog: None,
             wallet_seed_hash_cache: Default::default(),
             sort_column: IdentitiesSortColumn::Alias,
             sort_order: IdentitiesSortOrder::Ascending,
@@ -799,8 +801,21 @@ impl IdentitiesScreen {
 
                                                 // Remove
                                                 if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
+                                                    let message = format!(
+                                                        "Are you sure you want to no longer track this {} identity?\n\nIdentity ID: {}",
+                                                        qualified_identity.identity_type,
+                                                        qualified_identity.identity.id().to_string(
+                                                            qualified_identity.identity_type.default_encoding()
+                                                        )
+                                                    );
                                                     self.identity_to_remove =
                                                         Some(qualified_identity.clone());
+                                                    self.remove_confirmation_dialog = Some(
+                                                        ConfirmationDialog::new("Confirm Removal", message)
+                                                            .confirm_text(Some("Yes"))
+                                                            .cancel_text(Some("No"))
+                                                            .danger_mode(true),
+                                                    );
                                                 }
 
                                                 // Up arrow
@@ -840,90 +855,16 @@ impl IdentitiesScreen {
         action
     }
 
-    fn show_identity_to_remove(&mut self, ctx: &Context) -> AppAction {
-        if let Some(identity_to_remove) = self.identity_to_remove.clone() {
-            let action = AppAction::None;
+    fn show_identity_removal_dialog(&mut self, ui: &mut Ui) -> AppAction {
+        use crate::ui::components::component_trait::Component;
 
-            // Draw dark overlay behind the popup
-            let screen_rect = ctx.content_rect();
-            let painter = ctx.layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new("confirm_removal_overlay"),
-            ));
-            painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
-
-            egui::Window::new("Confirm Removal")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .frame(egui::Frame {
-                    inner_margin: egui::Margin::same(20),
-                    outer_margin: egui::Margin::same(0),
-                    corner_radius: egui::CornerRadius::same(8),
-                    shadow: egui::epaint::Shadow {
-                        offset: [0, 8],
-                        blur: 16,
-                        spread: 0,
-                        color: DashColors::popup_shadow(),
-                    },
-                    fill: ctx.style().visuals.window_fill,
-                    stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
-                })
-                .show(ctx, |ui| {
-                    ui.set_min_width(350.0);
-
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-
-                    ui.label(
-                        RichText::new(format!(
-                            "Are you sure you want to no longer track this {} identity?",
-                            identity_to_remove.identity_type
-                        ))
-                        .color(DashColors::text_primary(dark_mode)),
-                    );
-
-                    ui.add_space(8.0);
-
-                    ui.label(
-                        RichText::new(format!(
-                            "Identity ID: {}",
-                            identity_to_remove
-                                .identity
-                                .id()
-                                .to_string(identity_to_remove.identity_type.default_encoding())
-                        ))
-                        .color(DashColors::text_secondary(dark_mode)),
-                    );
-
-                    ui.add_space(16.0);
-
-                    ui.horizontal(|ui| {
-                        // No button
-                        let no_button = egui::Button::new(
-                            RichText::new("No").color(DashColors::text_primary(dark_mode)),
-                        )
-                        .fill(egui::Color32::TRANSPARENT)
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            DashColors::text_secondary(dark_mode),
-                        ))
-                        .corner_radius(egui::CornerRadius::same(4))
-                        .min_size(egui::Vec2::new(80.0, 32.0));
-
-                        if ui.add(no_button).clicked() {
-                            self.identity_to_remove = None;
-                        }
-
-                        ui.add_space(8.0);
-
-                        // Yes button
-                        let yes_button =
-                            egui::Button::new(RichText::new("Yes").color(Color32::WHITE))
-                                .fill(DashColors::DANGER_RED)
-                                .corner_radius(egui::CornerRadius::same(4))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
-
-                        if ui.add(yes_button).clicked() {
+        if let Some(dialog) = self.remove_confirmation_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.remove_confirmation_dialog = None;
+                match result {
+                    ConfirmationStatus::Confirmed => {
+                        if let Some(identity_to_remove) = self.identity_to_remove.take() {
                             let identity_id = identity_to_remove.identity.id();
 
                             match self
@@ -962,15 +903,15 @@ impl IdentitiesScreen {
                                     );
                                 }
                             }
-
-                            self.identity_to_remove = None;
                         }
-                    });
-                });
-            action
-        } else {
-            AppAction::None
+                    }
+                    ConfirmationStatus::Canceled => {
+                        self.identity_to_remove = None;
+                    }
+                }
+            }
         }
+        AppAction::None
     }
 
     fn show_alias_edit_popup(&mut self, ctx: &Context) -> AppAction {
@@ -988,7 +929,7 @@ impl IdentitiesScreen {
         ));
         painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
-        egui::Window::new("Update Alias")
+        let window_response = egui::Window::new("Update Alias")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -1029,18 +970,7 @@ impl IdentitiesScreen {
 
                 ui.horizontal(|ui| {
                     // Cancel button
-                    let cancel_button = egui::Button::new(
-                        RichText::new("Cancel").color(DashColors::text_primary(dark_mode)),
-                    )
-                    .fill(egui::Color32::TRANSPARENT)
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        DashColors::text_secondary(dark_mode),
-                    ))
-                    .corner_radius(egui::CornerRadius::same(4))
-                    .min_size(egui::Vec2::new(80.0, 32.0));
-
-                    if ui.add(cancel_button).clicked() {
+                    if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
                         self.editing_alias_identity = None;
                         self.editing_alias_value.clear();
                     }
@@ -1048,13 +978,7 @@ impl IdentitiesScreen {
                     ui.add_space(8.0);
 
                     // Save button
-                    let save_button =
-                        egui::Button::new(RichText::new("Save").color(Color32::WHITE))
-                            .fill(DashColors::DASH_BLUE)
-                            .corner_radius(egui::CornerRadius::same(4))
-                            .min_size(egui::Vec2::new(80.0, 32.0));
-
-                    if ui.add(save_button).clicked() || submit {
+                    if ComponentStyles::add_primary_button(ui, "Save").clicked() || submit {
                         // Update the alias
                         let new_alias = if self.editing_alias_value.trim().is_empty() {
                             None
@@ -1062,27 +986,38 @@ impl IdentitiesScreen {
                             Some(self.editing_alias_value.trim().to_string())
                         };
 
-                        // Update in memory
-                        {
-                            let mut identities = self.identities.lock().unwrap();
-                            if let Some(identity_to_update) = identities.get_mut(&identity_id) {
-                                identity_to_update.alias = new_alias.clone();
-                            }
-                        }
-
-                        // Update in database
-                        if let Err(e) = self
+                        // Persist to database first — only update in-memory on success
+                        match self
                             .app_context
                             .set_identity_alias(&identity_id, new_alias.as_deref())
                         {
-                            error!("Failed to save alias: {}", e);
+                            Ok(()) => {
+                                let mut identities = self.identities.lock().unwrap();
+                                if let Some(identity_to_update) = identities.get_mut(&identity_id) {
+                                    identity_to_update.alias = new_alias;
+                                }
+                                self.editing_alias_identity = None;
+                                self.editing_alias_value.clear();
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Failed to save alias",
+                                    MessageType::Error,
+                                )
+                                .with_details(e);
+                            }
                         }
-
-                        self.editing_alias_identity = None;
-                        self.editing_alias_value.clear();
                     }
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            self.editing_alias_identity = None;
+            self.editing_alias_value.clear();
+        }
 
         AppAction::None
     }
@@ -1204,8 +1139,8 @@ impl ScreenLike for IdentitiesScreen {
             }
 
             // Handle identity removal confirmation dialog
-            if self.identity_to_remove.is_some() {
-                inner_action |= self.show_identity_to_remove(ctx);
+            if self.remove_confirmation_dialog.is_some() {
+                inner_action |= self.show_identity_removal_dialog(ui);
             }
 
             // Handle alias editing popup

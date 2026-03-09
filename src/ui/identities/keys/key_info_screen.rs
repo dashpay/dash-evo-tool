@@ -4,10 +4,12 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -40,7 +42,7 @@ pub struct KeyInfoScreen {
     pub private_key_data: Option<(PrivateKeyData, Option<WalletDerivationPath>)>,
     pub decrypted_private_key: Option<RPCPrivateKey>,
     pub app_context: Arc<AppContext>,
-    private_key_input: String,
+    private_key_input: PasswordInput,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -312,8 +314,9 @@ impl ScreenLike for KeyInfoScreen {
                                                 .strong()
                                                 .color(ui.visuals().text_color()),
                                         );
+                                        let wif = Secret::new(private_key.to_wif());
                                         ui.label(
-                                            RichText::new(private_key.to_wif())
+                                            RichText::new(wif.expose_secret())
                                                 .color(ui.visuals().text_color()),
                                         );
                                         ui.end_row();
@@ -324,9 +327,9 @@ impl ScreenLike for KeyInfoScreen {
                                             .strong()
                                             .color(ui.visuals().text_color()),
                                     );
-                                    let private_key_hex = hex::encode(clear);
+                                    let private_key_hex = Secret::new(hex::encode(clear));
                                     ui.label(
-                                        RichText::new(private_key_hex)
+                                        RichText::new(private_key_hex.expose_secret())
                                             .color(ui.visuals().text_color()),
                                     );
                                     ui.end_row();
@@ -358,9 +361,9 @@ impl ScreenLike for KeyInfoScreen {
                                                     .strong()
                                                     .color(ui.visuals().text_color()),
                                             );
-                                            let private_key_wif = private_key.to_wif();
+                                            let wif = Secret::new(private_key.to_wif());
                                             ui.label(
-                                                RichText::new(private_key_wif)
+                                                RichText::new(wif.expose_secret())
                                                     .color(ui.visuals().text_color()),
                                             );
                                             ui.end_row();
@@ -370,10 +373,11 @@ impl ScreenLike for KeyInfoScreen {
                                                     .strong()
                                                     .color(ui.visuals().text_color()),
                                             );
-                                            let private_key_hex =
-                                                hex::encode(private_key.inner.secret_bytes());
+                                            let private_key_hex = Secret::new(hex::encode(
+                                                private_key.inner.secret_bytes(),
+                                            ));
                                             ui.label(
-                                                RichText::new(private_key_hex)
+                                                RichText::new(private_key_hex.expose_secret())
                                                     .color(ui.visuals().text_color()),
                                             );
                                             ui.end_row();
@@ -395,9 +399,9 @@ impl ScreenLike for KeyInfoScreen {
                                                             .strong()
                                                             .color(ui.visuals().text_color()),
                                                     );
-                                                    let private_key_wif = private_key.to_wif();
+                                                    let wif = Secret::new(private_key.to_wif());
                                                     ui.label(
-                                                        RichText::new(private_key_wif)
+                                                        RichText::new(wif.expose_secret())
                                                             .color(ui.visuals().text_color()),
                                                     );
                                                     ui.end_row();
@@ -407,12 +411,14 @@ impl ScreenLike for KeyInfoScreen {
                                                             .strong()
                                                             .color(ui.visuals().text_color()),
                                                     );
-                                                    let private_key_hex = hex::encode(
+                                                    let private_key_hex = Secret::new(hex::encode(
                                                         private_key.inner.secret_bytes(),
-                                                    );
+                                                    ));
                                                     ui.label(
-                                                        RichText::new(private_key_hex)
-                                                            .color(ui.visuals().text_color()),
+                                                        RichText::new(
+                                                            private_key_hex.expose_secret(),
+                                                        )
+                                                        .color(ui.visuals().text_color()),
                                                     );
                                                     ui.end_row();
                                                 });
@@ -451,9 +457,9 @@ impl ScreenLike for KeyInfoScreen {
                                                             .strong()
                                                             .color(ui.visuals().text_color()),
                                                     );
-                                                    let private_key_wif = private_key.to_wif();
+                                                    let wif = Secret::new(private_key.to_wif());
                                                     ui.label(
-                                                        RichText::new(private_key_wif)
+                                                        RichText::new(wif.expose_secret())
                                                             .color(ui.visuals().text_color()),
                                                     );
                                                     ui.end_row();
@@ -463,12 +469,14 @@ impl ScreenLike for KeyInfoScreen {
                                                             .strong()
                                                             .color(ui.visuals().text_color()),
                                                     );
-                                                    let private_key_hex = hex::encode(
+                                                    let private_key_hex = Secret::new(hex::encode(
                                                         private_key.inner.secret_bytes(),
-                                                    );
+                                                    ));
                                                     ui.label(
-                                                        RichText::new(private_key_hex)
-                                                            .color(ui.visuals().text_color()),
+                                                        RichText::new(
+                                                            private_key_hex.expose_secret(),
+                                                        )
+                                                        .color(ui.visuals().text_color()),
                                                     );
                                                     ui.end_row();
                                                 });
@@ -499,7 +507,7 @@ impl ScreenLike for KeyInfoScreen {
                     }
                 } else {
                     ui.label(RichText::new("Enter Private Key:").color(text_primary));
-                    ui.text_edit_singleline(&mut self.private_key_input);
+                    self.private_key_input.show(ui);
 
                     if ui.button("Add Private Key").clicked() {
                         self.validate_and_store_private_key();
@@ -592,7 +600,9 @@ impl KeyInfoScreen {
             private_key_data,
             decrypted_private_key: None,
             app_context: app_context.clone(),
-            private_key_input: String::new(),
+            private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (WIF or hex)")
+                .with_monospace(),
             selected_wallet,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -608,7 +618,7 @@ impl KeyInfoScreen {
 
     fn validate_and_store_private_key(&mut self) {
         // Convert the input string to bytes (hex decoding)
-        let private_key_bytes = match hex::decode(&self.private_key_input) {
+        let private_key_bytes = match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
                 private_key_bytes_vec.try_into().unwrap()
             }
@@ -620,7 +630,7 @@ impl KeyInfoScreen {
                 );
                 return;
             }
-            Err(_) => match PrivateKey::from_wif(&self.private_key_input) {
+            Err(_) => match PrivateKey::from_wif(self.private_key_input.text()) {
                 Ok(key) => key.inner.secret_bytes(),
                 Err(_) => {
                     MessageBanner::set_global(

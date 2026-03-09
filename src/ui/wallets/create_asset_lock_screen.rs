@@ -11,6 +11,7 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -35,8 +36,7 @@ pub struct CreateAssetLockScreen {
     pub wallet: Arc<RwLock<Wallet>>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub app_context: Arc<AppContext>,
-    wallet_password: String,
-    show_password: bool,
+    password_input: PasswordInput,
     // Asset lock creation fields
     step: Arc<RwLock<WalletFundedScreenStep>>,
     amount_input: Option<AmountInput>,
@@ -75,8 +75,7 @@ impl CreateAssetLockScreen {
             wallet,
             selected_wallet,
             app_context: app_context.clone(),
-            wallet_password: String::new(),
-            show_password: false,
+            password_input: PasswordInput::new().with_hint_text("Enter password"),
             step: Arc::new(RwLock::new(WalletFundedScreenStep::WaitingOnFunds)),
             amount_input: Some(
                 AmountInput::new(Amount::new_dash(0.5))
@@ -237,20 +236,8 @@ impl ScreenWithWalletUnlock for CreateAssetLockScreen {
         &self.selected_wallet
     }
 
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
+    fn password_input(&mut self) -> &mut PasswordInput {
+        &mut self.password_input
     }
 
     fn app_context(&self) -> Arc<AppContext> {

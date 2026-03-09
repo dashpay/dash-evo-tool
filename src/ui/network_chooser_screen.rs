@@ -10,6 +10,7 @@ use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
@@ -86,7 +87,7 @@ pub struct NetworkChooserScreen {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
-    pub local_network_dashmate_password: String,
+    pub dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
     custom_dash_qt_path: Option<PathBuf>,
@@ -120,15 +121,12 @@ impl NetworkChooserScreen {
         current_network: Network,
         overwrite_dash_conf: bool,
     ) -> Self {
-        let local_network_dashmate_password = if let Ok(config) = Config::load() {
-            if let Some(local_config) = config.config_for_network(Network::Regtest) {
-                local_config.core_rpc_password.clone()
-            } else {
-                "".to_string()
-            }
-        } else {
-            "".to_string()
-        };
+        let mut dashmate_password_input = PasswordInput::new().with_hint_text("Core RPC password");
+        if let Ok(config) = Config::load()
+            && let Some(local_config) = config.config_for_network(Network::Regtest)
+        {
+            dashmate_password_input.set_text(local_config.core_rpc_password.clone());
+        }
 
         let current_context = match current_network {
             Network::Dash => mainnet_app_context,
@@ -184,7 +182,7 @@ impl NetworkChooserScreen {
             testnet_app_context: testnet_app_context.cloned(),
             devnet_app_context: devnet_app_context.cloned(),
             local_app_context: local_app_context.cloned(),
-            local_network_dashmate_password,
+            dashmate_password_input,
             current_network,
             recheck_time: None,
             custom_dash_qt_path,
@@ -444,7 +442,7 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.local_network_dashmate_password);
+                    self.dashmate_password_input.show(ui);
 
                     let save_clicked = ui.button("Save").clicked();
 
@@ -452,7 +450,7 @@ impl NetworkChooserScreen {
                     if ui.button("Auto Update").clicked() {
                         match read_dashmate_rpc_password("local_seed") {
                             Ok(password) => {
-                                self.local_network_dashmate_password = password;
+                                self.dashmate_password_input.set_text(password);
                                 auto_update_succeeded = true;
                             }
                             Err(e) => {
@@ -466,8 +464,9 @@ impl NetworkChooserScreen {
                         && let Ok(mut config) = Config::load()
                         && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
                     {
-                        let updated_local_config = local_cfg
-                            .update_core_rpc_password(self.local_network_dashmate_password.clone());
+                        let updated_local_config = local_cfg.update_core_rpc_password(
+                            self.dashmate_password_input.text().to_string(),
+                        );
                         config.update_config_for_network(
                             Network::Regtest,
                             updated_local_config.clone(),

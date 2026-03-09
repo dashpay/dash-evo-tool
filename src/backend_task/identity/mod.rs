@@ -17,6 +17,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
+use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -42,10 +43,10 @@ pub struct IdentityInputToLoad {
     pub identity_id_input: String,
     pub identity_type: IdentityType,
     pub alias_input: String,
-    pub voting_private_key_input: String,
-    pub owner_private_key_input: String,
-    pub payout_address_private_key_input: String,
-    pub keys_input: Vec<String>,
+    pub voting_private_key_input: Secret,
+    pub owner_private_key_input: Secret,
+    pub payout_address_private_key_input: Secret,
+    pub keys_input: Vec<Secret>,
     pub derive_keys_from_wallets: bool,
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
 }
@@ -349,10 +350,10 @@ pub enum IdentityTask {
 }
 
 fn verify_key_input(
-    untrimmed_private_key: String,
+    untrimmed_private_key: Secret,
     type_key: &str,
 ) -> Result<Option<[u8; 32]>, String> {
-    let private_key = untrimmed_private_key.trim().to_string();
+    let private_key = untrimmed_private_key.expose_secret().trim().to_string();
     match private_key.len() {
         64 => {
             // hex

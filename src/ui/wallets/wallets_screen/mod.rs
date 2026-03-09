@@ -15,6 +15,7 @@ use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::selection_dialog::{SelectionDialog, SelectionStatus};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
@@ -82,8 +83,7 @@ pub struct WalletsBalancesScreen {
     rename_input: String,
     wallet_unlock_popup: WalletUnlockPopup,
     show_sk_unlock_dialog: bool,
-    sk_wallet_password: String,
-    sk_show_password: bool,
+    sk_password_input: PasswordInput,
     remove_wallet_dialog: Option<ConfirmationDialog>,
     pending_wallet_removal: Option<WalletSeedHash>,
     pending_wallet_removal_alias: Option<String>,
@@ -192,8 +192,7 @@ impl WalletsBalancesScreen {
             rename_input: String::new(),
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_sk_unlock_dialog: false,
-            sk_wallet_password: String::new(),
-            sk_show_password: false,
+            sk_password_input: PasswordInput::new().with_hint_text("Enter password"),
             remove_wallet_dialog: None,
             pending_wallet_removal: None,
             pending_wallet_removal_alias: None,
@@ -1867,29 +1866,15 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.add_space(10.0);
 
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                         let mut attempt_unlock = false;
 
-                        ui.horizontal(|ui| {
-                            let password_input = ui.add(
-                                egui::TextEdit::singleline(&mut self.sk_wallet_password)
-                                    .password(!self.sk_show_password)
-                                    .hint_text("Enter password")
-                                    .desired_width(250.0)
-                                    .text_color(DashColors::text_primary(dark_mode))
-                                    .background_color(DashColors::input_background(dark_mode)),
-                            );
+                        let pw_response = self.sk_password_input.show(ui);
 
-                            if password_input.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            {
-                                attempt_unlock = true;
-                            }
-                        });
-
-                        ui.add_space(5.0);
-
-                        ui.checkbox(&mut self.sk_show_password, "Show Password");
+                        if pw_response.response.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            attempt_unlock = true;
+                        }
 
                         ui.add_space(10.0);
 
@@ -1906,7 +1891,7 @@ impl ScreenLike for WalletsBalancesScreen {
                         if attempt_unlock {
                             if let Some(wallet_arc) = &self.selected_single_key_wallet {
                                 let mut wallet = wallet_arc.write().unwrap();
-                                let unlock_result = wallet.open(&self.sk_wallet_password);
+                                let unlock_result = wallet.open(self.sk_password_input.text());
 
                                 match unlock_result {
                                     Ok(_) => {
@@ -1917,7 +1902,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     }
                                 }
                             }
-                            self.sk_wallet_password.clear();
+                            self.sk_password_input.clear();
                         }
 
                         // Error display is handled by the global MessageBanner.
@@ -1926,7 +1911,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
             if close_dialog {
                 self.show_sk_unlock_dialog = false;
-                self.sk_wallet_password.clear();
+                self.sk_password_input.clear();
                 // Check if we were trying to refresh the SK wallet
                 if self.pending_refresh_after_unlock {
                     self.pending_refresh_after_unlock = false;

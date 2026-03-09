@@ -2,22 +2,13 @@ use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
-use crate::ui::components::styled::StyledCheckbox;
-use crate::ui::theme::DashColors;
+use crate::ui::components::password_input::PasswordInput;
 use egui::Ui;
 use std::sync::{Arc, RwLock};
-use zeroize::Zeroize;
 
 pub trait ScreenWithWalletUnlock {
     fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>>;
-    // Allow dead_code: This method provides read-only access to wallet passwords,
-    // useful for password validation and UI state management
-    #[allow(dead_code)]
-    fn wallet_password_ref(&self) -> &String;
-    fn wallet_password_mut(&mut self) -> &mut String;
-    fn show_password(&self) -> bool;
-    fn show_password_mut(&mut self) -> &mut bool;
-
+    fn password_input(&mut self) -> &mut PasswordInput;
     fn app_context(&self) -> Arc<AppContext>;
 
     fn should_ask_for_password(&mut self) -> bool {
@@ -54,7 +45,6 @@ pub trait ScreenWithWalletUnlock {
         if let Some(wallet_guard) = self.selected_wallet_ref().clone() {
             let mut wallet = wallet_guard.write().unwrap();
 
-            // Only render the unlock prompt if the wallet requires a password and is locked
             if wallet.uses_password && !wallet.is_open() {
                 if let Some(alias) = &wallet.alias {
                     ui.label(format!(
@@ -67,45 +57,19 @@ pub trait ScreenWithWalletUnlock {
 
                 ui.add_space(5.0);
 
-                // Capture necessary values before the closure
-                let show_password = self.show_password();
-                let mut local_show_password = show_password;
-                let wallet_password_mut = self.wallet_password_mut();
+                let pw_response = self.password_input().show(ui);
 
-                let mut attempt_unlock = false;
-
-                ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                    let password_input = ui.add(
-                        egui::TextEdit::singleline(wallet_password_mut)
-                            .password(!local_show_password)
-                            .hint_text("Enter password")
-                            .text_color(DashColors::text_primary(dark_mode))
-                            .background_color(DashColors::input_background(dark_mode)),
-                    );
-
-                    if password_input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                    {
-                        attempt_unlock = true;
-                    }
-
-                    ui.add_space(5.0);
-
-                    // Checkbox to toggle password visibility
-                    StyledCheckbox::new(&mut local_show_password, "Show Password").show(ui);
-                });
+                let enter_pressed = pw_response.response.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
                 ui.add_space(5.0);
 
-                if ui.button("Unlock").clicked() {
-                    attempt_unlock = true;
-                }
+                let unlock_clicked = ui.button("Unlock").clicked();
 
-                if attempt_unlock {
-                    // Use the password from wallet_password_mut
-                    let wallet_password_ref = &*wallet_password_mut;
+                if enter_pressed || unlock_clicked {
+                    let password_text = self.password_input().text().to_string();
 
-                    let unlock_result = wallet.wallet_seed.open(wallet_password_ref);
+                    let unlock_result = wallet.wallet_seed.open(&password_text);
 
                     match unlock_result {
                         Ok(_) => {
@@ -121,13 +85,9 @@ pub trait ScreenWithWalletUnlock {
                                 .with_auto_dismiss(std::time::Duration::from_secs(10));
                         }
                     }
-                    // Clear the password field after submission
-                    wallet_password_mut.zeroize();
-                }
 
-                // Update `show_password` after the closure
-                *self.show_password_mut() = local_show_password;
-                // Error display is handled by the global MessageBanner
+                    self.password_input().clear();
+                }
             }
         }
 

@@ -9,9 +9,10 @@ use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -508,7 +509,7 @@ impl AddNewWalletScreen {
         }
 
         let mut open = self.show_receive_popup;
-        egui::Window::new("Fund Wallet")
+        let window_response = egui::Window::new("Fund Wallet")
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
@@ -530,7 +531,7 @@ impl AddNewWalletScreen {
                     if let Some(address) = &self.receive_address_string {
                         ui.label(address);
                         ui.add_space(4.0);
-                        if ui.button("Copy Address").clicked()
+                        if ComponentStyles::add_primary_button(ui, "Copy Address").clicked()
                             && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address)
                         {
                             tracing::warn!("Failed to copy address: {}", err);
@@ -542,6 +543,12 @@ impl AddNewWalletScreen {
                     ui.label("Waiting for funds...");
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         self.show_receive_popup = open;
         AppAction::None
@@ -945,8 +952,9 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ctx, |ui| {
                     ui.label(error_message);
                     ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
-                        self.error = None; // Clear the error to close the popup
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
+                        self.error = None;
                     }
                 });
         }

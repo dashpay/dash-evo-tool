@@ -6,9 +6,10 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 };
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
@@ -50,7 +51,7 @@ pub struct KeyInfoScreen {
     wallet_open: bool,
     view_private_key_even_if_encrypted_or_in_wallet: bool,
     show_pop_up_info: Option<String>,
-    show_confirm_remove_private_key: bool,
+    remove_private_key_dialog: Option<ConfirmationDialog>,
 }
 
 // /// The prefix for signed messages using Dash's message signing protocol.
@@ -333,7 +334,15 @@ impl ScreenLike for KeyInfoScreen {
                                 });
                             ui.add_space(10.0);
                             if ui.button("Remove private key from DET").clicked() {
-                                self.show_confirm_remove_private_key = true;
+                                self.remove_private_key_dialog = Some(
+                                    ConfirmationDialog::new(
+                                        "Remove Private Key",
+                                        "Are you sure you want to remove the private key?",
+                                    )
+                                    .confirm_text(Some("Remove"))
+                                    .cancel_text(Some("Cancel"))
+                                    .danger_mode(true),
+                                );
                             }
                             self.render_sign_input(ui);
                         }
@@ -532,8 +541,8 @@ impl ScreenLike for KeyInfoScreen {
                 }
 
                 // Show the remove private key confirmation popup
-                if self.show_confirm_remove_private_key {
-                    self.render_remove_private_key_confirm(ui);
+                if self.remove_private_key_dialog.is_some() {
+                    self.show_remove_private_key_dialog(ui);
                 }
 
                 ui.add_space(10.0);
@@ -602,7 +611,7 @@ impl KeyInfoScreen {
             wallet_open: false,
             view_private_key_even_if_encrypted_or_in_wallet: false,
             show_pop_up_info: None,
-            show_confirm_remove_private_key: false,
+            remove_private_key_dialog: None,
         }
     }
 
@@ -776,42 +785,29 @@ impl KeyInfoScreen {
         }
     }
 
-    fn render_remove_private_key_confirm(&mut self, ui: &mut egui::Ui) {
-        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
-        egui::Window::new("Remove Private Key")
-            .collapsible(false) // Prevent collapsing
-            .resizable(false) // Prevent resizing
-            .show(ui.ctx(), |ui| {
-                ui.label(
-                    RichText::new("Are you sure you want to remove the private key?")
-                        .color(text_primary),
-                );
-                ui.add_space(10.0);
-
-                ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
-                        self.show_confirm_remove_private_key = false;
+    fn show_remove_private_key_dialog(&mut self, ui: &mut egui::Ui) {
+        if let Some(dialog) = self.remove_private_key_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.remove_private_key_dialog = None;
+                if result == ConfirmationStatus::Confirmed {
+                    self.private_key_data = None;
+                    self.identity
+                        .private_keys
+                        .private_keys
+                        .remove(&(self.key.purpose().into(), self.key.id()));
+                    if let Err(e) = self
+                        .app_context
+                        .update_local_qualified_identity(&self.identity)
+                    {
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            format!("Issue saving: {}", e),
+                            MessageType::Error,
+                        );
                     }
-                    ui.add_space(3.0);
-                    if ui.button("Remove").clicked() {
-                        self.private_key_data = None;
-                        self.identity
-                            .private_keys
-                            .private_keys
-                            .remove(&(self.key.purpose().into(), self.key.id()));
-                        if let Err(e) = self
-                            .app_context
-                            .update_local_qualified_identity(&self.identity)
-                        {
-                            MessageBanner::set_global(
-                                ui.ctx(),
-                                format!("Issue saving: {}", e),
-                                MessageType::Error,
-                            );
-                        }
-                        self.show_confirm_remove_private_key = false;
-                    }
-                });
-            });
+                }
+            }
+        }
     }
 }

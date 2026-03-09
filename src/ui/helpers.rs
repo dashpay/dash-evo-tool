@@ -1,6 +1,17 @@
 use dash_sdk::dpp::address_funds::{PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET};
 use std::sync::Arc;
 
+/// Returns true if the user left-clicked outside the given window rect this frame.
+/// Use after painting a modal overlay and showing the dialog window.
+pub fn clicked_outside_window(ctx: &egui::Context, window_rect: egui::Rect) -> bool {
+    ctx.input(|i| {
+        i.pointer.primary_pressed()
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|pos| !window_rect.contains(pos))
+    })
+}
+
 /// Checks if a string looks like a Platform address (bech32m with dash/tdash HRP per DIP-18).
 ///
 /// This checks whether the string starts with a known Platform HRP followed by the

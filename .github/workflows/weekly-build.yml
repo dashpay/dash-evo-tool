@@ -51,16 +51,47 @@ jobs:
             IFS='|' read -r name file <<< "$entry"
             echo "Triggering: ${name} (${file}) on ${TARGET_BRANCH}"
 
-            # Dispatch and capture run ID directly (no race condition)
+            # Capture timestamp before dispatch for fallback matching
+            start_ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+            # Try dispatch with return_run_details (requires gh CLI 2.65+)
             run_id=$(gh api \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/${file}/dispatches" \
               -X POST \
               -f ref="${TARGET_BRANCH}" \
               -F return_run_details=true \
-              --jq '.workflow_run_id')
+              --jq '.workflow_run_id' 2>/dev/null || true)
+
+            # Fallback: poll gh run list if the API returned no run ID
+            if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
+              echo "  return_run_details unavailable, falling back to polling..."
+
+              # If return_run_details was unsupported, the dispatch may not
+              # have happened yet (204 with no body). Fire a plain dispatch
+              # to be safe -- GitHub deduplicates if one is already queued.
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/${file}/dispatches" \
+                -X POST \
+                -f ref="${TARGET_BRANCH}" 2>/dev/null || true
+
+              for attempt in $(seq 1 12); do
+                sleep 5
+                run_id=$(gh run list \
+                  -w "$file" \
+                  -b "${TARGET_BRANCH}" \
+                  --json databaseId,createdAt,event \
+                  --jq "[.[] | select(.event==\"workflow_dispatch\" and .createdAt > \"${start_ts}\")] | first | .databaseId" \
+                  2>/dev/null || true)
+
+                if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
+                  break
+                fi
+                echo "  Poll attempt ${attempt}/12 -- run not yet visible..."
+              done
+            fi
 
             if [ -z "$run_id" ] || [ "$run_id" = "null" ]; then
-              echo "::error::Could not get run ID for ${name}"
+              echo "::error::Could not get run ID for ${name} after dispatch + polling"
               exit 1
             fi
 

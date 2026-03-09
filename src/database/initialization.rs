@@ -53,6 +53,7 @@ impl Database {
         match version {
             28 => {
                 self.add_core_wallet_name_column(tx)?;
+                self.init_contacts_tables(tx)?;
             }
             27 => {
                 self.add_network_indexes(tx)?;
@@ -983,5 +984,72 @@ mod test {
             count, 1,
             "Identity should not be deleted during migration failure"
         );
+    }
+
+    /// Given a database at version 27,
+    /// when migration 28 is applied,
+    /// then the `contact_private_info` table should exist.
+    #[test]
+    fn test_migration_28_creates_contact_private_info_table() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("test_data.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+
+        // Set up the database with all tables, then rewind version to 27
+        // so migration 28 will run.
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        // Drop the contact_private_info table to simulate a DB that was
+        // created before the table existed.
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("DROP TABLE IF EXISTS contact_private_info", [])
+                .expect("Failed to drop contact_private_info table");
+
+            // Verify it is gone
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='contact_private_info'",
+                    [],
+                    |row| row.get::<_, i32>(0).map(|count| count > 0),
+                )
+                .unwrap();
+            assert!(
+                !exists,
+                "contact_private_info table should not exist before migration"
+            );
+        }
+
+        // Rewind version to 27
+        const PRE_MIGRATION_VERSION: u16 = 27;
+        db.set_db_version(PRE_MIGRATION_VERSION).unwrap();
+
+        // Run migration from 27 -> 28
+        let result = db.try_perform_migration(PRE_MIGRATION_VERSION, 28);
+        assert!(
+            result.is_ok(),
+            "Migration 28 should succeed: {:?}",
+            result.err()
+        );
+
+        // Verify the table now exists
+        let conn = db.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='contact_private_info'",
+                [],
+                |row| row.get::<_, i32>(0).map(|count| count > 0),
+            )
+            .unwrap();
+        assert!(
+            exists,
+            "contact_private_info table should exist after migration 28"
+        );
+
+        // Verify version was updated
+        drop(conn);
+        let version = db.db_schema_version().unwrap();
+        assert_eq!(version, 28);
     }
 }

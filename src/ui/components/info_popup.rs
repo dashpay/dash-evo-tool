@@ -1,5 +1,5 @@
 use crate::ui::components::modal_overlay::clicked_outside_window;
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
@@ -133,16 +133,7 @@ impl InfoPopup {
                 // Close button
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let close_button = if let WidgetText::RichText(rich_text) = &self.close_text
-                        {
-                            egui::Button::new(rich_text.clone())
-                                .fill(ComponentStyles::primary_button_fill())
-                                .stroke(ComponentStyles::primary_button_stroke())
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(ComponentStyles::DIALOG_BUTTON_MIN_SIZE)
-                        } else {
-                            ComponentStyles::primary_button(self.close_text.text())
-                        };
+                        let close_button = ComponentStyles::primary_button(self.close_text.clone());
 
                         if ui
                             .add(close_button)

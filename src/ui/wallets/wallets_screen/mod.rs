@@ -406,6 +406,12 @@ impl WalletsBalancesScreen {
         self.platform_sync_info = None;
     }
 
+    pub(crate) fn reset_pending_list_state(&mut self) {
+        self.pending_list_core_wallets = false;
+        self.pending_list_wallet_hash = None;
+        self.pending_list_is_single_key = false;
+    }
+
     fn add_receiving_address(&mut self) {
         if let Some(wallet) = &self.selected_wallet {
             let result = {

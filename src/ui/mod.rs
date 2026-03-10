@@ -769,6 +769,7 @@ impl Screen {
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => {
                 screen.app_context = app_context;
+                screen.reset_pending_list_state();
                 screen.update_selected_wallet_for_network();
             }
             Screen::ImportMnemonicScreen(screen) => {

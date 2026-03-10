@@ -738,6 +738,7 @@ impl ScreenLike for AddNewWalletScreen {
 
     fn display_task_error(&mut self, _error: &TaskError) -> bool {
         self.core_wallets_loading = false;
+        self.core_wallets = Some(vec![]);
         false
     }
 

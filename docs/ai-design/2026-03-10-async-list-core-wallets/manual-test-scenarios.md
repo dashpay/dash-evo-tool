@@ -293,12 +293,12 @@ Cross-cutting behaviors:
 
 ---
 
-## ACW-011: Error recovery -- loading flag resets on failed async fetch
+## ACW-011: Error recovery -- failed fetch stops retry loop, user navigates away and back to retry
 
 | Field | Value |
 |---|---|
 | **ID** | ACW-011 |
-| **Title** | core_wallets_loading resets when the ListCoreWallets task fails, enabling retry on next frame |
+| **Title** | Failed ListCoreWallets sets an empty list to prevent infinite retry; user can retry by reopening the screen |
 | **Priority** | P1 |
 
 ### Preconditions
@@ -308,60 +308,71 @@ Cross-cutting behaviors:
 ### Steps
 1. Open the Create Wallet screen while Core RPC is unavailable
 2. Wait several seconds for the async wallet list fetch to attempt and fail
-3. Restore Core RPC connectivity
-4. Wait for the next frame cycle (or navigate away and back)
+3. Observe the screen -- no repeated RPC calls are made
+4. Restore Core RPC connectivity
+5. Navigate away (back to the Wallets screen) and reopen "Create Wallet"
 
 ### Expected Results
-- Step 2: The fetch fails; `core_wallets_loading` resets to `false`; `core_wallets` remains `None`
-- No error dialog or crash occurs -- the UI continues rendering normally
-- Step 3-4: On the next frame where `core_wallets.is_none() && !core_wallets_loading`, a new
-  `ListCoreWallets` task is dispatched automatically
-- After the retry succeeds, the ComboBox appears if multiple Core wallets are loaded (ACW-002
-  behavior) or the form proceeds without it if zero/one wallet exists (ACW-003 behavior)
+- Step 2: The fetch fails; an error banner is shown; `core_wallets` is set to an empty list
+  (`Some(vec![])`) which stops the dispatch guard from re-firing
+- Step 3: No infinite retry loop occurs -- the screen remains stable with no further
+  `ListCoreWallets` tasks dispatched
+- Step 5: Reopening the screen creates a fresh instance with `core_wallets = None`, which
+  triggers a new `ListCoreWallets` fetch. After it succeeds, the ComboBox appears if multiple
+  Core wallets are loaded (ACW-002 behavior) or the form proceeds without it if zero/one wallet
+  exists (ACW-003 behavior)
 
 ---
 
-## ACW-012: Network switch -- Core wallet list re-fetched for new network
+## ACW-012: Network switch -- Create Wallet screen retains stale Core wallet list
 
 | Field | Value |
 |---|---|
 | **ID** | ACW-012 |
-| **Title** | Switching networks clears the cached wallet list and triggers a fresh async fetch |
-| **Priority** | P1 |
+| **Title** | Create Wallet modal screen retains stale Core wallet data after network switch because change_network() only iterates main_screens |
+| **Priority** | P2 |
 
 ### Preconditions
 - Application configured with at least two networks (e.g., Mainnet and Testnet) each backed by
   a different Dash Core instance
 - Mainnet Core has wallets: `mainnet_a`, `mainnet_b`
 - Testnet Core has wallets: `testnet_x`
-- The Create Wallet or Import Wallet screen is open on one network
+- The Create Wallet screen is open on Mainnet
 
 ### Steps
 1. Navigate to "Create Wallet" on Mainnet
 2. Wait for the async wallet list to arrive -- observe the ComboBox listing `mainnet_a`,
    `mainnet_b`
 3. Switch to Testnet using the network selector
-4. The Create Wallet screen is still open (it persists across network switches as a root screen)
-5. Wait for the async wallet list to re-fetch for Testnet
+4. Observe the Create Wallet screen
 
 ### Expected Results
-- Step 3: `reset_core_wallets_cache()` is called via `change_context()`, clearing `core_wallets`
-  and resetting `core_wallets_loading` to `false`
-- Step 4: The ComboBox temporarily disappears (no stale Mainnet data is shown)
-- Step 5: A new `ListCoreWallets` task is dispatched for Testnet
-- After the task completes, the ComboBox lists only `testnet_x` (the single Testnet wallet),
-  or is absent entirely per ACW-003 behavior
-- No Mainnet wallet names appear after the switch
+- The Create Wallet screen is a modal screen on `screen_stack`, not a root screen in
+  `main_screens`
+- `change_network()` only calls `change_context()` on `main_screens`, not on `screen_stack`
+  items
+- Although `Screen::AddNewWalletScreen` has a `change_context()` handler that calls
+  `reset_core_wallets_cache()` (defined in `src/ui/mod.rs`), it is NOT invoked during a
+  network switch
+- Step 4: The stale Mainnet wallet list (`mainnet_a`, `mainnet_b`) remains visible in the
+  ComboBox
+- The user must dismiss the Create Wallet screen and reopen it on Testnet to get the correct
+  wallet list
+
+### Notes
+This is a known limitation of the current architecture. Modal screens on `screen_stack` do not
+receive `change_context()` calls during network switches. A future improvement could extend
+`change_network()` to also iterate `screen_stack` items.
 
 ---
 
-## ACW-013: Network switch -- Import Wallet screen also re-fetches for new network
+## ACW-013: Network switch -- Import Wallet screen retains stale Core wallet list
 
 | Field | Value |
 |---|---|
 | **ID** | ACW-013 |
-| **Title** | Switching networks while the Import Wallet screen is open clears its Core wallet cache |
-| **Priority** | P1 |
+| **Title** | Import Wallet modal screen retains stale Core wallet data after network switch because change_network() only iterates main_screens |
+| **Priority** | P2 |
 
 ### Preconditions
 - Same as ACW-012
@@ -373,10 +384,15 @@ Cross-cutting behaviors:
 3. Observe the Import Wallet screen
 
 ### Expected Results
-- Step 2: `reset_core_wallets_cache()` clears the Mainnet list from the Import Wallet screen
-- Step 3: The ComboBox is absent while the Testnet fetch is in flight; after it completes, the
-  result matches ACW-005 or ACW-003 behavior for Testnet's wallet count
-- No Mainnet wallet names are ever shown while on Testnet
+- Same behavior as ACW-012: the Import Wallet screen is a modal on `screen_stack` and does not
+  receive `change_context()` during network switches
+- Step 3: The stale Mainnet wallet list remains visible in the ComboBox
+- The user must dismiss and reopen the Import Wallet screen on Testnet to get the correct list
+
+### Notes
+Same architectural limitation as ACW-012. Both `AddNewWalletScreen` and `ImportMnemonicScreen`
+have `change_context()` handlers with `reset_core_wallets_cache()`, but these handlers are only
+reachable if `change_network()` iterates `screen_stack`, which it currently does not.
 
 ---
 

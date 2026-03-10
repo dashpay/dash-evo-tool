@@ -761,14 +761,20 @@ impl Screen {
             Screen::UpdateDataContractScreen(screen) => screen.app_context = app_context,
             Screen::DocumentActionScreen(screen) => screen.app_context = app_context,
             Screen::GroupActionsScreen(screen) => screen.app_context = app_context,
-            Screen::AddNewWalletScreen(screen) => screen.app_context = app_context,
+            Screen::AddNewWalletScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_core_wallets_cache();
+            }
             Screen::TransferScreen(screen) => screen.app_context = app_context,
             Screen::TopUpIdentityScreen(screen) => screen.app_context = app_context,
             Screen::WalletsBalancesScreen(screen) => {
                 screen.app_context = app_context;
                 screen.update_selected_wallet_for_network();
             }
-            Screen::ImportMnemonicScreen(screen) => screen.app_context = app_context,
+            Screen::ImportMnemonicScreen(screen) => {
+                screen.app_context = app_context;
+                screen.reset_core_wallets_cache();
+            }
             Screen::WalletSendScreen(screen) => screen.app_context = app_context,
             Screen::SingleKeyWalletSendScreen(screen) => screen.app_context = app_context,
             Screen::ProofLogScreen(screen) => screen.app_context = app_context,

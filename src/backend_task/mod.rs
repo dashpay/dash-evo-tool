@@ -271,6 +271,9 @@ pub enum BackendTaskSuccessResult {
 
     // Mining results (dev mode, Regtest/Devnet only)
     MineBlocksSuccess(u64),
+
+    // Core wallet list (async fetch of loaded Core wallets)
+    CoreWalletsList(Vec<String>),
 }
 
 impl BackendTaskSuccessResult {}

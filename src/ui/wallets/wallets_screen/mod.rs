@@ -119,6 +119,12 @@ pub struct WalletsBalancesScreen {
     pending_core_wallet_options: Option<Vec<String>>,
     /// Whether the pending Core wallet selection is for a single-key wallet
     pending_core_wallet_is_single_key: bool,
+    /// Whether we need to fire a ListCoreWallets backend task (set on CoreWalletNotConfigured error)
+    pending_list_core_wallets: bool,
+    /// Wallet hash pending the ListCoreWallets response
+    pending_list_wallet_hash: Option<[u8; 32]>,
+    /// Whether the wallet pending list is a single-key wallet
+    pending_list_is_single_key: bool,
 }
 
 impl WalletsBalancesScreen {
@@ -216,6 +222,9 @@ impl WalletsBalancesScreen {
             pending_core_wallet_seed_hash: None,
             pending_core_wallet_options: None,
             pending_core_wallet_is_single_key: false,
+            pending_list_core_wallets: false,
+            pending_list_wallet_hash: None,
+            pending_list_is_single_key: false,
         }
     }
 
@@ -395,6 +404,12 @@ impl WalletsBalancesScreen {
 
         self.selected_account = None;
         self.platform_sync_info = None;
+    }
+
+    pub(crate) fn reset_pending_list_state(&mut self) {
+        self.pending_list_core_wallets = false;
+        self.pending_list_wallet_hash = None;
+        self.pending_list_is_single_key = false;
     }
 
     fn add_receiving_address(&mut self) {
@@ -2010,6 +2025,12 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
+        // Dispatch the async ListCoreWallets task if pending
+        if self.pending_list_core_wallets {
+            self.pending_list_core_wallets = false;
+            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
+        }
+
         // Show Core wallet selection dialog if active
         if let Some(dialog) = self.core_wallet_dialog.as_mut()
             && let Some(status) = dialog.show_modal(ctx)
@@ -2084,7 +2105,8 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
-    /// Intercept Core-wallet-not-configured errors and show the wallet selection dialog.
+    /// Intercept Core-wallet-not-configured errors and schedule an async
+    /// `ListCoreWallets` backend task (instead of blocking the UI thread).
     fn display_task_error(&mut self, error: &TaskError) -> bool {
         if matches!(error, TaskError::CoreWalletNotConfigured) {
             self.refreshing = false;
@@ -2107,61 +2129,9 @@ impl ScreenLike for WalletsBalancesScreen {
                 (None, false)
             };
 
-            // TODO(CMT-004): Move list_core_wallets() off the UI thread — synchronous RPC
-            // can block rendering if Core is slow/unreachable. Fetch via backend task instead.
-            match self.app_context.list_core_wallets() {
-                Ok(wallets) if wallets.len() == 1 => {
-                    if let Some(hash) = wallet_hash {
-                        match self.apply_core_wallet_selection(&hash, &wallets[0], is_single_key) {
-                            Ok(()) => {
-                                MessageBanner::set_global(
-                                    self.app_context.egui_ctx(),
-                                    format!(
-                                        "Auto-selected Core wallet '{}' — refreshing wallet. If you were performing another operation, please retry it.",
-                                        wallets[0]
-                                    ),
-                                    MessageType::Success,
-                                );
-                                self.refresh();
-                            }
-                            Err(e) => {
-                                MessageBanner::set_global(
-                                    self.app_context.egui_ctx(),
-                                    "Failed to save Core wallet selection",
-                                    MessageType::Error,
-                                )
-                                .with_details(e);
-                            }
-                        }
-                    }
-                }
-                Ok(wallets) if wallets.len() > 1 => {
-                    let dialog = SelectionDialog::new(
-                        "Select Dash Core Wallet",
-                        "Multiple wallets loaded in Dash Core. Select the one to use:",
-                        wallets.clone(),
-                    );
-                    self.core_wallet_dialog = Some(dialog);
-                    self.pending_core_wallet_seed_hash = wallet_hash;
-                    self.pending_core_wallet_options = Some(wallets);
-                    self.pending_core_wallet_is_single_key = is_single_key;
-                }
-                Ok(_) => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "No wallets loaded in Dash Core",
-                        MessageType::Error,
-                    );
-                }
-                Err(e) => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Failed to list Dash Core wallets",
-                        MessageType::Error,
-                    )
-                    .with_details(e);
-                }
-            }
+            self.pending_list_core_wallets = true;
+            self.pending_list_wallet_hash = wallet_hash;
+            self.pending_list_is_single_key = is_single_key;
             true // Suppress generic error banner
         } else {
             false
@@ -2319,6 +2289,53 @@ impl ScreenLike for WalletsBalancesScreen {
                     format!("Mined {} block(s)", count),
                     MessageType::Success,
                 );
+            }
+            crate::ui::BackendTaskSuccessResult::CoreWalletsList(wallets) => {
+                let wallet_hash = self.pending_list_wallet_hash.take();
+                let is_single_key = self.pending_list_is_single_key;
+                self.pending_list_is_single_key = false;
+
+                if wallets.len() == 1 {
+                    if let Some(hash) = wallet_hash {
+                        match self.apply_core_wallet_selection(&hash, &wallets[0], is_single_key) {
+                            Ok(()) => {
+                                MessageBanner::set_global(
+                                    self.app_context.egui_ctx(),
+                                    format!(
+                                        "Auto-selected Core wallet '{}' — refreshing wallet. If you were performing another operation, please retry it.",
+                                        wallets[0]
+                                    ),
+                                    MessageType::Success,
+                                );
+                                self.refresh();
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    self.app_context.egui_ctx(),
+                                    "Failed to save Core wallet selection",
+                                    MessageType::Error,
+                                )
+                                .with_details(e);
+                            }
+                        }
+                    }
+                } else if wallets.len() > 1 {
+                    let dialog = SelectionDialog::new(
+                        "Select Dash Core Wallet",
+                        "Multiple wallets loaded in Dash Core. Select the one to use:",
+                        wallets.clone(),
+                    );
+                    self.core_wallet_dialog = Some(dialog);
+                    self.pending_core_wallet_seed_hash = wallet_hash;
+                    self.pending_core_wallet_options = Some(wallets);
+                    self.pending_core_wallet_is_single_key = is_single_key;
+                } else {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "No wallets loaded in Dash Core",
+                        MessageType::Error,
+                    );
+                }
             }
             _ => {}
         }

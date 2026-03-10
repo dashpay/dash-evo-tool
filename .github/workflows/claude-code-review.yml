@@ -39,7 +39,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          fetch-depth: 1
+          # We can diff so we need history
+          fetch-depth: 0
 
       - name: Configure git to use HTTPS instead of SSH
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
@@ -59,6 +60,9 @@ jobs:
           prompt: |
             Load /claudash:dash-platform for Dash Platform domain context.
             Prefer GitHub MCP tools over gh CLI commands.
+            Use MCP GitHub tools (not env vars or gh CLI) to retrieve PR context: PR number,
+            base branch, head branch, changed files. Sub-agents have no conversation history —
+            pass all relevant PR context explicitly when spawning them.
             Write all PR comments in Claudius persona — witty, confident, subtly snarky,
             but always respectful and genuinely helpful, as if advising a trusted colleague.
 

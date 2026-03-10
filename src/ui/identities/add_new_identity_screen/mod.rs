@@ -11,6 +11,7 @@ use crate::backend_task::identity::{
 };
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::info_popup::InfoPopup;
@@ -619,7 +620,10 @@ impl AddNewIdentityScreen {
                                 ui.label("Master Key");
                             });
                             row.col(|ui| {
-                                ui.label(master_key.to_wif());
+                                let wif = Secret::new(master_key.to_wif());
+                                // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
+                                ui.label(wif.expose_secret());
                             });
                             row.col(|_ui| {
                                 // No purpose for master key
@@ -663,7 +667,10 @@ impl AddNewIdentityScreen {
                                 ui.label(format!("Key {}", i + 1));
                             });
                             row.col(|ui| {
-                                ui.label(key.to_wif());
+                                let wif = Secret::new(key.to_wif());
+                                // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
+                                ui.label(wif.expose_secret());
                             });
                             row.col(|ui| {
                                 ui.vertical(|ui| {

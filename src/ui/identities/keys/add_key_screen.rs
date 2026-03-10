@@ -7,6 +7,7 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::Wallet;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -41,7 +42,7 @@ pub enum AddKeyStatus {
 pub struct AddKeyScreen {
     pub identity: QualifiedIdentity,
     pub app_context: Arc<AppContext>,
-    private_key_input: String,
+    private_key_input: PasswordInput,
     key_type: KeyType,
     purpose: Purpose,
     security_level: SecurityLevel,
@@ -73,7 +74,9 @@ impl AddKeyScreen {
         Self {
             identity,
             app_context: app_context.clone(),
-            private_key_input: String::new(),
+            private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (hex)")
+                .with_monospace(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::AUTHENTICATION,
             security_level: SecurityLevel::HIGH,
@@ -114,7 +117,9 @@ impl AddKeyScreen {
         Self {
             identity,
             app_context: app_context.clone(),
-            private_key_input: String::new(),
+            private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (hex)")
+                .with_monospace(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::ENCRYPTION,
             security_level: SecurityLevel::MEDIUM,
@@ -155,7 +160,9 @@ impl AddKeyScreen {
         Self {
             identity,
             app_context: app_context.clone(),
-            private_key_input: String::new(),
+            private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (hex)")
+                .with_monospace(),
             key_type: KeyType::ECDSA_SECP256K1,
             purpose: Purpose::DECRYPTION,
             security_level: SecurityLevel::MEDIUM,
@@ -174,7 +181,7 @@ impl AddKeyScreen {
     fn validate_and_add_key(&mut self) -> AppAction {
         let mut app_action = AppAction::None;
         // Convert the input string to bytes (hex decoding)
-        match hex::decode(&self.private_key_input) {
+        match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
                 let private_key_bytes = private_key_bytes_vec.try_into().unwrap();
                 let public_key_data_result = self.key_type.public_key_data_from_private_key_data(
@@ -290,7 +297,8 @@ impl AddKeyScreen {
             .key_type
             .random_public_and_private_key_data(&mut rng, self.app_context.platform_version())
         {
-            self.private_key_input = hex::encode(private_key_bytes);
+            self.private_key_input
+                .set_text(hex::encode(private_key_bytes));
         } else {
             self.add_key_status = AddKeyStatus::Error;
             MessageBanner::set_global(
@@ -322,7 +330,7 @@ impl AddKeyScreen {
         if let AppAction::Custom(ref s) = action
             && s == "add_another"
         {
-            self.private_key_input = String::new();
+            self.private_key_input.clear();
             self.contract_id_input = String::new();
             self.document_type_input = String::new();
             self.enable_contract_bounds = false;
@@ -597,7 +605,7 @@ impl ScreenLike for AddKeyScreen {
 
                     // Private Key Input
                     ui.label("Private Key:");
-                    ui.text_edit_singleline(&mut self.private_key_input);
+                    self.private_key_input.show(ui);
                     if ui.button("Generate Random").clicked() {
                         self.generate_random_private_key();
                     }

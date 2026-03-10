@@ -1,11 +1,10 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::ui::components::styled::StyledCheckbox;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui;
 use std::sync::{Arc, RwLock};
-use zeroize::Zeroize;
 
 /// Result of showing the wallet unlock popup
 #[derive(Debug, Clone, PartialEq)]
@@ -22,9 +21,9 @@ pub enum WalletUnlockResult {
 /// Similar to InfoPopup and ConfirmationDialog but specialized for wallet unlock flow
 pub struct WalletUnlockPopup {
     is_open: bool,
-    password: String,
-    show_password: bool,
+    password_input: PasswordInput,
     error_message: Option<String>,
+    focus_requested: bool,
 }
 
 impl Default for WalletUnlockPopup {
@@ -38,23 +37,24 @@ impl WalletUnlockPopup {
     pub fn new() -> Self {
         Self {
             is_open: false,
-            password: String::new(),
-            show_password: false,
+            password_input: PasswordInput::new().with_hint_text("Enter password"),
             error_message: None,
+            focus_requested: false,
         }
     }
 
     /// Open the popup
     pub fn open(&mut self) {
         self.is_open = true;
-        self.password.clear();
+        self.password_input.clear();
         self.error_message = None;
+        self.focus_requested = false;
     }
 
     /// Close the popup
     pub fn close(&mut self) {
         self.is_open = false;
-        self.password.zeroize();
+        self.password_input.clear();
         self.error_message = None;
     }
 
@@ -126,36 +126,22 @@ impl WalletUnlockPopup {
 
                 ui.add_space(12.0);
 
-                // TODO(#707): Replace manual password input + show/hide toggle with
-                // PasswordInput component once available.
-                // Password input
                 let mut attempt_unlock = false;
 
-                let password_response = ui.add(
-                    egui::TextEdit::singleline(&mut self.password)
-                        .password(!self.show_password)
-                        .hint_text("Enter password")
-                        .desired_width(f32::INFINITY)
-                        .text_color(DashColors::text_primary(dark_mode))
-                        .background_color(DashColors::input_background(dark_mode)),
-                );
+                let pw_response = self.password_input.show(ui);
 
-                // Focus the password field when popup opens
-                if password_response.gained_focus() || self.password.is_empty() {
-                    password_response.request_focus();
+                // Focus the password field once when popup opens
+                if !self.focus_requested {
+                    pw_response.response.request_focus();
+                    self.focus_requested = true;
                 }
 
                 // Check for Enter key
-                if password_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if pw_response.response.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
                     attempt_unlock = true;
                 }
-
-                ui.add_space(8.0);
-
-                // Show password checkbox
-                ui.horizontal(|ui| {
-                    StyledCheckbox::new(&mut self.show_password, "Show password").show(ui);
-                });
 
                 // Error message
                 if let Some(error) = &self.error_message {
@@ -187,7 +173,7 @@ impl WalletUnlockPopup {
                 // Attempt unlock if requested
                 if attempt_unlock {
                     let mut wallet_guard = wallet.write().unwrap();
-                    match wallet_guard.wallet_seed.open(&self.password) {
+                    match wallet_guard.wallet_seed.open(self.password_input.text()) {
                         Ok(_) => {
                             // Notify app context that wallet was unlocked
                             drop(wallet_guard); // Release write lock before calling handle_wallet_unlocked
@@ -203,7 +189,7 @@ impl WalletUnlockPopup {
                             } else {
                                 self.error_message = Some("Incorrect password".to_string());
                             }
-                            self.password.zeroize();
+                            self.password_input.clear();
                         }
                     }
                 }

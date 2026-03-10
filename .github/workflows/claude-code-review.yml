@@ -68,32 +68,29 @@ jobs:
             MemCan is NOT available in CI — skip memcan:recall, memcan:lessons-learned, and all mcp__plugin_memcan_brain__* tools.
             When spawning agents, instruct them to not use memcan tools.
 
-            FIRST, before anything else, probe GitHub MCP availability by calling
-            mcp__plugin_claudius_github__get_me (no arguments). If it succeeds, use MCP tools
-            for GitHub API operations. If it fails or is denied, set GITHUB_MCP_AVAILABLE=false
-            mentally and use gh CLI for all GitHub operations instead. When spawning sub-agents,
-            always include "GitHub MCP is available" or "GitHub MCP is NOT available — use gh CLI
-            for all GitHub operations" in their prompts so they don't waste turns rediscovering this.
+            Use MCP tools (mcp__plugin_claudius_github__*) for GitHub operations. If an MCP call fails, fall back to gh CLI.
 
-            Load /claudash:dash-platform for Dash Platform domain context, and instruct agents to also do this.
             Sub-agents have no conversation history —
             pass all relevant PR context explicitly when spawning them.
             Write all PR comments in Claudius persona — witty, confident, subtly snarky,
             but always respectful and genuinely helpful, as if advising a trusted colleague.
 
-            Follow this review flow in order:
+            Follow this review flow in order. Steps 1 and 2 MUST use the Skill tool —
+            do NOT skip them or perform their work manually.
 
-            1. Run /claudius:check-pr-comments to check if previous review comments are addressed.
+            1. Invoke Skill(skill="claudius:check-pr-comments") to check previous review comments.
                For each thread that IS fixed but NOT yet resolved, reply describing the fix
                and resolve the thread.
-            2. Run /claudius:grumpy-review to perform a fresh code review.
+            2. Invoke Skill(skill="claudius:grumpy-review") to perform a fresh code review.
+               This spawns parallel specialist agents and produces a consolidated report.
+               Do NOT review the code yourself — the skill handles the full pipeline.
             3. Post only MEDIUM severity and higher findings as new inline PR comments.
             4. If no unresolved comments remain after the full flow, approve the PR.
           claude_args: |
             --agent claudius:claudius
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns 150
-            --allowedTools "mcp__*,Read,Write,Edit,Glob,Grep,Agent,Skill,Task,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskOutput,SendMessage,Bash(gh pr *),Bash(gh api *),Bash(git diff *),Bash(git log *),Bash(git fetch *),Bash(git branch *),Bash(git rev-parse *),Bash(git show *),Bash(git pull *),Bash(git checkout *),Bash(git status),Bash(git status *),Bash(git remote *),Bash(git merge-base *),Bash(cat *),Bash(python3 *),Bash(echo *),Bash(ls *),Bash(grep *),Bash(mkdir *),Bash(mktemp *),Bash(pwd *)"
+            --allowedTools "mcp__plugin_claudius_github,Read,Write,Edit,Glob,Grep,Agent,Skill,Task,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskOutput,SendMessage,Bash(gh pr *),Bash(gh api *),Bash(git diff *),Bash(git log *),Bash(git fetch *),Bash(git branch *),Bash(git rev-parse *),Bash(git show *),Bash(git pull *),Bash(git checkout *),Bash(git status),Bash(git status *),Bash(git remote *),Bash(git merge-base *),Bash(cat *),Bash(python3 *),Bash(echo *),Bash(ls *),Bash(grep *),Bash(mkdir *),Bash(mktemp *),Bash(pwd *)"
 
       - name: Remove claudius-review label
         if: success()

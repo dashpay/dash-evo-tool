@@ -51,7 +51,9 @@ jobs:
           use_sticky_comment: true
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
           plugin_marketplaces: "https://github.com/lklimek/agents.git"
-          plugins: "claudius@lklimek"
+          plugins: |
+            claudius@lklimek
+            claudash@lklimek
           show_full_output: true
           trigger_phrase: ""
           prompt: |

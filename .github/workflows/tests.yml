@@ -10,6 +10,7 @@ on:
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".cargo/config.toml"
+      - "tests/backend-e2e/**"
       - ".github/workflows/tests.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -18,6 +19,7 @@ on:
       - "**/Cargo.toml"
       - "Cargo.lock"
       - ".cargo/config.toml"
+      - "tests/backend-e2e/**"
       - ".github/workflows/tests.yml"
 
 concurrency:
@@ -78,3 +80,9 @@ jobs:
         with:
           command: test
           args: --doc --all-features --workspace
+
+      - name: Run backend E2E tests
+        if: ${{ secrets.E2E_WALLET_MNEMONIC != '' }}
+        run: cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
+        env:
+          E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}

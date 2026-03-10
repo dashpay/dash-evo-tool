@@ -39,7 +39,7 @@ Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 
 ### Manual test scenarios
 
-End-to-end manual test scenarios live in `docs/ai-design/manual-tests.md` (max 10 scenarios covering multiple features each). When a PR changes user-visible behavior, verify it's covered by an existing scenario or update the file. Reference applicable scenario numbers in the PR description under "Test plan".
+End-to-end manual test scenarios live in `docs/ai-design/manual-tests.md` (scenarios covering multiple features each). When a PR changes user-visible behavior, verify it's covered by an existing scenario or update the file. Reference applicable scenario numbers in the PR description under "Test plan".
 Skip manual test updates only for non-functional changes (CI, docs, formatting, pure refactoring) — state why in the PR description.
 
 ### User stories catalog
@@ -76,8 +76,8 @@ scripts/safe-cargo.sh +nightly fmt --all
 
 - **docs/ai-design** should contain architecture, technical design and manual testing scenarios files, grouped in subdirectories prefixed with ISO-formatted date
 - **docs/personas** contains user personas (Everyday User, Power User, Platform Developer) that define the three target user archetypes and the progressive disclosure model for UI complexity. Consult these when making UX decisions about what to show/hide or how to structure wallet features.
-- **docs/user-stories.md** catalogs 113 user stories across 10 feature areas, tagged by persona and marked `[Implemented]` or `[Gap]`. Reference when planning new features or verifying coverage.
-- **docs/ux-design-patterns.md** is the UI/UX reference card — design tokens, button styles, dialog conventions, form patterns, accessibility rules, and progressive disclosure model. Consult when building or reviewing UI.
+- **docs/user-stories.md** catalogs user stories across feature areas, tagged by persona and marked `[Implemented]` or `[Gap]`. Reference when planning new features or verifying coverage.
+- **docs/ux-design-patterns.md** is the UI/UX reference card — explains **when and how** to use design tokens, buttons, dialogs, forms, accessibility rules, and progressive disclosure. For exact values (sizes, colors, padding), refer to source files (`src/ui/theme.rs`, `src/ui/components/`). Consult when building or reviewing UI.
 - end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
 ### Core Module Structure

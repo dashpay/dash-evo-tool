@@ -1,6 +1,6 @@
 # User Stories
 
-This document catalogs 113 user stories for Dash Evo Tool, organized by feature area and mapped to the three user personas: **Alex** (Everyday User), **Priya** (Power User), and **Jordan** (Platform Developer). Each story follows a progressive disclosure model where simpler needs come first. Stories marked `[Implemented]` reflect features present in the current codebase; stories marked `[Gap]` represent identified needs not yet addressed.
+This document catalogs user stories for Dash Evo Tool, organized by feature area and mapped to the three user personas: **Alex** (Everyday User), **Priya** (Power User), and **Jordan** (Platform Developer). Each story follows a progressive disclosure model where simpler needs come first. Stories marked `[Implemented]` reflect features present in the current codebase; stories marked `[Gap]` represent identified needs not yet addressed.
 
 See [docs/personas/](personas/) for full persona descriptions.
 

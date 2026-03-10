@@ -1,4 +1,8 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
+use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::core::CoreTask;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::model::wallet::{
@@ -103,8 +107,10 @@ pub struct AddNewWalletScreen {
     receive_qr_texture: Option<TextureHandle>,
     show_receive_popup: bool,
     funds_received: bool,
-    /// Cached list of Core wallets (fetched once on screen init)
+    /// Cached list of Core wallets (fetched asynchronously via backend task)
     core_wallets: Option<Vec<String>>,
+    /// Whether the backend task to fetch Core wallets has been dispatched
+    core_wallets_loading: bool,
     /// Index of selected Core wallet in the ComboBox
     selected_core_wallet_index: usize,
 }
@@ -131,11 +137,15 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
-            // TODO(CMT-007): Move list_core_wallets() off the UI thread — synchronous RPC
-            // can block screen construction. Fetch via backend task or cache.
-            core_wallets: app_context.list_core_wallets().ok(),
+            core_wallets: None,
+            core_wallets_loading: false,
             selected_core_wallet_index: 0,
         }
+    }
+
+    pub fn reset_core_wallets_cache(&mut self) {
+        self.core_wallets = None;
+        self.core_wallets_loading = false;
     }
 
     /// Generate a new seed phrase based on the selected language and word count
@@ -717,7 +727,29 @@ impl AddNewWalletScreen {
 }
 
 impl ScreenLike for AddNewWalletScreen {
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::CoreWalletsList(wallets) = backend_task_success_result {
+            self.selected_core_wallet_index = self
+                .selected_core_wallet_index
+                .min(wallets.len().saturating_sub(1));
+            self.core_wallets = Some(wallets);
+        }
+    }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        self.core_wallets_loading = false;
+        self.core_wallets = Some(vec![]);
+        false
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
+        let mut pending_action = AppAction::None;
+        if self.core_wallets.is_none() && !self.core_wallets_loading {
+            self.core_wallets_loading = true;
+            pending_action =
+                AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
+        }
+
         let mut action = add_top_panel(
             ctx,
             &self.app_context,
@@ -944,6 +976,7 @@ impl ScreenLike for AddNewWalletScreen {
                 });
         }
 
+        action |= pending_action;
         action
     }
 }

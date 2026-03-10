@@ -5,17 +5,17 @@ use std::ops::Range;
 use egui::TextBuffer;
 use zeroize::{Zeroize, Zeroizing};
 
-/// Default pre-allocation size for `Secret` buffers.
+/// Default pre-allocation capacity for `Secret` buffers.
 ///
-/// Set to one memory page (4096 bytes on most platforms) because:
+/// Set to 4096 bytes because:
 /// - `mlock` operates on page granularity — locking less than a page still
 ///   locks the entire page, so smaller buffers waste no memory.
-/// - A full page is large enough for any human-entered password or WIF key,
+/// - 4096 bytes is large enough for any human-entered password or WIF key,
 ///   making `String` reallocation virtually impossible during normal use.
 /// - When reallocation *does* happen, the old buffer is freed by the system
 ///   allocator without zeroing — a residual leak we cannot prevent without
-///   a custom allocator. Pre-allocating one page avoids this entirely.
-const PAGE_SIZE: usize = 4096;
+///   a custom allocator. Pre-allocating avoids this entirely.
+const DEFAULT_CAPACITY: usize = 4096;
 
 /// Zeroize-on-drop wrapper for sensitive strings (passwords, WIF keys, private key inputs).
 ///
@@ -52,7 +52,7 @@ impl Secret {
     /// Wrap a string in a `Secret`, locking its backing memory on a best-effort basis.
     pub fn new(s: impl Into<String>) -> Self {
         let mut source: String = s.into();
-        let cap = source.len().max(PAGE_SIZE);
+        let cap = source.len().max(DEFAULT_CAPACITY);
         let mut buf = String::with_capacity(cap);
         buf.push_str(&source);
         // Zeroize the original string before it's freed
@@ -73,7 +73,7 @@ impl Secret {
 
     /// Create an empty `Secret` with a pre-allocated, locked buffer.
     pub fn with_capacity(cap: usize) -> Self {
-        let cap = cap.max(PAGE_SIZE);
+        let cap = cap.max(DEFAULT_CAPACITY);
         let s = String::with_capacity(cap);
         let lock = region::lock(s.as_ptr(), s.capacity())
             .map_err(|e| {
@@ -128,13 +128,14 @@ impl Drop for Secret {
     fn drop(&mut self) {
         // Zero the full capacity, including bytes beyond len that
         // Zeroize for String would miss (it only zeros 0..len).
+        // Use zeroize crate semantics (volatile/fence-guarded) to prevent
+        // the compiler from optimizing the wipe away.
         let ptr = self.inner.as_mut_ptr();
         let cap = self.inner.capacity();
         if cap > 0 {
             // SAFETY: ptr is valid for cap bytes (String allocation guarantee).
-            unsafe {
-                std::ptr::write_bytes(ptr, 0, cap);
-            }
+            let slice = unsafe { std::slice::from_raw_parts_mut(ptr, cap) };
+            slice.zeroize();
         }
         // After this, Rust drops fields in order: inner (Zeroizing re-zeroes 0..len, harmless),
         // then _lock (unlocks the page), then locked_ptr (no-op).
@@ -204,7 +205,7 @@ impl Clone for Secret {
 
 impl Default for Secret {
     fn default() -> Self {
-        Self::with_capacity(PAGE_SIZE)
+        Self::with_capacity(DEFAULT_CAPACITY)
     }
 }
 
@@ -354,12 +355,12 @@ mod tests {
         let secret = Secret::with_capacity(256);
         assert!(secret.is_empty());
         assert_eq!(secret.expose_secret(), "");
-        // Capacity must be at least PAGE_SIZE
+        // Capacity must be at least DEFAULT_CAPACITY
         assert!(
-            secret.inner.capacity() >= PAGE_SIZE,
-            "capacity {} must be >= PAGE_SIZE {}",
+            secret.inner.capacity() >= DEFAULT_CAPACITY,
+            "capacity {} must be >= DEFAULT_CAPACITY {}",
             secret.inner.capacity(),
-            PAGE_SIZE,
+            DEFAULT_CAPACITY,
         );
     }
 

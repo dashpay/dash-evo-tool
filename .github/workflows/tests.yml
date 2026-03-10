@@ -86,3 +86,8 @@ jobs:
         run: cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
         env:
           E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}
+      - name: Cleanup E2E test wallets
+        if: always() && secrets.E2E_WALLET_MNEMONIC != ''
+        run: cargo test --test backend-e2e --all-features -- --ignored --nocapture cleanup_only
+        env:
+          E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}

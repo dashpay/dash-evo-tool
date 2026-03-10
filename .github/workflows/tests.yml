@@ -9,6 +9,7 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/config.toml"
       - ".github/workflows/tests.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -16,6 +17,7 @@ on:
       - "**/*.rs"
       - "**/Cargo.toml"
       - "Cargo.lock"
+      - ".cargo/config.toml"
       - ".github/workflows/tests.yml"
 
 concurrency:

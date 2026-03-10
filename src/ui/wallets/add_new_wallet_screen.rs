@@ -729,6 +729,9 @@ impl AddNewWalletScreen {
 impl ScreenLike for AddNewWalletScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         if let BackendTaskSuccessResult::CoreWalletsList(wallets) = backend_task_success_result {
+            self.selected_core_wallet_index = self
+                .selected_core_wallet_index
+                .min(wallets.len().saturating_sub(1));
             self.core_wallets = Some(wallets);
         }
     }

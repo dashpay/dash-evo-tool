@@ -98,7 +98,7 @@ Cross-cutting behaviors:
 ### Expected Results
 - Step 3: No "Dash Core Wallet" ComboBox appears at any point during the session
 - Step numbering remains at "6. Save the wallet." (no extra Core wallet step)
-- Clicking "Save Wallet" saves the wallet with `core_wallet_name = NULL` in SQLite
+- Clicking "Save Wallet" saves the wallet with the sole Core wallet auto-assigned (or `core_wallet_name = NULL` if zero wallets loaded)
 
 ---
 

@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -16,8 +17,8 @@ impl AppContext {
     pub fn recover_asset_locks(
         &self,
         wallet: Arc<RwLock<Wallet>>,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        let (known_addresses, seed_hash, already_tracked_txids) = {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let (known_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
             let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
             let addresses: Vec<Address> = wallet_guard.known_addresses.keys().cloned().collect();
             let tracked: HashSet<_> = wallet_guard
@@ -25,7 +26,12 @@ impl AppContext {
                 .iter()
                 .map(|(tx, _, _, _, _)| tx.txid())
                 .collect();
-            (addresses, wallet_guard.seed_hash(), tracked)
+            (
+                addresses,
+                wallet_guard.seed_hash(),
+                tracked,
+                wallet_guard.core_wallet_name.clone(),
+            )
         };
 
         tracing::info!(
@@ -42,10 +48,7 @@ impl AppContext {
             });
         }
 
-        let client = self
-            .core_client
-            .read()
-            .expect("Core client lock was poisoned");
+        let client = self.core_client_for_wallet(core_wallet_name.as_deref())?;
 
         let mut recovered_count = 0;
         let mut total_amount = 0u64;
@@ -59,9 +62,7 @@ impl AppContext {
 
         // Method 1: Get unspent outputs for all known addresses
         let address_refs: Vec<&Address> = known_addresses.iter().collect();
-        let unspent = client
-            .list_unspent(None, None, Some(&address_refs), Some(true), None)
-            .map_err(|e| format!("Failed to list unspent: {}", e))?;
+        let unspent = client.list_unspent(None, None, Some(&address_refs), Some(true), None)?;
 
         tracing::info!(
             "Found {} unspent outputs for known addresses",

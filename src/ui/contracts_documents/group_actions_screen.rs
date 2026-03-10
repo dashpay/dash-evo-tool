@@ -21,7 +21,7 @@ use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionB
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::add_contract_chooser_pre_filtered;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::ComponentStyles;
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
 use crate::ui::tokens::freeze_tokens_screen::FreezeTokensScreen;
@@ -49,7 +49,7 @@ use dash_sdk::dpp::tokens::emergency_action::TokenEmergencyAction;
 use dash_sdk::dpp::tokens::token_event::TokenEvent;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Color32, Context, RichText};
+use eframe::egui::{self, Context, RichText};
 use egui::{ScrollArea, TextStyle};
 use egui_extras::{Column, TableBuilder};
 use std::collections::BTreeMap;
@@ -234,15 +234,11 @@ impl GroupActionsScreen {
                                     });
                                 });
                                 row.col(|ui| {
-                                    if ui
-                                        .add(
-                                            egui::Button::new(
-                                                RichText::new("Take Action").color(Color32::WHITE),
-                                            )
-                                            .fill(DashColors::ACTION_BUTTON_BLUE)
-                                            .frame(true),
-                                        )
-                                        .clicked()
+                                    if ComponentStyles::add_primary_button(
+                                        ui,
+                                        "Take Action",
+                                    )
+                                    .clicked()
                                     {
                                         let token_contract_position = group_action.token_contract_position();
                                         let token_id = self.selected_contract.clone().expect("No contract selected").contract.token_id(token_contract_position).expect("No token ID found at the given position");
@@ -557,13 +553,7 @@ impl ScreenLike for GroupActionsScreen {
             let mut fetch_clicked = false;
             if self.selected_contract.is_some() && self.selected_identity.is_some() {
                 ui.add_space(10.0);
-                let button =
-                    egui::Button::new(RichText::new("Fetch Group Actions").color(Color32::WHITE))
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-
-                if ui.add(button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Fetch Group Actions").clicked() {
                     self.fetch_banner.take_and_clear();
                     let handle = MessageBanner::set_global(
                         ui.ctx(),

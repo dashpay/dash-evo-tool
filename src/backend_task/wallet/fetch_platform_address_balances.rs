@@ -152,11 +152,16 @@ impl AppContext {
                 }
             }
 
-            // Return balances for result
-            provider
-                .found_balances()
+            // Return the wallet's complete platform_address_info, not just
+            // found_balances.  The SDK's incremental sync only reports addresses
+            // whose balance changed; unchanged addresses are absent from
+            // found_balances but still have valid nonces in the wallet.
+            // Returning only found_balances would cause the UI to lose nonce
+            // values for stable-balance addresses (issue #652).
+            wallet
+                .platform_address_info
                 .iter()
-                .map(|(addr, funds)| (addr.clone(), (funds.balance, funds.nonce)))
+                .map(|(addr, info)| (addr.clone(), (info.balance, info.nonce)))
                 .collect()
         };
 

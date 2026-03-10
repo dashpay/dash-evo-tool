@@ -233,13 +233,19 @@ impl AppContext {
                 let ctx = Arc::clone(self);
                 self.subtasks
                     .spawn_sync("refresh_wallet_utxos", async move {
-                        if let Err(e) =
+                        let result =
                             tokio::task::spawn_blocking(move || ctx.refresh_wallet_info(wallet))
-                                .await
-                                .map_err(|e| format!("Task join error: {}", e))
-                                .and_then(|r| r.map(|_| ()))
-                        {
-                            tracing::warn!("Failed to auto-refresh wallet UTXOs on startup: {}", e);
+                                .await;
+                        match result {
+                            Err(e) => tracing::warn!(
+                                "Failed to auto-refresh wallet UTXOs on startup: {}",
+                                e
+                            ),
+                            Ok(Err(e)) => tracing::warn!(
+                                "Failed to auto-refresh wallet UTXOs on startup: {}",
+                                e
+                            ),
+                            Ok(Ok(_)) => {}
                         }
                     });
             }
@@ -252,17 +258,20 @@ impl AppContext {
                 let ctx = Arc::clone(self);
                 self.subtasks
                     .spawn_sync("refresh_single_key_wallet_utxos", async move {
-                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                        let result = tokio::task::spawn_blocking(move || {
                             ctx.refresh_single_key_wallet_info(wallet)
                         })
-                        .await
-                        .map_err(|e| format!("Task join error: {}", e))
-                        .and_then(|r| r)
-                        {
-                            tracing::warn!(
+                        .await;
+                        match result {
+                            Err(e) => tracing::warn!(
                                 "Failed to auto-refresh single key wallet UTXOs on startup: {}",
                                 e
-                            );
+                            ),
+                            Ok(Err(e)) => tracing::warn!(
+                                "Failed to auto-refresh single key wallet UTXOs on startup: {}",
+                                e
+                            ),
+                            Ok(Ok(())) => {}
                         }
                     });
             }

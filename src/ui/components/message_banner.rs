@@ -208,7 +208,16 @@ impl BannerHandle {
         }
         let mut banners = get_banners(&self.ctx);
         let b = banners.iter_mut().find(|b| b.key == self.key)?;
-        b.details = Some(details);
+        // Skip if details would just repeat the primary text (exact match or
+        // Debug-quoted match, e.g. `"same text"` vs `same text`).
+        let is_redundant = details == b.text
+            || details.strip_prefix('"').and_then(|s| s.strip_suffix('"')) == Some(b.text.as_str());
+
+        if is_redundant {
+            b.details = None;
+        } else {
+            b.details = Some(details);
+        }
         set_banners(&self.ctx, banners);
         Some(self)
     }
@@ -350,6 +359,18 @@ impl MessageBanner {
             ctx: ctx.clone(),
             key,
         }
+    }
+
+    /// Set a global error banner from any error type that implements `Display` + `Debug`.
+    ///
+    /// Uses `Display` for the user-facing message and attaches `Debug` as details.
+    pub fn set_global_with_error<E: fmt::Debug + fmt::Display>(
+        ctx: &egui::Context,
+        err: E,
+    ) -> BannerHandle {
+        let handle = Self::set_global(ctx, err.to_string(), MessageType::Error);
+        handle.with_details(err);
+        handle
     }
 
     /// Finds a message by `old_text` and replaces it with `new_text`.
@@ -539,6 +560,7 @@ fn process_banner(ui: &mut egui::Ui, state: &mut BannerState) -> BannerStatus {
         state.suggestion.as_deref(),
         state.details.as_deref(),
         &mut state.details_expanded,
+        state.key,
     ) {
         return BannerStatus::Dismissed;
     }
@@ -550,6 +572,7 @@ fn process_banner(ui: &mut egui::Ui, state: &mut BannerState) -> BannerStatus {
 
 /// Shared rendering logic for both global and per-instance banners.
 /// Returns `true` if the dismiss button was clicked.
+#[allow(clippy::too_many_arguments)]
 fn render_banner(
     ui: &mut egui::Ui,
     text: &str,
@@ -558,6 +581,7 @@ fn render_banner(
     suggestion: Option<&str>,
     details: Option<&str>,
     details_expanded: &mut bool,
+    banner_key: u64,
 ) -> bool {
     let dark_mode = ui.ctx().style().visuals.dark_mode;
     let fg_color = DashColors::message_color(message_type, dark_mode);
@@ -601,17 +625,16 @@ fn render_banner(
 
                 // Right-aligned: annotation + dismiss
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    let dismiss_response = ui.add(
-                        egui::Label::new(
-                            egui::RichText::new("\u{274C}")
-                                .color(fg_color)
-                                .font(Typography::body_small()),
+                    let dismiss_response = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new("\u{274C}")
+                                    .color(fg_color)
+                                    .font(Typography::body_small()),
+                            )
+                            .sense(egui::Sense::click()),
                         )
-                        .sense(egui::Sense::click()),
-                    );
-                    if dismiss_response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if dismiss_response.clicked() {
                         dismissed = true;
                     }
@@ -648,7 +671,7 @@ fn render_banner(
                 } else {
                     "Show details"
                 };
-                if ui
+                let toggle_response = ui
                     .add(
                         egui::Label::new(
                             egui::RichText::new(toggle_text)
@@ -658,8 +681,8 @@ fn render_banner(
                         )
                         .sense(egui::Sense::click()),
                     )
-                    .clicked()
-                {
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                if toggle_response.clicked() {
                     *details_expanded = !*details_expanded;
                 }
 
@@ -671,6 +694,7 @@ fn render_banner(
                         .corner_radius(Shape::RADIUS_SM as f32)
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
+                                .id_salt(banner_key)
                                 .max_height(DETAILS_MAX_HEIGHT)
                                 .show(ui, |ui| {
                                     ui.add(

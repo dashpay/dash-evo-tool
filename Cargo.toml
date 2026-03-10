@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "570e3af07ced2315826c157b93f9c520efb7d201", features = [
+dash-sdk = { git = "https://github.com/dashpay/platform", rev = "89c75ded905be3489dc9688cb5b6b8e0a21ab185", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -74,6 +74,8 @@ which = { version = "8.0.0" }
 tz-rs = { version = "0.7.0" }
 tempfile = "3.20.0"
 arc-swap = "1"
+urlencoding = "2"
+region = "3.0.2"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"

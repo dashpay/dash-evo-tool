@@ -7,7 +7,7 @@ use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionB
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -225,14 +225,9 @@ impl TransitionVisualizerScreen {
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                     ui.set_style(new_style);
 
-                    let button = egui::Button::new(
-                        RichText::new("Broadcast Transition to Platform").color(Color32::WHITE),
-                    )
-                    .fill(DashColors::ACTION_BUTTON_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0);
-
-                    if ui.add(button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, "Broadcast Transition to Platform")
+                        .clicked()
+                    {
                         // Mark as submitting
                         self.submit_banner.take_and_clear();
                         let handle = MessageBanner::set_global(

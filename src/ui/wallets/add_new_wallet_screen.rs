@@ -4,18 +4,20 @@ use crate::model::wallet::Wallet;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::generate_qr_code_image;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
 use dash_sdk::dpp::dashcore::Address;
 use eframe::egui::{Context, TextureHandle, TextureOptions};
 use eframe::emath::Align;
 use egui::load::SizedTexture;
-use egui::{Color32, ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
+use egui::{ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
 use std::sync::Arc;
 use zxcvbn::zxcvbn;
 
@@ -49,7 +51,7 @@ impl WordCount {
 
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
-    password: String,
+    password_input: PasswordInput,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
     selected_word_count: WordCount,
@@ -68,13 +70,17 @@ pub struct AddNewWalletScreen {
     receive_qr_texture: Option<TextureHandle>,
     show_receive_popup: bool,
     funds_received: bool,
+    /// Cached list of Core wallets (fetched once on screen init)
+    core_wallets: Option<Vec<String>>,
+    /// Index of selected Core wallet in the ComboBox
+    selected_core_wallet_index: usize,
 }
 
 impl AddNewWalletScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             seed_phrase: None,
-            password: String::new(),
+            password_input: PasswordInput::new().with_hint_text("Optional password"),
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
             selected_word_count: WordCount::Words24, // Default to 24 words for maximum security
@@ -92,6 +98,10 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
+            // TODO(CMT-007): Move list_core_wallets() off the UI thread — synchronous RPC
+            // can block screen construction. Fetch via backend task or cache.
+            core_wallets: app_context.list_core_wallets().ok(),
+            selected_core_wallet_index: 0,
         }
     }
 
@@ -112,18 +122,18 @@ impl AddNewWalletScreen {
             let seed = mnemonic.to_seed("");
 
             // Handle app-level password encryption (UI concern, separate from wallet)
-            if !self.password.is_empty() && self.use_password_for_app {
+            if !self.password_input.is_empty() && self.use_password_for_app {
                 let (encrypted_message, salt, nonce) =
-                    encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
+                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
                 self.app_context
                     .update_main_password(&salt, &nonce, &encrypted_message)
                     .map_err(|e| e.to_string())?;
             }
 
-            let password = if self.password.is_empty() {
+            let password = if self.password_input.is_empty() {
                 None
             } else {
-                Some(self.password.as_str())
+                Some(self.password_input.text())
             };
 
             // Generate default wallet name if none provided
@@ -139,12 +149,17 @@ impl AddNewWalletScreen {
                 self.alias_input.clone()
             };
 
-            let wallet = Wallet::new_from_seed(
+            let mut wallet = Wallet::new_from_seed(
                 seed,
                 self.app_context.network,
                 Some(wallet_alias),
                 password,
             )?;
+
+            wallet.core_wallet_name = self
+                .core_wallets
+                .as_ref()
+                .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
             // Extract first receive address for display before registering
             if let Some((address, _)) = wallet.known_addresses.first_key_value() {
@@ -322,7 +337,7 @@ impl AddNewWalletScreen {
         }
 
         let mut open = self.show_receive_popup;
-        egui::Window::new("Fund Wallet")
+        let window_response = egui::Window::new("Fund Wallet")
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
@@ -344,7 +359,7 @@ impl AddNewWalletScreen {
                     if let Some(address) = &self.receive_address_string {
                         ui.label(address);
                         ui.add_space(4.0);
-                        if ui.button("Copy Address").clicked()
+                        if ComponentStyles::add_primary_button(ui, "Copy Address").clicked()
                             && let Err(err) = crate::ui::helpers::copy_text_to_clipboard(address)
                         {
                             tracing::warn!("Failed to copy address: {}", err);
@@ -356,6 +371,12 @@ impl AddNewWalletScreen {
                     ui.label("Waiting for funds...");
                 });
             });
+
+        if let Some(ref resp) = window_response
+            && clicked_outside_window(ctx, resp.response.rect)
+        {
+            open = false;
+        }
 
         self.show_receive_popup = open;
         AppAction::None
@@ -453,17 +474,7 @@ impl AddNewWalletScreen {
 
                 ui.add_space(10.0);
 
-                let generate_button = egui::Button::new(
-                    RichText::new("Generate")
-                        .strong()
-                        .size(12.0)
-                        .color(Color32::WHITE),
-                )
-                .min_size(Vec2::new(100.0, 20.0))
-                .fill(DashColors::ACTION_BUTTON_BLUE) // Blue background
-                .corner_radius(5.0);
-
-                if ui.add(generate_button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Generate").clicked() {
                     self.generate_seed_phrase();
                 }
             });
@@ -625,9 +636,10 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.horizontal(|ui| {
                         ui.label("Optional Password:");
-                        if ui.text_edit_singleline(&mut self.password).changed() {
-                            if !self.password.is_empty() {
-                                let estimate = zxcvbn(&self.password, &[]);
+                        let pw_response = self.password_input.show(ui);
+                        if pw_response.changed {
+                            if !self.password_input.is_empty() {
+                                let estimate = zxcvbn(self.password_input.text(), &[]);
 
                                 // Convert Score to u8
                                 let score_u8 = u8::from(estimate.score());
@@ -684,21 +696,50 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    ui.heading("6. Save the wallet.");
+                    let save_step = if self
+                        .core_wallets
+                        .as_ref()
+                        .is_some_and(|w| w.len() > 1)
+                    {
+                        let core_wallets = self.core_wallets.as_ref().unwrap();
+                        ui.heading(
+                            "6. Select the Dash Core wallet to use for RPC operations.",
+                        );
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Dash Core Wallet:");
+                            let selected_name =
+                                &core_wallets[self.selected_core_wallet_index];
+                            ComboBox::from_id_salt("core_wallet_selector")
+                                .selected_text(selected_name.as_str())
+                                .show_ui(ui, |ui| {
+                                    for (i, name) in core_wallets.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut self.selected_core_wallet_index,
+                                            i,
+                                            name,
+                                        );
+                                    }
+                                });
+                        });
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+                        "7"
+                    } else {
+                        "6"
+                    };
+
+                    ui.heading(format!("{save_step}. Save the wallet."));
                     ui.add_space(10.0);
 
                     // Save Wallet button styled like Load Identity button
                     let mut new_style = (**ui.style()).clone();
                     new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                     ui.set_style(new_style);
-                    let save_button = egui::Button::new(
-                        RichText::new("Save Wallet").color(Color32::WHITE),
-                    )
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-
-                    if ui.add(save_button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, "Save Wallet").clicked() {
                         match self.save_wallet() {
                             Ok(save_wallet_action) => {
                                 inner_action = save_wallet_action;
@@ -723,8 +764,9 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ctx, |ui| {
                     ui.label(error_message);
                     ui.add_space(10.0);
-                    if ui.button("Close").clicked() {
-                        self.error = None; // Clear the error to close the popup
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
+                        self.error = None;
                     }
                 });
         }

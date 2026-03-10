@@ -14,8 +14,9 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, ResultBannerExt};
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, Frame, Margin, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
 use std::collections::HashMap;
@@ -1306,7 +1307,16 @@ impl ProfileScreen {
             if let Some(profile) = &self.profile {
                 let avatar_url = profile.avatar_url.clone();
                 let texture_id = format!("avatar_{}", avatar_url);
-                egui::Window::new("Avatar")
+
+                // Draw modal overlay
+                let screen_rect = ui.ctx().content_rect();
+                let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                    egui::Order::Background,
+                    egui::Id::new("avatar_popup_overlay"),
+                ));
+                painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+
+                let window_response = egui::Window::new("Avatar")
                     .collapsible(false)
                     .resizable(false)
                     .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -1335,7 +1345,7 @@ impl ProfileScreen {
 
                             ui.add_space(10.0);
                             ui.horizontal(|ui| {
-                                if ui.button("Copy URL").clicked() {
+                                if ComponentStyles::add_primary_button(ui, "Copy URL").clicked() {
                                     ui.ctx().copy_text(avatar_url.clone());
                                     MessageBanner::set_global(
                                         ui.ctx(),
@@ -1344,12 +1354,20 @@ impl ProfileScreen {
                                     );
                                     self.show_avatar_url_popup = false;
                                 }
-                                if ui.button("Close").clicked() {
+                                if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)
+                                    .clicked()
+                                {
                                     self.show_avatar_url_popup = false;
                                 }
                             });
                         });
                     });
+
+                if let Some(ref resp) = window_response
+                    && clicked_outside_window(ui.ctx(), resp.response.rect)
+                {
+                    self.show_avatar_url_popup = false;
+                }
             } else {
                 self.show_avatar_url_popup = false;
             }

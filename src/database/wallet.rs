@@ -33,8 +33,8 @@ impl Database {
             wallet.master_bip44_ecdsa_extended_public_key.encode();
 
         self.execute(
-            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO wallet (seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, network, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 wallet.seed_hash(),
                 wallet.encrypted_seed_slice(),
@@ -48,10 +48,33 @@ impl Database {
                 network_str,
                 wallet.confirmed_balance as i64,
                 wallet.unconfirmed_balance as i64,
-                wallet.total_balance as i64
+                wallet.total_balance as i64,
+                wallet.core_wallet_name.as_deref(),
             ],
         )?;
         Ok(())
+    }
+
+    /// Update the Dash Core wallet name for an HD wallet.
+    ///
+    /// Returns `Ok(true)` if exactly one row was updated, `Ok(false)` if no
+    /// matching wallet was found (0 rows), or `Err` on database errors
+    /// (including the unexpected case of >1 rows affected).
+    pub fn set_wallet_core_wallet_name(
+        &self,
+        seed_hash: &[u8; 32],
+        core_wallet_name: Option<&str>,
+    ) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn.execute(
+            "UPDATE wallet SET core_wallet_name = ? WHERE seed_hash = ?",
+            params![core_wallet_name, seed_hash],
+        )?;
+        match rows {
+            0 => Ok(false),
+            1 => Ok(true),
+            n => Err(rusqlite::Error::StatementChangedRows(n)),
+        }
     }
 
     /// Update the alias of a wallet based on the seed.
@@ -419,7 +442,7 @@ impl Database {
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
-            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance FROM wallet WHERE network = ?",
+            "SELECT seed_hash, encrypted_seed, salt, nonce, master_ecdsa_bip44_account_0_epk, alias, is_main, uses_password, password_hint, confirmed_balance, unconfirmed_balance, total_balance, core_wallet_name FROM wallet WHERE network = ?",
         )?;
 
         let mut wallets_map: BTreeMap<[u8; 32], Wallet> = BTreeMap::new();
@@ -437,6 +460,7 @@ impl Database {
             let confirmed_balance: i64 = row.get::<_, Option<i64>>(9)?.unwrap_or(0);
             let unconfirmed_balance: i64 = row.get::<_, Option<i64>>(10)?.unwrap_or(0);
             let total_balance: i64 = row.get::<_, Option<i64>>(11)?.unwrap_or(0);
+            let core_wallet_name: Option<String> = row.get(12)?;
 
             // Reconstruct the extended public keys
             let master_ecdsa_extended_public_key =
@@ -512,6 +536,7 @@ impl Database {
                     unconfirmed_balance: unconfirmed_balance as u64,
                     total_balance: total_balance as u64,
                     platform_address_info: BTreeMap::new(),
+                    core_wallet_name,
                 },
             );
 

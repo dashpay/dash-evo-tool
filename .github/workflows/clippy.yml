@@ -5,7 +5,20 @@ on:
     branches:
       - main
       - "v*-dev"
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
+      - ".github/workflows/clippy.yml"
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "**/*.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/config.toml"
+      - ".github/workflows/clippy.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -17,33 +30,10 @@ env:
 jobs:
   clippy:
     name: Clippy
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
 
     steps:
-      - name: Free disk space
-        run: |
-          echo "=== Disk space before cleanup ==="
-          df -h
-          # Remove large unnecessary directories
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /opt/hostedtoolcache/go
-          sudo rm -rf /opt/hostedtoolcache/node
-          sudo rm -rf /usr/local/share/boost
-          sudo rm -rf /usr/share/swift
-          sudo rm -rf /usr/local/graalvm
-          sudo rm -rf /usr/local/.ghcup
-          # Clean docker
-          sudo docker image prune --all --force || true
-          sudo docker system prune --all --force || true
-          # Clean apt cache
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-          echo "=== Disk space after cleanup ==="
-          df -h
-
       - name: Checkout code
         uses: actions/checkout@v4
 

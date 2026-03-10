@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{
     IdentityRegistrationInfo, IdentityTask, RegisterIdentityFundingMethod,
 };
@@ -9,13 +10,12 @@ use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, WalletFundedScreenStep,
 };
 use crate::ui::identities::funding_common::{self, copy_to_clipboard, generate_qr_code_image};
-use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;
 use egui::Ui;
 use std::sync::Arc;
 
 impl AddNewIdentityScreen {
-    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
+    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), TaskError> {
         let (address, _should_check_balance) = {
             // Scope the write lock to ensure it's dropped before calling `start_balance_check`.
 
@@ -28,42 +28,24 @@ impl AddNewIdentityScreen {
                         true,
                         Some(&self.app_context),
                     )?;
+                    let core_wallet_name = wallet.core_wallet_name.clone();
+                    drop(wallet);
 
                     if let Some(has_address) = self.core_has_funding_address {
                         if !has_address {
-                            self.app_context
-                                .core_client
-                                .read()
-                                .expect("Core client lock was poisoned")
-                                .import_address(
-                                    &receive_address,
-                                    Some("Managed by Dash Evo Tool"),
-                                    Some(false),
-                                )
-                                .map_err(|e| e.to_string())?;
+                            self.app_context.ensure_address_imported(
+                                &receive_address,
+                                core_wallet_name.as_deref(),
+                                Some("Managed by Dash Evo Tool"),
+                            )?;
                         }
                         self.funding_address = Some(receive_address);
                     } else {
-                        let info = self
-                            .app_context
-                            .core_client
-                            .read()
-                            .expect("Core client lock was poisoned")
-                            .get_address_info(&receive_address)
-                            .map_err(|e| e.to_string())?;
-
-                        if !(info.is_watchonly || info.is_mine) {
-                            self.app_context
-                                .core_client
-                                .read()
-                                .expect("Core client lock was poisoned")
-                                .import_address(
-                                    &receive_address,
-                                    Some("Managed by Dash Evo Tool"),
-                                    Some(false),
-                                )
-                                .map_err(|e| e.to_string())?;
-                        }
+                        self.app_context.ensure_address_imported(
+                            &receive_address,
+                            core_wallet_name.as_deref(),
+                            Some("Managed by Dash Evo Tool"),
+                        )?;
                         self.funding_address = Some(receive_address);
                         self.core_has_funding_address = Some(true);
                     }
@@ -74,7 +56,7 @@ impl AddNewIdentityScreen {
                     (self.funding_address.as_ref().unwrap().clone(), false)
                 }
             } else {
-                return Err("No wallet selected".to_string());
+                return Err("No wallet selected".to_string().into());
             }
         };
 
@@ -167,7 +149,11 @@ impl AddNewIdentityScreen {
             egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
             |ui| {
                 if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        e.to_string(),
+                        MessageType::Error,
+                    );
                 }
 
                 ui.add_space(20.0);

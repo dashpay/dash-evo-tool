@@ -11,12 +11,14 @@ use eframe::egui::Context;
 
 use crate::model::wallet::Wallet;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
-use crate::ui::theme::DashColors;
+use crate::ui::components::password_input::PasswordInput;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
-use egui::{Color32, ComboBox, Grid, RichText, Ui, Vec2};
+use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::Ordering;
+use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +30,7 @@ pub enum ImportType {
 pub struct ImportMnemonicScreen {
     // Common fields
     import_type: ImportType,
-    password: String,
+    password_input: PasswordInput,
     alias_input: String,
     password_strength: f64,
     estimated_time_to_crack: String,
@@ -44,11 +46,16 @@ pub struct ImportMnemonicScreen {
     seed_phrase: Option<Mnemonic>,
 
     // Private key-specific fields
-    private_key_input: String,
+    private_key_input: PasswordInput,
     parsed_single_key_wallet: Option<SingleKeyWallet>,
 
     // Identity discovery options
     identity_scan_count: u32,
+
+    /// Cached list of Core wallets (fetched once on screen init)
+    core_wallets: Option<Vec<String>>,
+    /// Index of selected Core wallet in the ComboBox
+    selected_core_wallet_index: usize,
 }
 
 impl ImportMnemonicScreen {
@@ -56,7 +63,7 @@ impl ImportMnemonicScreen {
         Self {
             // Common fields
             import_type: ImportType::Mnemonic,
-            password: String::new(),
+            password_input: PasswordInput::new().with_hint_text("Optional password"),
             alias_input: String::new(),
             password_strength: 0.0,
             estimated_time_to_crack: String::new(),
@@ -72,16 +79,23 @@ impl ImportMnemonicScreen {
             seed_phrase: None,
 
             // Private key-specific fields
-            private_key_input: String::new(),
+            private_key_input: PasswordInput::new()
+                .with_hint_text("Enter private key (WIF: 51-52 chars, or hex: 64 chars)")
+                .with_monospace(),
             parsed_single_key_wallet: None,
 
             // Identity discovery options
             identity_scan_count: 5,
+
+            // TODO(CMT-008): Move list_core_wallets() off the UI thread — synchronous RPC
+            // can block screen construction. Fetch via backend task or cache.
+            core_wallets: app_context.list_core_wallets().ok(),
+            selected_core_wallet_index: 0,
         }
     }
 
     fn try_parse_private_key(&mut self) {
-        let input = self.private_key_input.trim();
+        let input = self.private_key_input.text().trim();
         if input.is_empty() {
             self.parsed_single_key_wallet = None;
             self.error = None;
@@ -105,16 +119,16 @@ impl ImportMnemonicScreen {
     }
 
     fn save_private_key_wallet(&mut self) -> Result<AppAction, String> {
-        let input = self.private_key_input.trim();
+        let input = self.private_key_input.text().trim();
         if input.is_empty() {
             return Err("Please enter a private key".to_string());
         }
 
         // Parse the key with password and alias
-        let password = if self.password.is_empty() {
+        let password = if self.password_input.is_empty() {
             None
         } else {
-            Some(self.password.as_str())
+            Some(self.password_input.text())
         };
 
         // Generate default wallet name if none provided
@@ -131,9 +145,15 @@ impl ImportMnemonicScreen {
         };
 
         // Try WIF first, then hex
-        let wallet = SingleKeyWallet::from_wif(input, password, alias.clone()).or_else(|_| {
-            SingleKeyWallet::from_hex(input, self.app_context.network, password, alias)
-        })?;
+        let mut wallet =
+            SingleKeyWallet::from_wif(input, password, alias.clone()).or_else(|_| {
+                SingleKeyWallet::from_hex(input, self.app_context.network, password, alias)
+            })?;
+
+        wallet.core_wallet_name = self
+            .core_wallets
+            .as_ref()
+            .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
         let key_hash = wallet.key_hash();
 
@@ -159,23 +179,24 @@ impl ImportMnemonicScreen {
         self.wallet_imported = true;
         Ok(AppAction::None)
     }
+
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
 
             // Handle app-level password encryption (UI concern, separate from wallet)
-            if !self.password.is_empty() && self.use_password_for_app {
+            if !self.password_input.is_empty() && self.use_password_for_app {
                 let (encrypted_message, salt, nonce) =
-                    encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
+                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
                 self.app_context
                     .update_main_password(&salt, &nonce, &encrypted_message)
                     .map_err(|e| e.to_string())?;
             }
 
-            let password = if self.password.is_empty() {
+            let password = if self.password_input.is_empty() {
                 None
             } else {
-                Some(self.password.as_str())
+                Some(self.password_input.text())
             };
 
             // Generate default wallet name if none provided
@@ -191,12 +212,17 @@ impl ImportMnemonicScreen {
                 self.alias_input.clone()
             };
 
-            let wallet = Wallet::new_from_seed(
+            let mut wallet = Wallet::new_from_seed(
                 seed,
                 self.app_context.network,
                 Some(wallet_alias),
                 password,
             )?;
+
+            wallet.core_wallet_name = self
+                .core_wallets
+                .as_ref()
+                .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
             let (new_wallet_seed_hash, wallet_arc) = self.app_context.register_wallet(wallet)?;
 
@@ -258,16 +284,19 @@ impl ImportMnemonicScreen {
             && s == "import_another_wallet"
         {
             // Reset mnemonic fields
+            for w in &mut self.seed_phrase_words {
+                w.zeroize();
+            }
             self.seed_phrase_words = vec!["".to_string(); 24];
             self.selected_seed_phrase_length = 12;
             self.seed_phrase = None;
 
             // Reset private key fields
-            self.private_key_input = String::new();
+            self.private_key_input.clear();
             self.parsed_single_key_wallet = None;
 
             // Reset common fields
-            self.password = String::new();
+            self.password_input.clear();
             self.alias_input = String::new();
             self.password_strength = 0.0;
             self.estimated_time_to_crack = String::new();
@@ -370,17 +399,9 @@ impl ImportMnemonicScreen {
         ));
         ui.add_space(8.0);
 
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let response = ui.add_sized(
-            Vec2::new(ui.available_width() - 20.0, 40.0),
-            egui::TextEdit::singleline(&mut self.private_key_input)
-                .hint_text("Enter private key (WIF: 51-52 chars, or hex: 64 chars)")
-                .text_color(DashColors::text_primary(dark_mode))
-                .background_color(DashColors::input_background(dark_mode))
-                .password(true),
-        );
+        let response = self.private_key_input.show(ui);
 
-        if response.changed() {
+        if response.changed {
             self.try_parse_private_key();
         }
 
@@ -418,6 +439,14 @@ impl ImportMnemonicScreen {
                 "Private Key (Single Address)",
             );
         });
+    }
+}
+
+impl Drop for ImportMnemonicScreen {
+    fn drop(&mut self) {
+        for w in &mut self.seed_phrase_words {
+            w.zeroize();
+        }
     }
 }
 
@@ -572,9 +601,10 @@ impl ScreenLike for ImportMnemonicScreen {
 
                     ui.horizontal(|ui| {
                         ui.label("Optional Password:");
-                        if ui.text_edit_singleline(&mut self.password).changed() {
-                            if !self.password.is_empty() {
-                                let estimate = zxcvbn(&self.password, &[]);
+                        let pw_response = self.password_input.show(ui);
+                        if pw_response.changed {
+                            if !self.password_input.is_empty() {
+                                let estimate = zxcvbn(self.password_input.text(), &[]);
 
                                 // Convert Score to u8
                                 let score_u8 = u8::from(estimate.score());
@@ -634,6 +664,40 @@ impl ScreenLike for ImportMnemonicScreen {
 
                     step += 1;
 
+                    if self
+                        .core_wallets
+                        .as_ref()
+                        .is_some_and(|w| w.len() > 1)
+                    {
+                        let core_wallets = self.core_wallets.as_ref().unwrap();
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        ui.heading(format!(
+                            "{}. Select the Dash Core wallet to use for RPC operations.",
+                            step
+                        ));
+                        step += 1;
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label("Dash Core Wallet:");
+                            let selected_name = &core_wallets[self.selected_core_wallet_index];
+                            ComboBox::from_id_salt("import_core_wallet_selector")
+                                .selected_text(selected_name)
+                                .show_ui(ui, |ui| {
+                                    for (i, name) in core_wallets.iter().enumerate() {
+                                        ui.selectable_value(
+                                            &mut self.selected_core_wallet_index,
+                                            i,
+                                            name,
+                                        );
+                                    }
+                                });
+                        });
+                    }
+
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(10.0);
@@ -654,14 +718,7 @@ impl ScreenLike for ImportMnemonicScreen {
                         ImportType::Mnemonic => "Save Wallet",
                         ImportType::PrivateKey => "Import Key",
                     };
-                    let save_button = egui::Button::new(
-                        RichText::new(button_label).color(Color32::WHITE),
-                    )
-                        .fill(DashColors::ACTION_BUTTON_BLUE)
-                        .frame(true)
-                        .corner_radius(3.0);
-
-                    if ui.add(save_button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, button_label).clicked() {
                         let result = match self.import_type {
                             ImportType::Mnemonic => self.save_wallet(),
                             ImportType::PrivateKey => self.save_private_key_wallet(),

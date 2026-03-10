@@ -66,9 +66,16 @@ jobs:
                and resolve the thread.
             2. Run /claudius:grumpy-review to perform a fresh code review.
             3. Post only MEDIUM severity and higher findings as new inline PR comments.
-            4. Remove the "claudius-review" label (review is human-triggered each time).
-            5. If no unresolved comments remain after the full flow, approve the PR.
+            4. If no unresolved comments remain after the full flow, approve the PR.
           claude_args: |
             --agent claudius:claudius
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns 30
+
+      - name: Remove claudius-review label
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit "${{ github.event.pull_request.number }}" \
+            --remove-label "claudius-review" 2>/dev/null || true

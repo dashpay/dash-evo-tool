@@ -1,6 +1,6 @@
 # User Stories
 
-This document catalogs user stories for Dash Evo Tool, organized by feature area and mapped to the three user personas: **Alex** (Everyday User), **Priya** (Power User), and **Jordan** (Platform Developer). Each story follows a progressive disclosure model where simpler needs come first. Stories marked `[Implemented]` reflect features present in the current codebase; stories marked `[Gap]` represent identified needs not yet addressed.
+This document catalogs 113 user stories for Dash Evo Tool, organized by feature area and mapped to the three user personas: **Alex** (Everyday User), **Priya** (Power User), and **Jordan** (Platform Developer). Each story follows a progressive disclosure model where simpler needs come first. Stories marked `[Implemented]` reflect features present in the current codebase; stories marked `[Gap]` represent identified needs not yet addressed.
 
 See [docs/personas/](personas/) for full persona descriptions.
 
@@ -153,6 +153,38 @@ As a user, I want to review my past transactions so that I can track payments se
 - Lists transactions with amounts, dates, and direction.
 - Priya sees TxID, block height, and confirmation count.
 
+### WAL-017: Fund Platform address from wallet [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to fund a Platform payment address directly from my wallet UTXOs so that I can use Platform features without manually creating asset locks.
+
+- Creates asset lock automatically from wallet funds.
+- Supports fee deduction from output or wallet.
+
+### WAL-018: Fund Platform address from asset lock [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to fund a Platform address from an existing asset lock so that I can reuse previously locked funds.
+
+- Converts InstantLock to ChainLock proof automatically.
+- Supports multiple destination addresses.
+
+### WAL-019: Transfer credits between Platform addresses [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to transfer credits between my Platform payment addresses so that I can redistribute Platform funds across addresses.
+
+- Fee deduction strategy selection.
+- Used in internal wallet operations.
+
+### WAL-020: Withdraw from Platform address to Core [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to withdraw credits from a Platform address back to a Core address so that I can convert Platform credits to spendable Dash.
+
+- Destination Core address input.
+- Fee strategy configuration.
+
 ---
 
 ## Send and Receive (SND)
@@ -189,13 +221,24 @@ As an everyday user, I want to send Dash to someone by entering their DPNS usern
 - Confirmation shows both the username and resolved address.
 - Error displayed if username is not found.
 
-### SND-005: See fee estimate before confirming send [Gap]
+### SND-005: See fee estimate before confirming send [Implemented]
 **Persona:** Alex, Priya
 
 As a user, I want to see the estimated transaction fee and total amount to be deducted before confirming a send so that I know exactly what I am paying.
 
 - Fee estimate shown in confirmation dialog.
 - Total deduction (amount + fee) displayed clearly.
+- Single-key wallets: `estimate_fee()` with transaction size details (inputs, bytes).
+- HD wallets: fee displayed before confirmation with Platform address handling.
+
+### SND-006: Send to multiple recipients [Implemented]
+**Persona:** Priya, Jordan
+
+As a user with a single-key wallet, I want to send Dash to multiple recipients in one transaction so that I can distribute funds efficiently.
+
+- Add/remove recipients in a list.
+- Per-recipient address and amount.
+- Single transaction broadcast.
 
 ---
 
@@ -323,6 +366,22 @@ As a developer, I want to create multiple identities in one operation so that I 
 - Each is funded and registered automatically.
 - Progress shown per identity.
 
+### IDN-012: Register identity from Platform addresses [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to register a new identity using Platform address credits so that I can fund identities without creating a separate asset lock.
+
+- Alternative funding method in identity registration wizard.
+- Uses existing Platform address balance.
+
+### IDN-013: Top up identity from Platform addresses [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to top up identity credits from a Platform address so that I can fund identities from my Platform balance.
+
+- Available as funding method in top-up screen.
+- Uses Platform address credits directly.
+
 ---
 
 ## DPNS (DPN)
@@ -363,6 +422,7 @@ As a masternode operator, I want to vote on contested DPNS name registrations so
 
 - Cast, change, or abstain votes (max 4 vote changes per contest).
 - Evonode/masternode identity required.
+- Note: The max 4 vote changes constraint is enforced at the Platform protocol level, not validated in the app UI.
 
 ### DPN-006: Schedule votes [Implemented]
 **Persona:** Priya
@@ -443,6 +503,31 @@ As a user, I want to view past payments sent and received through DashPay so tha
 As an everyday user, I want to generate a DashPay QR code so that someone nearby can scan it to add me as a contact or send a payment.
 
 - QR code encodes DashPay profile or payment info.
+
+### DPY-009: Edit contact info [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to edit contact details (nickname, note, hidden status) so that I can organize and annotate my contact list.
+
+- Set custom nickname and personal notes per contact.
+- Toggle contact visibility (hidden/visible).
+- Changes persist locally.
+
+### DPY-010: Remove a contact [Gap]
+**Persona:** Alex, Priya
+
+As a user, I want to remove a contact from my list so that I can manage who appears in my contacts.
+
+- Backend function exists but returns "not yet implemented".
+- Requires Platform-level support for contact removal.
+
+### DPY-011: Auto-accept contact requests [Implemented]
+**Persona:** Priya
+
+As a power user, I want to generate an auto-accept proof so that incoming contact requests are accepted automatically without my manual intervention.
+
+- HD derivation and proof signing for automatic acceptance.
+- QR code generation for sharing auto-accept proof.
 
 ---
 
@@ -557,6 +642,30 @@ As a token issuer, I want to use group actions (query, sign, approve) so that to
 
 - View pending group actions.
 - Sign or approve actions as a group member.
+
+### TOK-015: View available token claims [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to browse available token claims before claiming so that I can review what is available and decide which to claim.
+
+- Detailed view of claim documents with metadata.
+- Accessible before performing claim action.
+
+### TOK-016: Estimate perpetual token rewards [Implemented]
+**Persona:** Jordan
+
+As a token issuer, I want to estimate perpetual distribution rewards so that I can understand the expected payout schedule.
+
+- Detailed estimation with explanation.
+- Supports multiple distribution function types (fixed, linear, polynomial, exponential, logarithmic).
+
+### TOK-017: Pay for document operations with tokens [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to pay for document operations (create, replace, delete, transfer) using tokens instead of credits so that I can use alternative payment methods.
+
+- Optional `TokenPaymentInfo` parameter on all document actions.
+- Token-based payment as alternative to credit-based payment.
 
 ---
 
@@ -740,12 +849,13 @@ As a user, I want to enable developer mode so that I can access advanced feature
 
 - Toggles visibility of advanced UI elements.
 
-### NET-006: Select user mode [Implemented]
+### NET-006: Select user mode [Gap]
 **Persona:** Alex, Priya
 
 As a user, I want to choose between Beginner and Advanced mode so that the interface matches my experience level.
 
 - Beginner mode hides complexity; Advanced mode shows full detail.
+- `UserMode` enum and database persistence exist but no UI control is implemented.
 
 ### NET-007: Granular refresh controls [Implemented]
 **Persona:** Priya

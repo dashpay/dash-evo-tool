@@ -64,6 +64,35 @@ Border widths: 1px standard (`BORDER_WIDTH`), 2px emphasis/focus (`BORDER_WIDTH_
 | Validation    | `VALIDATION_WARNING`| `#ff9664`|
 | Disabled      | `DISABLED`        | `#bdc3c7` |
 
+**Password strength colors**:
+
+| Constant          | Hex       | Usage                  |
+|-------------------|-----------|------------------------|
+| `STRENGTH_WEAK`   | `#ffb6c1` | Very weak password     |
+| `STRENGTH_FAIR`   | `#ffe082` | Fair password          |
+| `STRENGTH_GOOD`   | `#90ee90` | Good password          |
+| `STRENGTH_STRONG` | `#5ac858` | Strong password        |
+
+**Additional semantic colors**:
+
+| Constant             | Hex       | Usage                              |
+|----------------------|-----------|------------------------------------|
+| `DANGER_HOVER`       | `#c80000` | Danger button hover state          |
+| `BUTTON_DISABLED`    | `#646464` | Disabled/inactive button fill      |
+| `WARNING_BRIGHT`     | `#ff9800` | Important warnings (key exposure)  |
+| `PLATFORM_PURPLE`    | `#8250dc` | Platform address type indicators   |
+| `ACTION_BUTTON_BLUE` | `#0080ff` | Primary action buttons             |
+| `HIGHLIGHT_GOLD`     | `#9b870c` | Text highlighting (matched hashes) |
+
+**Interactive state colors** (theme-aware via `hover(dark_mode)`, `pressed(dark_mode)`, etc.):
+
+| State    | Light             | Dark              |
+|----------|-------------------|-------------------|
+| Hover    | `#c8dcfa`         | `#2d2d37`         |
+| Pressed  | `#b4c8f0`         | `#373741`         |
+| Selected | `#bed2f5`         | `#324664`         |
+| Disabled | `#bdc3c7`         | `#505050`         |
+
 **Network accents** (`network_accent(network, dark_mode)`):
 
 | Network  | Light         | Dark          |
@@ -97,6 +126,7 @@ Use `StyledButton` from `src/ui/components/styled.rs`. Never use bare `ui.button
 - Hover: pointing hand cursor
 - Min click target: 32x32px (WCAG AA), prefer 44x44px
 - Usage: `StyledButton::primary("Label").show(ui)`
+- **Styling**: Use `ComponentStyles` helpers -- `primary_button_fill()`, `primary_button_text()`, `primary_button_stroke()`, `secondary_button_fill()`, `secondary_button_text()`, `secondary_button_stroke()`, `danger_button_fill()`, `danger_button_text()`. Never style buttons ad-hoc at call sites.
 
 ## 4. Dialogs and Modals
 
@@ -120,7 +150,18 @@ Reference: `AmountInput` in `src/ui/components/amount_input.rs`.
 - Invalid input sets domain value to `None`
 - Input border: 1px unfocused (`input_stroke()`), 2px focused in `DASH_BLUE` (`input_stroke_focused()`), 2px `ERROR` on validation failure (`input_stroke_error()`)
 - Styled text edits: `styled_text_edit_singleline()` / `styled_text_edit_multiline()`
+- **Input border helpers**: `ComponentStyles::input_stroke()`, `input_stroke_focused()`, `input_stroke_error()` are the canonical helpers -- never construct input strokes manually
 - Follow Component pattern: lazy init, private fields, builder API, `ComponentResponse` trait (see `docs/COMPONENT_DESIGN_PATTERN.md`)
+
+### Password Inputs
+
+Reference: `src/ui/components/wallet_unlock.rs`.
+
+- Mask input: `TextEdit::singleline(&mut text).password(!show_password)`
+- Hold-to-reveal: use `egui::Button` with eye icon; toggle via `ui.input(|i| i.pointer.any_pressed())` -- show cleartext only while pressed
+- Password strength: display colored bar using `STRENGTH_WEAK`/`FAIR`/`GOOD`/`STRONG` colors
+- Show validation errors only after user interaction, never on initial focus for untouched fields
+- See `docs/ai-design/2026-03-09-password-input/ux-spec.md` for full spec
 
 ## 6. Messages and Errors
 
@@ -195,6 +236,21 @@ Reference personas in `docs/personas/`.
 - `ScrollArea` for overflow content
 - Modal windows resizable for content-heavy dialogs
 
+## 13. Shadows
+
+Reference: `Shadow` in `src/ui/theme.rs`.
+
+| Token       | Offset | Blur | Usage                        |
+|-------------|--------|------|------------------------------|
+| `small()`   | [0,2]  | 4    | Subtle depth                 |
+| `medium()`  | [0,4]  | 12   | Cards, panels                |
+| `large()`   | [0,8]  | 24   | Elevated elements            |
+| `elevated()`| [0,12] | 32   | Major cards, hero panels     |
+| `inner()`   | [0,1]  | 2    | Glass morphism (white tint)  |
+| `glow()`    | [0,0]  | 20   | Primary element emphasis (Dash Blue tint) |
+
+Dark mode uses lighter surfaces for elevation rather than shadows.
+
 ---
 
 ## See Also
@@ -205,3 +261,5 @@ Reference personas in `docs/personas/`.
 - `src/ui/components/styled.rs` -- button and card components
 - `src/ui/components/message_banner.rs` -- message system
 - `src/ui/components/confirmation_dialog.rs` -- dialog pattern
+- `src/ui/components/wallet_unlock.rs` -- password input pattern
+- `docs/ai-design/2026-03-09-password-input/ux-spec.md` -- password input UX spec

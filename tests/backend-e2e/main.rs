@@ -14,6 +14,7 @@ mod identity_helpers;
 mod task_runner;
 mod wait;
 
+mod cleanup_only;
 mod fetch_contract;
 mod identity_create;
 mod identity_withdraw;

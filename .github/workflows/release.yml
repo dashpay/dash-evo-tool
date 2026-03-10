@@ -13,6 +13,12 @@ on:
       tag:
         description: "Version (i.e. v0.1.0)"
         required: false
+  workflow_call:
+    inputs:
+      tag:
+        description: "Version (i.e. v0.1.0)"
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -112,6 +118,7 @@ jobs:
         with:
           name: dash-evo-tool-${{ matrix.platform }}.zip
           path: dash-evo-tool-${{ matrix.platform }}.zip
+          retention-days: 14
 
   build-macos-arm64:
     name: Build macOS ARM64 (Signed & Notarized)
@@ -379,6 +386,7 @@ jobs:
         with:
           name: dash-evo-tool-macos-arm64.dmg
           path: dash-evo-tool-macos-arm64.dmg
+          retention-days: 14
 
   build-macos-x86:
     name: Build macOS x86_64 (Signed & Notarized)
@@ -641,6 +649,7 @@ jobs:
         with:
           name: dash-evo-tool-macos-x86_64.dmg
           path: dash-evo-tool-macos-x86_64.dmg
+          retention-days: 14
 
   release:
     name: Create GitHub Release
@@ -672,9 +681,9 @@ jobs:
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: ${{ github.event.inputs.tag != '' }}
+        if: ${{ inputs.tag != '' }}
         with:
-          tag_name: ${{ github.event.inputs.tag }}
+          tag_name: ${{ inputs.tag }}
           files: |
             ./dash-evo-tool-linux-x86_64.zip
             ./dash-evo-tool-linux-arm64.zip

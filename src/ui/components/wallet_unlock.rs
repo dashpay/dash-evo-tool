@@ -67,9 +67,7 @@ pub trait ScreenWithWalletUnlock {
                 let unlock_clicked = ui.button("Unlock").clicked();
 
                 if enter_pressed || unlock_clicked {
-                    let password_text = self.password_input().text().to_string();
-
-                    let unlock_result = wallet.wallet_seed.open(&password_text);
+                    let unlock_result = wallet.wallet_seed.open(self.password_input().text());
 
                     match unlock_result {
                         Ok(_) => {

@@ -353,11 +353,11 @@ fn verify_key_input(
     untrimmed_private_key: Secret,
     type_key: &str,
 ) -> Result<Option<[u8; 32]>, String> {
-    let private_key = untrimmed_private_key.expose_secret().trim().to_string();
+    let private_key = untrimmed_private_key.expose_secret().trim();
     match private_key.len() {
         64 => {
             // hex
-            match hex::decode(private_key.as_str()) {
+            match hex::decode(private_key) {
                 Ok(decoded) => Ok(Some(decoded.try_into().unwrap())),
                 Err(_) => Err(format!(
                     "{} key is the size of a hex key but isn't hex",
@@ -367,7 +367,7 @@ fn verify_key_input(
         }
         51 | 52 => {
             // wif
-            match PrivateKey::from_wif(private_key.as_str()) {
+            match PrivateKey::from_wif(private_key) {
                 Ok(key) => Ok(Some(key.inner.secret_bytes())),
                 Err(_) => Err(format!(
                     "{} key is the length of a WIF key but is invalid",

@@ -100,7 +100,7 @@ impl ImportMnemonicScreen {
     }
 
     fn try_parse_private_key(&mut self) {
-        let input = self.private_key_input.text().trim().to_string();
+        let input = self.private_key_input.text().trim();
         if input.is_empty() {
             self.parsed_single_key_wallet = None;
             self.error = None;
@@ -108,8 +108,8 @@ impl ImportMnemonicScreen {
         }
 
         // Try to parse as WIF first, then as hex
-        let result = SingleKeyWallet::from_wif(&input, None, None)
-            .or_else(|_| SingleKeyWallet::from_hex(&input, self.app_context.network, None, None));
+        let result = SingleKeyWallet::from_wif(input, None, None)
+            .or_else(|_| SingleKeyWallet::from_hex(input, self.app_context.network, None, None));
 
         match result {
             Ok(wallet) => {
@@ -124,7 +124,7 @@ impl ImportMnemonicScreen {
     }
 
     fn save_private_key_wallet(&mut self) -> Result<AppAction, String> {
-        let input = self.private_key_input.text().trim().to_string();
+        let input = self.private_key_input.text().trim();
         if input.is_empty() {
             return Err("Please enter a private key".to_string());
         }
@@ -151,8 +151,8 @@ impl ImportMnemonicScreen {
 
         // Try WIF first, then hex
         let mut wallet =
-            SingleKeyWallet::from_wif(&input, password, alias.clone()).or_else(|_| {
-                SingleKeyWallet::from_hex(&input, self.app_context.network, password, alias)
+            SingleKeyWallet::from_wif(input, password, alias.clone()).or_else(|_| {
+                SingleKeyWallet::from_hex(input, self.app_context.network, password, alias)
             })?;
 
         wallet.core_wallet_name = self

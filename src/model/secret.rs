@@ -99,6 +99,11 @@ impl Secret {
         &self.inner
     }
 
+    /// The length of the secret in bytes.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
     /// Whether the secret is empty.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()

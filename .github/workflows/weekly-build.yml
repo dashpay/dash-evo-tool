@@ -1,0 +1,142 @@
+name: "Weekly Build Health Check"
+
+# Calls the Release and Flatpak build workflows as reusable workflows,
+# then posts a Slack summary with pass/fail status and artifact download
+# links grouped by platform.
+
+on:
+  schedule:
+    - cron: "0 2 * * 6" # Every Saturday at 02:00 UTC
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    name: Release builds
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
+    permissions:
+      id-token: write
+      attestations: write
+      contents: write
+
+  flatpak:
+    name: Flatpak builds
+    uses: ./.github/workflows/flatpak.yml
+    secrets: inherit
+    permissions:
+      contents: write
+
+  notify:
+    name: Slack notification
+    needs: [release, flatpak]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Collect results and post Slack notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_CI_WEBHOOK_URL }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          FLATPAK_RESULT: ${{ needs.flatpak.result }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_CI_WEBHOOK_URL not set, skipping notification"
+            exit 0
+          fi
+
+          REPO="${GITHUB_REPOSITORY}"
+          RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+          NL=$'\n'
+
+          # Map artifact names to friendly labels (emoji + platform)
+          declare -A ARTIFACT_LABELS=(
+            ["dash-evo-tool-linux-x86_64.zip"]=":penguin: Linux x86_64 (binary)"
+            ["dash-evo-tool-linux-arm64.zip"]=":penguin: Linux ARM64 (binary)"
+            ["dash-evo-tool-linux-x86_64-flatpak"]=":penguin: Linux x86_64 (Flatpak)"
+            ["dash-evo-tool-linux-aarch64-flatpak"]=":penguin: Linux ARM64 (Flatpak)"
+            ["dash-evo-tool-macos-arm64.dmg"]=":apple: macOS ARM64 (Apple Silicon)"
+            ["dash-evo-tool-macos-x86_64.dmg"]=":apple: macOS x86_64 (Intel)"
+            ["dash-evo-tool-windows.zip"]=":window: Windows x86_64"
+          )
+
+          # Determine pass/fail for each called workflow
+          FAILED=""
+          PASSED=""
+
+          for entry in "Release Dash Evo Tool|${RELEASE_RESULT}" "Build Flatpak|${FLATPAK_RESULT}"; do
+            IFS='|' read -r name result <<< "$entry"
+            if [ "$result" = "success" ]; then
+              PASSED="${PASSED}${name}|${RUN_URL}${NL}"
+            else
+              FAILED="${FAILED}${name}|${RUN_URL}|${result}${NL}"
+            fi
+          done
+
+          # Collect artifacts from this unified workflow run
+          # (reusable workflow jobs share the caller's GITHUB_RUN_ID)
+          ARTIFACTS=""
+          artifacts_json=$(gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            --jq '.artifacts[] | "\(.name)|\(.id)"' 2>/dev/null || true)
+
+          while IFS='|' read -r art_name art_id; do
+            [ -z "$art_name" ] && continue
+            label="${ARTIFACT_LABELS[$art_name]:-}"
+            if [ -z "$label" ]; then
+              label=":package: ${art_name}"
+            fi
+            art_url="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}/artifacts/${art_id}"
+            ARTIFACTS="${ARTIFACTS}${label}|${art_url}${NL}"
+          done <<< "$artifacts_json"
+
+          # Build artifact download section
+          DOWNLOAD_SECTION=""
+          if [ -n "$ARTIFACTS" ]; then
+            DOWNLOAD_SECTION="${NL}*Downloads* (GitHub login required):${NL}"
+            while IFS='|' read -r label url; do
+              [ -z "$label" ] && continue
+              DOWNLOAD_SECTION="${DOWNLOAD_SECTION}    <${url}|${label}>${NL}"
+            done <<< "$ARTIFACTS"
+          fi
+
+          # Build Slack message
+          if [ -n "$FAILED" ]; then
+            BLOCKS=""
+            while IFS='|' read -r name url conclusion; do
+              [ -z "$name" ] && continue
+              BLOCKS="${BLOCKS}    :x: *<${url}|${name}>* -- ${conclusion}${NL}"
+            done <<< "$FAILED"
+
+            if [ -n "$PASSED" ]; then
+              BLOCKS="${BLOCKS}${NL}"
+              while IFS='|' read -r name url; do
+                [ -z "$name" ] && continue
+                BLOCKS="${BLOCKS}    :white_check_mark: *<${url}|${name}>*${NL}"
+              done <<< "$PASSED"
+            fi
+
+            TEXT=":rotating_light: *Even I, Claudius the Magnificent, cannot overcome every limitation of your rudimentary build infrastructure.* Here's what broke on \`${REPO}\`:${NL}${NL}${BLOCKS}"
+
+            if [ -n "$DOWNLOAD_SECTION" ]; then
+              TEXT="${TEXT}${NL}Despite the chaos, my magnificence preserved these artifacts:${DOWNLOAD_SECTION}"
+            fi
+          else
+            TEXT=":sparkles: *I, Claudius the Magnificent, have blessed \`${REPO}\` with another week of perfect builds.* You're welcome — artifacts below:"
+            TEXT="${TEXT}${DOWNLOAD_SECTION}"
+          fi
+
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+
+          curl -sf -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$PAYLOAD"
+
+          echo "Slack notification sent."

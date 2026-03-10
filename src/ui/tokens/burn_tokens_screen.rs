@@ -8,7 +8,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::{BannerHandle, Component, ComponentResponse, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::ui::tokens::validate_signing_key;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -22,7 +22,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Context, Ui};
 use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
@@ -639,12 +639,7 @@ impl ScreenLike for BurnTokensScreen {
                 // Burn button
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);
-                    let button =
-                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(DashColors::ACTION_BUTTON_BLUE)
-                            .corner_radius(3.0);
-
-                    if ui.add(button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, button_text).clicked() {
                         // Create confirmation dialog on button click
                         if self.confirmation_dialog.is_none() {
                             let amount = match self.amount.as_ref() {

@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use crate::ui::theme::{ComponentStyles, DashColors, Shape};
+use crate::ui::helpers::clicked_outside_window;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 
 /// Result of a selection dialog interaction
@@ -246,56 +245,27 @@ impl SelectionDialog {
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Confirm button
-                        if let Some(confirm_text) = &self.confirm_text {
-                            let fill_color = ComponentStyles::primary_button_fill();
-                            let text_color = ComponentStyles::primary_button_text();
-
-                            let confirm_label = if let WidgetText::RichText(rich_text) =
-                                confirm_text
-                            {
-                                rich_text.clone()
-                            } else {
-                                Arc::new(egui::RichText::new(confirm_text.text()).color(text_color))
-                            };
-
-                            let confirm_button = egui::Button::new(confirm_label)
-                                .fill(fill_color)
-                                .stroke(ComponentStyles::primary_button_stroke())
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
-
-                            if ui
-                                .add_enabled(!self.options.is_empty(), confirm_button)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                                && !self.options.is_empty()
-                            {
-                                final_response =
-                                    Some(SelectionStatus::Selected(self.selected_index));
-                            }
+                        if let Some(confirm_text) = &self.confirm_text
+                            && ComponentStyles::add_primary_button_enabled(
+                                ui,
+                                !self.options.is_empty(),
+                                confirm_text.clone(),
+                            )
+                            .clicked()
+                            && !self.options.is_empty()
+                        {
+                            final_response = Some(SelectionStatus::Selected(self.selected_index));
                         }
 
                         // Cancel button
                         if let Some(cancel_text) = &self.cancel_text {
-                            let cancel_label = if let WidgetText::RichText(rich_text) = cancel_text
-                            {
-                                rich_text.clone()
-                            } else {
-                                egui::RichText::new(cancel_text.text())
-                                    .color(ComponentStyles::secondary_button_text())
-                                    .into()
-                            };
-
-                            let cancel_button = egui::Button::new(cancel_label)
-                                .fill(ComponentStyles::secondary_button_fill())
-                                .stroke(ComponentStyles::secondary_button_stroke())
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_SM))
-                                .min_size(egui::Vec2::new(80.0, 32.0));
-
-                            if ui
-                                .add(cancel_button)
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            if ComponentStyles::add_secondary_button(
+                                ui,
+                                cancel_text.clone(),
+                                dark_mode,
+                            )
+                            .clicked()
                             {
                                 final_response = Some(SelectionStatus::Canceled);
                             }
@@ -324,6 +294,15 @@ impl SelectionDialog {
             && ui.input(|i| i.key_pressed(egui::Key::Enter))
         {
             final_response = Some(SelectionStatus::Selected(self.selected_index));
+        }
+
+        // Handle click outside window (skip if ComboBox dropdown is open)
+        if let Some(ref wr) = window_response
+            && final_response.is_none()
+            && !combo_open
+            && clicked_outside_window(ui.ctx(), wr.response.rect)
+        {
+            final_response = Some(SelectionStatus::Canceled);
         }
 
         // Update state: record status before closing so current_value() sees it

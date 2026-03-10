@@ -21,7 +21,7 @@ use crate::ui::helpers::{
     show_success_screen_with_info,
 };
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
@@ -926,13 +926,7 @@ impl DocumentActionScreen {
             DocumentActionType::Transfer => "Transfer document",
         };
 
-        let button = egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-            .fill(DashColors::ACTION_BUTTON_BLUE)
-            .frame(true)
-            .corner_radius(3.0)
-            .min_size(egui::vec2(100.0, 30.0));
-
-        if ui.add(button).clicked() && self.can_broadcast() {
+        if ComponentStyles::add_primary_button(ui, button_text).clicked() && self.can_broadcast() {
             let task = self.create_document_action();
             if task != BackendTask::None {
                 self.broadcast_status = BroadcastStatus::Broadcasting;

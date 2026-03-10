@@ -165,7 +165,10 @@ impl PasswordInput {
         let eye_response = ui.interact(eye_rect, eye_id, Sense::click_and_drag());
 
         // Update for NEXT frame.
-        self.revealing = eye_response.is_pointer_button_down_on() && eye_response.hovered();
+        let next_revealing =
+            eye_response.is_pointer_button_down_on() && eye_response.hovered();
+        let reveal_changed = next_revealing != self.revealing;
+        self.revealing = next_revealing;
 
         let icon_color = if eye_response.hovered() || self.revealing {
             DashColors::DASH_BLUE
@@ -195,7 +198,7 @@ impl PasswordInput {
         }
         eye_response.on_hover_text("Hold to reveal");
 
-        if self.revealing {
+        if self.revealing || reveal_changed {
             ui.ctx().request_repaint();
         }
 

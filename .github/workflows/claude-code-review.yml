@@ -73,7 +73,7 @@ jobs:
             --max-turns 30
 
       - name: Remove claudius-review label
-        if: always()
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

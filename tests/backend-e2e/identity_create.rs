@@ -15,23 +15,51 @@ use std::time::Duration;
 async fn test_create_identity() {
     let ctx = ctx().await;
 
-    // Create a funded test wallet (0.01 DASH = 1_000_000 duffs)
-    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(1_000_000).await;
+    // Create a funded test wallet (0.03 DASH = 3_000_000 duffs)
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(3_000_000).await;
 
     // Wait for test wallet funds to become spendable (confirmed/IS-locked)
     // before attempting identity registration which sends a transaction.
-    wait_for_spendable_balance(&ctx.app_context, seed_hash, 1, Duration::from_secs(60))
+    wait_for_spendable_balance(&ctx.app_context, seed_hash, 1, Duration::from_secs(120))
         .await
         .expect("Test wallet funds should become spendable");
 
-    // Build identity registration info
-    let registration_info = build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
-
-    // Register identity on Platform
-    let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(registration_info));
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("Identity registration should succeed");
+    // Register identity on Platform (with retry for transient chain sync issues)
+    let mut last_error = String::new();
+    let mut result = None;
+    for attempt in 1..=3 {
+        let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
+            build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash),
+        ));
+        match run_task(&ctx.app_context, task).await {
+            Ok(r) => {
+                result = Some(r);
+                break;
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if attempt < 3
+                    && (err_str.contains("chain height")
+                        || err_str.contains("Timeout waiting for asset lock"))
+                {
+                    println!(
+                        "  Identity registration attempt {}/3 failed ({}), retrying in 30s...",
+                        attempt, err_str
+                    );
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    last_error = err_str;
+                    continue;
+                }
+                panic!("Identity registration should succeed: {}", e);
+            }
+        }
+    }
+    let result = result.unwrap_or_else(|| {
+        panic!(
+            "Identity registration failed after 3 attempts: {}",
+            last_error
+        )
+    });
 
     match result {
         BackendTaskSuccessResult::RegisteredIdentity(qualified_identity, fee_result) => {

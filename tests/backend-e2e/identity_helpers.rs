@@ -73,7 +73,7 @@ pub fn build_identity_registration(
         wallet: wallet_arc.clone(),
         wallet_identity_index: identity_index,
         identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
-            500_000, // 0.005 DASH for identity funding
+            2_000_000, // 0.02 DASH for identity funding
             identity_index,
         ),
     }

@@ -18,19 +18,49 @@ async fn test_withdraw_from_identity() {
     let ctx = ctx().await;
 
     // Create funded test wallet
-    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(10_000_000).await;
 
     // Wait for test wallet funds to become spendable before identity registration
     wait_for_spendable_balance(&ctx.app_context, seed_hash, 1, Duration::from_secs(60))
         .await
         .expect("Test wallet funds should become spendable");
 
-    // Register identity
-    let registration_info = build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash);
-    let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(registration_info));
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("Identity registration should succeed");
+    // Register identity (with retry for transient chain sync issues)
+    let mut last_error = String::new();
+    let mut reg_result = None;
+    for attempt in 1..=3 {
+        let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
+            build_identity_registration(&ctx.app_context, &wallet_arc, seed_hash),
+        ));
+        match run_task(&ctx.app_context, task).await {
+            Ok(r) => {
+                reg_result = Some(r);
+                break;
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if attempt < 3
+                    && (err_str.contains("chain height")
+                        || err_str.contains("Timeout waiting for asset lock"))
+                {
+                    println!(
+                        "  Identity registration attempt {}/3 failed ({}), retrying in 30s...",
+                        attempt, err_str
+                    );
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    last_error = err_str;
+                    continue;
+                }
+                panic!("Identity registration should succeed: {}", e);
+            }
+        }
+    }
+    let result = reg_result.unwrap_or_else(|| {
+        panic!(
+            "Identity registration failed after 3 attempts: {}",
+            last_error
+        )
+    });
 
     let qualified_identity = match result {
         BackendTaskSuccessResult::RegisteredIdentity(qi, _) => qi,
@@ -46,8 +76,8 @@ async fn test_withdraw_from_identity() {
         .expect("Valid address")
         .assume_checked();
 
-    // Withdraw half the credits
-    let withdraw_amount = initial_balance / 2;
+    // Withdraw a tenth of the credits
+    let withdraw_amount = initial_balance / 10;
     let task = BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
         qualified_identity,
         Some(withdraw_address),

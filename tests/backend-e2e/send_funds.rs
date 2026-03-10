@@ -60,10 +60,14 @@ async fn send_with_retry(
 
         match run_task(app_context, task).await {
             Ok(result) => return result,
-            Err(e) if e.to_string().contains("Insufficient") && attempt < MAX_RETRIES => {
+            Err(e)
+                if (e.to_string().contains("Insufficient")
+                    || e.to_string().contains("No UTXOs"))
+                    && attempt < MAX_RETRIES =>
+            {
                 println!(
-                    "  Send attempt {}/{} failed (Insufficient funds), will retry...",
-                    attempt, MAX_RETRIES
+                    "  Send attempt {}/{} failed ({}), will retry...",
+                    attempt, MAX_RETRIES, e
                 );
                 tokio::time::sleep(RETRY_DELAY).await;
                 continue;
@@ -85,21 +89,16 @@ async fn test_send_and_receive_funds() {
     let app_context = &ctx.app_context;
 
     // Create two funded test wallets
-    let (hash_a, wallet_a) = ctx.create_funded_test_wallet(500_000).await;
-    let (hash_b, wallet_b) = ctx.create_funded_test_wallet(100_000).await;
+    let (hash_a, wallet_a) = ctx.create_funded_test_wallet(5_000_000).await;
+    let (hash_b, wallet_b) = ctx.create_funded_test_wallet(1_000_000).await;
 
     let initial_b_balance = {
         let w = wallet_b.read().expect("lock");
         w.total_balance_duffs()
     };
 
-    // Wait for wallet A's funds to become spendable before sending
-    wait_for_spendable_balance(app_context, hash_a, 1, Duration::from_secs(60))
-        .await
-        .expect("Wallet A funds should become spendable");
-
-    // Send 200,000 duffs from A to B
-    let send_amount: u64 = 200_000;
+    // Send 2,000,000 duffs from A to B
+    let send_amount: u64 = 2_000_000;
     let b_address = get_receive_address(app_context, &wallet_b);
 
     let result = send_with_retry(
@@ -139,7 +138,7 @@ async fn test_send_and_receive_funds() {
     );
 
     // Wait for B's funds to become spendable before sending back
-    wait_for_spendable_balance(app_context, hash_b, send_amount, Duration::from_secs(60))
+    wait_for_spendable_balance(app_context, hash_b, send_amount, Duration::from_secs(120))
         .await
         .expect("Wallet B funds should become spendable");
 

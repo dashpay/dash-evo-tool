@@ -215,7 +215,8 @@ impl BackendTestContext {
                         .get(&framework_wallet_hash)
                         .map(|w| {
                             let mut guard = w.write().expect("wallet lock");
-                            let bal = (guard.confirmed_balance_duffs(), guard.total_balance_duffs());
+                            let bal =
+                                (guard.confirmed_balance_duffs(), guard.total_balance_duffs());
                             let addr = guard
                                 .receive_address(Network::Testnet, false, Some(&app_context))
                                 .map(|a| a.to_string())
@@ -377,6 +378,12 @@ impl BackendTestContext {
         )
         .await
         .expect("Test wallet did not receive expected funds");
+
+        // Wait for test wallet funds to become spendable (confirmed/IS-locked)
+        // so callers can immediately build transactions.
+        wait::wait_for_spendable_balance(app_context, seed_hash, 1, Duration::from_secs(120))
+            .await
+            .expect("Test wallet funds did not become spendable");
 
         // Wait for framework wallet change output to become spendable.
         let _ = wait::wait_for_spendable_balance(

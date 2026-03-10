@@ -1,0 +1,68 @@
+---
+name: Claude Code Review
+
+"on":
+  pull_request:
+    types: [labeled, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: >
+      github.event.pull_request.draft == false &&
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'claude review') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'claude review'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    env:
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'opus' }}
+    steps:
+      - name: Check for OAuth token
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK secret not configured — skipping review."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Configure git to use HTTPS instead of SSH
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_sticky_comment: true
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
+          plugin_marketplaces: "https://github.com/lklimek/agents.git"
+          plugins: "claudius@lklimek"
+          show_full_output: true
+          trigger_phrase: ""
+          prompt: |
+            Prefer GitHub MCP tools over gh CLI commands.
+
+            1. Run /claudius:check-pr-comments to verify if previous review comments are addressed.
+            2. For each inline comment thread that IS fixed in code but NOT yet resolved:
+               reply with a short description of how it was resolved, then resolve the thread.
+            3. If ALL previous comments are now resolved, approve the PR and
+               remove the "claude review" label.
+            4. If unresolved comments remain OR this is the first review, run /claudius:grumpy-review
+               and publish new findings as inline PR comments.
+          claude_args: |
+            --model ${{ env.CLAUDE_MODEL }}
+            --max-turns 30

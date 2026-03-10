@@ -165,8 +165,7 @@ impl PasswordInput {
         let eye_response = ui.interact(eye_rect, eye_id, Sense::click_and_drag());
 
         // Update for NEXT frame.
-        let next_revealing =
-            eye_response.is_pointer_button_down_on() && eye_response.hovered();
+        let next_revealing = eye_response.is_pointer_button_down_on() && eye_response.hovered();
         let reveal_changed = next_revealing != self.revealing;
         self.revealing = next_revealing;
 

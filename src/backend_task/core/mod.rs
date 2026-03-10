@@ -736,7 +736,19 @@ impl AppContext {
         let mut spendable_total = 0u64;
         let mut spendable_inputs = 0usize;
         for utxo in account.utxos.values() {
-            if (*utxo).is_spendable(current_height) {
+            // TODO(dashpay/rust-dashcore#514): Remove this workaround once upstream sets
+            // is_confirmed/is_instantlocked on UTXOs properly.
+            // Workaround: upstream key-wallet-manager never sets is_confirmed/is_instantlocked
+            // on UTXOs, but is_spendable() requires one of them. Infer status:
+            // - height > 0 (in a block) -> confirmed
+            // - height == 0 (mempool) -> IS-locked (Dash IS locks most txs in seconds)
+            let mut utxo = utxo.clone();
+            if utxo.height > 0 {
+                utxo.is_confirmed = true;
+            } else {
+                utxo.is_instantlocked = true;
+            }
+            if utxo.is_spendable(current_height) {
                 spendable_total = spendable_total.saturating_add(utxo.value());
                 spendable_inputs += 1;
             }
@@ -770,7 +782,25 @@ impl AppContext {
             .get(&account_index)
             .ok_or(WalletError::AccountNotFound(account_index))?;
 
-        let all_utxos: Vec<_> = account.utxos.values().cloned().collect();
+        // TODO(dashpay/rust-dashcore#514): Remove this workaround once upstream sets
+        // is_confirmed/is_instantlocked on UTXOs properly.
+        // Workaround: upstream key-wallet-manager never sets is_confirmed/is_instantlocked
+        // on UTXOs, but CoinSelector requires one for spending. Infer status:
+        // - height > 0 (in a block) -> confirmed
+        // - height == 0 (mempool) -> IS-locked (Dash IS locks most txs in seconds)
+        let all_utxos: Vec<_> = account
+            .utxos
+            .values()
+            .cloned()
+            .map(|mut u| {
+                if u.height > 0 {
+                    u.is_confirmed = true;
+                } else {
+                    u.is_instantlocked = true;
+                }
+                u
+            })
+            .collect();
         if all_utxos.is_empty() {
             return Err(WalletError::InsufficientFunds);
         }

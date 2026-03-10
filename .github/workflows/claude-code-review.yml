@@ -1,5 +1,5 @@
 ---
-name: Claude Code Review
+name: "Claude Code Review (add claudius-review label to trigger)"
 
 "on":
   pull_request:
@@ -14,8 +14,8 @@ jobs:
     if: >
       github.event.pull_request.draft == false &&
       (
-        (github.event.action == 'labeled' && github.event.label.name == 'claude review') ||
-        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'claude review'))
+        (github.event.action == 'labeled' && github.event.label.name == 'claudius-review') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'claudius-review'))
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -60,7 +60,7 @@ jobs:
             2. For each inline comment thread that IS fixed in code but NOT yet resolved:
                reply with a short description of how it was resolved, then resolve the thread.
             3. If ALL previous comments are now resolved, approve the PR and
-               remove the "claude review" label.
+               remove the "claudius-review" label.
             4. If unresolved comments remain OR this is the first review, run /claudius:grumpy-review
                and publish new findings as inline PR comments.
           claude_args: |

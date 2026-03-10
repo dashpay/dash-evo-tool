@@ -3,7 +3,11 @@ use egui::{Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 use crate::model::secret::Secret;
 use crate::ui::theme::DashColors;
 
-/// Response from a [`PasswordInput`] widget.
+/// Response from [`PasswordInput::show`].
+///
+/// Intentionally does NOT implement `ComponentResponse` — exposing the `Secret`
+/// through a generic trait would undermine the security model.
+// INTENTIONAL(PROJ-001): Custom response type instead of ComponentResponse.
 pub struct PasswordInputResponse {
     /// The underlying `TextEdit` response.
     pub response: Response,
@@ -83,7 +87,7 @@ impl PasswordInput {
 
     /// Replace the secret with new content.
     pub fn set_text(&mut self, s: impl Into<String>) {
-        self.secret = Secret::new(s.into());
+        self.secret = Secret::new(s);
     }
 
     /// Zeroize and reset the secret to empty.
@@ -118,6 +122,8 @@ impl PasswordInput {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         // -- TextEdit --------------------------------------------------------
+        // INTENTIONAL(SEC-005): Egui TextEdit may cache plaintext in layout galleys and
+        // accessibility state. Accepted as inherent framework limitation for desktop GUI threat model.
         let mut text_edit = egui::TextEdit::singleline(&mut self.secret)
             .password(!self.revealing)
             .hint_text(&self.hint_text)

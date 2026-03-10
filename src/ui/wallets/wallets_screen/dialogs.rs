@@ -95,6 +95,7 @@ pub(super) struct MineDialogState {
 }
 
 /// State for the Private Key dialog
+#[derive(Default)]
 pub(super) struct PrivateKeyDialogState {
     pub is_open: bool,
     /// The address being displayed
@@ -107,19 +108,6 @@ pub(super) struct PrivateKeyDialogState {
     pub pending_derivation_path: Option<DerivationPath>,
     /// Pending address string (when wallet needs unlock first)
     pub pending_address: Option<String>,
-}
-
-impl Default for PrivateKeyDialogState {
-    fn default() -> Self {
-        Self {
-            is_open: false,
-            address: String::new(),
-            private_key_wif: Secret::new(String::new()),
-            show_key: false,
-            pending_derivation_path: None,
-            pending_address: None,
-        }
-    }
 }
 
 impl WalletsBalancesScreen {

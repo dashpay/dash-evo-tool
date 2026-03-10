@@ -23,6 +23,7 @@ pub struct WalletUnlockPopup {
     is_open: bool,
     password_input: PasswordInput,
     error_message: Option<String>,
+    focus_requested: bool,
 }
 
 impl Default for WalletUnlockPopup {
@@ -38,6 +39,7 @@ impl WalletUnlockPopup {
             is_open: false,
             password_input: PasswordInput::new().with_hint_text("Enter password"),
             error_message: None,
+            focus_requested: false,
         }
     }
 
@@ -46,6 +48,7 @@ impl WalletUnlockPopup {
         self.is_open = true;
         self.password_input.clear();
         self.error_message = None;
+        self.focus_requested = false;
     }
 
     /// Close the popup
@@ -127,9 +130,10 @@ impl WalletUnlockPopup {
 
                 let pw_response = self.password_input.show(ui);
 
-                // Focus the password field when popup opens
-                if pw_response.response.gained_focus() || self.password_input.is_empty() {
+                // Focus the password field once when popup opens
+                if !self.focus_requested {
                     pw_response.response.request_focus();
+                    self.focus_requested = true;
                 }
 
                 // Check for Enter key

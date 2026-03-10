@@ -352,7 +352,7 @@ impl ScreenLike for AssetLockDetailScreen {
 
                     ui.label("Private Key (WIF):");
                     if let Some(ref wif) = self.private_key_wif {
-                        ui.add(egui::TextEdit::multiline(&mut wif.expose_secret().to_owned().as_str())
+                        ui.add(egui::TextEdit::multiline(&mut wif.expose_secret())
                             .font(egui::FontId::monospace(12.0))
                             .desired_width(f32::INFINITY)
                             .desired_rows(1));
@@ -366,6 +366,7 @@ impl ScreenLike for AssetLockDetailScreen {
                         if ComponentStyles::add_primary_button(ui, "Copy").clicked()
                             && let Some(ref wif) = self.private_key_wif
                         {
+                            // SECURITY: clipboard copy inherently exposes plaintext — user-initiated action
                             ui.ctx().copy_text(wif.expose_secret().to_string());
                             MessageBanner::set_global(ctx, "Private key copied to clipboard", MessageType::Success);
                         }

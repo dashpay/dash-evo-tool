@@ -24,6 +24,7 @@ use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,6 +356,9 @@ impl ImportMnemonicScreen {
             && s == "import_another_wallet"
         {
             // Reset mnemonic fields
+            for w in &mut self.seed_phrase_words {
+                w.zeroize();
+            }
             self.seed_phrase_words = vec!["".to_string(); 24];
             self.selected_seed_phrase_length = 12;
             self.seed_phrase = None;
@@ -507,6 +511,14 @@ impl ImportMnemonicScreen {
                 "Private Key (Single Address)",
             );
         });
+    }
+}
+
+impl Drop for ImportMnemonicScreen {
+    fn drop(&mut self) {
+        for w in &mut self.seed_phrase_words {
+            w.zeroize();
+        }
     }
 }
 

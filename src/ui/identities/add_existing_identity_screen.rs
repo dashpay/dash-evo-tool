@@ -3,7 +3,6 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::IdentityType;
-use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -898,15 +897,13 @@ impl AddExistingIdentityScreen {
             identity_id_input: self.identity_id_input.trim().to_string(),
             identity_type: self.identity_type,
             alias_input: self.alias_input.clone(),
-            voting_private_key_input: Secret::new(self.voting_private_key_input.text().to_string()),
-            owner_private_key_input: Secret::new(self.owner_private_key_input.text().to_string()),
-            payout_address_private_key_input: Secret::new(
-                self.payout_address_private_key_input.text().to_string(),
-            ),
+            voting_private_key_input: self.voting_private_key_input.take_secret(),
+            owner_private_key_input: self.owner_private_key_input.take_secret(),
+            payout_address_private_key_input: self.payout_address_private_key_input.take_secret(),
             keys_input: self
                 .keys_input
-                .iter()
-                .map(|k| Secret::new(k.text().to_string()))
+                .iter_mut()
+                .map(|k| k.take_secret())
                 .collect(),
             derive_keys_from_wallets: self.identity_associated_with_wallet,
             selected_wallet_seed_hash,

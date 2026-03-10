@@ -316,6 +316,8 @@ impl ScreenLike for KeyInfoScreen {
                                                 .color(ui.visuals().text_color()),
                                         );
                                         let wif = Secret::new(private_key.to_wif());
+                                        // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                        // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                         ui.label(
                                             RichText::new(wif.expose_secret())
                                                 .color(ui.visuals().text_color()),
@@ -329,6 +331,8 @@ impl ScreenLike for KeyInfoScreen {
                                             .color(ui.visuals().text_color()),
                                     );
                                     let private_key_hex = Secret::new(hex::encode(clear));
+                                    // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                    // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                     ui.label(
                                         RichText::new(private_key_hex.expose_secret())
                                             .color(ui.visuals().text_color()),

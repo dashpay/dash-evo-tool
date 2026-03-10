@@ -87,7 +87,7 @@ pub struct NetworkChooserScreen {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
-    pub dashmate_password_input: PasswordInput,
+    dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
     custom_dash_qt_path: Option<PathBuf>,

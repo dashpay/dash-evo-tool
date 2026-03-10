@@ -621,6 +621,8 @@ impl AddNewIdentityScreen {
                             });
                             row.col(|ui| {
                                 let wif = Secret::new(master_key.to_wif());
+                                // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                 ui.label(wif.expose_secret());
                             });
                             row.col(|_ui| {
@@ -666,6 +668,8 @@ impl AddNewIdentityScreen {
                             });
                             row.col(|ui| {
                                 let wif = Secret::new(key.to_wif());
+                                // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                 ui.label(wif.expose_secret());
                             });
                             row.col(|ui| {

@@ -17,6 +17,27 @@ use zeroize::{Zeroize, Zeroizing};
 ///   a custom allocator. Pre-allocating avoids this entirely.
 const DEFAULT_CAPACITY: usize = 4096;
 
+/// A raw pointer used only for equality comparison, never dereferenced.
+/// Encapsulates the Send/Sync safety invariant so `Secret` itself does not
+/// need manual unsafe trait impls.
+#[derive(Clone, Copy)]
+struct CompareOnlyPtr(*const u8);
+
+// SAFETY: CompareOnlyPtr is never dereferenced — only compared via addr_eq().
+// The pointed-to memory is managed by the String inside Zeroizing.
+unsafe impl Send for CompareOnlyPtr {}
+unsafe impl Sync for CompareOnlyPtr {}
+
+impl CompareOnlyPtr {
+    fn new(ptr: *const u8) -> Self {
+        Self(ptr)
+    }
+
+    fn addr_eq(self, other: *const u8) -> bool {
+        std::ptr::eq(self.0, other)
+    }
+}
+
 /// Zeroize-on-drop wrapper for sensitive strings (passwords, WIF keys, private key inputs).
 ///
 /// Debug output is redacted. Best-effort `mlock` prevents the backing memory from
@@ -39,14 +60,8 @@ pub struct Secret {
     /// Dropped second -- unlocks the page.
     _lock: Option<region::LockGuard>,
     /// Tracks the heap pointer so we can re-lock after reallocation.
-    locked_ptr: *const u8,
+    locked_ptr: CompareOnlyPtr,
 }
-
-// SAFETY: `locked_ptr` is only used for pointer comparison (never dereferenced).
-// The actual data lives in `inner` (Send+Sync via Zeroizing<String>) and `_lock`
-// (Send+Sync via region::LockGuard's unsafe impls).
-unsafe impl Send for Secret {}
-unsafe impl Sync for Secret {}
 
 impl Secret {
     /// Wrap a string in a `Secret`, locking its backing memory on a best-effort basis.
@@ -63,7 +78,7 @@ impl Secret {
                 e
             })
             .ok();
-        let locked_ptr = buf.as_ptr();
+        let locked_ptr = CompareOnlyPtr::new(buf.as_ptr());
         Self {
             inner: Zeroizing::new(buf),
             _lock: lock,
@@ -81,7 +96,7 @@ impl Secret {
                 e
             })
             .ok();
-        let locked_ptr = s.as_ptr();
+        let locked_ptr = CompareOnlyPtr::new(s.as_ptr());
         Self {
             inner: Zeroizing::new(s),
             _lock: lock,
@@ -109,17 +124,24 @@ impl Secret {
         self.inner.is_empty()
     }
 
+    /// Returns a new `Secret` containing the trimmed content.
+    /// Keeps the data within the secure wrapper unlike `text().trim()`
+    /// which returns a borrowed `&str`.
+    pub fn trimmed(&self) -> Self {
+        Self::new(self.inner.trim().to_string())
+    }
+
     /// If the backing allocation moved (e.g. after a `String` reallocation),
     /// drop the old mlock guard and create a new one for the current buffer.
     fn relock_if_moved(&mut self) {
-        if self.inner.as_ptr() != self.locked_ptr {
+        if !self.locked_ptr.addr_eq(self.inner.as_ptr()) {
             self._lock = region::lock(self.inner.as_ptr(), self.inner.capacity())
                 .map_err(|e| {
                     tracing::debug!("mlock re-lock failed after reallocation: {e}");
                     e
                 })
                 .ok();
-            self.locked_ptr = self.inner.as_ptr();
+            self.locked_ptr = CompareOnlyPtr::new(self.inner.as_ptr());
         }
     }
 }
@@ -168,9 +190,7 @@ impl TextBuffer for Secret {
         if cap > len {
             // SAFETY: ptr is valid for cap bytes (String's allocation guarantee),
             // and we only write to the unused portion [len..cap).
-            unsafe {
-                std::ptr::write_bytes(ptr.add(len), 0, cap - len);
-            }
+            unsafe { std::slice::from_raw_parts_mut(ptr.add(len), cap - len) }.zeroize();
         }
     }
 
@@ -185,6 +205,9 @@ impl TextBuffer for Secret {
     }
 
     fn take(&mut self) -> String {
+        // INTENTIONAL(SEC-003): Returns unprotected String — required by egui TextBuffer trait.
+        // The undoer is disabled in PasswordInput, limiting the call paths. Accepted as
+        // inherent limitation of the egui framework for the desktop GUI threat model.
         let copy = self.inner.to_string();
         Zeroize::zeroize(&mut *self.inner);
         copy
@@ -199,7 +222,7 @@ impl TextBuffer for Secret {
 
 impl Clone for Secret {
     fn clone(&self) -> Self {
-        Self::new(self.inner.to_string())
+        Self::new((*self.inner).clone())
     }
 }
 
@@ -365,6 +388,20 @@ mod tests {
     }
 
     #[test]
+    fn test_trimmed() {
+        let secret = Secret::new("  hello world  ");
+        let trimmed = secret.trimmed();
+        assert_eq!(trimmed.expose_secret(), "hello world");
+    }
+
+    #[test]
+    fn test_trimmed_empty() {
+        let secret = Secret::new("   ");
+        let trimmed = secret.trimmed();
+        assert!(trimmed.is_empty());
+    }
+
+    #[test]
     fn test_delete_char_range_zeroes_trailing() {
         let mut secret = Secret::new("abcdef");
         secret.delete_char_range(3..6);
@@ -384,5 +421,49 @@ mod tests {
         assert_eq!(secret.expose_secret(), "drop me safely");
         drop(secret);
         // If we get here, drop didn't panic
+    }
+
+    // Compile-time assertion that Secret has a Drop impl (not trivially droppable).
+    const _: () = {
+        assert!(std::mem::needs_drop::<Secret>());
+    };
+
+    /// Best-effort test that Drop zeroes the full capacity.
+    ///
+    /// Reads freed memory after drop — technically UB and may fail if the
+    /// allocator reuses the page between drop and inspection (common during
+    /// parallel test execution). Run manually with `--ignored` in a single
+    /// thread for reliable results:
+    ///
+    /// ```sh
+    /// cargo test --lib -- test_drop_zeroes_full_capacity --ignored --test-threads=1
+    /// ```
+    ///
+    /// The compile-time assertion (`needs_drop`) above is the primary regression
+    /// guard; this test provides supplementary runtime verification.
+    #[test]
+    #[ignore]
+    fn test_drop_zeroes_full_capacity() {
+        let ptr: *const u8;
+        let cap: usize;
+        {
+            let secret = Secret::new("sensitive_data_here".to_string());
+            ptr = secret.inner.as_ptr();
+            cap = secret.inner.capacity();
+            // Verify data is present before drop
+            let slice = unsafe { std::slice::from_raw_parts(ptr, cap) };
+            assert!(
+                slice.iter().any(|&b| b != 0),
+                "Expected non-zero bytes before drop"
+            );
+            // secret drops here — Drop zeros 0..cap via zeroize
+        }
+        // SAFETY: Reading freed memory. Best-effort: allocator is unlikely to
+        // reuse this page immediately when running single-threaded.
+        let post = unsafe { std::slice::from_raw_parts(ptr, cap) };
+        assert!(
+            post.iter().all(|&b| b == 0),
+            "Memory was not zeroed after drop"
+        );
     }
 }

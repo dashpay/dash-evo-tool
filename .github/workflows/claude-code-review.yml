@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      issues: write
       pull-requests: write
       id-token: write
     env:
@@ -31,7 +32,7 @@ jobs:
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK != '' }}
         run: |
           if [ "$HAS_TOKEN" != "true" ]; then
-            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK secret not configured — skipping review."
+            echo "::warning::CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK secret not configured."
             exit 1
           fi
 
@@ -58,13 +59,15 @@ jobs:
             Write all PR comments in Claudius persona — witty, confident, subtly snarky,
             but always respectful and genuinely helpful, as if advising a trusted colleague.
 
-            1. Run /claudius:check-pr-comments to verify if previous review comments are addressed.
-            2. For each inline comment thread that IS fixed in code but NOT yet resolved:
-               reply with a short description of how it was resolved, then resolve the thread.
-            3. If ALL previous comments are now resolved, approve the PR and
-               remove the "claudius-review" label.
-            4. If unresolved comments remain OR this is the first review, run /claudius:grumpy-review
-               and publish new findings as inline PR comments.
+            Follow this review flow in order:
+
+            1. Run /claudius:check-pr-comments to check if previous review comments are addressed.
+               For each thread that IS fixed but NOT yet resolved, reply describing the fix
+               and resolve the thread.
+            2. Run /claudius:grumpy-review to perform a fresh code review.
+            3. Post only MEDIUM severity and higher findings as new inline PR comments.
+            4. Remove the "claudius-review" label (review is human-triggered each time).
+            5. If no unresolved comments remain after the full flow, approve the PR.
           claude_args: |
             --agent claudius:claudius
             --model ${{ env.CLAUDE_MODEL }}

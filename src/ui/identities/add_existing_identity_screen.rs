@@ -6,6 +6,7 @@ use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
@@ -94,10 +95,10 @@ pub struct AddExistingIdentityScreen {
     identity_id_input: String,
     pub identity_type: IdentityType,
     alias_input: String,
-    voting_private_key_input: String,
-    owner_private_key_input: String,
-    payout_address_private_key_input: String,
-    keys_input: Vec<String>,
+    voting_private_key_input: PasswordInput,
+    owner_private_key_input: PasswordInput,
+    payout_address_private_key_input: PasswordInput,
+    keys_input: Vec<PasswordInput>,
     add_identity_status: AddIdentityStatus,
     testnet_loaded_nodes: Option<TestnetNodes>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -134,9 +135,15 @@ impl AddExistingIdentityScreen {
             identity_id_input: String::new(),
             identity_type: IdentityType::User,
             alias_input: String::new(),
-            voting_private_key_input: String::new(),
-            owner_private_key_input: String::new(),
-            payout_address_private_key_input: String::new(),
+            voting_private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (WIF or hex)")
+                .with_monospace(),
+            owner_private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (WIF or hex)")
+                .with_monospace(),
+            payout_address_private_key_input: PasswordInput::new()
+                .with_hint_text("Private key (WIF or hex)")
+                .with_monospace(),
             keys_input: vec![],
             add_identity_status: AddIdentityStatus::NotStarted,
             testnet_loaded_nodes,
@@ -384,28 +391,23 @@ impl AddExistingIdentityScreen {
                 if self.show_advanced_options {
                     match self.identity_type {
                         IdentityType::Masternode | IdentityType::Evonode => {
-                            let voting_private_key_input = &mut self.voting_private_key_input;
-                            let owner_private_key_input = &mut self.owner_private_key_input;
-                            let payout_address_private_key_input =
-                                &mut self.payout_address_private_key_input;
-
                             ui.label("Voting Private Key:");
-                            ui.text_edit_singleline(voting_private_key_input);
+                            self.voting_private_key_input.show(ui);
                             ui.end_row();
 
                             ui.label("Owner Private Key:");
-                            ui.text_edit_singleline(owner_private_key_input);
+                            self.owner_private_key_input.show(ui);
                             ui.end_row();
 
                             ui.label("Payout Address Private Key:");
-                            ui.text_edit_singleline(payout_address_private_key_input);
+                            self.payout_address_private_key_input.show(ui);
                             ui.end_row();
                         }
                         IdentityType::User => {
                             // Manual key inputs for User type
                             let mut keys_to_remove = vec![];
 
-                            for (i, key) in self.keys_input.iter_mut().enumerate() {
+                            for (i, key_input) in self.keys_input.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.label(format!("Private Key {} (Hex or WIF):", i + 1));
 
@@ -422,7 +424,7 @@ impl AddExistingIdentityScreen {
                                     }
                                 });
 
-                                ui.text_edit_singleline(key);
+                                key_input.show(ui);
 
                                 if ui.button("-").clicked() {
                                     keys_to_remove.push(i);
@@ -443,7 +445,11 @@ impl AddExistingIdentityScreen {
         if self.show_advanced_options && self.identity_type == IdentityType::User {
             ui.add_space(10.0);
             if ui.button("+ Add key manually").clicked() {
-                self.keys_input.push(String::new());
+                self.keys_input.push(
+                    PasswordInput::new()
+                        .with_hint_text("Private key (WIF or hex)")
+                        .with_monospace(),
+                );
             }
         }
 
@@ -891,10 +897,14 @@ impl AddExistingIdentityScreen {
             identity_id_input: self.identity_id_input.trim().to_string(),
             identity_type: self.identity_type,
             alias_input: self.alias_input.clone(),
-            voting_private_key_input: self.voting_private_key_input.clone(),
-            owner_private_key_input: self.owner_private_key_input.clone(),
-            payout_address_private_key_input: self.payout_address_private_key_input.clone(),
-            keys_input: self.keys_input.clone(),
+            voting_private_key_input: self.voting_private_key_input.take_secret(),
+            owner_private_key_input: self.owner_private_key_input.take_secret(),
+            payout_address_private_key_input: self.payout_address_private_key_input.take_secret(),
+            keys_input: self
+                .keys_input
+                .iter_mut()
+                .map(|k| k.take_secret())
+                .collect(),
             derive_keys_from_wallets: self.identity_associated_with_wallet,
             selected_wallet_seed_hash,
         };
@@ -912,9 +922,12 @@ impl AddExistingIdentityScreen {
             self.identity_id_input = hpmn.protx_tx_hash.clone();
             self.identity_type = IdentityType::Evonode;
             self.alias_input = name.clone();
-            self.voting_private_key_input = hpmn.voter.private_key.clone();
-            self.owner_private_key_input = hpmn.owner.private_key.clone();
-            self.payout_address_private_key_input = hpmn.payout.private_key.clone();
+            self.voting_private_key_input
+                .set_text(hpmn.voter.private_key.clone());
+            self.owner_private_key_input
+                .set_text(hpmn.owner.private_key.clone());
+            self.payout_address_private_key_input
+                .set_text(hpmn.payout.private_key.clone());
         }
     }
 
@@ -927,8 +940,10 @@ impl AddExistingIdentityScreen {
             self.identity_id_input = masternode.pro_tx_hash.clone();
             self.identity_type = IdentityType::Masternode;
             self.alias_input = name.clone();
-            self.voting_private_key_input = masternode.voter.private_key.clone();
-            self.owner_private_key_input = masternode.owner.private_key.clone();
+            self.voting_private_key_input
+                .set_text(masternode.voter.private_key.clone());
+            self.owner_private_key_input
+                .set_text(masternode.owner.private_key.clone());
         }
     }
 
@@ -962,7 +977,17 @@ impl AddExistingIdentityScreen {
             self.voting_private_key_input.clear();
             self.owner_private_key_input.clear();
             self.payout_address_private_key_input.clear();
-            self.keys_input = vec![String::new(), String::new(), String::new()];
+            self.keys_input = vec![
+                PasswordInput::new()
+                    .with_hint_text("Private key (WIF or hex)")
+                    .with_monospace(),
+                PasswordInput::new()
+                    .with_hint_text("Private key (WIF or hex)")
+                    .with_monospace(),
+                PasswordInput::new()
+                    .with_hint_text("Private key (WIF or hex)")
+                    .with_monospace(),
+            ];
             self.identity_index_input.clear();
             self.dpns_name_input.clear();
             self.show_pop_up_info = None;

@@ -7,7 +7,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::ComponentStyles;
 use crate::ui::{MessageType, ScreenLike};
 use chrono::{DateTime, Utc};
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -15,7 +15,6 @@ use dash_sdk::dpp::platform_value::Value;
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery};
 use egui::Context;
-use egui::{Color32, RichText};
 use std::sync::Arc;
 
 use super::tokens_screen::IdentityTokenBasicInfo;
@@ -131,13 +130,7 @@ impl ScreenLike for ViewTokenClaimsScreen {
             ui.heading("View Token Claims");
             ui.add_space(10.0);
 
-            let fetch_button =
-                egui::Button::new(RichText::new("Fetch claims").color(Color32::WHITE))
-                    .fill(DashColors::ACTION_BUTTON_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0);
-
-            if ui.add(fetch_button).clicked() {
+            if ComponentStyles::add_primary_button(ui, "Fetch claims").clicked() {
                 action |= AppAction::BackendTask(BackendTask::DocumentTask(Box::new(
                     DocumentTask::FetchDocuments(self.new_claims_query.clone()),
                 )));

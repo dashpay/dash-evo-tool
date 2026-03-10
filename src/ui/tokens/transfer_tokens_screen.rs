@@ -21,7 +21,7 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, Result
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -29,7 +29,7 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use eframe::egui::{self, Context, Ui};
 use eframe::egui::{Frame, Margin};
-use egui::{Color32, RichText};
+use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
@@ -604,10 +604,6 @@ impl ScreenLike for TransferTokensScreen {
                 let mut new_style = (**ui.style()).clone();
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
-                let button = egui::Button::new(RichText::new("Transfer").color(Color32::WHITE))
-                    .fill(DashColors::ACTION_BUTTON_BLUE)
-                    .frame(true)
-                    .corner_radius(3.0);
                 let hover_text = if !has_enough_balance {
                     format!(
                         "Insufficient identity balance for fee (need at least {})",
@@ -617,8 +613,7 @@ impl ScreenLike for TransferTokensScreen {
                     "Please ensure all fields are filled correctly".to_string()
                 };
 
-                if ui
-                    .add_enabled(ready, button)
+                if ComponentStyles::add_primary_button_enabled(ui, ready, "Transfer")
                     .on_disabled_hover_text(&hover_text)
                     .clicked()
                 {

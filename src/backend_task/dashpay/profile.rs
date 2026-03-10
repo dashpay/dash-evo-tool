@@ -346,7 +346,6 @@ pub async fn send_payment(
     amount_dash: f64,
     memo: Option<String>,
 ) -> Result<BackendTaskSuccessResult, String> {
-    // Use the new payments module to send payment
     super::payments::send_payment_to_contact(
         app_context,
         sdk,
@@ -356,6 +355,7 @@ pub async fn send_payment(
         memo,
     )
     .await
+    .map_err(|e| e.to_string())
 }
 
 pub async fn load_payment_history(

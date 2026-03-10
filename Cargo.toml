@@ -74,6 +74,8 @@ which = { version = "8.0.0" }
 tz-rs = { version = "0.7.0" }
 tempfile = "3.20.0"
 arc-swap = "1"
+urlencoding = "2"
+region = "3.0.2"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"

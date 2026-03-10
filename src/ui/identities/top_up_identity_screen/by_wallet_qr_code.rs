@@ -1,17 +1,17 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::identities::funding_common::{self, copy_to_clipboard, generate_qr_code_image};
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
-use dash_sdk::dashcore_rpc::RpcApi;
 use eframe::epaint::TextureHandle;
 use egui::Ui;
 use std::sync::Arc;
 
 impl TopUpIdentityScreen {
-    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), String> {
+    fn render_qr_code(&mut self, ui: &mut egui::Ui, amount: f64) -> Result<(), TaskError> {
         let address = {
             if let Some(wallet_guard) = self.wallet.as_ref() {
                 // Get the receive address from the selected wallet
@@ -22,29 +22,14 @@ impl TopUpIdentityScreen {
                         true,
                         Some(&self.app_context),
                     )?;
+                    let core_wallet_name = wallet.core_wallet_name.clone();
+                    drop(wallet);
 
-                    // Import address to Core if needed for monitoring
-                    let core_client = self
-                        .app_context
-                        .core_client
-                        .read()
-                        .map_err(|_| "Core client lock was poisoned".to_string())?;
-
-                    let info = core_client
-                        .get_address_info(&receive_address)
-                        .map_err(|e| e.to_string())?;
-
-                    if !(info.is_watchonly || info.is_mine) {
-                        core_client
-                            .import_address(
-                                &receive_address,
-                                Some("Managed by Dash Evo Tool"),
-                                Some(false),
-                            )
-                            .map_err(|e| e.to_string())?;
-                    }
-
-                    drop(core_client);
+                    self.app_context.ensure_address_imported(
+                        &receive_address,
+                        core_wallet_name.as_deref(),
+                        Some("Managed by Dash Evo Tool"),
+                    )?;
 
                     self.funding_address = Some(receive_address.clone());
                     receive_address
@@ -52,7 +37,7 @@ impl TopUpIdentityScreen {
                     self.funding_address.as_ref().unwrap().clone()
                 }
             } else {
-                return Err("No wallet selected".to_string());
+                return Err("No wallet selected".to_string().into());
             }
         };
 
@@ -128,7 +113,12 @@ impl TopUpIdentityScreen {
             if let Ok(amount_dash) = self.funding_amount.parse::<f64>() {
                 if amount_dash > 0.0 {
                     if let Err(e) = self.render_qr_code(ui, amount_dash) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Failed to render QR code",
+                            MessageType::Error,
+                        )
+                        .with_details(e);
                     }
                 } else {
                     ui.label("Please enter an amount greater than 0");

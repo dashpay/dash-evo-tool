@@ -1,0 +1,81 @@
+---
+name: "Claude (label: claudius-review)"
+
+"on":
+  pull_request:
+    types: [labeled, synchronize]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: >
+      github.event.pull_request.draft == false &&
+      (
+        (github.event.action == 'labeled' && github.event.label.name == 'claudius-review') ||
+        (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'claudius-review'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      id-token: write
+    env:
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'opus' }}
+    steps:
+      - name: Check for OAuth token
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::error::CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK secret not configured. Configure the CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK secret in your repository or organization settings."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Configure git to use HTTPS instead of SSH
+        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_sticky_comment: true
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
+          plugin_marketplaces: "https://github.com/lklimek/agents.git"
+          plugins: "claudius@lklimek"
+          show_full_output: true
+          trigger_phrase: ""
+          prompt: |
+            Prefer GitHub MCP tools over gh CLI commands.
+            Write all PR comments in Claudius persona — witty, confident, subtly snarky,
+            but always respectful and genuinely helpful, as if advising a trusted colleague.
+
+            Follow this review flow in order:
+
+            1. Run /claudius:check-pr-comments to check if previous review comments are addressed.
+               For each thread that IS fixed but NOT yet resolved, reply describing the fix
+               and resolve the thread.
+            2. Run /claudius:grumpy-review to perform a fresh code review.
+            3. Post only MEDIUM severity and higher findings as new inline PR comments.
+            4. If no unresolved comments remain after the full flow, approve the PR.
+          claude_args: |
+            --agent claudius:claudius
+            --model ${{ env.CLAUDE_MODEL }}
+            --max-turns 30
+
+      - name: Remove claudius-review label
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit "${{ github.event.pull_request.number }}" \
+            --remove-label "claudius-review" 2>/dev/null || true

@@ -32,6 +32,13 @@ pub enum TaskError {
     #[error(transparent)]
     DashPay(#[from] crate::backend_task::dashpay::errors::DashPayError),
 
+    /// Retroactive DashPay wallet transaction scan failed.
+    #[error("Could not scan wallet transactions for DashPay payments. Please retry.")]
+    DashPayScan {
+        #[source]
+        source: crate::backend_task::dashpay::incoming_payments::DashPayScanError,
+    },
+
     /// Configuration errors.
     #[error(transparent)]
     Config(#[from] crate::config::ConfigError),

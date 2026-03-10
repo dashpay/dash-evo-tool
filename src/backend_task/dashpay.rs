@@ -1,5 +1,7 @@
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{
+    BackendTaskSuccessResult, DashPayPaymentHistoryEntry, DashPayPaymentHistoryResult,
+};
 use crate::context::AppContext;
 use dash_sdk::Sdk;
 use std::sync::Arc;
@@ -26,6 +28,8 @@ use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
+
+const PARTIAL_PAYMENT_HISTORY_WARNING: &str = "Some older DashPay payments may be missing. Unlock all associated wallets and refresh payment history to complete the backfill.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DashPayTask {
@@ -171,6 +175,79 @@ impl AppContext {
             ),
             DashPayTask::LoadPaymentHistory { identity } => {
                 let identity_id = identity.identity.id();
+                let network_str = self.network.to_string();
+                let mut payment_history_warning = None;
+
+                // Retroactively scan wallet transactions for DashPay payments
+                // that may not yet be in the dashpay_payments table. Once a
+                // wallet has completed its full backfill scan we rely on the
+                // lifecycle reconcile path to handle deltas.
+                for (seed_hash, wallet_arc) in &identity.associated_wallets {
+                    let has_scan_marker = self.db.has_dashpay_wallet_tx_scan_marker(
+                        seed_hash,
+                        &identity_id,
+                        &network_str,
+                    )?;
+                    if has_scan_marker {
+                        continue;
+                    }
+
+                    let (wallet_txs, seed) = match wallet_arc.read() {
+                        Ok(guard) => {
+                            if guard.transactions.is_empty() {
+                                continue;
+                            }
+
+                            if !guard.is_open() {
+                                payment_history_warning =
+                                    Some(PARTIAL_PAYMENT_HISTORY_WARNING.to_string());
+                                continue;
+                            }
+
+                            let Ok(seed) = guard.seed_bytes() else {
+                                payment_history_warning =
+                                    Some(PARTIAL_PAYMENT_HISTORY_WARNING.to_string());
+                                continue;
+                            };
+
+                            (guard.transactions.clone(), *seed)
+                        }
+                        Err(_) => {
+                            return Err(TaskError::DashPayScan {
+                                source: incoming_payments::DashPayScanError::WalletLockPoisoned,
+                            });
+                        }
+                    };
+
+                    let scan_mode = incoming_payments::DashPayWalletScanMode::Full {
+                        active_seed_bytes: &seed,
+                        active_wallet: wallet_arc,
+                    };
+
+                    let scan_result =
+                        incoming_payments::scan_wallet_transactions_for_dashpay_payments(
+                            self,
+                            &identity_id,
+                            &wallet_txs,
+                            scan_mode,
+                        )
+                        .map_err(|source| TaskError::DashPayScan { source })?;
+
+                    if scan_result.mappings_available {
+                        self.db.mark_dashpay_wallet_tx_scan_complete(
+                            seed_hash,
+                            &identity_id,
+                            &network_str,
+                        )?;
+                    }
+                    if scan_result.saved_payments > 0 {
+                        tracing::info!(
+                            "Retroactively discovered {} DashPay payment(s) from wallet transactions",
+                            scan_result.saved_payments
+                        );
+                    }
+                }
+
                 let records = payments::load_payment_history(self, &identity_id, None)
                     .await
                     .map_err(
@@ -179,11 +256,10 @@ impl AppContext {
                         },
                     )?;
 
-                let network_str = self.network.to_string();
                 let contacts = self
                     .db
                     .load_dashpay_contacts(&identity_id, &network_str)
-                    .unwrap_or_default();
+                    .map_err(|source| TaskError::Database { source })?;
 
                 let results: Vec<_> = records
                     .into_iter()
@@ -208,17 +284,23 @@ impl AppContext {
                                 format!("Unknown ({})", &s[..s.len().min(8)])
                             });
 
-                        (
-                            rec.tx_id.unwrap_or_default(),
+                        DashPayPaymentHistoryEntry {
+                            tx_id: rec.tx_id.unwrap_or_default(),
                             contact_name,
-                            rec.amount,
+                            amount: rec.amount,
                             is_incoming,
-                            rec.memo.unwrap_or_default(),
-                        )
+                            memo: rec.memo.unwrap_or_default(),
+                            timestamp: rec.timestamp,
+                        }
                     })
                     .collect();
 
-                Ok(BackendTaskSuccessResult::DashPayPaymentHistory(results))
+                Ok(BackendTaskSuccessResult::DashPayPaymentHistory(
+                    DashPayPaymentHistoryResult {
+                        payments: results,
+                        warning: payment_history_warning,
+                    },
+                ))
             }
             DashPayTask::SendPaymentToContact {
                 identity,
@@ -258,11 +340,7 @@ impl AppContext {
                 let result =
                     incoming_payments::register_dashpay_addresses_for_identity(self, &identity)
                         .await
-                        .map_err(|e| {
-                            crate::backend_task::dashpay::errors::DashPayError::Internal {
-                                message: e,
-                            }
-                        })?;
+                        .map_err(|source| TaskError::DashPayScan { source })?;
 
                 Ok(BackendTaskSuccessResult::Message(format!(
                     "Registered {} DashPay addresses for {} contacts{}",

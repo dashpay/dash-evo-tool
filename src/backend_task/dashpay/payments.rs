@@ -335,6 +335,7 @@ pub async fn send_payment_to_contact_impl(
         amount_duffs as i64,
         memo.as_deref(),
         "sent",
+        None,
     )?;
 
     // Convert to Dash for display

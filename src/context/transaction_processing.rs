@@ -9,6 +9,7 @@ use dash_sdk::dpp::dashcore::transaction::special_transaction::TransactionPayloa
 use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction, TxOut, Txid};
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
@@ -212,36 +213,100 @@ impl AppContext {
                 if let Ok(Some((owner_id, contact_id, address_index))) =
                     self.db.get_dashpay_address_mapping(&address)
                 {
+                    let txid_str = tx.txid().to_string();
+                    let owner_str = owner_id.to_string(Encoding::Base58);
+                    let contact_str = contact_id.to_string(Encoding::Base58);
+
                     // Update the highest receive index if needed
-                    if let Ok(indices) = self.db.get_contact_address_indices(&owner_id, &contact_id)
-                        && address_index >= indices.highest_receive_index
-                    {
-                        let _ = self.db.update_highest_receive_index(
-                            &owner_id,
-                            &contact_id,
-                            address_index + 1,
-                        );
+                    match self.db.get_contact_address_indices(&owner_id, &contact_id) {
+                        Ok(indices) if address_index >= indices.highest_receive_index => {
+                            if let Err(e) = self.db.update_highest_receive_index(
+                                &owner_id,
+                                &contact_id,
+                                address_index + 1,
+                            ) {
+                                tracing::warn!(
+                                    txid = %txid_str,
+                                    owner = %owner_str,
+                                    contact = %contact_str,
+                                    address = %address,
+                                    address_index,
+                                    error = %e,
+                                    "Failed to update DashPay receive index for received transaction"
+                                );
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                txid = %txid_str,
+                                owner = %owner_str,
+                                contact = %contact_str,
+                                address = %address,
+                                address_index,
+                                error = %e,
+                                "Failed to load DashPay receive indices for received transaction"
+                            );
+                        }
                     }
 
                     // Save the payment record
-                    let _ = self.db.save_payment(
+                    match self.db.save_payment_with_output_index(
                         &tx.txid().to_string(),
+                        Some(vout as u32),
                         &contact_id, // from contact
                         &owner_id,   // to us
                         tx_out.value as i64,
                         None, // memo not available for incoming
                         "received",
-                    );
-
-                    tracing::info!(
-                        "DashPay payment received: {} duffs from contact {} to address {} (index {})",
-                        tx_out.value,
-                        contact_id.to_string(
-                            dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58
-                        ),
-                        address,
-                        address_index
-                    );
+                        None, // real-time: use current time
+                    ) {
+                        Ok(save_result) if save_result.inserted => {
+                            tracing::info!(
+                                txid = %txid_str,
+                                owner = %owner_str,
+                                contact = %contact_str,
+                                address = %address,
+                                address_index,
+                                amount = tx_out.value,
+                                "DashPay payment received and saved"
+                            );
+                        }
+                        Ok(save_result) if save_result.updated_existing => {
+                            tracing::info!(
+                                txid = %txid_str,
+                                owner = %owner_str,
+                                contact = %contact_str,
+                                address = %address,
+                                address_index,
+                                amount = tx_out.value,
+                                "DashPay payment received and upgraded from legacy row"
+                            );
+                        }
+                        Ok(_) => {
+                            tracing::info!(
+                                txid = %txid_str,
+                                owner = %owner_str,
+                                contact = %contact_str,
+                                address = %address,
+                                address_index,
+                                amount = tx_out.value,
+                                "DashPay payment received but already recorded"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                txid = %txid_str,
+                                owner = %owner_str,
+                                contact = %contact_str,
+                                address = %address,
+                                address_index,
+                                amount = tx_out.value,
+                                error = %e,
+                                "Failed to save DashPay payment for received transaction"
+                            );
+                        }
+                    }
                 }
             }
         }

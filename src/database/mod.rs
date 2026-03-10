@@ -124,6 +124,11 @@ impl Database {
             )?;
 
             tx.execute(
+                "DELETE FROM dashpay_wallet_tx_scan_markers WHERE network = ?1",
+                rusqlite::params![&network_str],
+            )?;
+
+            tx.execute(
                 "DELETE FROM identity_token_balances WHERE network = ?1",
                 rusqlite::params![&network_str],
             )?;

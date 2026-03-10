@@ -793,73 +793,31 @@ impl PaymentHistory {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPayPaymentHistory(payment_data) => {
+            BackendTaskSuccessResult::DashPayPaymentHistory(payment_history) => {
                 self.payments.clear();
                 self.has_searched = true;
 
-                // Get current identity for saving to database
-                if let Some(identity) = &self.selected_identity {
-                    let identity_id = identity.identity.id();
+                if let Some(warning) = payment_history.warning {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        warning,
+                        MessageType::Warning,
+                    );
+                }
 
-                    // Convert backend data to PaymentRecord structs and save to database
-                    for (tx_id, contact_name, amount, is_incoming, memo) in payment_data {
-                        // Parse contact identity from contact_name if it contains ID
-                        let contact_id = if contact_name.contains("(") && contact_name.contains(")")
-                        {
-                            // Extract ID from format "Unknown (abcd1234)"
-                            let start = contact_name.find('(').unwrap() + 1;
-                            let end = contact_name.find(')').unwrap();
-                            let _id_str = &contact_name[start..end];
-                            // This is likely a partial base58 ID, we'd need the full ID
-                            // For now, we'll use a placeholder
-                            Identifier::new([0; 32])
+                for payment_data in payment_history.payments {
+                    self.payments.push(PaymentRecord {
+                        tx_id: payment_data.tx_id,
+                        contact_name: payment_data.contact_name,
+                        amount: Credits::from(payment_data.amount),
+                        is_incoming: payment_data.is_incoming,
+                        timestamp: payment_data.timestamp,
+                        memo: if payment_data.memo.is_empty() {
+                            None
                         } else {
-                            Identifier::new([0; 32])
-                        };
-
-                        let payment = PaymentRecord {
-                            tx_id: tx_id.clone(),
-                            contact_name,
-                            amount: Credits::from(amount),
-                            is_incoming,
-                            timestamp: 0, // TODO: Include timestamp in backend data
-                            memo: if memo.is_empty() {
-                                None
-                            } else {
-                                Some(memo.clone())
-                            },
-                        };
-                        self.payments.push(payment);
-
-                        // Save to database
-                        let (from_id, to_id, payment_type) = if is_incoming {
-                            (contact_id, identity_id, "received")
-                        } else {
-                            (identity_id, contact_id, "sent")
-                        };
-
-                        let _ = self.app_context.db.save_payment(
-                            &tx_id,
-                            &from_id,
-                            &to_id,
-                            amount as i64,
-                            if memo.is_empty() { None } else { Some(&memo) },
-                            payment_type,
-                        );
-                    }
-                } else {
-                    // No selected identity, just populate in-memory
-                    for (tx_id, contact_name, amount, is_incoming, memo) in payment_data {
-                        let payment = PaymentRecord {
-                            tx_id,
-                            contact_name,
-                            amount: Credits::from(amount),
-                            is_incoming,
-                            timestamp: 0, // TODO: Include timestamp in backend data
-                            memo: if memo.is_empty() { None } else { Some(memo) },
-                        };
-                        self.payments.push(payment);
-                    }
+                            Some(payment_data.memo)
+                        },
+                    });
                 }
             }
             _ => {

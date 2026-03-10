@@ -118,6 +118,22 @@ pub enum BackendTask {
 }
 
 #[derive(Debug, Clone)]
+pub struct DashPayPaymentHistoryEntry {
+    pub tx_id: String,
+    pub contact_name: String,
+    pub amount: u64,
+    pub is_incoming: bool,
+    pub memo: String,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct DashPayPaymentHistoryResult {
+    pub payments: Vec<DashPayPaymentHistoryEntry>,
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum BackendTaskSuccessResult {
     // General results
@@ -193,7 +209,7 @@ pub enum BackendTaskSuccessResult {
     },
     DashPayContacts(Vec<Identifier>), // List of contact identity IDs
     DashPayContactsWithInfo(Vec<ContactData>), // List of contacts with metadata
-    DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
+    DashPayPaymentHistory(DashPayPaymentHistoryResult),
     DashPayProfileUpdated(Identifier), // Identity ID of updated profile
     DashPayContactRequestSent(String), // Username or ID of recipient
     DashPayContactRequestAccepted(Identifier), // Request ID that was accepted

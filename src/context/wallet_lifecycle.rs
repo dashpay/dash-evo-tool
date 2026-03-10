@@ -761,9 +761,6 @@ impl AppContext {
             wm_arc.read().await;
         let mapping = self.spv_manager.det_wallets_snapshot();
 
-        // Take a snapshot of known addresses per wallet so we can scope DB updates
-        let wallets_guard = self.wallets.read()?;
-
         for (seed_hash, wallet_id) in mapping.iter() {
             // Log total balance for visibility
             let balance = wm
@@ -775,7 +772,7 @@ impl AppContext {
                 continue;
             };
 
-            let Some(wallet_arc) = wallets_guard.get(seed_hash).cloned() else {
+            let Some(wallet_arc) = self.wallets.read()?.get(seed_hash).cloned() else {
                 continue;
             };
 
@@ -911,9 +908,7 @@ impl AppContext {
             }
 
             // Write per-address balances and UTXOs into wallet model
-            if let Some(wref) = wallets_guard.get(seed_hash)
-                && let Ok(mut w) = wref.write()
-            {
+            if let Ok(mut w) = wallet_arc.write() {
                 // Update in-memory UTXOs map
                 w.utxos = new_utxos;
 
@@ -979,9 +974,147 @@ impl AppContext {
                 )?;
             }
 
-            if let Some(wref) = wallets_guard.get(seed_hash)
-                && let Ok(mut wallet) = wref.write()
-                && !wallet_transactions.is_empty()
+            // Collect identity IDs and the pre-update txid set under a read
+            // lock, then drop it before scanning to avoid holding the wallet
+            // lock during DB work.
+            let (identity_ids, existing_txids, seed_hash, active_seed_bytes): (
+                Vec<dash_sdk::platform::Identifier>,
+                std::collections::HashSet<_>,
+                Option<WalletSeedHash>,
+                Option<[u8; 64]>,
+            ) = if !wallet_transactions.is_empty() {
+                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                match wallet_arc.read() {
+                    Ok(wallet) => {
+                        let active_seed_bytes = if wallet.is_open() {
+                            wallet.seed_bytes().ok().copied()
+                        } else {
+                            None
+                        };
+                        (
+                            wallet.identities.values().map(|id| id.id()).collect(),
+                            wallet.transactions.iter().map(|tx| tx.txid).collect(),
+                            Some(wallet.seed_hash()),
+                            active_seed_bytes,
+                        )
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            seed_hash = %hex::encode(seed_hash),
+                            error = %err,
+                            "Skipping SPV reconcile identity scan because wallet read lock is poisoned"
+                        );
+                        (vec![], std::collections::HashSet::new(), None, None)
+                    }
+                }
+            } else {
+                (vec![], std::collections::HashSet::new(), None, None)
+            };
+
+            let network_str = self.network.to_string();
+
+            // Scan wallet transactions for DashPay payments and save any
+            // matches to the dashpay_payments table.  This bridges the gap
+            // between the SPV wallet (which knows about on-chain txs) and
+            // the DashPay payment history (which only knew about payments
+            // initiated through the app UI).
+            if !wallet_transactions.is_empty() && !identity_ids.is_empty() {
+                let mut delta_wallet_transactions: Option<Vec<WalletTransaction>> = None;
+                for identity_id in &identity_ids {
+                    let Some(seed_hash) = seed_hash else {
+                        break;
+                    };
+
+                    let has_scan_marker = self.db.has_dashpay_wallet_tx_scan_marker(
+                        &seed_hash,
+                        identity_id,
+                        &network_str,
+                    )?;
+
+                    let scan_transactions = if has_scan_marker {
+                        std::borrow::Cow::Borrowed(
+                            delta_wallet_transactions
+                                .get_or_insert_with(|| {
+                                    wallet_transactions
+                                        .iter()
+                                        .filter(|tx| !existing_txids.contains(&tx.txid))
+                                        .cloned()
+                                        .collect()
+                                })
+                                .as_slice(),
+                        )
+                    } else {
+                        std::borrow::Cow::Borrowed(wallet_transactions.as_slice())
+                    };
+
+                    if scan_transactions.is_empty() {
+                        continue;
+                    }
+
+                    let scan_mode = if has_scan_marker {
+                        crate::backend_task::dashpay::incoming_payments::DashPayWalletScanMode::Delta {
+                            active_seed_bytes: active_seed_bytes.as_ref(),
+                            active_wallet: Some(&wallet_arc),
+                        }
+                    } else {
+                        let Some(active_seed_bytes) = active_seed_bytes.as_ref() else {
+                            tracing::debug!(
+                                identity = %identity_id,
+                                full_wallet_scan = true,
+                                "SPV reconcile: skipping DashPay full scan because active wallet seed is unavailable"
+                            );
+                            continue;
+                        };
+                        crate::backend_task::dashpay::incoming_payments::DashPayWalletScanMode::Full {
+                            active_seed_bytes,
+                            active_wallet: &wallet_arc,
+                        }
+                    };
+
+                    match crate::backend_task::dashpay::incoming_payments::scan_wallet_transactions_for_dashpay_payments(
+                        self,
+                        identity_id,
+                        scan_transactions.as_ref(),
+                        scan_mode,
+                    ) {
+                        Ok(scan_result) if scan_result.saved_payments > 0 => {
+                            if !has_scan_marker && scan_result.mappings_available {
+                                self.db.mark_dashpay_wallet_tx_scan_complete(
+                                    &seed_hash,
+                                    identity_id,
+                                    &network_str,
+                                )?;
+                            }
+                            tracing::info!(
+                                identity = %identity_id,
+                                new_payments = scan_result.saved_payments,
+                                full_wallet_scan = !has_scan_marker,
+                                "SPV reconcile: discovered DashPay payments from wallet transactions"
+                            );
+                        }
+                        Ok(scan_result) => {
+                            if !has_scan_marker && scan_result.mappings_available {
+                                self.db.mark_dashpay_wallet_tx_scan_complete(
+                                    &seed_hash,
+                                    identity_id,
+                                    &network_str,
+                                )?;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                identity = %identity_id,
+                                full_wallet_scan = !has_scan_marker,
+                                error = %e,
+                                "SPV reconcile: DashPay payment scan failed"
+                            );
+                        }
+                    }
+                }
+            }
+
+            if !wallet_transactions.is_empty()
+                && let Ok(mut wallet) = wallet_arc.write()
             {
                 wallet.set_transactions(wallet_transactions);
             }

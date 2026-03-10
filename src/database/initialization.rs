@@ -35,7 +35,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 34;
+pub const DEFAULT_DB_VERSION: u16 = 37;
 
 /// Minimal view of `.env` values the v34 migration needs.
 struct V34EnvSnapshot {
@@ -156,6 +156,18 @@ impl Database {
                          (local Dash Core node configured)"
                     );
                 }
+            }
+            35 => {
+                self.migrate_dashpay_payments_to_output_identity(tx)
+                    .migration_err("dashpay_payments", "migrate to per-output uniqueness")?;
+            }
+            36 => {
+                self.create_dashpay_wallet_tx_scan_markers_table(tx)
+                    .migration_err("dashpay_wallet_tx_scan_markers", "create table")?;
+            }
+            37 => {
+                self.add_seed_hash_to_dashpay_address_mappings(tx)
+                    .migration_err("dashpay_address_mappings", "add seed_hash column")?;
             }
             // Versions 28-32 were consolidated into v33 to resolve migration
             // numbering conflicts between the zk and v1.0-dev branches.
@@ -1138,6 +1150,100 @@ impl Database {
         Ok(())
     }
 
+    /// Migration 35: allow multiple DashPay payment rows per transaction by
+    /// keying stored rows by transaction + contact relationship + output index.
+    fn migrate_dashpay_payments_to_output_identity(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        let has_output_index: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('dashpay_payments') WHERE name='output_index'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+        if has_output_index {
+            return Ok(());
+        }
+
+        conn.execute_batch(
+            "ALTER TABLE dashpay_payments RENAME TO dashpay_payments_old;
+             CREATE TABLE dashpay_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tx_id TEXT NOT NULL,
+                output_index INTEGER NOT NULL DEFAULT -1,
+                from_identity_id BLOB NOT NULL,
+                to_identity_id BLOB NOT NULL,
+                amount INTEGER NOT NULL,
+                memo TEXT,
+                payment_type TEXT NOT NULL CHECK (payment_type IN ('sent', 'received')),
+                status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
+                created_at INTEGER DEFAULT (unixepoch()),
+                confirmed_at INTEGER,
+                UNIQUE (tx_id, from_identity_id, to_identity_id, output_index)
+             );
+             INSERT INTO dashpay_payments (
+                id, tx_id, output_index, from_identity_id, to_identity_id, amount, memo,
+                payment_type, status, created_at, confirmed_at
+             )
+             SELECT
+                id, tx_id, -1, from_identity_id, to_identity_id, amount, memo,
+                payment_type, status, created_at, confirmed_at
+             FROM dashpay_payments_old;
+             DROP TABLE dashpay_payments_old;
+             CREATE INDEX IF NOT EXISTS idx_payments_from
+                ON dashpay_payments(from_identity_id);
+             CREATE INDEX IF NOT EXISTS idx_payments_to
+                ON dashpay_payments(to_identity_id);",
+        )?;
+
+        Ok(())
+    }
+
+    /// Migration 36: add a one-time DashPay wallet transaction scan marker.
+    fn create_dashpay_wallet_tx_scan_markers_table(
+        &self,
+        conn: &Connection,
+    ) -> rusqlite::Result<()> {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dashpay_wallet_tx_scan_markers (
+                seed_hash BLOB NOT NULL,
+                identity_id BLOB NOT NULL,
+                network TEXT NOT NULL,
+                completed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                PRIMARY KEY (seed_hash, identity_id, network)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dashpay_wallet_tx_scan_markers_identity
+             ON dashpay_wallet_tx_scan_markers(identity_id, network)",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Migration 37: scope DashPay address mappings to the wallet seed that derived them.
+    fn add_seed_hash_to_dashpay_address_mappings(&self, conn: &Connection) -> rusqlite::Result<()> {
+        let has_seed_hash: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('dashpay_address_mappings') WHERE name='seed_hash'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+        if !has_seed_hash {
+            conn.execute(
+                "ALTER TABLE dashpay_address_mappings ADD COLUMN seed_hash BLOB DEFAULT NULL",
+                [],
+            )?;
+        }
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dashpay_address_mappings_owner_seed_contact
+             ON dashpay_address_mappings(owner_identity_id, seed_hash, contact_identity_id, address_index)",
+            [],
+        )?;
+        Ok(())
+    }
+
     // Shielded table helpers (create_shielded_tables, create_shielded_wallet_meta_table,
     // add_nullifier_sync_timestamp_column) are implemented in database/shielded.rs.
 
@@ -1552,8 +1658,8 @@ mod test {
         assert!(exists, "column `{column}` should exist in table `{table}`");
     }
 
-    /// Verify the full v33 schema: all tables and columns introduced in v28-v33.
-    fn assert_v33_schema(conn: &Connection) {
+    /// Verify the full current schema, including the DashPay payment output identity.
+    fn assert_current_schema(conn: &Connection) {
         // wallet.core_wallet_name (v28)
         assert_column_exists(conn, "wallet", "core_wallet_name");
 
@@ -1589,6 +1695,8 @@ mod test {
 
         // dashpay_contact_requests table (pre-existing, but checked for completeness)
         assert_table_exists(conn, "dashpay_contact_requests");
+        assert_column_exists(conn, "dashpay_payments", "output_index");
+        assert_column_exists(conn, "dashpay_address_mappings", "seed_hash");
     }
 
     #[test]
@@ -1675,7 +1783,7 @@ mod test {
     }
 
     #[test]
-    fn test_v33_migration_fresh_install() {
+    fn test_v35_migration_fresh_install() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_file_path = temp_dir.path().join("fresh.db");
         let db = super::Database::new(&db_file_path).unwrap();
@@ -1707,11 +1815,11 @@ mod test {
             "fresh install must default to SPV (core_backend_mode = 1)"
         );
 
-        assert_v33_schema(&conn);
+        assert_current_schema(&conn);
     }
 
     #[test]
-    fn test_v33_migration_from_v27() {
+    fn test_v35_migration_from_v27() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_file_path = temp_dir.path().join("v27.db");
         let db = super::Database::new(&db_file_path).unwrap();
@@ -1824,13 +1932,187 @@ mod test {
         // Verify final version
         assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
 
-        // Verify full v33 schema
+        // Verify full current schema
         let conn = db.conn.lock().unwrap();
-        assert_v33_schema(&conn);
+        assert_current_schema(&conn);
     }
 
     #[test]
-    fn test_v33_migration_with_orphaned_fk_rows() {
+    fn test_v36_migration_creates_dashpay_wallet_tx_scan_markers_table() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("v35_dashpay_scan_markers.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute("DROP TABLE dashpay_wallet_tx_scan_markers", [])
+                .unwrap();
+            conn.execute("UPDATE settings SET database_version = 35 WHERE id = 1", [])
+                .unwrap();
+        }
+
+        let result = db.try_perform_migration(35, DEFAULT_DB_VERSION, None);
+        assert!(
+            result.is_ok(),
+            "migration from v35 to v{DEFAULT_DB_VERSION} failed: {:?}",
+            result.err()
+        );
+
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
+
+        let conn = db.conn.lock().unwrap();
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table' AND name = 'dashpay_wallet_tx_scan_markers'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            table_exists,
+            "scan marker table should exist after migration"
+        );
+    }
+
+    #[test]
+    fn test_v37_migration_adds_seed_hash_to_dashpay_address_mappings() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("v36_dashpay_address_mappings.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "ALTER TABLE dashpay_address_mappings RENAME TO dashpay_address_mappings_new;
+                 CREATE TABLE dashpay_address_mappings (
+                    address TEXT PRIMARY KEY,
+                    owner_identity_id BLOB NOT NULL,
+                    contact_identity_id BLOB NOT NULL,
+                    address_index INTEGER NOT NULL,
+                    created_at INTEGER DEFAULT (unixepoch())
+                 );
+                 INSERT INTO dashpay_address_mappings
+                    (address, owner_identity_id, contact_identity_id, address_index, created_at)
+                 SELECT
+                    address, owner_identity_id, contact_identity_id, address_index, created_at
+                 FROM dashpay_address_mappings_new;
+                 DROP TABLE dashpay_address_mappings_new;",
+            )
+            .unwrap();
+            conn.execute("UPDATE settings SET database_version = 36 WHERE id = 1", [])
+                .unwrap();
+        }
+
+        let result = db.try_perform_migration(36, DEFAULT_DB_VERSION, None);
+        assert!(
+            result.is_ok(),
+            "migration from v36 to v{DEFAULT_DB_VERSION} failed: {:?}",
+            result.err()
+        );
+
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
+
+        let conn = db.conn.lock().unwrap();
+        assert_column_exists(&conn, "dashpay_address_mappings", "seed_hash");
+    }
+
+    #[test]
+    fn test_v35_migration_preserves_legacy_dashpay_payments() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_file_path = temp_dir.path().join("v34_dashpay_payments.db");
+        let db = super::Database::new(&db_file_path).unwrap();
+        db.create_tables().unwrap();
+        db.set_default_version().unwrap();
+
+        let owner_identity_id = vec![0x11u8; 32];
+        let contact_identity_id = vec![0x22u8; 32];
+
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute_batch(
+                "ALTER TABLE dashpay_payments RENAME TO dashpay_payments_new;
+                 CREATE TABLE dashpay_payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tx_id TEXT NOT NULL,
+                    from_identity_id BLOB NOT NULL,
+                    to_identity_id BLOB NOT NULL,
+                    amount INTEGER NOT NULL,
+                    memo TEXT,
+                    payment_type TEXT NOT NULL CHECK (payment_type IN ('sent', 'received')),
+                    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'failed')),
+                    created_at INTEGER DEFAULT (unixepoch()),
+                    confirmed_at INTEGER,
+                    UNIQUE (tx_id, from_identity_id, to_identity_id)
+                 );
+                 DROP TABLE dashpay_payments_new;",
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO dashpay_payments
+                 (tx_id, from_identity_id, to_identity_id, amount, memo, payment_type, status, created_at, confirmed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    "legacy_txid",
+                    &owner_identity_id,
+                    &contact_identity_id,
+                    123_456_i64,
+                    "legacy memo",
+                    "sent",
+                    "confirmed",
+                    1_700_000_000_i64,
+                    1_700_000_010_i64,
+                ],
+            )
+            .unwrap();
+
+            conn.execute("UPDATE settings SET database_version = 34 WHERE id = 1", [])
+                .unwrap();
+        }
+
+        let result = db.try_perform_migration(34, DEFAULT_DB_VERSION, None);
+        assert!(
+            result.is_ok(),
+            "migration from v34 to v{DEFAULT_DB_VERSION} failed: {:?}",
+            result.err()
+        );
+
+        assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
+
+        let owner_identifier =
+            dash_sdk::platform::Identifier::from_bytes(&owner_identity_id).unwrap();
+        let contact_identifier =
+            dash_sdk::platform::Identifier::from_bytes(&contact_identity_id).unwrap();
+
+        let payments = db.load_payment_history(&owner_identifier, 10).unwrap();
+        assert_eq!(payments.len(), 1);
+        let payment = &payments[0];
+        assert_eq!(payment.tx_id, "legacy_txid");
+        assert_eq!(payment.output_index, -1);
+        assert_eq!(payment.from_identity_id, owner_identity_id);
+        assert_eq!(payment.to_identity_id, contact_identity_id);
+        assert_eq!(payment.amount, 123_456);
+        assert_eq!(payment.memo.as_deref(), Some("legacy memo"));
+        assert_eq!(payment.status, "confirmed");
+        assert_eq!(payment.created_at, 1_700_000_000);
+        assert_eq!(payment.confirmed_at, Some(1_700_000_010));
+
+        let contact_payments = db
+            .load_payment_history_for_contact(&owner_identifier, &contact_identifier, 10)
+            .unwrap();
+        assert_eq!(contact_payments.len(), 1);
+        assert_eq!(contact_payments[0].tx_id, "legacy_txid");
+    }
+
+    #[test]
+    fn test_v35_migration_with_orphaned_fk_rows() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_file_path = temp_dir.path().join("orphans.db");
         let db = super::Database::new(&db_file_path).unwrap();
@@ -2087,7 +2369,7 @@ mod test {
         assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
 
         let conn = db.conn.lock().unwrap();
-        assert_v33_schema(&conn);
+        assert_current_schema(&conn);
 
         // Orphaned wallet_transactions should be gone
         let orphan_txs: i64 = conn
@@ -2435,7 +2717,7 @@ mod test {
         assert_eq!(db.db_schema_version().unwrap(), DEFAULT_DB_VERSION);
 
         let conn = db.conn.lock().unwrap();
-        assert_v33_schema(&conn);
+        assert_current_schema(&conn);
 
         // Verify data survived migration
         let wallet_network: String = conn

@@ -12,7 +12,6 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::dashpay::DashPaySubscreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
-use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use egui::{Color32, RichText, ScrollArea, TextEdit, Ui};
@@ -27,7 +26,8 @@ const PRIVATE_CONTACT_INFO_TEXT: &str = "About Private Contact Information:\n\n\
 #[derive(Debug, Clone)]
 pub struct Payment {
     pub tx_id: String,
-    pub amount: Credits,
+    /// Amount in duffs (1 Dash = 100_000_000 duffs)
+    pub amount: u64,
     pub timestamp: u64,
     pub is_incoming: bool,
     pub memo: Option<String>,
@@ -58,7 +58,9 @@ pub struct ContactDetailsScreen {
     edit_hidden: bool,
     loading: bool,
     show_info_popup: bool,
-    needs_backend_fetch: bool,
+    payment_history_error: Option<String>,
+    needs_profile_fetch: bool,
+    needs_payment_history_load: bool,
 }
 
 impl ContactDetailsScreen {
@@ -79,7 +81,9 @@ impl ContactDetailsScreen {
             edit_hidden: false,
             loading: false,
             show_info_popup: false,
-            needs_backend_fetch: true,
+            payment_history_error: None,
+            needs_profile_fetch: true,
+            needs_payment_history_load: true,
         };
         screen.load_from_database();
         screen
@@ -89,6 +93,48 @@ impl ContactDetailsScreen {
     fn load_from_database(&mut self) {
         let identity_id = self.identity.identity.id();
         let network_str = self.app_context.network.to_string();
+
+        // Load payment history from database for this contact
+        self.payment_history.clear();
+        self.payment_history_error = None;
+        match self.app_context.db.load_payment_history_for_contact(
+            &identity_id,
+            &self.contact_id,
+            1000,
+        ) {
+            Ok(stored_payments) => {
+                for sp in stored_payments {
+                    let is_incoming = sp.to_identity_id == identity_id.to_buffer().to_vec();
+                    let amount = if sp.amount < 0 {
+                        0u64
+                    } else {
+                        sp.amount as u64
+                    };
+
+                    self.payment_history.push(Payment {
+                        tx_id: sp.tx_id,
+                        amount,
+                        timestamp: if sp.created_at < 0 {
+                            0u64
+                        } else {
+                            sp.created_at as u64
+                        },
+                        is_incoming,
+                        memo: sp.memo,
+                    });
+                }
+            }
+            Err(error) => {
+                let message = "Could not load payment history for this contact. Try opening the contact again.";
+                let handle = MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    message,
+                    MessageType::Error,
+                );
+                handle.with_details(&error);
+                self.payment_history_error = Some(message.to_string());
+            }
+        }
 
         // Try to load the contact's public info from the dashpay_contacts table
         let mut username = None;
@@ -169,6 +215,15 @@ impl ContactDetailsScreen {
         )))
     }
 
+    fn trigger_payment_history_load(&mut self) -> AppAction {
+        self.loading = true;
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::LoadPaymentHistory {
+                identity: self.identity.clone(),
+            },
+        )))
+    }
+
     fn start_editing(&mut self) {
         if let Some(info) = &self.contact_info {
             self.edit_nickname = info.nickname.clone().unwrap_or_default();
@@ -240,9 +295,11 @@ impl ContactDetailsScreen {
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        // Dispatch deferred backend fetch if flagged
-        if self.needs_backend_fetch {
-            self.needs_backend_fetch = false;
+        if self.needs_payment_history_load {
+            self.needs_payment_history_load = false;
+            action = self.trigger_payment_history_load();
+        } else if self.needs_profile_fetch {
+            self.needs_profile_fetch = false;
             action = self.trigger_backend_fetch();
         }
 
@@ -420,7 +477,9 @@ impl ContactDetailsScreen {
                     ui.label(RichText::new("Payment History").strong());
                     ui.separator();
 
-                    if self.payment_history.is_empty() {
+                    if let Some(error) = &self.payment_history_error {
+                        ui.label(RichText::new(error).color(DashColors::ERROR));
+                    } else if self.payment_history.is_empty() {
                         ui.label("No payment history with this contact");
                     } else {
                         for payment in &self.payment_history {
@@ -435,8 +494,9 @@ impl ContactDetailsScreen {
 
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
-                                        // Amount
-                                        let amount_str = format!("{} Dash", payment.amount);
+                                        // Amount (stored in duffs, display as Dash)
+                                        let dash_amount = payment.amount as f64 / 100_000_000.0;
+                                        let amount_str = format!("{:.8} Dash", dash_amount);
                                         if payment.is_incoming {
                                             ui.label(
                                                 RichText::new(format!("+{}", amount_str))
@@ -516,8 +576,8 @@ impl ScreenLike for ContactDetailsScreen {
 
     fn refresh_on_arrival(&mut self) {
         self.load_from_database();
-        // Flag that we need a backend fetch; it will be dispatched from render()
-        self.needs_backend_fetch = true;
+        self.needs_payment_history_load = true;
+        self.needs_profile_fetch = true;
     }
 
     fn ui(&mut self, ctx: &egui::Context) -> AppAction {
@@ -635,6 +695,16 @@ impl ScreenLike for ContactDetailsScreen {
                         account_reference: 0,
                     });
                 }
+            }
+            BackendTaskSuccessResult::DashPayPaymentHistory(history_result) => {
+                if let Some(warning) = history_result.warning {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        warning,
+                        MessageType::Warning,
+                    );
+                }
+                self.load_from_database();
             }
             BackendTaskSuccessResult::DashPayContactInfoUpdated(contact_id) => {
                 if contact_id == self.contact_id {

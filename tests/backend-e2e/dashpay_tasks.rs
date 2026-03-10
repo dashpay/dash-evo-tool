@@ -612,7 +612,7 @@ async fn tc_041_load_payment_history_empty() {
         BackendTaskSuccessResult::DashPayPaymentHistory(history) => {
             tracing::info!(
                 "TC-041: LoadPaymentHistory returned {} entries",
-                history.len()
+                history.payments.len()
             );
         }
         other => panic!("TC-041: expected DashPayPaymentHistory, got: {:?}", other),

@@ -75,6 +75,6 @@ jobs:
           PROTOC: /usr/local/bin/protoc
 
       - name: Run backend E2E tests
-        run: scripts/safe-cargo.sh test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
+        run: cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
         env:
           E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}

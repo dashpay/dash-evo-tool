@@ -71,6 +71,7 @@ jobs:
             --agent claudius:claudius
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns 30
+            --allowedTools "mcp__*,Read,Write,Edit,Glob,Grep,Agent,Skill,Task,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskOutput,SendMessage,Bash(gh pr *),Bash(gh api *),Bash(git diff *),Bash(git log *),Bash(git fetch *),Bash(git branch *),Bash(git rev-parse *),Bash(git show *),Bash(cat *),Bash(python3 *),Bash(bash *)"
 
       - name: Remove claudius-review label
         if: success()

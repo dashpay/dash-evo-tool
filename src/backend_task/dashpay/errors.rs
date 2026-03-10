@@ -36,6 +36,9 @@ pub enum DashPayError {
     #[error("Missing DECRYPTION key required for DashPay")]
     MissingDecryptionKey,
 
+    #[error("Recipient identity is missing a DashPay-compatible key")]
+    RecipientMissingKey,
+
     #[error("ECDH key generation failed: {reason}")]
     EcdhFailed { reason: String },
 
@@ -174,6 +177,9 @@ impl DashPayError {
             DashPayError::MissingDecryptionKey => {
                 "Your identity is missing a DECRYPTION key required for DashPay. Please add a DashPay-compatible decryption key.".to_string()
             }
+            DashPayError::RecipientMissingKey => {
+                "The recipient's identity does not have a DashPay-compatible key. They need to add an ENCRYPTION or DECRYPTION key to their identity before you can send them a contact request.".to_string()
+            }
             _ => "An error occurred. Please try again.".to_string(),
         }
     }
@@ -203,6 +209,7 @@ impl DashPayError {
                 | DashPayError::MissingField { .. }
                 | DashPayError::MissingEncryptionKey
                 | DashPayError::MissingDecryptionKey
+                | DashPayError::RecipientMissingKey
         )
     }
 }

@@ -390,6 +390,9 @@ impl ScreenLike for AddContactScreen {
                                             ));
                                         }
                                 }
+                                DashPayError::RecipientMissingKey => {
+                                    ui.label(RichText::new("The recipient needs to add a DashPay-compatible key (ENCRYPTION or DECRYPTION) to their identity before you can contact them.").small().color(DashColors::text_secondary(dark_mode)));
+                                }
                                 _ => {}
                             }
                         }
@@ -637,7 +640,9 @@ impl ScreenLike for AddContactScreen {
                     || message.contains("does not have")
                 {
                     // Try to parse structured error, fallback to generic
-                    let error = if message.contains("ENCRYPTION key") {
+                    let error = if message.contains("Recipient does not have") {
+                        DashPayError::RecipientMissingKey
+                    } else if message.contains("ENCRYPTION key") {
                         DashPayError::MissingEncryptionKey
                     } else if message.contains("DECRYPTION key") {
                         DashPayError::MissingDecryptionKey

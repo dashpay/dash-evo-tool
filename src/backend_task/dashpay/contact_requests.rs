@@ -254,8 +254,11 @@ pub async fn send_contact_request_with_proof(
             "Sender does not have a compatible ECDSA_SECP256K1 ENCRYPTION key for ECDH. Please add a DashPay-compatible encryption key to your identity.".to_string()
         })?;
 
-    // Find a recipient DECRYPTION key that supports ECDH (must be ECDSA_SECP256K1)
-    // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
+    // Find a recipient key that supports ECDH (must be ECDSA_SECP256K1).
+    // Try DECRYPTION first (preferred per DIP-15 convention), then fall back to
+    // ENCRYPTION — both are valid ECDSA_SECP256K1 keys and work identically for
+    // ECDH.  Many identities created by the mobile wallet or other tools only
+    // carry an ENCRYPTION key, so the fallback is essential for interoperability.
     let recipient_key = to_identity
         .get_first_public_key_matching(
             Purpose::DECRYPTION,
@@ -263,8 +266,16 @@ pub async fn send_contact_request_with_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
+        .or_else(|| {
+            to_identity.get_first_public_key_matching(
+                Purpose::ENCRYPTION,
+                HashSet::from([SecurityLevel::MEDIUM]),
+                HashSet::from([KeyType::ECDSA_SECP256K1]),
+                false,
+            )
+        })
         .ok_or_else(|| {
-            "Recipient does not have a compatible ECDSA_SECP256K1 DECRYPTION key for ECDH. They need to add a DashPay-compatible decryption key to their identity.".to_string()
+            "Recipient does not have a compatible ECDSA_SECP256K1 key (ENCRYPTION or DECRYPTION) for ECDH. They need to add a DashPay-compatible key to their identity.".to_string()
         })?;
 
     // Step 4: Generate ECDH shared key and encrypt data

@@ -1044,7 +1044,10 @@ impl ScreenLike for ContactRequests {
 
         // TODO(RUST-002): String-based error classification — see #660
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            if message.contains("ENCRYPTION key") {
+            if message.contains("Recipient does not have") {
+                self.error = Some(DashPayError::RecipientMissingKey);
+                return;
+            } else if message.contains("ENCRYPTION key") {
                 self.error = Some(DashPayError::MissingEncryptionKey);
             } else if message.contains("DECRYPTION key") {
                 self.error = Some(DashPayError::MissingDecryptionKey);
@@ -1211,7 +1214,9 @@ impl ScreenLike for ContactRequests {
             }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is an error message about missing keys
-                if msg.contains("ENCRYPTION key") {
+                if msg.contains("Recipient does not have") {
+                    self.error = Some(DashPayError::RecipientMissingKey);
+                } else if msg.contains("ENCRYPTION key") {
                     self.error = Some(DashPayError::MissingEncryptionKey);
                 } else if msg.contains("DECRYPTION key") {
                     self.error = Some(DashPayError::MissingDecryptionKey);

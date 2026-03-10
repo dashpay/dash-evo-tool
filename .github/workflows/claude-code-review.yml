@@ -57,6 +57,7 @@ jobs:
           show_full_output: true
           trigger_phrase: ""
           prompt: |
+            Load /claudash:dash-platform for Dash Platform domain context.
             Prefer GitHub MCP tools over gh CLI commands.
             Write all PR comments in Claudius persona — witty, confident, subtly snarky,
             but always respectful and genuinely helpful, as if advising a trusted colleague.

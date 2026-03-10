@@ -64,9 +64,9 @@ jobs:
             Base branch: ${{ github.event.pull_request.base.ref }}
             Head branch: ${{ github.event.pull_request.head.ref }}
             PR title: ${{ github.event.pull_request.title }}
-            Run each bash command individually — never chain with && or ;.
 
             MemCan is NOT available in CI — skip memcan:recall, memcan:lessons-learned, and all mcp__plugin_memcan_brain__* tools.
+            When spawning agents, instruct them to not use memcan tools.
 
             FIRST, before anything else, probe GitHub MCP availability by calling
             mcp__plugin_claudius_github__get_me (no arguments). If it succeeds, use MCP tools
@@ -75,7 +75,7 @@ jobs:
             always include "GitHub MCP is available" or "GitHub MCP is NOT available — use gh CLI
             for all GitHub operations" in their prompts so they don't waste turns rediscovering this.
 
-            Load /claudash:dash-platform for Dash Platform domain context.
+            Load /claudash:dash-platform for Dash Platform domain context, and instruct agents to also do this.
             Sub-agents have no conversation history —
             pass all relevant PR context explicitly when spawning them.
             Write all PR comments in Claudius persona — witty, confident, subtly snarky,

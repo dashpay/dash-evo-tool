@@ -1,5 +1,5 @@
 ---
-name: "Claude Code Review (add claudius-review label to trigger)"
+name: "Claude (label: claudius-review)"
 
 "on":
   pull_request:
@@ -55,6 +55,8 @@ jobs:
           trigger_phrase: ""
           prompt: |
             Prefer GitHub MCP tools over gh CLI commands.
+            Write all PR comments in Claudius persona — witty, confident, subtly snarky,
+            but always respectful and genuinely helpful, as if advising a trusted colleague.
 
             1. Run /claudius:check-pr-comments to verify if previous review comments are addressed.
             2. For each inline comment thread that IS fixed in code but NOT yet resolved:
@@ -64,5 +66,6 @@ jobs:
             4. If unresolved comments remain OR this is the first review, run /claudius:grumpy-review
                and publish new findings as inline PR comments.
           claude_args: |
+            --agent claudius:claudius
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns 30

@@ -184,7 +184,7 @@ pub async fn send_contact_request_with_proof(
     // Step 1: Resolve the recipient identity
     let to_identity = if to_username_or_id.ends_with(".dash") {
         // It's a complete username, resolve via DPNS
-        resolve_username_to_identity(sdk, &to_username_or_id).await?
+        resolve_username_to_identity(app_context, sdk, &to_username_or_id).await?
     } else {
         // Try to parse as identity ID first
         match Identifier::from_string_try_encodings(
@@ -201,7 +201,7 @@ pub async fn send_contact_request_with_proof(
             Err(_) => {
                 // Not a valid ID format, assume it's a username without .dash suffix
                 let username_with_suffix = format!("{}.dash", to_username_or_id);
-                resolve_username_to_identity(sdk, &username_with_suffix).await?
+                resolve_username_to_identity(app_context, sdk, &username_with_suffix).await?
             }
         }
     };
@@ -504,33 +504,39 @@ pub async fn send_contact_request_with_proof(
     ))
 }
 
-async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, String> {
+async fn resolve_username_to_identity(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    username: &str,
+) -> Result<Identity, String> {
     // Parse username (e.g., "alice.dash" -> "alice")
     let name = username
         .split('.')
         .next()
         .ok_or_else(|| format!("Invalid username format: {}", username))?;
 
-    // Query DPNS for the username
-    let dpns_contract_id = Identifier::from_string(
-        "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec",
-        Encoding::Base58,
-    )
-    .map_err(|e| format!("Failed to parse DPNS contract ID: {}", e))?;
+    // Normalize the label using homograph-safe conversion, consistent with DPNS registration
+    let normalized_name =
+        dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars(&name.to_lowercase());
 
-    let dpns_contract = dash_sdk::platform::DataContract::fetch(sdk, dpns_contract_id)
-        .await
-        .map_err(|e| format!("Failed to fetch DPNS contract: {}", e))?
-        .ok_or("DPNS contract not found")?;
+    // Query DPNS for the username using the app context's cached contract
+    let dpns_contract = app_context.dpns_contract.clone();
 
-    let mut query = DocumentQuery::new(Arc::new(dpns_contract), "domain")
+    let mut query = DocumentQuery::new(dpns_contract, "domain")
         .map_err(|e| format!("Failed to create DPNS query: {}", e))?;
 
-    query = query.with_where(WhereClause {
-        field: "normalizedLabel".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Text(name.to_lowercase()),
-    });
+    // Both normalizedParentDomainName and normalizedLabel are required for DPNS queries
+    query = query
+        .with_where(WhereClause {
+            field: "normalizedParentDomainName".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Text("dash".to_string()),
+        })
+        .with_where(WhereClause {
+            field: "normalizedLabel".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Text(normalized_name),
+        });
     query.limit = 1;
 
     let results = Document::fetch_many(sdk, query)
@@ -544,8 +550,31 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
 
     let document = document.ok_or_else(|| format!("Invalid DPNS document for '{}'", username))?;
 
-    // Get the identity ID from the DPNS document
-    let identity_id = document.owner_id();
+    // Extract the identity ID from records.identity (not owner_id, which may differ)
+    let identity_id = document
+        .get("records")
+        .and_then(|records| {
+            if let Value::Map(map) = records {
+                map.iter()
+                    .find(|(k, _)| matches!(k, Value::Text(key) if key == "identity"))
+                    .map(|(_, v)| v.clone())
+            } else {
+                None
+            }
+        })
+        .and_then(|id_value| {
+            if let Value::Identifier(id_bytes) = id_value {
+                Some(Identifier::from(id_bytes))
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| {
+            format!(
+                "DPNS document for '{}' does not contain a valid identity reference",
+                username
+            )
+        })?;
 
     // Fetch the identity
     Identity::fetch(sdk, identity_id)

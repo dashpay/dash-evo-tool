@@ -7,6 +7,7 @@ use crate::model::wallet::{
 };
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::helpers::clicked_outside_window;
@@ -83,7 +84,7 @@ impl WordCount {
 
 pub struct AddNewWalletScreen {
     seed_phrase: Option<Mnemonic>,
-    password: String,
+    password_input: PasswordInput,
     entropy_grid: U256EntropyGrid,
     selected_language: Language,
     selected_word_count: WordCount,
@@ -112,7 +113,7 @@ impl AddNewWalletScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         Self {
             seed_phrase: None,
-            password: String::new(),
+            password_input: PasswordInput::new().with_hint_text("Optional password"),
             entropy_grid: U256EntropyGrid::new(),
             selected_language: Language::English,
             selected_word_count: WordCount::Words24, // Default to 24 words for maximum security
@@ -153,15 +154,15 @@ impl AddNewWalletScreen {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
 
-            let (encrypted_seed, salt, nonce, uses_password) = if self.password.is_empty() {
+            let (encrypted_seed, salt, nonce, uses_password) = if self.password_input.is_empty() {
                 (seed.to_vec(), vec![], vec![], false)
             } else {
                 // Encrypt the seed to obtain encrypted_seed, salt, and nonce
                 let (encrypted_seed, salt, nonce) =
-                    ClosedKeyItem::encrypt_seed(&seed, self.password.as_str())?;
+                    ClosedKeyItem::encrypt_seed(&seed, self.password_input.text())?;
                 if self.use_password_for_app {
                     let (encrypted_message, salt, nonce) =
-                        encrypt_message(DASH_SECRET_MESSAGE, self.password.as_str())?;
+                        encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
                     self.app_context
                         .update_main_password(&salt, &nonce, &encrypted_message)
                         .map_err(|e| e.to_string())?;
@@ -808,9 +809,10 @@ impl ScreenLike for AddNewWalletScreen {
 
                     ui.horizontal(|ui| {
                         ui.label("Optional Password:");
-                        if ui.text_edit_singleline(&mut self.password).changed() {
-                            if !self.password.is_empty() {
-                                let estimate = zxcvbn(&self.password, &[]);
+                        let pw_response = self.password_input.show(ui);
+                        if pw_response.changed {
+                            if !self.password_input.is_empty() {
+                                let estimate = zxcvbn(self.password_input.text(), &[]);
 
                                 // Convert Score to u8
                                 let score_u8 = u8::from(estimate.score());

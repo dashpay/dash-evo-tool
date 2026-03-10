@@ -1,8 +1,10 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
@@ -14,17 +16,15 @@ use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use std::sync::{Arc, RwLock};
-use zeroize::Zeroizing;
 
 pub struct AssetLockDetailScreen {
     pub wallet_seed_hash: [u8; 32],
     pub asset_lock_index: usize,
     pub app_context: Arc<AppContext>,
     wallet: Option<Arc<RwLock<Wallet>>>,
-    wallet_password: String,
-    show_password: bool,
+    password_input: PasswordInput,
     show_private_key_popup: bool,
-    private_key_wif: Option<Zeroizing<String>>,
+    private_key_wif: Option<Secret>,
 }
 
 impl AssetLockDetailScreen {
@@ -47,8 +47,7 @@ impl AssetLockDetailScreen {
             asset_lock_index,
             app_context: app_context.clone(),
             wallet,
-            wallet_password: String::new(),
-            show_password: false,
+            password_input: PasswordInput::new().with_hint_text("Enter password"),
             show_private_key_popup: false,
             private_key_wif: None,
         }
@@ -228,7 +227,7 @@ impl AssetLockDetailScreen {
                                         let wallet = wallet_arc.write().unwrap();
                                         match wallet.private_key_at_derivation_path(&derivation_path, self.app_context.network) {
                                             Ok(private_key) => {
-                                                self.private_key_wif = Some(Zeroizing::new(private_key.to_wif()));
+                                                self.private_key_wif = Some(Secret::new(private_key.to_wif()));
                                                 self.show_private_key_popup = true;
                                             }
                                             Err(e) => {
@@ -266,20 +265,8 @@ impl ScreenWithWalletUnlock for AssetLockDetailScreen {
         &self.wallet
     }
 
-    fn wallet_password_ref(&self) -> &String {
-        &self.wallet_password
-    }
-
-    fn wallet_password_mut(&mut self) -> &mut String {
-        &mut self.wallet_password
-    }
-
-    fn show_password(&self) -> bool {
-        self.show_password
-    }
-
-    fn show_password_mut(&mut self) -> &mut bool {
-        &mut self.show_password
+    fn password_input(&mut self) -> &mut PasswordInput {
+        &mut self.password_input
     }
 
     fn app_context(&self) -> Arc<AppContext> {
@@ -365,8 +352,7 @@ impl ScreenLike for AssetLockDetailScreen {
 
                     ui.label("Private Key (WIF):");
                     if let Some(ref wif) = self.private_key_wif {
-                        let wif_display = wif.as_str().to_string();
-                        ui.add(egui::TextEdit::multiline(&mut wif_display.as_str())
+                        ui.add(egui::TextEdit::multiline(&mut wif.expose_secret())
                             .font(egui::FontId::monospace(12.0))
                             .desired_width(f32::INFINITY)
                             .desired_rows(1));
@@ -380,7 +366,8 @@ impl ScreenLike for AssetLockDetailScreen {
                         if ComponentStyles::add_primary_button(ui, "Copy").clicked()
                             && let Some(ref wif) = self.private_key_wif
                         {
-                            ui.ctx().copy_text(wif.as_str().to_string());
+                            // SECURITY: clipboard copy inherently exposes plaintext — user-initiated action
+                            ui.ctx().copy_text(wif.expose_secret().to_string());
                             MessageBanner::set_global(ctx, "Private key copied to clipboard", MessageType::Success);
                         }
                         if ComponentStyles::add_secondary_button(ui, "Close", dark_mode)

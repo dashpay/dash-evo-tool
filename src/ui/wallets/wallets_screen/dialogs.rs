@@ -3,6 +3,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
 use crate::model::amount::Amount;
+use crate::model::secret::Secret;
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
@@ -21,7 +22,6 @@ use eframe::epaint::TextureHandle;
 use egui::load::SizedTexture;
 use egui::{Frame, Margin, RichText, TextureOptions};
 use std::sync::{Arc, RwLock};
-use zeroize::Zeroizing;
 
 use super::WalletsBalancesScreen;
 
@@ -95,31 +95,19 @@ pub(super) struct MineDialogState {
 }
 
 /// State for the Private Key dialog
+#[derive(Default)]
 pub(super) struct PrivateKeyDialogState {
     pub is_open: bool,
     /// The address being displayed
     pub address: String,
-    /// The private key in WIF format (zeroized on drop)
-    pub private_key_wif: Zeroizing<String>,
+    /// The private key in WIF format
+    pub private_key_wif: Secret,
     /// Whether to show the private key (hidden by default)
     pub show_key: bool,
     /// Pending derivation path (when wallet needs unlock first)
     pub pending_derivation_path: Option<DerivationPath>,
     /// Pending address string (when wallet needs unlock first)
     pub pending_address: Option<String>,
-}
-
-impl Default for PrivateKeyDialogState {
-    fn default() -> Self {
-        Self {
-            is_open: false,
-            address: String::new(),
-            private_key_wif: Zeroizing::new(String::new()),
-            show_key: false,
-            pending_derivation_path: None,
-            pending_address: None,
-        }
-    }
 }
 
 impl WalletsBalancesScreen {
@@ -940,7 +928,7 @@ impl WalletsBalancesScreen {
                     // Private key value (hidden by default)
                     if self.private_key_dialog.show_key {
                         ui.label(
-                            RichText::new(self.private_key_dialog.private_key_wif.as_str())
+                            RichText::new(self.private_key_dialog.private_key_wif.expose_secret())
                                 .monospace()
                                 .color(DashColors::text_primary(dark_mode)),
                         );
@@ -968,8 +956,9 @@ impl WalletsBalancesScreen {
                         }
 
                         if ComponentStyles::add_primary_button(ui, "Copy Key").clicked() {
-                            let _ =
-                                copy_text_to_clipboard(&self.private_key_dialog.private_key_wif);
+                            let _ = copy_text_to_clipboard(
+                                self.private_key_dialog.private_key_wif.expose_secret(),
+                            );
                         }
                     });
 
@@ -1268,7 +1257,7 @@ impl WalletsBalancesScreen {
         }
     }
 
-    pub(super) fn derive_private_key_wif(&self, path: &DerivationPath) -> Result<String, String> {
+    pub(super) fn derive_private_key_wif(&self, path: &DerivationPath) -> Result<Secret, String> {
         let wallet_arc = self
             .selected_wallet
             .clone()
@@ -1278,7 +1267,7 @@ impl WalletsBalancesScreen {
             return Err("Unlock this wallet to view private keys.".to_string());
         }
         let private_key = wallet.private_key_at_derivation_path(path, self.app_context.network)?;
-        Ok(private_key.to_wif())
+        Ok(Secret::new(private_key.to_wif()))
     }
 
     pub(super) fn open_mine_dialog(&mut self) {

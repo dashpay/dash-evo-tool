@@ -8,6 +8,7 @@ use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -62,8 +63,7 @@ pub struct SingleKeyWalletSendScreen {
     sending: bool,
 
     // Wallet unlock
-    wallet_password: String,
-    show_password: bool,
+    password_input: PasswordInput,
 
     // Fee confirmation dialog
     fee_dialog: FeeConfirmationDialog,
@@ -82,8 +82,7 @@ impl SingleKeyWalletSendScreen {
             subtract_fee: false,
             memo: String::new(),
             sending: false,
-            wallet_password: String::new(),
-            show_password: false,
+            password_input: PasswordInput::new().with_hint_text("Enter password"),
             fee_dialog: FeeConfirmationDialog::default(),
             show_advanced_options: false,
         }
@@ -754,14 +753,7 @@ impl SingleKeyWalletSendScreen {
                     );
                     ui.add_space(5.0);
 
-                    let password_field = if self.show_password {
-                        egui::TextEdit::singleline(&mut self.wallet_password)
-                    } else {
-                        egui::TextEdit::singleline(&mut self.wallet_password).password(true)
-                    };
-                    ui.add(password_field.desired_width(200.0));
-
-                    ui.checkbox(&mut self.show_password, "Show");
+                    self.password_input.show(ui);
 
                     ui.add_space(10.0);
 
@@ -770,9 +762,9 @@ impl SingleKeyWalletSendScreen {
                     {
                         match wallet.write() {
                             Ok(mut wallet_guard) => {
-                                match wallet_guard.open(&self.wallet_password) {
+                                match wallet_guard.open(self.password_input.text()) {
                                     Ok(_) => {
-                                        self.wallet_password.clear();
+                                        self.password_input.clear();
                                     }
                                     Err(e) => {
                                         MessageBanner::set_global(

@@ -6,6 +6,7 @@
 //!   Parses known error patterns into typed variants automatically.
 
 use dash_sdk::dashcore_rpc;
+use dash_sdk::Error as SdkError;
 use thiserror::Error;
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
@@ -64,15 +65,17 @@ pub enum TaskError {
     /// Duplicate identity public key — the key data already exists on the platform.
     #[error("This public key is already registered on the platform. Try a different key.")]
     DuplicateIdentityPublicKey {
-        /// Raw `SdkError` debug representation for diagnostic logging.
-        source_error: String,
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
     },
 
     /// Duplicate identity public key ID — the key hash is already taken platform-wide.
     #[error("This key hash is already registered on the platform. Try a different key.")]
     DuplicateIdentityPublicKeyId {
-        /// Raw `SdkError` debug representation for diagnostic logging.
-        source_error: String,
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
     },
 
     /// Identity public key conflicts with an existing key's unique contract bounds.
@@ -81,8 +84,9 @@ pub enum TaskError {
     )]
     IdentityPublicKeyContractBoundsConflict {
         contract_id: String,
-        /// Raw `SdkError` debug representation for diagnostic logging.
-        source_error: String,
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
     },
 }
 

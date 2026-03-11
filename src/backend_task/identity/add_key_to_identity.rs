@@ -22,7 +22,12 @@ use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{Fetch, Identity};
 
-fn broadcast_error_message(error: &SdkError) -> String {
+/// Converts a broadcast SDK error into a typed `TaskError`.
+///
+/// Matches known consensus error variants from two SDK error paths
+/// (`StateTransitionBroadcastError` and `Protocol/ConsensusError`),
+/// falling back to `TaskError::Generic` for unrecognised errors.
+fn broadcast_error(error: &SdkError) -> TaskError {
     let consensus_error = match error {
         SdkError::StateTransitionBroadcastError(broadcast_err) => broadcast_err.cause.as_ref(),
         SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
@@ -32,24 +37,23 @@ fn broadcast_error_message(error: &SdkError) -> String {
     if let Some(ce) = consensus_error {
         match ce {
             ConsensusError::StateError(StateError::DuplicatedIdentityPublicKeyStateError(_)) => {
-                return TaskError::DuplicateIdentityPublicKey.to_string();
+                return TaskError::DuplicateIdentityPublicKey;
             }
             ConsensusError::StateError(StateError::DuplicatedIdentityPublicKeyIdStateError(_)) => {
-                return TaskError::DuplicateIdentityPublicKeyId.to_string();
+                return TaskError::DuplicateIdentityPublicKeyId;
             }
             ConsensusError::StateError(
                 StateError::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError(e),
             ) => {
                 return TaskError::IdentityPublicKeyContractBoundsConflict {
                     contract_id: format!("{}", e.contract_id()),
-                }
-                .to_string();
+                };
             }
             _ => {}
         }
     }
 
-    format!("Broadcasting error: {}", error)
+    TaskError::Generic(format!("Broadcasting error: {}", error))
 }
 
 impl AppContext {
@@ -59,19 +63,19 @@ impl AppContext {
         mut qualified_identity: QualifiedIdentity,
         mut public_key_to_add: QualifiedIdentityPublicKey,
         private_key: [u8; 32],
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let new_identity_nonce = sdk
             .get_identity_nonce(qualified_identity.identity.id(), true, None)
             .await
             .map_err(|e| format!("Fetch nonce error: {}", e))?;
         let Some(master_key) = qualified_identity.can_sign_with_master_key() else {
-            return Err("Master key not found".to_string());
+            return Err("Master key not found".to_string().into());
         };
         let master_key_id = master_key.identity_public_key.id();
         let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
             .await
-            .map_err(|e| format!("Fetch nonce error: {}", e))?
-            .ok_or("Identity not found".to_string())?;
+            .map_err(|e| format!("Fetch identity error: {}", e))?
+            .ok_or_else(|| TaskError::Generic("Identity not found".into()))?;
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
         public_key_to_add
@@ -104,7 +108,7 @@ impl AppContext {
         let result = state_transition
             .broadcast_and_wait(sdk, None)
             .await
-            .map_err(|ref e| broadcast_error_message(e))?;
+            .map_err(|ref e| broadcast_error(e))?;
 
         // Log and handle the proof result
         tracing::info!("AddKeyToIdentity proof result: {}", result);
@@ -158,7 +162,7 @@ impl AppContext {
 
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
-            .map_err(|e| format!("Database error: {}", e))
+            .map_err(|e| TaskError::Generic(format!("Database error: {}", e)))
     }
 }
 
@@ -176,22 +180,16 @@ mod tests {
         let consensus =
             ConsensusError::from(DuplicatedIdentityPublicKeyStateError::new(vec![1, 2]));
         let sdk_err = SdkError::from(consensus);
-        let msg = broadcast_error_message(&sdk_err);
-        assert_eq!(
-            msg,
-            "This public key is already registered on the platform. Try a different key."
-        );
+        let err = broadcast_error(&sdk_err);
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey));
     }
 
     #[test]
     fn test_duplicate_public_key_id_error() {
         let consensus = ConsensusError::from(DuplicatedIdentityPublicKeyIdStateError::new(vec![3]));
         let sdk_err = SdkError::from(consensus);
-        let msg = broadcast_error_message(&sdk_err);
-        assert_eq!(
-            msg,
-            "This key hash is already registered on the platform. Try a different key."
-        );
+        let err = broadcast_error(&sdk_err);
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKeyId));
     }
 
     #[test]
@@ -208,13 +206,9 @@ mod tests {
             ),
         );
         let sdk_err = SdkError::from(consensus);
-        let msg = broadcast_error_message(&sdk_err);
-        assert_eq!(
-            msg,
-            format!(
-                "This key conflicts with an existing key bound to contract {}. Use a different key or purpose.",
-                contract_id
-            )
+        let err = broadcast_error(&sdk_err);
+        assert!(
+            matches!(err, TaskError::IdentityPublicKeyContractBoundsConflict { ref contract_id } if !contract_id.is_empty())
         );
     }
 
@@ -229,18 +223,14 @@ mod tests {
             cause: Some(consensus),
         };
         let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
-        let msg = broadcast_error_message(&sdk_err);
-        assert_eq!(
-            msg,
-            "This public key is already registered on the platform. Try a different key."
-        );
+        let err = broadcast_error(&sdk_err);
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey));
     }
 
     #[test]
     fn test_unknown_sdk_error_falls_back() {
         let sdk_err = SdkError::Generic("connection timeout".to_string());
-        let msg = broadcast_error_message(&sdk_err);
-        assert!(msg.starts_with("Broadcasting error:"));
-        assert!(msg.contains("connection timeout"));
+        let err = broadcast_error(&sdk_err);
+        assert!(matches!(err, TaskError::Generic(ref s) if s.contains("connection timeout")));
     }
 }

@@ -11,7 +11,7 @@ mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
 
-use super::{BackendTaskSuccessResult, FeeResult};
+use super::{BackendTaskSuccessResult, FeeResult, TaskError};
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
@@ -530,65 +530,59 @@ impl AppContext {
         task: IdentityTask,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            IdentityTask::LoadIdentity(input) => self.load_identity(sdk, input).await,
+            IdentityTask::LoadIdentity(input) => Ok(self.load_identity(sdk, input).await?),
             IdentityTask::WithdrawFromIdentity(qualified_identity, to_address, credits, id) => {
-                self.withdraw_from_identity(qualified_identity, to_address, credits, id)
-                    .await
+                Ok(self
+                    .withdraw_from_identity(qualified_identity, to_address, credits, id)
+                    .await?)
             }
             IdentityTask::AddKeyToIdentity(qualified_identity, public_key_to_add, private_key) => {
                 self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
-                self.register_identity(registration_info).await
+                Ok(self.register_identity(registration_info).await?)
             }
-            IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
-            IdentityTask::RefreshIdentity(qualified_identity) => self
+            IdentityTask::RegisterDpnsName(input) => {
+                Ok(self.register_dpns_name(sdk, input).await?)
+            }
+            IdentityTask::RefreshIdentity(qualified_identity) => Ok(self
                 .refresh_identity(sdk, qualified_identity, sender)
                 .await
-                .map_err(|e| format!("Error refreshing identity: {}", e)),
-            IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
-                self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
-                    .await
+                .map_err(|e| format!("Error refreshing identity: {}", e))?),
+            IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => Ok(self
+                .transfer_to_identity(qualified_identity, to_identifier, credits, id)
+                .await?),
+            IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => Ok(self
+                .load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
+                .await?),
+            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => Ok(self
+                .load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
+                .await?),
+            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => Ok(self
+                .load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
+                .await?),
+            IdentityTask::TopUpIdentity(top_up_info) => {
+                Ok(self.top_up_identity(top_up_info).await?)
             }
-            IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
-                self.load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
-                    .await
-            }
-            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => {
-                self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
-                    .await
-            }
-            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => {
-                self.load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
-                    .await
-            }
-            IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity,
                 inputs,
                 wallet_seed_hash,
-            } => {
-                self.top_up_identity_from_platform_addresses(
-                    sdk,
-                    identity,
-                    inputs,
-                    wallet_seed_hash,
-                )
-                .await
-            }
+            } => Ok(self
+                .top_up_identity_from_platform_addresses(sdk, identity, inputs, wallet_seed_hash)
+                .await?),
             IdentityTask::TransferToAddresses {
                 identity,
                 outputs,
                 key_id,
-            } => {
-                self.transfer_to_addresses(sdk, identity, outputs, key_id)
-                    .await
-            }
+            } => Ok(self
+                .transfer_to_addresses(sdk, identity, outputs, key_id)
+                .await?),
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
-                self.refresh_loaded_identities_dpns_names(sender).await
+                Ok(self.refresh_loaded_identities_dpns_names(sender).await?)
             }
         }
     }

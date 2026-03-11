@@ -519,29 +519,50 @@ async fn resolve_username_to_identity(
     let normalized_name =
         dash_sdk::dpp::util::strings::convert_to_homograph_safe_chars(&name.to_lowercase());
 
-    // Query DPNS for the username using the app context's cached contract
+    // Query DPNS for the username using the app context's cached contract.
+    // Retry on transient "height is outdated" / "try another server" errors.
+    const MAX_RETRIES: u32 = 3;
     let dpns_contract = app_context.dpns_contract.clone();
 
-    let mut query = DocumentQuery::new(dpns_contract, "domain")
-        .map_err(|e| format!("Failed to create DPNS query: {}", e))?;
+    let mut retries = 0u32;
+    let results = loop {
+        let query = DocumentQuery::new(dpns_contract.clone(), "domain")
+            .map_err(|e| format!("Failed to create DPNS query: {}", e))?
+            .with_where(WhereClause {
+                field: "normalizedParentDomainName".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Text("dash".to_string()),
+            })
+            .with_where(WhereClause {
+                field: "normalizedLabel".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Text(normalized_name.clone()),
+            });
 
-    // Both normalizedParentDomainName and normalizedLabel are required for DPNS queries
-    query = query
-        .with_where(WhereClause {
-            field: "normalizedParentDomainName".to_string(),
-            operator: WhereOperator::Equal,
-            value: Value::Text("dash".to_string()),
-        })
-        .with_where(WhereClause {
-            field: "normalizedLabel".to_string(),
-            operator: WhereOperator::Equal,
-            value: Value::Text(normalized_name),
-        });
-    query.limit = 1;
-
-    let results = Document::fetch_many(sdk, query)
-        .await
-        .map_err(|e| format!("Failed to query DPNS: {}", e))?;
+        match Document::fetch_many(sdk, query).await {
+            Ok(results) => break results,
+            Err(e) => {
+                let err = e.to_string();
+                if (err.contains("try another server") || err.contains("height is outdated"))
+                    && retries < MAX_RETRIES
+                {
+                    retries += 1;
+                    tracing::warn!(
+                        "Retrying DPNS query for '{}' (attempt {}/{}): {}",
+                        username,
+                        retries,
+                        MAX_RETRIES,
+                        e
+                    );
+                    continue;
+                }
+                if err.contains("height is outdated") || err.contains("try another server") {
+                    return Err("Platform servers are temporarily out of sync. Please try again in a moment.".to_string());
+                }
+                return Err(format!("Failed to query DPNS: {}", e));
+            }
+        }
+    };
 
     let (_, document) = results
         .into_iter()
@@ -576,11 +597,37 @@ async fn resolve_username_to_identity(
             )
         })?;
 
-    // Fetch the identity
-    Identity::fetch(sdk, identity_id)
-        .await
-        .map_err(|e| format!("Failed to fetch identity for '{}': {}", username, e))?
-        .ok_or_else(|| format!("Identity not found for username '{}'", username))
+    // Fetch the identity with retry logic for transient errors
+    let mut retries = 0u32;
+    loop {
+        match Identity::fetch(sdk, identity_id).await {
+            Ok(Some(identity)) => return Ok(identity),
+            Ok(None) => return Err(format!("Identity not found for username '{}'", username)),
+            Err(e) => {
+                let err = e.to_string();
+                if (err.contains("try another server") || err.contains("height is outdated"))
+                    && retries < MAX_RETRIES
+                {
+                    retries += 1;
+                    tracing::warn!(
+                        "Retrying identity fetch for '{}' (attempt {}/{}): {}",
+                        username,
+                        retries,
+                        MAX_RETRIES,
+                        e
+                    );
+                    continue;
+                }
+                if err.contains("height is outdated") || err.contains("try another server") {
+                    return Err("Platform servers are temporarily out of sync. Please try again in a moment.".to_string());
+                }
+                return Err(format!(
+                    "Failed to fetch identity for '{}': {}",
+                    username, e
+                ));
+            }
+        }
+    }
 }
 
 pub async fn accept_contact_request(

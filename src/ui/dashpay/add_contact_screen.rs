@@ -653,6 +653,13 @@ impl ScreenLike for AddContactScreen {
                             )
                             .unwrap_or_else(|_| dash_sdk::platform::Identifier::random()),
                         }
+                    } else if message.contains("try another server")
+                        || message.contains("height is outdated")
+                        || message.contains("temporarily out of sync")
+                    {
+                        DashPayError::NetworkError {
+                            reason: "Platform servers are temporarily out of sync. Please try again in a moment.".to_string(),
+                        }
                     } else if message.contains("Network") || message.contains("connection") {
                         DashPayError::NetworkError {
                             reason: message.clone(),

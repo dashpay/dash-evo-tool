@@ -26,6 +26,7 @@ jobs:
       id-token: write
     env:
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'opus' }}
+      REPORT_DIR: ${{ github.workspace }}/review-report
     steps:
       - name: Check for OAuth token
         env:
@@ -44,6 +45,9 @@ jobs:
 
       - name: Configure git to use HTTPS instead of SSH
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
+
+      - name: Create review report directory
+        run: mkdir -p "$REPORT_DIR"
 
       - name: Run Claude Code Review
         id: claude-review
@@ -84,6 +88,8 @@ jobs:
             2. Invoke Skill(skill="claudius:grumpy-review") to perform a fresh code review.
                This spawns parallel specialist agents and produces a consolidated report.
                Do NOT review the code yourself — the skill handles the full pipeline.
+               Generate HTML format instead of markdown (use --format html in the render step).
+               Write the final report.json and report.html to $REPORT_DIR.
             3. Post only MEDIUM severity and higher findings as new inline PR comments.
             4. If no unresolved comments remain after the full flow, approve the PR.
           claude_args: |
@@ -91,6 +97,17 @@ jobs:
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns 150
             --allowedTools "mcp__plugin_claudius_github,Read,Write,Edit,Glob,Grep,Agent,Skill,Task,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskOutput,SendMessage,Bash(gh pr *),Bash(gh api *),Bash(git diff *),Bash(git log *),Bash(git fetch *),Bash(git branch *),Bash(git rev-parse *),Bash(git show *),Bash(git pull *),Bash(git checkout *),Bash(git status),Bash(git status *),Bash(git remote *),Bash(git merge-base *),Bash(cat *),Bash(python3 *),Bash(echo *),Bash(ls *),Bash(grep *),Bash(mkdir *),Bash(mktemp *),Bash(pwd *)"
+
+      - name: Upload review report
+        if: '!cancelled()'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-review-report-pr-${{ github.event.pull_request.number }}
+          path: |
+            ${{ env.REPORT_DIR }}/report.json
+            ${{ env.REPORT_DIR }}/report.html
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Remove claudius-review label
         if: success()

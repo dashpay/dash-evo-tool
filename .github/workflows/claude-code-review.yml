@@ -89,7 +89,7 @@ jobs:
                This spawns parallel specialist agents and produces a consolidated report.
                Do NOT review the code yourself — the skill handles the full pipeline.
                Generate HTML format instead of markdown (use --format html in the render step).
-               Write the final report.json and report.html directly to $REPORT_DIR (directory already exists).
+               Write the final report.json and report.html to $REPORT_DIR.
             3. Post only MEDIUM severity and higher findings as new inline PR comments.
             4. If no unresolved comments remain after the full flow, approve the PR.
           claude_args: |

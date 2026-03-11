@@ -38,7 +38,7 @@ a key whose public key data already exists on the identity.
 ### Expected Result
 
 - An **error banner** appears at the top of the screen with the message:
-  > This key already exists on this identity. Try adding a different key.
+  > This public key is already registered on the platform. Each key must be globally unique — try a different key.
 - The message is plain text -- no base64, no CBOR encoding, no raw error dump.
 - The banner type is **Error** (red/error styling).
 - The app does **not** crash or freeze.
@@ -74,7 +74,7 @@ error display path regardless of trigger.
 ### Expected Result
 
 - An **error banner** appears with the message:
-  > A key with this ID already exists on this identity. Try adding a different key.
+  > This key hash is already registered on the platform. Each key must be globally unique — try a different key.
 - The message is plain text -- no encoded data.
 - The banner type is **Error**.
 - The app does **not** crash.

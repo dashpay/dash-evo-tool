@@ -61,12 +61,16 @@ pub enum TaskError {
     #[error("{0}")]
     MustRetry(String),
 
-    /// Duplicate identity public key -- the key data already exists on this identity.
-    #[error("This key already exists on this identity. Try adding a different key.")]
+    /// Duplicate identity public key — the key data already exists on the platform.
+    #[error(
+        "This public key is already registered on the platform. Each key must be globally unique — try a different key."
+    )]
     DuplicateIdentityPublicKey,
 
-    /// Duplicate identity public key ID -- the key ID is already taken.
-    #[error("A key with this ID already exists on this identity. Try adding a different key.")]
+    /// Duplicate identity public key ID — the key hash is already taken platform-wide.
+    #[error(
+        "This key hash is already registered on the platform. Each key must be globally unique — try a different key."
+    )]
     DuplicateIdentityPublicKeyId,
 
     /// Identity public key conflicts with an existing key's unique contract bounds.

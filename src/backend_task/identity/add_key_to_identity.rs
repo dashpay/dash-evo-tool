@@ -15,6 +15,7 @@ use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::UserFeeIncrease;
 use dash_sdk::dpp::state_transition::identity_update_transition::IdentityUpdateTransition;
 use dash_sdk::dpp::state_transition::identity_update_transition::methods::IdentityUpdateTransitionMethodsV0;
@@ -46,7 +47,7 @@ fn broadcast_error(error: &SdkError) -> TaskError {
                 StateError::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError(e),
             ) => {
                 return TaskError::IdentityPublicKeyContractBoundsConflict {
-                    contract_id: format!("{}", e.contract_id()),
+                    contract_id: e.contract_id().to_string(Encoding::Base58),
                 };
             }
             _ => {}
@@ -207,7 +208,7 @@ mod tests {
         );
         let sdk_err = SdkError::from(consensus);
         let err = broadcast_error(&sdk_err);
-        let expected_contract_id = contract_id.to_string();
+        let expected_contract_id = contract_id.to_string(Encoding::Base58);
         assert!(
             matches!(err, TaskError::IdentityPublicKeyContractBoundsConflict { ref contract_id } if *contract_id == expected_contract_id)
         );

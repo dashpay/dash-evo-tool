@@ -63,12 +63,12 @@ fn broadcast_error(error: SdkError) -> TaskError {
 
     let boxed = Box::new(error);
     match kind {
-        Some(ConsensusKind::DuplicateKey) => {
-            TaskError::DuplicateIdentityPublicKey { source_error: boxed }
-        }
-        Some(ConsensusKind::DuplicateKeyId) => {
-            TaskError::DuplicateIdentityPublicKeyId { source_error: boxed }
-        }
+        Some(ConsensusKind::DuplicateKey) => TaskError::DuplicateIdentityPublicKey {
+            source_error: boxed,
+        },
+        Some(ConsensusKind::DuplicateKeyId) => TaskError::DuplicateIdentityPublicKeyId {
+            source_error: boxed,
+        },
         Some(ConsensusKind::ContractBoundsConflict(contract_id)) => {
             TaskError::IdentityPublicKeyContractBoundsConflict {
                 contract_id,
@@ -212,7 +212,10 @@ mod tests {
         let consensus = ConsensusError::from(DuplicatedIdentityPublicKeyIdStateError::new(vec![3]));
         let sdk_err = SdkError::from(consensus);
         let err = broadcast_error(sdk_err);
-        assert!(matches!(err, TaskError::DuplicateIdentityPublicKeyId { .. }));
+        assert!(matches!(
+            err,
+            TaskError::DuplicateIdentityPublicKeyId { .. }
+        ));
     }
 
     #[test]

@@ -5,8 +5,8 @@
 //! `From<String>` → backwards compatible with existing `Result<T, String>` code.
 //!   Parses known error patterns into typed variants automatically.
 
-use dash_sdk::dashcore_rpc;
 use dash_sdk::Error as SdkError;
+use dash_sdk::dashcore_rpc;
 use thiserror::Error;
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).

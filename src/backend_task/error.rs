@@ -5,6 +5,7 @@
 //! `From<String>` → backwards compatible with existing `Result<T, String>` code.
 //!   Parses known error patterns into typed variants automatically.
 
+use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc;
 use thiserror::Error;
 
@@ -63,17 +64,30 @@ pub enum TaskError {
 
     /// Duplicate identity public key — the key data already exists on the platform.
     #[error("This public key is already registered on the platform. Try a different key.")]
-    DuplicateIdentityPublicKey,
+    DuplicateIdentityPublicKey {
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// Duplicate identity public key ID — the key hash is already taken platform-wide.
     #[error("This key hash is already registered on the platform. Try a different key.")]
-    DuplicateIdentityPublicKeyId,
+    DuplicateIdentityPublicKeyId {
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// Identity public key conflicts with an existing key's unique contract bounds.
     #[error(
         "This key conflicts with an existing key bound to contract {contract_id}. Use a different key or purpose."
     )]
-    IdentityPublicKeyContractBoundsConflict { contract_id: String },
+    IdentityPublicKeyContractBoundsConflict {
+        contract_id: String,
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
+    },
 }
 
 impl From<String> for TaskError {

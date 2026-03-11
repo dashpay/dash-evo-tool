@@ -349,10 +349,12 @@ impl BackendTestContext {
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    if err_str.contains("Insufficient") && attempt < SEND_MAX_RETRIES {
+                    if (err_str.contains("Insufficient") || err_str.contains("No UTXOs"))
+                        && attempt < SEND_MAX_RETRIES
+                    {
                         println!(
-                            "  Send attempt {}/{} failed (Insufficient funds), will retry...",
-                            attempt, SEND_MAX_RETRIES
+                            "  Send attempt {}/{} failed ({}), will retry...",
+                            attempt, SEND_MAX_RETRIES, err_str
                         );
                         last_error = err_str;
                         tokio::time::sleep(SEND_RETRY_DELAY).await;

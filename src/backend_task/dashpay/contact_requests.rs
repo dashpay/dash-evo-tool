@@ -29,6 +29,14 @@ use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
+/// Returns `true` when the error string matches a known transient platform-sync
+/// condition that should trigger retry logic.
+fn is_transient_platform_sync_error(err: &str) -> bool {
+    err.contains("temporarily out of sync")
+        || err.contains("height is outdated")
+        || err.contains("try another server")
+}
+
 pub async fn load_contact_requests(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
@@ -204,10 +212,7 @@ pub async fn send_contact_request_with_proof(
                         }
                         Err(e) => {
                             let err = e.to_string();
-                            if (err.contains("try another server")
-                                || err.contains("height is outdated"))
-                                && retries < MAX_RETRIES
-                            {
+                            if is_transient_platform_sync_error(&err) && retries < MAX_RETRIES {
                                 retries += 1;
                                 tracing::warn!(
                                     "Retrying identity fetch for '{}' (attempt {}/{}): {}",
@@ -218,9 +223,7 @@ pub async fn send_contact_request_with_proof(
                                 );
                                 continue;
                             }
-                            if err.contains("height is outdated")
-                                || err.contains("try another server")
-                            {
+                            if is_transient_platform_sync_error(&err) {
                                 return Err("Platform servers are temporarily out of sync. Please try again in a moment.".to_string());
                             }
                             return Err(format!("Failed to fetch identity: {}", e));
@@ -539,11 +542,11 @@ async fn resolve_username_to_identity(
     sdk: &Sdk,
     username: &str,
 ) -> Result<Identity, String> {
-    // Parse username (e.g., "alice.dash" -> "alice")
-    let name = username
-        .split('.')
-        .next()
-        .ok_or_else(|| format!("Invalid username format: {}", username))?;
+    // Parse username: accept "alice" or "alice.dash", reject anything else with dots
+    let name = username.strip_suffix(".dash").unwrap_or(username);
+    if name.is_empty() || name.contains('.') {
+        return Err(format!("Invalid username format: {}", username));
+    }
 
     // Normalize the label using homograph-safe conversion, consistent with DPNS registration
     let normalized_name =
@@ -573,9 +576,7 @@ async fn resolve_username_to_identity(
             Ok(results) => break results,
             Err(e) => {
                 let err = e.to_string();
-                if (err.contains("try another server") || err.contains("height is outdated"))
-                    && retries < MAX_RETRIES
-                {
+                if is_transient_platform_sync_error(&err) && retries < MAX_RETRIES {
                     retries += 1;
                     tracing::warn!(
                         "Retrying DPNS query for '{}' (attempt {}/{}): {}",
@@ -586,7 +587,7 @@ async fn resolve_username_to_identity(
                     );
                     continue;
                 }
-                if err.contains("height is outdated") || err.contains("try another server") {
+                if is_transient_platform_sync_error(&err) {
                     return Err("Platform servers are temporarily out of sync. Please try again in a moment.".to_string());
                 }
                 return Err(format!("Failed to query DPNS: {}", e));
@@ -635,9 +636,7 @@ async fn resolve_username_to_identity(
             Ok(None) => return Err(format!("Identity not found for username '{}'", username)),
             Err(e) => {
                 let err = e.to_string();
-                if (err.contains("try another server") || err.contains("height is outdated"))
-                    && retries < MAX_RETRIES
-                {
+                if is_transient_platform_sync_error(&err) && retries < MAX_RETRIES {
                     retries += 1;
                     tracing::warn!(
                         "Retrying identity fetch for '{}' (attempt {}/{}): {}",
@@ -648,7 +647,7 @@ async fn resolve_username_to_identity(
                     );
                     continue;
                 }
-                if err.contains("height is outdated") || err.contains("try another server") {
+                if is_transient_platform_sync_error(&err) {
                     return Err("Platform servers are temporarily out of sync. Please try again in a moment.".to_string());
                 }
                 return Err(format!(

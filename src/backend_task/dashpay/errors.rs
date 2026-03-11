@@ -149,7 +149,8 @@ impl DashPayError {
                     || reason.contains("height is outdated")
                     || reason.contains("try another server")
                 {
-                    reason.clone()
+                    "Platform servers are temporarily out of sync. Please try again in a moment."
+                        .to_string()
                 } else {
                     "Network connection error. Please check your internet connection.".to_string()
                 }

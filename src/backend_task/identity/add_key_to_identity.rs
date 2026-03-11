@@ -179,7 +179,7 @@ mod tests {
         let msg = broadcast_error_message(&sdk_err);
         assert_eq!(
             msg,
-            "This public key is already registered on the platform. Each key must be globally unique — try a different key."
+            "This public key is already registered on the platform. Try a different key."
         );
     }
 
@@ -190,7 +190,7 @@ mod tests {
         let msg = broadcast_error_message(&sdk_err);
         assert_eq!(
             msg,
-            "This key hash is already registered on the platform. Each key must be globally unique — try a different key."
+            "This key hash is already registered on the platform. Try a different key."
         );
     }
 
@@ -232,7 +232,7 @@ mod tests {
         let msg = broadcast_error_message(&sdk_err);
         assert_eq!(
             msg,
-            "This public key is already registered on the platform. Each key must be globally unique — try a different key."
+            "This public key is already registered on the platform. Try a different key."
         );
     }
 

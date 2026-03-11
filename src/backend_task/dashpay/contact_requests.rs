@@ -192,11 +192,41 @@ pub async fn send_contact_request_with_proof(
             &[Encoding::Base58, Encoding::Hex],
         ) {
             Ok(to_id) => {
-                // Successfully parsed as ID, fetch the identity
-                Identity::fetch(sdk, to_id)
-                    .await
-                    .map_err(|e| format!("Failed to fetch identity: {}", e))?
-                    .ok_or_else(|| format!("Identity {} not found", to_username_or_id))?
+                // Successfully parsed as ID, fetch the identity with retry
+                // logic for transient platform errors.
+                const MAX_RETRIES: u32 = 3;
+                let mut retries = 0u32;
+                loop {
+                    match Identity::fetch(sdk, to_id).await {
+                        Ok(Some(identity)) => break identity,
+                        Ok(None) => {
+                            return Err(format!("Identity {} not found", to_username_or_id));
+                        }
+                        Err(e) => {
+                            let err = e.to_string();
+                            if (err.contains("try another server")
+                                || err.contains("height is outdated"))
+                                && retries < MAX_RETRIES
+                            {
+                                retries += 1;
+                                tracing::warn!(
+                                    "Retrying identity fetch for '{}' (attempt {}/{}): {}",
+                                    to_username_or_id,
+                                    retries,
+                                    MAX_RETRIES,
+                                    e
+                                );
+                                continue;
+                            }
+                            if err.contains("height is outdated")
+                                || err.contains("try another server")
+                            {
+                                return Err("Platform servers are temporarily out of sync. Please try again in a moment.".to_string());
+                            }
+                            return Err(format!("Failed to fetch identity: {}", e));
+                        }
+                    }
+                }
             }
             Err(_) => {
                 // Not a valid ID format, assume it's a username without .dash suffix

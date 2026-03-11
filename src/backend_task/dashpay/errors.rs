@@ -142,8 +142,17 @@ impl DashPayError {
             DashPayError::QrCodeExpired { .. } => {
                 "QR code has expired. Please ask for a new one.".to_string()
             }
-            DashPayError::NetworkError { .. } => {
-                "Network connection error. Please check your internet connection.".to_string()
+            DashPayError::NetworkError { reason } => {
+                // Surface curated reason when it's a known platform-sync message;
+                // fall back to generic network text for everything else.
+                if reason.contains("temporarily out of sync")
+                    || reason.contains("height is outdated")
+                    || reason.contains("try another server")
+                {
+                    reason.clone()
+                } else {
+                    "Network connection error. Please check your internet connection.".to_string()
+                }
             }
             DashPayError::ValidationFailed { errors } => {
                 if errors.len() == 1 {

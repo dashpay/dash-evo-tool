@@ -63,17 +63,27 @@ pub enum TaskError {
 
     /// Duplicate identity public key — the key data already exists on the platform.
     #[error("This public key is already registered on the platform. Try a different key.")]
-    DuplicateIdentityPublicKey,
+    DuplicateIdentityPublicKey {
+        /// Raw `SdkError` debug representation for diagnostic logging.
+        source_error: String,
+    },
 
     /// Duplicate identity public key ID — the key hash is already taken platform-wide.
     #[error("This key hash is already registered on the platform. Try a different key.")]
-    DuplicateIdentityPublicKeyId,
+    DuplicateIdentityPublicKeyId {
+        /// Raw `SdkError` debug representation for diagnostic logging.
+        source_error: String,
+    },
 
     /// Identity public key conflicts with an existing key's unique contract bounds.
     #[error(
         "This key conflicts with an existing key bound to contract {contract_id}. Use a different key or purpose."
     )]
-    IdentityPublicKeyContractBoundsConflict { contract_id: String },
+    IdentityPublicKeyContractBoundsConflict {
+        contract_id: String,
+        /// Raw `SdkError` debug representation for diagnostic logging.
+        source_error: String,
+    },
 }
 
 impl From<String> for TaskError {

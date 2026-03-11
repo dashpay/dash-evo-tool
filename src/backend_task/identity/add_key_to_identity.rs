@@ -29,7 +29,7 @@ use dash_sdk::platform::{Fetch, Identity};
 /// (`StateTransitionBroadcastError` and `Protocol/ConsensusError`),
 /// falling back to `TaskError::Generic` for unrecognised errors.
 fn broadcast_error(error: &SdkError) -> TaskError {
-    tracing::warn!("AddKeyToIdentity broadcast failed: {:?}", error);
+    let source_error = format!("{:?}", error);
 
     let consensus_error = match error {
         SdkError::StateTransitionBroadcastError(broadcast_err) => broadcast_err.cause.as_ref(),
@@ -40,16 +40,17 @@ fn broadcast_error(error: &SdkError) -> TaskError {
     if let Some(ce) = consensus_error {
         match ce {
             ConsensusError::StateError(StateError::DuplicatedIdentityPublicKeyStateError(_)) => {
-                return TaskError::DuplicateIdentityPublicKey;
+                return TaskError::DuplicateIdentityPublicKey { source_error };
             }
             ConsensusError::StateError(StateError::DuplicatedIdentityPublicKeyIdStateError(_)) => {
-                return TaskError::DuplicateIdentityPublicKeyId;
+                return TaskError::DuplicateIdentityPublicKeyId { source_error };
             }
             ConsensusError::StateError(
                 StateError::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError(e),
             ) => {
                 return TaskError::IdentityPublicKeyContractBoundsConflict {
                     contract_id: e.contract_id().to_string(Encoding::Base58),
+                    source_error,
                 };
             }
             _ => {}
@@ -184,7 +185,7 @@ mod tests {
             ConsensusError::from(DuplicatedIdentityPublicKeyStateError::new(vec![1, 2]));
         let sdk_err = SdkError::from(consensus);
         let err = broadcast_error(&sdk_err);
-        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey));
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey { .. }));
     }
 
     #[test]
@@ -192,7 +193,7 @@ mod tests {
         let consensus = ConsensusError::from(DuplicatedIdentityPublicKeyIdStateError::new(vec![3]));
         let sdk_err = SdkError::from(consensus);
         let err = broadcast_error(&sdk_err);
-        assert!(matches!(err, TaskError::DuplicateIdentityPublicKeyId));
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKeyId { .. }));
     }
 
     #[test]
@@ -212,7 +213,7 @@ mod tests {
         let err = broadcast_error(&sdk_err);
         let expected_contract_id = contract_id.to_string(Encoding::Base58);
         assert!(
-            matches!(err, TaskError::IdentityPublicKeyContractBoundsConflict { ref contract_id } if *contract_id == expected_contract_id)
+            matches!(err, TaskError::IdentityPublicKeyContractBoundsConflict { ref contract_id, .. } if *contract_id == expected_contract_id)
         );
     }
 
@@ -228,7 +229,7 @@ mod tests {
         };
         let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
         let err = broadcast_error(&sdk_err);
-        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey));
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey { .. }));
     }
 
     #[test]

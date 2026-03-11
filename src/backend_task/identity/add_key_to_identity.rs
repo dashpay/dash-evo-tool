@@ -207,8 +207,9 @@ mod tests {
         );
         let sdk_err = SdkError::from(consensus);
         let err = broadcast_error(&sdk_err);
+        let expected_contract_id = contract_id.to_string();
         assert!(
-            matches!(err, TaskError::IdentityPublicKeyContractBoundsConflict { ref contract_id } if !contract_id.is_empty())
+            matches!(err, TaskError::IdentityPublicKeyContractBoundsConflict { ref contract_id } if *contract_id == expected_contract_id)
         );
     }
 

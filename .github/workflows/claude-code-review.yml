@@ -26,6 +26,7 @@ jobs:
       id-token: write
     env:
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'opus' }}
+      REPORT_DIR: ${{ github.workspace }}/review-report
     steps:
       - name: Check for OAuth token
         env:
@@ -45,9 +46,14 @@ jobs:
       - name: Configure git to use HTTPS instead of SSH
         run: git config --global url."https://github.com/".insteadOf "git@github.com:"
 
+      - name: Create review report directory
+        run: mkdir -p "$REPORT_DIR"
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
         with:
           use_sticky_comment: true
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
@@ -58,27 +64,50 @@ jobs:
           show_full_output: true
           trigger_phrase: ""
           prompt: |
-            Load /claudash:dash-platform for Dash Platform domain context.
-            Prefer GitHub MCP tools over gh CLI commands.
-            Use MCP GitHub tools (not env vars or gh CLI) to retrieve PR context: PR number,
-            base branch, head branch, changed files. Sub-agents have no conversation history —
+            You are reviewing PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Base branch: ${{ github.event.pull_request.base.ref }}
+            Head branch: ${{ github.event.pull_request.head.ref }}
+            PR title: ${{ github.event.pull_request.title }}
+
+            MemCan is NOT available in CI — skip memcan:recall, memcan:lessons-learned, and all mcp__plugin_memcan_brain__* tools.
+            When spawning agents, instruct them to not use memcan tools.
+
+            Use MCP tools (mcp__plugin_claudius_github__*) for GitHub operations. If an MCP call fails, fall back to gh CLI.
+
+            Sub-agents have no conversation history —
             pass all relevant PR context explicitly when spawning them.
             Write all PR comments in Claudius persona — witty, confident, subtly snarky,
             but always respectful and genuinely helpful, as if advising a trusted colleague.
 
-            Follow this review flow in order:
+            Follow this review flow in order. Steps 1 and 2 MUST use the Skill tool —
+            do NOT skip them or perform their work manually.
 
-            1. Run /claudius:check-pr-comments to check if previous review comments are addressed.
+            1. Invoke Skill(skill="claudius:check-pr-comments") to check previous review comments.
                For each thread that IS fixed but NOT yet resolved, reply describing the fix
                and resolve the thread.
-            2. Run /claudius:grumpy-review to perform a fresh code review.
+            2. Invoke Skill(skill="claudius:grumpy-review") to perform a fresh code review.
+               This spawns parallel specialist agents and produces a consolidated report.
+               Do NOT review the code yourself — the skill handles the full pipeline.
+               Generate HTML format instead of markdown (use --format html in the render step).
+               Write the final report.json and report.html to $REPORT_DIR.
             3. Post only MEDIUM severity and higher findings as new inline PR comments.
             4. If no unresolved comments remain after the full flow, approve the PR.
           claude_args: |
             --agent claudius:claudius
             --model ${{ env.CLAUDE_MODEL }}
             --max-turns 150
-            --allowedTools "mcp__*,Read,Write,Edit,Glob,Grep,Agent,Skill,Task,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskOutput,SendMessage,Bash(gh pr *),Bash(gh api *),Bash(git diff *),Bash(git log *),Bash(git fetch *),Bash(git branch *),Bash(git rev-parse *),Bash(git show *),Bash(git pull *),Bash(git checkout *),Bash(cat *),Bash(python3 *),Bash(bash *),Bash(echo *),Bash(ls *),Bash(grep *),Bash(mkdir *),Bash(mktemp *),Bash(pwd *)"
+            --allowedTools "mcp__plugin_claudius_github,Read,Write,Edit,Glob,Grep,Agent,Skill,Task,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskOutput,SendMessage,Bash(gh pr *),Bash(gh api *),Bash(git diff *),Bash(git log *),Bash(git fetch *),Bash(git branch *),Bash(git rev-parse *),Bash(git show *),Bash(git pull *),Bash(git checkout *),Bash(git status),Bash(git status *),Bash(git remote *),Bash(git merge-base *),Bash(cat *),Bash(python3 *),Bash(echo *),Bash(ls *),Bash(grep *),Bash(mkdir *),Bash(mktemp *),Bash(pwd *)"
+
+      - name: Upload review report
+        if: '!cancelled()'
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-review-report-pr-${{ github.event.pull_request.number }}
+          path: |
+            ${{ env.REPORT_DIR }}/report.json
+            ${{ env.REPORT_DIR }}/report.html
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Remove claudius-review label
         if: success()

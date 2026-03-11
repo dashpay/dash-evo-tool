@@ -77,6 +77,7 @@ pub enum CoreTask {
         address: Address,
         wallet: Arc<RwLock<Wallet>>,
     },
+    ListCoreWallets,
 }
 impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
@@ -117,6 +118,7 @@ impl PartialEq for CoreTask {
                     CoreTask::RecoverAssetLocks(_),
                 )
                 | (CoreTask::MineBlocks { .. }, CoreTask::MineBlocks { .. })
+                | (CoreTask::ListCoreWallets, CoreTask::ListCoreWallets)
         )
     }
 }
@@ -350,6 +352,10 @@ impl AppContext {
                     })?;
 
                 Ok(BackendTaskSuccessResult::MineBlocksSuccess(mined_count))
+            }
+            CoreTask::ListCoreWallets => {
+                let wallets = self.list_core_wallets()?;
+                Ok(BackendTaskSuccessResult::CoreWalletsList(wallets))
             }
         }
     }

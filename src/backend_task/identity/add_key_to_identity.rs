@@ -29,6 +29,8 @@ use dash_sdk::platform::{Fetch, Identity};
 /// (`StateTransitionBroadcastError` and `Protocol/ConsensusError`),
 /// falling back to `TaskError::Generic` for unrecognised errors.
 fn broadcast_error(error: &SdkError) -> TaskError {
+    tracing::warn!("AddKeyToIdentity broadcast failed: {:?}", error);
+
     let consensus_error = match error {
         SdkError::StateTransitionBroadcastError(broadcast_err) => broadcast_err.cause.as_ref(),
         SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),

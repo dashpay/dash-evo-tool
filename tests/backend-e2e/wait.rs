@@ -17,7 +17,9 @@ pub async fn wait_for_balance(
     timeout(wait_timeout, async {
         loop {
             // Trigger reconcile so DET wallet model reflects latest SPV state
-            let _ = app_context.reconcile_spv_wallets().await;
+            if let Err(e) = app_context.reconcile_spv_wallets().await {
+                eprintln!("  Warning: reconcile_spv_wallets failed: {e}");
+            }
 
             let balance = {
                 let wallets = app_context.wallets().read().expect("wallets lock");
@@ -57,7 +59,9 @@ pub async fn wait_for_spendable_balance(
     timeout(wait_timeout, async {
         loop {
             // Trigger reconcile so DET wallet model reflects latest SPV state
-            let _ = app_context.reconcile_spv_wallets().await;
+            if let Err(e) = app_context.reconcile_spv_wallets().await {
+                eprintln!("  Warning: reconcile_spv_wallets failed: {e}");
+            }
 
             let balance = {
                 let wallets = app_context.wallets().read().expect("wallets lock");

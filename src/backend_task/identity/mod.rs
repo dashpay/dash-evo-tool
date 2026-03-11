@@ -69,6 +69,18 @@ pub struct IdentityKeys {
 }
 
 impl IdentityKeys {
+    pub fn new(
+        master_private_key: Option<(PrivateKey, DerivationPath)>,
+        master_private_key_type: KeyType,
+        keys_input: Vec<KeyInput>,
+    ) -> Self {
+        Self {
+            master_private_key,
+            master_private_key_type,
+            keys_input,
+        }
+    }
+
     pub fn to_key_storage(&self, wallet_seed_hash: WalletSeedHash) -> KeyStorage {
         let Self {
             master_private_key,
@@ -79,6 +91,15 @@ impl IdentityKeys {
         let mut key_map = BTreeMap::new();
 
         if let Some((master_private_key, master_private_key_derivation_path)) = master_private_key {
+            let data = match master_private_key_type {
+                KeyType::ECDSA_HASH160 => master_private_key
+                    .public_key(&secp)
+                    .pubkey_hash()
+                    .to_byte_array()
+                    .to_vec()
+                    .into(),
+                _ => master_private_key.public_key(&secp).to_bytes().into(),
+            };
             let key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                 id: 0,
                 purpose: Purpose::AUTHENTICATION,
@@ -86,7 +107,7 @@ impl IdentityKeys {
                 contract_bounds: None,
                 key_type: *master_private_key_type,
                 read_only: false,
-                data: master_private_key.public_key(&secp).to_bytes().into(),
+                data,
                 disabled_at: None,
             });
 
@@ -117,6 +138,15 @@ impl IdentityKeys {
                 ),
             )| {
                 let id = (i + 1) as KeyID;
+                let data = match key_type {
+                    KeyType::ECDSA_HASH160 => private_key
+                        .public_key(&secp)
+                        .pubkey_hash()
+                        .to_byte_array()
+                        .to_vec()
+                        .into(),
+                    _ => private_key.public_key(&secp).to_bytes().into(),
+                };
                 let identity_public_key = IdentityPublicKey::V0(IdentityPublicKeyV0 {
                     id,
                     purpose: *purpose,
@@ -124,7 +154,7 @@ impl IdentityKeys {
                     contract_bounds: contract_bounds.clone(),
                     key_type: *key_type,
                     read_only: false,
-                    data: private_key.public_key(&secp).to_bytes().into(),
+                    data,
                     disabled_at: None,
                 });
 

@@ -71,7 +71,7 @@ async fn test_spv_sync_and_create_wallet() {
     })
     .await;
     assert!(
-        wallet_in_spv.unwrap_or(false),
+        wallet_in_spv.is_ok_and(|b| b),
         "Wallet should appear in SPV within 10s"
     );
 }

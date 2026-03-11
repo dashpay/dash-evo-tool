@@ -73,7 +73,9 @@ pub fn build_identity_registration(
         wallet: wallet_arc.clone(),
         wallet_identity_index: identity_index,
         identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
-            2_000_000, // 0.02 DASH for identity funding
+            // Asset lock amount in duffs. Platform registration fee is ~241k credits
+            // (~241k duffs). 1M duffs provides comfortable margin for fees + top-up.
+            1_000_000,
             identity_index,
         ),
     }

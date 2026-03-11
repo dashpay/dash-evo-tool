@@ -179,6 +179,11 @@ impl AddNewWalletScreen {
 
             let (new_wallet_seed_hash, _wallet_arc) = self.app_context.register_wallet(wallet)?;
 
+            // Set pending wallet selection so the wallet screen auto-selects this wallet
+            if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
+                *pending = Some(new_wallet_seed_hash);
+            }
+
             self.created_wallet_seed_hash = Some(new_wallet_seed_hash);
             self.wallet_created = true;
             Ok(AppAction::None) // Show success screen instead of navigating away

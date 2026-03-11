@@ -156,5 +156,20 @@ async fn test_send_and_receive_funds() {
     )
     .await;
 
+    // Verify A received the return payment
+    let a_balance_after_return = wait_for_balance(
+        app_context,
+        hash_a,
+        send_amount, // A should have at least send_amount back (minus fee from B)
+        Duration::from_secs(120),
+    )
+    .await
+    .expect("A should receive return funds from B");
+
+    println!(
+        "  A balance after round-trip: {} duffs",
+        a_balance_after_return
+    );
+
     println!("  Round-trip payment completed successfully");
 }

@@ -405,7 +405,7 @@ impl Wallet {
 
         // Derive the first receive address (m/44'/coin'/0'/0/0)
         let (known_addresses, watched_addresses) =
-            Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp);
+            Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)?;
 
         Ok(Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
@@ -448,14 +448,18 @@ impl Wallet {
 
     /// Derive the first receive address (index 0) and return populated
     /// `known_addresses` and `watched_addresses` maps.
+    #[allow(clippy::type_complexity)]
     fn derive_first_address(
         master_pub: &ExtendedPubKey,
         network: Network,
         secp: &Secp256k1<dash_sdk::dpp::dashcore::secp256k1::All>,
-    ) -> (
-        BTreeMap<Address, DerivationPath>,
-        BTreeMap<DerivationPath, AddressInfo>,
-    ) {
+    ) -> Result<
+        (
+            BTreeMap<Address, DerivationPath>,
+            BTreeMap<DerivationPath, AddressInfo>,
+        ),
+        String,
+    > {
         let mut known_addresses = BTreeMap::new();
         let mut watched_addresses = BTreeMap::new();
 
@@ -467,34 +471,35 @@ impl Wallet {
             .as_slice(),
         );
 
-        if let Ok(pk) = master_pub.derive_pub(secp, &address_path) {
-            let address = Address::p2pkh(&pk.to_pub(), network);
-            let bip44 = match network {
-                Network::Dash => &DASH_BIP44_ACCOUNT_0_PATH_MAINNET,
-                _ => &DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
-            };
-            let full_path = DerivationPath::from(
-                [
-                    bip44[0],
-                    bip44[1],
-                    bip44[2],
-                    ChildNumber::Normal { index: 0 },
-                    ChildNumber::Normal { index: 0 },
-                ]
-                .as_slice(),
-            );
-            known_addresses.insert(address.clone(), full_path.clone());
-            watched_addresses.insert(
-                full_path,
-                AddressInfo {
-                    address,
-                    path_type: DerivationPathType::CLEAR_FUNDS,
-                    path_reference: DerivationPathReference::BIP44,
-                },
-            );
-        }
+        let pk = master_pub
+            .derive_pub(secp, &address_path)
+            .map_err(|e| format!("Failed to derive first receive address: {e}"))?;
+        let address = Address::p2pkh(&pk.to_pub(), network);
+        let bip44 = match network {
+            Network::Dash => &DASH_BIP44_ACCOUNT_0_PATH_MAINNET,
+            _ => &DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
+        };
+        let full_path = DerivationPath::from(
+            [
+                bip44[0],
+                bip44[1],
+                bip44[2],
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .as_slice(),
+        );
+        known_addresses.insert(address.clone(), full_path.clone());
+        watched_addresses.insert(
+            full_path,
+            AddressInfo {
+                address,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::BIP44,
+            },
+        );
 
-        (known_addresses, watched_addresses)
+        Ok((known_addresses, watched_addresses))
     }
 }
 

@@ -90,38 +90,43 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: Wallet,
     ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), String> {
-        // 1. Persist wallet to database
-        self.db.store_wallet(&wallet, &self.network).map_err(|e| {
-            if e.to_string().contains("UNIQUE constraint failed") {
-                "This wallet has already been imported for this network.".to_string()
-            } else {
-                e.to_string()
-            }
-        })?;
+        // 1. Persist wallet and known addresses atomically
+        let addresses: Vec<_> = wallet
+            .known_addresses
+            .iter()
+            .map(|(address, path)| {
+                (
+                    address,
+                    path,
+                    DerivationPathReference::BIP44,
+                    DerivationPathType::CLEAR_FUNDS,
+                )
+            })
+            .collect();
+
+        self.db
+            .store_wallet_with_addresses(&wallet, &self.network, &addresses)
+            .map_err(|e| {
+                if e.to_string().contains("UNIQUE constraint failed") {
+                    "This wallet has already been imported for this network.".to_string()
+                } else {
+                    e.to_string()
+                }
+            })?;
 
         let seed_hash = wallet.seed_hash();
 
-        // 2. Save known addresses to database
-        for (address, path) in &wallet.known_addresses {
-            let _ = self.db.add_address_if_not_exists(
-                &seed_hash,
-                address,
-                &self.network,
-                path,
-                DerivationPathReference::BIP44,
-                DerivationPathType::CLEAR_FUNDS,
-                None,
-            );
-        }
-
-        // 3. Register in-memory
+        // 2. Register in-memory
         let wallet_arc = Arc::new(RwLock::new(wallet));
-        if let Ok(mut wallets) = self.wallets.write() {
-            wallets.insert(seed_hash, wallet_arc.clone());
-            self.has_wallet.store(true, Ordering::Relaxed);
-        }
+        let mut wallets = self
+            .wallets
+            .write()
+            .map_err(|e| format!("Failed to acquire wallets lock: {e}"))?;
+        wallets.insert(seed_hash, wallet_arc.clone());
+        self.has_wallet.store(true, Ordering::Relaxed);
+        drop(wallets);
 
-        // 4. Bootstrap any additional addresses and load into SPV
+        // 3. Bootstrap any additional addresses and load into SPV
         self.bootstrap_wallet_addresses(&wallet_arc);
         if self.core_backend_mode() == CoreBackendMode::Spv {
             self.handle_wallet_unlocked(&wallet_arc);

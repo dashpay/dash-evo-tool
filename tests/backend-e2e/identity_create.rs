@@ -15,8 +15,8 @@ use std::time::Duration;
 async fn test_create_identity() {
     let ctx = ctx().await;
 
-    // Create a funded test wallet (0.03 DASH = 3_000_000 duffs)
-    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(3_000_000).await;
+    // Asset lock (1M duffs) + tx fees. 2M duffs is sufficient.
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
 
     // Wait for test wallet funds to become spendable (confirmed/IS-locked)
     // before attempting identity registration which sends a transaction.

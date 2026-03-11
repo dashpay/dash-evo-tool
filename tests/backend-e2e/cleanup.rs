@@ -72,6 +72,10 @@ pub async fn cleanup_test_wallets(
             continue;
         }
 
+        // TODO(CMT-032): Also withdraw Platform credits from test identities back to
+        // the framework wallet. Requires: enumerate identities owned by test wallets,
+        // call IdentityTask::WithdrawFromIdentity for each, wait for Core balance.
+
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
                 address: framework_address.clone(),

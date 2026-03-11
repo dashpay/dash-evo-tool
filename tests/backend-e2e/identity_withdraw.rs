@@ -17,8 +17,8 @@ use std::time::Duration;
 async fn test_withdraw_from_identity() {
     let ctx = ctx().await;
 
-    // Create funded test wallet
-    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(10_000_000).await;
+    // Asset lock (1M) + withdrawal state transition fees. 3M provides margin.
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(3_000_000).await;
 
     // Wait for test wallet funds to become spendable before identity registration
     wait_for_spendable_balance(&ctx.app_context, seed_hash, 1, Duration::from_secs(60))

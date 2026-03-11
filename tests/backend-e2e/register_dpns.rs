@@ -7,7 +7,7 @@ use crate::wait::wait_for_spendable_balance;
 use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-use rand::Rng;
+use rand::prelude::*;
 use std::time::Duration;
 
 /// Create identity, register a DPNS name, verify by searching.
@@ -67,20 +67,42 @@ async fn test_register_dpns_name() {
         other => panic!("Expected RegisteredIdentity, got: {:?}", other),
     };
 
-    // Generate a unique DPNS name
-    let random_suffix: u32 = rand::rng().random_range(100_000..999_999);
-    let dpns_name = format!("e2etest{}", random_suffix);
+    // Generate a unique DPNS name (u64 hex = 16 chars + "e2e" = 19 chars)
+    let random_suffix: u64 = rand::rng().random();
+    let dpns_name = format!("e2e{:x}", random_suffix);
     println!("  Registering DPNS name: {}", dpns_name);
 
-    // Register DPNS name
-    let task = BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
-        qualified_identity: qualified_identity.clone(),
-        name_input: dpns_name.clone(),
-    }));
-
-    let result = run_task(app_context, task)
-        .await
-        .expect("DPNS registration should succeed");
+    // Register DPNS name (with retry for identity propagation delay)
+    let mut last_error = String::new();
+    let mut dpns_result = None;
+    for attempt in 1..=3 {
+        let task =
+            BackendTask::IdentityTask(IdentityTask::RegisterDpnsName(RegisterDpnsNameInput {
+                qualified_identity: qualified_identity.clone(),
+                name_input: dpns_name.clone(),
+            }));
+        match run_task(app_context, task).await {
+            Ok(r) => {
+                dpns_result = Some(r);
+                break;
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if attempt < 3 && err_str.contains("not found") {
+                    println!(
+                        "  DPNS registration attempt {}/3 failed ({}), retrying in 30s...",
+                        attempt, err_str
+                    );
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    last_error = err_str;
+                    continue;
+                }
+                panic!("DPNS registration should succeed: {}", e);
+            }
+        }
+    }
+    let result = dpns_result
+        .unwrap_or_else(|| panic!("DPNS registration failed after 3 attempts: {}", last_error));
 
     match result {
         BackendTaskSuccessResult::RegisteredDpnsName(fee_result) => {

@@ -143,6 +143,8 @@ impl BackendTestContext {
                     &hash[..4]
                 );
             }
+            // NOTE: string match is fragile; upstream should return typed error.
+            // register_wallet() returns Result<_, String> so no typed variant is available.
             Err(e) if e.contains("already been imported") => {
                 println!("  Framework wallet already registered (reusing from persistent DB)");
             }
@@ -225,8 +227,9 @@ impl BackendTestContext {
                         })
                         .unwrap_or((0, 0, "<unknown>".to_string()))
                 };
-                eprintln!(
-                    "  Warning: {} (confirmed: {}, total: {})\n  \
+                panic!(
+                    "Framework wallet has no spendable balance: {} \
+                     (confirmed: {}, total: {})\n  \
                      Fund this address manually: {}",
                     e, confirmed, total, address
                 );

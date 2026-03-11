@@ -1046,7 +1046,6 @@ impl ScreenLike for ContactRequests {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             if message.contains("Recipient does not have") {
                 self.error = Some(DashPayError::RecipientMissingKey);
-                return;
             } else if message.contains("ENCRYPTION key") {
                 self.error = Some(DashPayError::MissingEncryptionKey);
             } else if message.contains("DECRYPTION key") {

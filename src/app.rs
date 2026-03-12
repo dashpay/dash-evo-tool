@@ -825,6 +825,10 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
+                        BackendTaskSuccessResult::Progress(_) => {
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
                             self.visible_screen_mut().display_message(

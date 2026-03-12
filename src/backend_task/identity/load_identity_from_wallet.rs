@@ -285,7 +285,7 @@ impl AppContext {
             // Send progress update before starting search for this index
             sender
                 .send(TaskResult::Success(Box::new(
-                    BackendTaskSuccessResult::Message(format!(
+                    BackendTaskSuccessResult::Progress(format!(
                         "Searching index {} of {}...",
                         identity_index, max_identity_index
                     )),

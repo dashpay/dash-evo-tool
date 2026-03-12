@@ -989,6 +989,9 @@ impl ScreenLike for AddExistingIdentityScreen {
                     self.backend_message = Some(msg);
                 }
             }
+            BackendTaskSuccessResult::Progress(msg) => {
+                self.backend_message = Some(msg);
+            }
             _ => {}
         }
     }

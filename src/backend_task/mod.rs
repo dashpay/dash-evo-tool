@@ -101,8 +101,9 @@ pub enum BackendTaskSuccessResult {
     // General results
     None,
     Refresh,
-    Message(String), // Used for: progress messages during long operations, placeholder messages for
+    Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
+    Progress(String), // Progress updates during long operations — NOT displayed as global banners.
     WalletPayment {
         txid: String,
         /// List of (address, amount) pairs for each recipient

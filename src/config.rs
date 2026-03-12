@@ -19,8 +19,18 @@ pub struct Config {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// Failed to load configuration from disk or environment.
     #[error("{0}")]
     LoadError(String),
+
+    /// Failed to save configuration to disk.
+    #[error("Could not save settings. Check that the application folder is writable and retry.")]
+    SaveError {
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// No valid network configurations found.
     #[error("No valid network configurations found in .env file or environment variables")]
     NoValidConfigs,
 }

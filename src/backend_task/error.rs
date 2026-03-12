@@ -47,9 +47,12 @@ pub enum TaskError {
     #[error(transparent)]
     Wallet(#[from] crate::database::WalletError),
 
-    /// SQLite errors.
-    #[error(transparent)]
-    Sqlite(#[from] rusqlite::Error),
+    /// A local database operation failed.
+    #[error("Could not access local data. Check available disk space and restart the application.")]
+    Database {
+        #[from]
+        source: rusqlite::Error,
+    },
 
     /// Failed to persist an identity update to the local database.
     #[error("Could not save identity changes. Check available disk space and retry.")]
@@ -67,6 +70,24 @@ pub enum TaskError {
         "Core wallet not configured for this wallet. Go to the Wallets screen and refresh to auto-detect the Core wallet association."
     )]
     CoreWalletNotConfigured,
+
+    /// A Dash Core RPC call failed.
+    #[error("Could not communicate with Dash Core. Check that Dash Core is running and retry.")]
+    CoreRpc {
+        #[source]
+        source: dashcore_rpc::Error,
+    },
+
+    /// An internal lock was poisoned — another thread panicked while holding it.
+    #[error("An internal error occurred. Please restart the application.")]
+    LockPoisoned {
+        /// Which resource's lock was poisoned (for Debug / logs).
+        resource: &'static str,
+    },
+
+    /// Dash Core peer-to-peer communication failed.
+    #[error(transparent)]
+    P2P(#[from] crate::components::core_p2p_handler::P2PError),
 
     /// The operation's prerequisite was auto-fixed (e.g., Core wallet detected).
     /// Callers should retry the failed operation.
@@ -193,6 +214,14 @@ impl From<String> for TaskError {
     }
 }
 
+impl<T> From<std::sync::PoisonError<T>> for TaskError {
+    fn from(_: std::sync::PoisonError<T>) -> Self {
+        TaskError::LockPoisoned {
+            resource: "unknown",
+        }
+    }
+}
+
 impl From<dashcore_rpc::Error> for TaskError {
     fn from(e: dashcore_rpc::Error) -> Self {
         if let dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(ref rpc_err)) =
@@ -201,7 +230,7 @@ impl From<dashcore_rpc::Error> for TaskError {
         {
             return TaskError::CoreWalletNotConfigured;
         }
-        TaskError::Generic(e.to_string())
+        TaskError::CoreRpc { source: e }
     }
 }
 
@@ -331,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn other_rpc_error_converts_to_generic() {
+    fn other_rpc_error_converts_to_core_rpc() {
         let rpc_err = dashcore_rpc::jsonrpc::error::RpcError {
             code: -1,
             message: "Some other error".to_string(),
@@ -340,8 +369,8 @@ mod tests {
         let err: TaskError =
             dashcore_rpc::Error::JsonRpc(dashcore_rpc::jsonrpc::error::Error::Rpc(rpc_err)).into();
         assert!(
-            matches!(err, TaskError::Generic(_)),
-            "Expected Generic, got: {err:?}"
+            matches!(err, TaskError::CoreRpc { .. }),
+            "Expected CoreRpc, got: {err:?}"
         );
     }
 

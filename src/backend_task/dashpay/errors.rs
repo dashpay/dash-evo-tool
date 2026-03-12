@@ -1,8 +1,9 @@
+use dash_sdk::dpp::dashcore::secp256k1;
 use dash_sdk::platform::Identifier;
 use thiserror::Error;
 
 /// Comprehensive error types for DashPay operations
-#[derive(Error, Debug, Clone, PartialEq)]
+#[derive(Error, Debug)]
 pub enum DashPayError {
     // Contact Request Errors
     #[error("Identity not found: {identity_id}")]
@@ -121,6 +122,33 @@ pub enum DashPayError {
 
     #[error("Rate limit exceeded for operation: {operation}")]
     RateLimited { operation: String },
+
+    /// Failed to build a document query (schema / configuration error).
+    #[error("Could not prepare the data request. Please retry or update the application.")]
+    QueryCreation {
+        /// Description of what query was being built (e.g., "contact requests", "DPNS domain").
+        query_target: &'static str,
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
+
+    /// Failed to parse a cryptographic key (secp256k1).
+    #[error("Could not read a cryptographic key. The data may be corrupted.")]
+    CryptoKeyParsing {
+        #[from]
+        source: secp256k1::Error,
+    },
+
+    /// Failed to resolve a private key from the identity's key store.
+    #[error(
+        "Could not find the required private key in your wallet. Try refreshing your identities."
+    )]
+    PrivateKeyResolution {
+        /// Human-readable key purpose (e.g. "ENCRYPTION", "AUTHENTICATION").
+        key_purpose: String,
+        /// Details about why the lookup failed.
+        reason: String,
+    },
 }
 
 impl DashPayError {

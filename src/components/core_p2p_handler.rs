@@ -1,7 +1,7 @@
 use chrono::Utc;
 use dash_sdk::dpp::dashcore::BlockHash;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::consensus::{deserialize, serialize};
+use dash_sdk::dpp::dashcore::consensus::{deserialize, encode, serialize};
 use dash_sdk::dpp::dashcore::network::constants::ServiceFlags;
 use dash_sdk::dpp::dashcore::network::message::{NetworkMessage, RawNetworkMessage};
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
@@ -14,6 +14,42 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::thread;
 use std::time::Duration;
+use thiserror::Error;
+
+/// Errors from peer-to-peer communication with Dash Core.
+#[derive(Debug, Error)]
+pub enum P2PError {
+    /// TCP connection or socket I/O failed.
+    #[error(
+        "Could not communicate with Dash Core over the local network. Check that Dash Core is running."
+    )]
+    Io {
+        #[from]
+        source: std::io::Error,
+    },
+
+    /// Failed to deserialize a P2P protocol message.
+    #[error("Received an unreadable message from Dash Core. The node may need to be updated.")]
+    Deserialization {
+        #[from]
+        source: encode::Error,
+    },
+
+    /// Timed out waiting for a response from Dash Core.
+    #[error("Dash Core did not respond in time. Please retry.")]
+    Timeout,
+
+    /// Received an unexpected message type.
+    #[error("Received an unexpected response from Dash Core. Please retry.")]
+    UnexpectedMessage {
+        /// The command name that was received instead of the expected one.
+        received: String,
+    },
+
+    /// Network type is not supported for P2P connections.
+    #[error("This network type does not support direct peer connections.")]
+    UnsupportedNetwork,
+}
 
 #[derive(Debug)]
 pub struct CoreP2PHandler {

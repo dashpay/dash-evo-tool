@@ -1148,10 +1148,11 @@ impl App for AppState {
                         }
                     }
                 }
-                TaskResult::Error(TaskError::MustRetry(msg)) => {
-                    MessageBanner::set_global(ctx, &msg, MessageType::Success);
+                TaskResult::Error(ref err @ TaskError::MustRetry(_)) => {
+                    let localized_msg = err.localized();
+                    MessageBanner::set_global(ctx, &localized_msg, MessageType::Success);
                     self.visible_screen_mut()
-                        .display_message(&msg, MessageType::Success);
+                        .display_message(&localized_msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
                 }
                 TaskResult::Error(err) => {
@@ -1160,7 +1161,7 @@ impl App for AppState {
                     let handled = self.visible_screen_mut().display_task_error(&err);
 
                     if !handled {
-                        let msg = err.to_string();
+                        let msg = err.localized();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                         if self.current_app_context().is_developer_mode() {
                             // INTENTIONAL(SEC-003): TaskError Debug output is shown to users

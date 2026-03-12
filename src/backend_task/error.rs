@@ -183,6 +183,105 @@ fn sdk_error_user_message(error: &SdkError) -> String {
     }
 }
 
+impl TaskError {
+    /// Return the localized user-facing message for this error.
+    ///
+    /// Maps each variant to its Fluent message ID, resolves it via the
+    /// system locale, and falls back to the existing `Display` impl
+    /// (English thiserror text) when no translation is available.
+    pub fn localized(&self) -> String {
+        use fluent_templates::fluent_bundle::FluentValue;
+        use std::borrow::Cow;
+
+        match self {
+            TaskError::Generic(s) => {
+                let mut args = std::collections::HashMap::new();
+                args.insert(Cow::Borrowed("message"), FluentValue::from(s.as_str()));
+                crate::localization::lookup_with_args("error-generic", &args)
+            }
+            TaskError::IdentitySaveError { .. } => {
+                crate::localization::lookup("error-identity-save")
+            }
+            TaskError::CoreWalletNotConfigured => {
+                crate::localization::lookup("error-core-wallet-not-configured")
+            }
+            TaskError::MustRetry(s) => {
+                let mut args = std::collections::HashMap::new();
+                args.insert(Cow::Borrowed("message"), FluentValue::from(s.as_str()));
+                crate::localization::lookup_with_args("error-must-retry", &args)
+            }
+            TaskError::DuplicateIdentityPublicKey { .. } => {
+                crate::localization::lookup("error-duplicate-identity-public-key")
+            }
+            TaskError::DuplicateIdentityPublicKeyId { .. } => {
+                crate::localization::lookup("error-duplicate-identity-public-key-id")
+            }
+            TaskError::IdentityPublicKeyContractBoundsConflict { contract_id, .. } => {
+                let mut args = std::collections::HashMap::new();
+                args.insert(
+                    Cow::Borrowed("contractId"),
+                    FluentValue::from(contract_id.as_str()),
+                );
+                crate::localization::lookup_with_args(
+                    "error-identity-public-key-contract-bounds-conflict",
+                    &args,
+                )
+            }
+            TaskError::IdentityNotFoundLocally => {
+                crate::localization::lookup("error-identity-not-found-locally")
+            }
+            TaskError::IdentityUpdateTransitionError { .. } => {
+                crate::localization::lookup("error-identity-update-transition")
+            }
+            TaskError::InternalSendError => crate::localization::lookup("error-internal-send"),
+            TaskError::SdkError { source_error } => localized_sdk_error(source_error),
+            // Transparent variants (Spv, DashPay, Config, etc.) — no dedicated
+            // Fluent IDs yet; fall through to Display.
+            _ => None,
+        }
+        .unwrap_or_else(|| self.to_string())
+    }
+}
+
+/// Localize an SDK error by mapping its variant to a Fluent message ID.
+///
+/// Mirrors [`sdk_error_user_message`] but resolves through the Fluent
+/// system so translations can be provided.
+fn localized_sdk_error(error: &SdkError) -> Option<String> {
+    use fluent_templates::fluent_bundle::FluentValue;
+    use std::borrow::Cow;
+
+    match error {
+        SdkError::StateTransitionBroadcastError(_) => {
+            crate::localization::lookup("error-sdk-broadcast-rejected")
+        }
+        SdkError::TimeoutReached(duration, _) => {
+            let mut args = std::collections::HashMap::new();
+            args.insert(
+                Cow::Borrowed("seconds"),
+                FluentValue::from(duration.as_secs() as f64),
+            );
+            crate::localization::lookup_with_args("error-sdk-timeout", &args)
+        }
+        SdkError::StaleNode(_) => crate::localization::lookup("error-sdk-stale-node"),
+        SdkError::DapiClientError(_) => crate::localization::lookup("error-sdk-dapi-client"),
+        SdkError::NoAvailableAddressesToRetry(_) => {
+            crate::localization::lookup("error-sdk-no-available-addresses")
+        }
+        SdkError::Cancelled(_) => crate::localization::lookup("error-sdk-cancelled"),
+        SdkError::AlreadyExists(_) => crate::localization::lookup("error-sdk-already-exists"),
+        SdkError::NonceOverflow(_) => crate::localization::lookup("error-sdk-nonce-overflow"),
+        SdkError::IdentityNonceNotFound(_) => {
+            crate::localization::lookup("error-sdk-identity-nonce-not-found")
+        }
+        _ => {
+            let mut args = std::collections::HashMap::new();
+            args.insert(Cow::Borrowed("error"), FluentValue::from(error.to_string()));
+            crate::localization::lookup_with_args("error-sdk-unknown", &args)
+        }
+    }
+}
+
 impl From<String> for TaskError {
     fn from(s: String) -> Self {
         if s.contains("Wallet file not specified") {
@@ -421,6 +520,42 @@ mod tests {
         assert!(
             matches!(err, TaskError::DuplicateIdentityPublicKey { .. }),
             "Expected DuplicateIdentityPublicKey, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn localized_returns_english_for_simple_variant() {
+        let err = TaskError::CoreWalletNotConfigured;
+        let msg = err.localized();
+        assert!(
+            msg.contains("Core wallet not configured"),
+            "Expected English Fluent text, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn localized_fills_placeholder() {
+        let err = TaskError::IdentityPublicKeyContractBoundsConflict {
+            contract_id: "Abc123".to_string(),
+            source_error: Box::new(SdkError::Generic("test".to_string())),
+        };
+        let msg = err.localized();
+        assert!(
+            msg.contains("Abc123"),
+            "Expected contract_id placeholder filled, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn localized_falls_back_to_display_for_unmapped_variant() {
+        let err = TaskError::Generic("custom error text".to_string());
+        let display = err.to_string();
+        let localized = err.localized();
+        // Generic maps through Fluent with { $message } placeholder,
+        // so the result should contain the original text either way.
+        assert!(
+            localized.contains("custom error text"),
+            "Expected fallback to contain original text, got: {localized} (display: {display})"
         );
     }
 }

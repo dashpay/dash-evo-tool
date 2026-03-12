@@ -76,6 +76,9 @@ tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
 region = "3.0.2"
+fluent-templates = "0.13"
+sys-locale = "0.3"
+unic-langid = "0.9"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"

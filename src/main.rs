@@ -12,6 +12,7 @@ fn main() -> eframe::Result<()> {
     let app_data_dir =
         app_user_data_dir_path().expect("Failed to get app user_data directory path");
     initialize_logger();
+    localization::init();
     tracing::info!(
         version = VERSION,
         data_dir = %app_data_dir.display(),

@@ -1048,6 +1048,12 @@ impl ScreenLike for AddExistingIdentityScreen {
                     }
                 }
             }
+            BackendTaskSuccessResult::Progress(msg) => {
+                // Progress updates only update the existing banner in-place
+                if let Some(ref handle) = self.refresh_banner {
+                    handle.set_message(&msg);
+                }
+            }
             _ => {}
         }
     }

@@ -62,6 +62,16 @@ scripts/safe-cargo.sh +nightly fmt --all
 * When a method takes `&AppContext` (or `Option<&AppContext>`), place it as the first parameter after `self`.
 * Screen constructors handle errors internally via `MessageBanner` and return `Self` with degraded state. Keep `create_screen()` clean — no error handling at callsites.
 
+### Error messages
+
+User-facing error messages (shown in `MessageBanner` via `Display`) must follow these rules:
+
+1. **Audience**: Write for the Everyday User persona (`docs/personas/everyday-user.md`). No jargon — no "consensus error", "nonce", "state transition", "SDK", "RPC", or error codes.
+2. **Structure**: *What happened* + *what to do*. Every message must include a concrete action: retry, wait, try a different approach, or contact support.
+3. **Tone**: Calm, direct, brief. Not apologetic ("Sorry!"), not alarming ("Something went wrong!"), not vague ("An error occurred").
+4. **Technical details**: Never in the message itself. Attach via `BannerHandle::with_details(e)` — the `Debug` repr goes to the collapsible details panel and logs.
+5. **Reference implementation**: `sdk_error_user_message()` in `src/backend_task/error.rs` demonstrates the pattern for SDK errors. New `TaskError` variants should follow the same style.
+
 ## Architecture Overview
 
 **Dash Evo Tool** is a cross-platform GUI application (Rust + egui) for interacting with Dash Evolution. It enables DPNS username registration, contest voting, state transition viewing, wallet management, and identity operations across Mainnet/Testnet/Devnet.

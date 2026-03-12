@@ -363,10 +363,10 @@ pub fn add_left_panel(
                                         // Dev mode label (below network label if present)
                                         if app_context.is_developer_mode() {
                                             ui.add_space(2.0);
-                                            let dev_label = egui::RichText::new("🔧 Expert Mode")
+                                            let dev_label = egui::RichText::new("🔧 Expert")
                                                 .color(DashColors::GRADIENT_PURPLE)
                                                 .size(12.0);
-                                            if ui.label(dev_label).clicked() {
+                                            if ui.label(dev_label).on_hover_text("Expert mode is enabled — shows advanced options").clicked() {
                                                 action = AppAction::SetMainScreenThenGoToMainScreen(
                                                     RootScreenType::RootScreenNetworkChooser,
                                                 );

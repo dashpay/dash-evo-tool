@@ -28,7 +28,7 @@ impl AppContext {
                     .to_string()
                 })?
                 .send_raw_transaction(tx)
-                .map_err(|e| e.to_string()),
+                .map_err(|e| TaskError::from(e).to_string()),
             CoreBackendMode::Spv => {
                 self.spv_manager.broadcast_transaction(tx).await?;
                 Ok(tx.txid())

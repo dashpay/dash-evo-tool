@@ -1,7 +1,6 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
@@ -26,7 +25,7 @@ use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::IndexMap;
-use dash_sdk::{Error, Sdk};
+use dash_sdk::Sdk;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -167,23 +166,7 @@ impl AppContext {
                 let result = sdk
                     .document_create(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            TaskError::ProofError
-                        }
-                        e => TaskError::from(e),
-                    })?;
+                    .map_err(|e| self.log_drive_proof_error(e))?;
 
                 // Handle the result - DocumentCreateResult contains the created document
                 match result {
@@ -219,23 +202,7 @@ impl AppContext {
                 let result = sdk
                     .document_delete(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            TaskError::ProofError
-                        }
-                        e => TaskError::from(e),
-                    })?;
+                    .map_err(|e| self.log_drive_proof_error(e))?;
 
                 // Handle the result - DocumentDeleteResult contains the deleted document ID
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
@@ -272,23 +239,7 @@ impl AppContext {
                 let result = sdk
                     .document_replace(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            TaskError::ProofError
-                        }
-                        e => TaskError::from(e),
-                    })?;
+                    .map_err(|e| self.log_drive_proof_error(e))?;
 
                 // Handle the result - DocumentReplaceResult contains the replaced document
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
@@ -343,23 +294,7 @@ impl AppContext {
                 let result = sdk
                     .document_transfer(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            TaskError::ProofError
-                        }
-                        e => TaskError::from(e),
-                    })?;
+                    .map_err(|e| self.log_drive_proof_error(e))?;
 
                 // Handle the result - DocumentTransferResult contains the transferred document
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
@@ -415,23 +350,7 @@ impl AppContext {
                 let result = sdk
                     .document_purchase(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            TaskError::ProofError
-                        }
-                        e => TaskError::from(e),
-                    })?;
+                    .map_err(|e| self.log_drive_proof_error(e))?;
 
                 // Handle the result - DocumentPurchaseResult contains the purchased document
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);
@@ -486,23 +405,7 @@ impl AppContext {
                 let result = sdk
                     .document_set_price(builder, &identity_key, &qualified_identity)
                     .await
-                    .map_err(|e| match e {
-                        Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                            self.db
-                                .insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes,
-                                    error: Some(proof_error.to_string()),
-                                })
-                                .ok();
-                            TaskError::ProofError
-                        }
-                        e => TaskError::from(e),
-                    })?;
+                    .map_err(|e| self.log_drive_proof_error(e))?;
 
                 // Handle the result - DocumentSetPriceResult contains the document with updated price
                 let estimated_fee = PlatformFeeEstimator::new().estimate_document_batch(1);

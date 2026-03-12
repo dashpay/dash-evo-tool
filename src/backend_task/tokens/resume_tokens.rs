@@ -1,7 +1,7 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -9,7 +9,7 @@ use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::platform::tokens::builders::emergency_action::TokenEmergencyActionTransitionBuilder;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
-use dash_sdk::{Error, Sdk};
+use dash_sdk::Sdk;
 use std::sync::Arc;
 
 impl AppContext {
@@ -24,7 +24,7 @@ impl AppContext {
         group_info: Option<GroupStateTransitionInfoStatus>,
         sdk: &Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Use .resume(...) constructor
         let mut builder = TokenEmergencyActionTransitionBuilder::resume(
             data_contract.clone(),
@@ -47,32 +47,13 @@ impl AppContext {
         let state_transition = builder
             .sign(sdk, &signing_key, actor_identity, self.platform_version())
             .await
-            .map_err(|e| format!("Error signing Resume Tokens transition: {}", e))?;
+            .map_err(TaskError::from)?;
 
         // Broadcast
         let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
-            .map_err(|e| match e {
-                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes,
-                            error: Some(proof_error.to_string()),
-                        })
-                        .ok();
-                    format!(
-                        "Error broadcasting Resume Tokens transition: {}, proof error logged",
-                        proof_error
-                    )
-                }
-                e => format!("Error broadcasting Resume Tokens transition: {}", e),
-            })?;
+            .map_err(|e| self.log_drive_proof_error(e))?;
 
         // Log proof result for audit trail
         tracing::info!("ResumeTokens proof result: {}", proof_result);

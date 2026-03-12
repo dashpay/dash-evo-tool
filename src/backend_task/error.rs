@@ -122,7 +122,11 @@ pub enum TaskError {
         "The operation could not be fully verified by the platform. The issue has been logged. \
          Please check whether the operation completed and retry if needed."
     )]
-    ProofError,
+    ProofError {
+        /// The original SDK error that triggered proof-verification failure.
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// An unexpected internal error that should not occur in normal operation.
     /// The technical detail is stored for debugging and logging only.

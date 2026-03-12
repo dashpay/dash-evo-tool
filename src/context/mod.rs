@@ -697,6 +697,36 @@ impl AppContext {
             _ => Ok(None), // 0 or >1 matches — ambiguous
         }
     }
+
+    /// Convert an SDK error to a [`TaskError`], with special handling for
+    /// [`dash_sdk::Error::DriveProofError`]: logs the proof data to the database
+    /// and returns [`TaskError::ProofError`] with the SDK error preserved as the source.
+    ///
+    /// All other SDK errors are converted via [`TaskError::from`].
+    pub(crate) fn log_drive_proof_error(&self, e: dash_sdk::Error) -> TaskError {
+        use crate::model::proof_log_item::{ProofLogItem, RequestType};
+        match e {
+            dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                let _ = self.db.insert_proof_log_item(ProofLogItem {
+                    request_type: RequestType::BroadcastStateTransition,
+                    request_bytes: vec![],
+                    verification_path_query_bytes: vec![],
+                    height: block_info.height,
+                    time_ms: block_info.time_ms,
+                    proof_bytes: proof_bytes.clone(),
+                    error: Some(proof_error.to_string()),
+                });
+                TaskError::ProofError {
+                    source_error: Box::new(dash_sdk::Error::DriveProofError(
+                        proof_error,
+                        proof_bytes,
+                        block_info,
+                    )),
+                }
+            }
+            e => TaskError::from(e),
+        }
+    }
 }
 
 /// Returns the default platform version for the given network.

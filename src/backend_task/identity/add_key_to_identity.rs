@@ -6,6 +6,7 @@ use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -64,7 +65,7 @@ impl AppContext {
             None,
         )
         .map_err(|e| TaskError::IdentityUpdateTransitionError {
-            source: Box::new(e),
+            source_error: Box::new(SdkError::Protocol(e)),
         })?;
 
         let result = state_transition.broadcast_and_wait(sdk, None).await?;

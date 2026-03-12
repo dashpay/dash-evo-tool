@@ -110,15 +110,12 @@ pub enum TaskError {
     #[error("Could not build the key update transaction. Please retry.")]
     IdentityUpdateTransitionError {
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source_error: Box<SdkError>,
     },
 
     /// Failed to send a result back to the UI — the receiver was dropped.
     #[error("Internal update failed. Please retry the operation.")]
-    InternalSendError {
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
+    InternalSendError,
 
     /// Unclassified SDK error — the operation failed for an unrecognised reason.
     /// Display is implemented manually via [`sdk_error_user_message`] to inspect

@@ -55,9 +55,7 @@ impl AppContext {
         sender
             .send(TaskResult::Refresh)
             .await
-            .map_err(|e| TaskError::InternalSendError {
-                source: Box::new(e),
-            })?;
+            .map_err(|_| TaskError::InternalSendError)?;
 
         Ok(BackendTaskSuccessResult::RefreshedIdentity(
             qualified_identity,

@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -126,7 +127,7 @@ impl ContactProfileViewerScreen {
         AppAction::BackendTask(task)
     }
 
-    fn save_private_info(&mut self) -> Result<(), String> {
+    fn save_private_info(&mut self) -> Result<(), TaskError> {
         self.app_context
             .db
             .save_contact_private_info(
@@ -136,7 +137,7 @@ impl ContactProfileViewerScreen {
                 &self.notes,
                 self.is_hidden,
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| TaskError::Database { source: e })
     }
 
     fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {

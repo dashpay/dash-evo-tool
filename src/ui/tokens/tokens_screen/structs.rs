@@ -1,3 +1,4 @@
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -145,7 +146,7 @@ impl IdentityTokenInfo {
     pub fn try_from_identity_token_balance_with_lookup(
         identity_token_balance: &IdentityTokenBalance,
         app_context: &AppContext,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, TaskError> {
         let IdentityTokenBalance {
             token_id,
             token_alias,
@@ -156,13 +157,11 @@ impl IdentityTokenInfo {
             ..
         } = identity_token_balance;
         let identity = app_context
-            .get_identity_by_id(identity_id)
-            .map_err(|err| err.to_string())?
-            .ok_or("Identity not found".to_string())?;
+            .get_identity_by_id(identity_id)?
+            .ok_or_else(|| TaskError::Generic("Identity not found".to_string()))?;
         let data_contract = app_context
-            .get_contract_by_id(data_contract_id)
-            .map_err(|err| err.to_string())?
-            .ok_or("Contract not found".to_string())?;
+            .get_contract_by_id(data_contract_id)?
+            .ok_or_else(|| TaskError::Generic("Contract not found".to_string()))?;
         Ok(Self {
             token_id: *token_id,
             token_alias: token_alias.clone(),
@@ -178,7 +177,7 @@ impl IdentityTokenInfo {
     pub fn try_from_identity_token_balance_with_actions_with_lookup(
         identity_token_balance: &IdentityTokenBalanceWithActions,
         app_context: &AppContext,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, TaskError> {
         let IdentityTokenBalanceWithActions {
             token_id,
             token_alias,
@@ -189,13 +188,11 @@ impl IdentityTokenInfo {
             ..
         } = identity_token_balance;
         let identity = app_context
-            .get_identity_by_id(identity_id)
-            .map_err(|err| err.to_string())?
-            .ok_or("Identity not found".to_string())?;
+            .get_identity_by_id(identity_id)?
+            .ok_or_else(|| TaskError::Generic("Identity not found".to_string()))?;
         let data_contract = app_context
-            .get_contract_by_id(data_contract_id)
-            .map_err(|err| err.to_string())?
-            .ok_or("Contract not found".to_string())?;
+            .get_contract_by_id(data_contract_id)?
+            .ok_or_else(|| TaskError::Generic("Contract not found".to_string()))?;
         Ok(Self {
             token_id: *token_id,
             token_alias: token_alias.clone(),
@@ -209,7 +206,7 @@ impl IdentityTokenInfo {
     pub fn try_from_identity_token_maybe_balance_with_actions_with_lookup(
         identity_token_balance: &IdentityTokenMaybeBalanceWithActions,
         app_context: &AppContext,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, TaskError> {
         let IdentityTokenMaybeBalanceWithActions {
             token_id,
             token_alias,
@@ -220,13 +217,11 @@ impl IdentityTokenInfo {
             ..
         } = identity_token_balance;
         let identity = app_context
-            .get_identity_by_id(identity_id)
-            .map_err(|err| err.to_string())?
-            .ok_or("Identity not found".to_string())?;
+            .get_identity_by_id(identity_id)?
+            .ok_or_else(|| TaskError::Generic("Identity not found".to_string()))?;
         let data_contract = app_context
-            .get_contract_by_id(data_contract_id)
-            .map_err(|err| err.to_string())?
-            .ok_or("Contract not found".to_string())?;
+            .get_contract_by_id(data_contract_id)?
+            .ok_or_else(|| TaskError::Generic("Contract not found".to_string()))?;
         Ok(Self {
             token_id: *token_id,
             token_alias: token_alias.clone(),

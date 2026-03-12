@@ -1027,8 +1027,9 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if StyledCheckbox::new(&mut self.developer_mode, "Developer mode")
+                    if StyledCheckbox::new(&mut self.developer_mode, "Expert mode")
                         .show(ui)
+                        .on_hover_text("Show advanced options for power users and developers")
                         .clicked()
                     {
                         // Always update all contexts first to keep UI in sync

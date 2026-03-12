@@ -631,13 +631,11 @@ impl IdentitiesScreen {
                                                             if !can_withdraw {
                                                                 ui.disable();
                                                             }
-                                                            let resp = ui.add_sized([width, 0.0], egui::Button::new("💸 Withdraw"));
-                                                            let resp = if can_withdraw {
-                                                                resp.clickable_tooltip(withdraw_hover)
-                                                            } else {
-                                                                resp.disabled_tooltip(withdraw_hover)
-                                                            };
-                                                            if resp.clicked() {
+                                                            if ui.add_sized([width, 0.0], egui::Button::new("💸 Withdraw"))
+                                                                .clickable_tooltip(withdraw_hover)
+                                                                .disabled_tooltip(withdraw_hover)
+                                                                .clicked()
+                                                            {
                                                                 action = AppAction::AddScreen(
                                                                     Screen::WithdrawalScreen(WithdrawalScreen::new(
                                                                         qualified_identity.clone(),
@@ -670,13 +668,11 @@ impl IdentitiesScreen {
                                                             if !can_transfer {
                                                                 ui.disable();
                                                             }
-                                                            let resp = ui.add_sized([width, 0.0], egui::Button::new("📤 Transfer"));
-                                                            let resp = if can_transfer {
-                                                                resp.clickable_tooltip(transfer_hover)
-                                                            } else {
-                                                                resp.disabled_tooltip(transfer_hover)
-                                                            };
-                                                            if resp.clicked() {
+                                                            if ui.add_sized([width, 0.0], egui::Button::new("📤 Transfer"))
+                                                                .clickable_tooltip(transfer_hover)
+                                                                .disabled_tooltip(transfer_hover)
+                                                                .clicked()
+                                                            {
                                                                 action = AppAction::AddScreen(
                                                                     Screen::TransferScreen(TransferScreen::new(
                                                                         qualified_identity.clone(),

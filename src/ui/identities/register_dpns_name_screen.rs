@@ -546,13 +546,11 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 })
                 .frame(true)
                 .corner_radius(3.0);
-            let response = ui.add_enabled(button_enabled, button);
-            let response = if button_enabled {
-                response.clickable_tooltip(&hover_text)
-            } else {
-                response.disabled_tooltip(&hover_text)
-            };
-            if response.clicked() {
+            if ui.add_enabled(button_enabled, button)
+                .clickable_tooltip(&hover_text)
+                .disabled_tooltip(&hover_text)
+                .clicked()
+            {
                 self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult;
                 let handle = MessageBanner::set_global(ui.ctx(), "Registering DPNS name...", MessageType::Info);
                 handle.with_elapsed();

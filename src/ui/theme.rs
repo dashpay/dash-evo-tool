@@ -926,24 +926,58 @@ impl ComponentStyles {
     }
 }
 
-/// Extension methods for [`egui::Response`] that enforce project-wide UI behavior policies.
+/// Extension methods for [`egui::Response`] that enforce the project-wide tooltip cursor
+/// policy. Never use bare `.on_hover_text()` or `.on_disabled_hover_text()` -- use these
+/// methods instead.
 ///
-/// This is the general-purpose extension point for `egui::Response`. Current scope:
-/// cursor icons (tooltip methods below). Future methods may enforce hover effects,
-/// accessibility attributes, interaction patterns, or other UX conventions.
+/// Methods are **state-aware**: `clickable_tooltip` only applies when the widget is
+/// enabled, `disabled_tooltip` only when disabled. This lets you chain both on the same
+/// response and have exactly the right one take effect:
 ///
-/// Use these instead of raw `.on_hover_text()` to ensure consistent behavior.
+/// ```ignore
+/// ui.add_enabled(ready, button)
+///     .clickable_tooltip("Transfer credits")
+///     .disabled_tooltip("Fill all fields first")
+///     .clicked()
+/// ```
+///
+/// All methods return `Self` for chaining -- this is a design contract. New methods
+/// added to this trait must also be state-aware and return `Self`.
 pub trait ResponseExt {
-    /// Informational tooltip with `Help` (?) cursor. For non-interactive elements
-    /// that show explanatory text on hover (status labels, setting descriptions).
+    /// Informational tooltip with `Help` (?) cursor.
+    ///
+    /// Applies regardless of enabled/disabled state -- informational text is always
+    /// relevant. Use for non-interactive elements that show explanatory text on hover
+    /// (status labels, setting descriptions).
+    ///
+    /// ```ignore
+    /// ui.label("Sync status: connected")
+    ///     .info_tooltip("Last synced 3 seconds ago");
+    /// ```
     fn info_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
 
-    /// Clickable tooltip with `PointingHand` cursor. For interactive elements
-    /// that show a tooltip and respond to clicks (custom clickable labels, links).
+    /// Clickable tooltip with `PointingHand` cursor.
+    ///
+    /// Only applies when the widget is **enabled** -- skips silently when disabled so
+    /// it can be chained with [`disabled_tooltip`](ResponseExt::disabled_tooltip). Use
+    /// for interactive elements (buttons, clickable labels, links).
+    ///
+    /// ```ignore
+    /// ui.add_enabled(ready, button)
+    ///     .clickable_tooltip("Submit the form");
+    /// ```
     fn clickable_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
 
-    /// Disabled tooltip with `NotAllowed` cursor. For disabled elements
-    /// that explain why the action is unavailable.
+    /// Disabled tooltip with `NotAllowed` cursor.
+    ///
+    /// Only applies when the widget is **disabled** -- skips silently when enabled so
+    /// it can be chained with [`clickable_tooltip`](ResponseExt::clickable_tooltip). Use
+    /// to explain why an action is unavailable.
+    ///
+    /// ```ignore
+    /// ui.add_enabled(ready, button)
+    ///     .disabled_tooltip("Fill all required fields first");
+    /// ```
     fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
 }
 
@@ -953,13 +987,21 @@ impl ResponseExt for egui::Response {
     }
 
     fn clickable_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
-        self.on_hover_text(text)
-            .on_hover_cursor(CursorIcon::PointingHand)
+        if self.enabled() {
+            self.on_hover_text(text)
+                .on_hover_cursor(CursorIcon::PointingHand)
+        } else {
+            self
+        }
     }
 
     fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
-        self.on_disabled_hover_text(text)
-            .on_hover_cursor(CursorIcon::NotAllowed)
+        if self.enabled() {
+            self
+        } else {
+            self.on_disabled_hover_text(text)
+                .on_hover_cursor(CursorIcon::NotAllowed)
+        }
     }
 }
 

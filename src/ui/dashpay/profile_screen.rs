@@ -990,14 +990,11 @@ impl ProfileScreen {
                                             "Save profile changes".to_string()
                                         };
 
-                                        let response =
-                                            ui.add_enabled(can_save, save_button);
-                                        let response = if can_save {
-                                            response.clickable_tooltip(&hover_text)
-                                        } else {
-                                            response.disabled_tooltip(&hover_text)
-                                        };
-                                        if response.clicked() {
+                                        if ui.add_enabled(can_save, save_button)
+                                            .clickable_tooltip(&hover_text)
+                                            .disabled_tooltip(&hover_text)
+                                            .clicked()
+                                        {
                                             action |= self.save_profile();
                                         }
                                     });

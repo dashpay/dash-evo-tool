@@ -798,13 +798,12 @@ impl ScreenLike for TransferScreen {
                     "Please ensure all fields are filled correctly".to_string()
                 };
 
-                let response = ui.add_enabled(ready, button);
-                let response = if ready {
-                    response.clickable_tooltip(hover_text)
-                } else {
-                    response.disabled_tooltip(hover_text)
-                };
-                if response.clicked() {
+                if ui
+                    .add_enabled(ready, button)
+                    .clickable_tooltip(&hover_text)
+                    .disabled_tooltip(&hover_text)
+                    .clicked()
+                {
                     self.confirmation_popup = true;
                 }
 

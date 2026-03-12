@@ -57,10 +57,10 @@ impl AppContext {
                         .map_err(|_| TaskError::LockPoisoned {
                             resource: "transactions_waiting_for_finality",
                         });
-                    if let Ok(proofs) = proofs {
-                        if let Some(Some(proof)) = proofs.get(&tx_id) {
-                            return proof.clone();
-                        }
+                    if let Ok(proofs) = proofs
+                        && let Some(Some(proof)) = proofs.get(&tx_id)
+                    {
+                        return proof.clone();
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -261,7 +261,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> Result<()> {
+    ) -> Result<(), TaskError> {
         // Extract the asset lock payload from the transaction
         let Some(AssetLockPayloadType(payload)) = tx.special_transaction_payload.as_ref() else {
             return Ok(());
@@ -284,7 +284,7 @@ impl AppContext {
         };
 
         {
-            let mut transactions = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut transactions = self.transactions_waiting_for_finality.lock()?;
 
             if let Some(asset_lock_proof) = transactions.get_mut(&tx.txid()) {
                 *asset_lock_proof = proof.clone();
@@ -292,9 +292,9 @@ impl AppContext {
         }
 
         // Identify the wallet associated with the transaction
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read()?;
         for wallet_arc in wallets.values() {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write()?;
 
             // Check if any of the addresses in the transaction outputs match the wallet's known addresses
             let matches_wallet = payload.credit_outputs.iter().any(|tx_out| {
@@ -322,15 +322,16 @@ impl AppContext {
                     self.network,
                 )?;
 
-                let first = payload.credit_outputs.first().ok_or_else(|| {
-                    rusqlite::Error::InvalidParameterName(
+                let first = payload
+                    .credit_outputs
+                    .first()
+                    .ok_or_else(|| TaskError::Internal(
                         "Asset lock transaction has no credit outputs".to_string(),
-                    )
-                })?;
+                    ))?;
 
                 let address =
                     Address::from_script(&first.script_pubkey, self.network).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
+                        TaskError::Internal(format!(
                             "Failed to derive address from asset lock credit output script: {e}"
                         ))
                     })?;

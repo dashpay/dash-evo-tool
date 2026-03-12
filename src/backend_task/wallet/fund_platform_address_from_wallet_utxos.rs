@@ -146,7 +146,7 @@ impl AppContext {
                     }
                 }
 
-                return Err(timeout_err.into());
+                return Err(timeout_err);
             }
         };
 

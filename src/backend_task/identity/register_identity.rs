@@ -128,9 +128,13 @@ impl AppContext {
                         &wallet,
                         &used_utxos,
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
+                let asset_lock_proof = self
+                    .wait_for_asset_lock_proof(tx_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -208,9 +212,13 @@ impl AppContext {
                         &wallet,
                         &used_utxos,
                     )
-                    .await?;
+                    .await
+                    .map_err(|e| e.to_string())?;
 
-                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
+                let asset_lock_proof = self
+                    .wait_for_asset_lock_proof(tx_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }

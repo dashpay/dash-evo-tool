@@ -251,7 +251,7 @@ impl AppContext {
             }
             CoreTask::RefreshSingleKeyWalletInfo(wallet) => {
                 let (key_hash, address) = {
-                    let g = wallet.read().map_err(|e| TaskError::from(e.to_string()))?;
+                    let g = wallet.read().map_err(TaskError::from)?;
                     (g.key_hash, g.address.clone())
                 };
                 let wallet_for_retry = wallet.clone();
@@ -275,7 +275,7 @@ impl AppContext {
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
-                .map_err(|e| TaskError::from(e.to_string()))
+                .map_err(|e| TaskError::UserInput(e.to_string()))
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
@@ -303,7 +303,7 @@ impl AppContext {
             }
             CoreTask::SendSingleKeyWalletPayment { wallet, request } => {
                 let (key_hash, address) = {
-                    let g = wallet.read().map_err(|e| TaskError::from(e.to_string()))?;
+                    let g = wallet.read().map_err(TaskError::from)?;
                     (g.key_hash, g.address.clone())
                 };
                 let result = self
@@ -325,7 +325,7 @@ impl AppContext {
                 wallet,
             } => {
                 if !matches!(self.network, Network::Regtest | Network::Devnet) {
-                    return Err(TaskError::from(
+                    return Err(TaskError::UserInput(
                         "Mining is only available on Regtest and Devnet".to_string(),
                     ));
                 }
@@ -333,9 +333,7 @@ impl AppContext {
                 let mined = tokio::task::spawn_blocking(move || {
                     ctx.core_client
                         .read()
-                        .map_err(|e| {
-                            TaskError::from(format!("Core client lock was poisoned: {}", e))
-                        })?
+                        .map_err(TaskError::from)?
                         .generate_to_address(block_count, &address)
                         .map_err(TaskError::from)
                 })
@@ -346,10 +344,7 @@ impl AppContext {
                 // Refresh wallet balances via RPC so the UI reflects the new coins
                 let refresh_ctx = self.clone();
                 tokio::task::spawn_blocking(move || refresh_ctx.refresh_wallet_info(wallet))
-                    .await?
-                    .map_err(|e| {
-                        TaskError::from(format!("Error refreshing wallet after mining: {}", e))
-                    })?;
+                    .await??;
 
                 Ok(BackendTaskSuccessResult::MineBlocksSuccess(mined_count))
             }

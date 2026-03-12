@@ -69,7 +69,11 @@ impl AppContext {
             .or_else(|_| Identifier::from_string(&identity_id_input, Encoding::Hex))
         {
             Ok(id) => id,
-            Err(e) => return Err(TaskError::from(format!("Identifier error: {}", e))),
+            Err(_e) => {
+                return Err(TaskError::IdentifierParsingError {
+                    input: identity_id_input,
+                });
+            }
         };
 
         // Fetch the identity using the SDK
@@ -178,9 +182,9 @@ impl AppContext {
                     );
                     Some((voter_identity, key))
                 } else {
-                    return Err(TaskError::from(
-                        "Voting private key is not valid".to_string(),
-                    ));
+                    return Err(TaskError::InvalidPrivateKey {
+                        detail: "Voting private key is not valid".to_string(),
+                    });
                 }
             } else {
                 None
@@ -200,8 +204,11 @@ impl AppContext {
                             .map_err(TaskError::from)
                             .transpose()?
                             .and_then(|sk| {
-                                PrivateKey::from_byte_array(&sk, self.network)
-                                    .map_err(|e| TaskError::from(e.to_string()))
+                                PrivateKey::from_byte_array(&sk, self.network).map_err(|e| {
+                                    TaskError::InvalidPrivateKey {
+                                        detail: e.to_string(),
+                                    }
+                                })
                             }),
                     )
                 })
@@ -316,7 +323,9 @@ impl AppContext {
                     })
                     .collect::<Vec<DPNSNameInfo>>()
             })
-            .map_err(|e| TaskError::from(format!("Error fetching DPNS names: {}", e)))?;
+            .map_err(|e| TaskError::DpnsFetchError {
+                source: Box::new(e),
+            })?;
 
         // Determine alias: use user input, or fall back to first DPNS name if available
         let alias = if !alias_input.is_empty() {
@@ -338,8 +347,11 @@ impl AppContext {
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .filter_map(|wallet| wallet.read().ok().map(|w| (w.seed_hash(), wallet.clone())))
-                .collect(),
+                .map(|wallet| {
+                    let w = wallet.read()?;
+                    Ok::<_, TaskError>((w.seed_hash(), wallet.clone()))
+                })
+                .collect::<Result<_, _>>()?,
             wallet_index: None, //todo
             top_ups: Default::default(),
             status: IdentityStatus::Active,

@@ -144,29 +144,17 @@ impl AppContext {
         self.db.remove_token(token_id, self)
     }
 
-    pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), String> {
+    pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
         {
-            let wallets = self.wallets.read().map_err(|_| {
-                TaskError::LockPoisoned {
-                    resource: "wallets",
-                }
-                .to_string()
-            })?;
+            let wallets = self.wallets.read()?;
             if !wallets.contains_key(seed_hash) {
-                return Err("Wallet not found".to_string());
+                return Err(TaskError::WalletNotFound);
             }
         }
 
-        self.db
-            .remove_wallet(seed_hash, &self.network)
-            .map_err(|e| TaskError::Database { source: e }.to_string())?;
+        self.db.remove_wallet(seed_hash, &self.network)?;
 
-        let mut wallets = self.wallets.write().map_err(|_| {
-            TaskError::LockPoisoned {
-                resource: "wallets",
-            }
-            .to_string()
-        })?;
+        let mut wallets = self.wallets.write()?;
 
         wallets.remove(seed_hash);
         let has_wallet = !wallets.is_empty();

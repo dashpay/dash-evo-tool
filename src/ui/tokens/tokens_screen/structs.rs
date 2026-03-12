@@ -158,10 +158,10 @@ impl IdentityTokenInfo {
         } = identity_token_balance;
         let identity = app_context
             .get_identity_by_id(identity_id)?
-            .ok_or_else(|| TaskError::Generic("Identity not found".to_string()))?;
+            .ok_or_else(|| TaskError::IdentityNotFoundLocally)?;
         let data_contract = app_context
             .get_contract_by_id(data_contract_id)?
-            .ok_or_else(|| TaskError::Generic("Contract not found".to_string()))?;
+            .ok_or_else(|| TaskError::DataContractNotFound)?;
         Ok(Self {
             token_id: *token_id,
             token_alias: token_alias.clone(),
@@ -189,10 +189,10 @@ impl IdentityTokenInfo {
         } = identity_token_balance;
         let identity = app_context
             .get_identity_by_id(identity_id)?
-            .ok_or_else(|| TaskError::Generic("Identity not found".to_string()))?;
+            .ok_or_else(|| TaskError::IdentityNotFoundLocally)?;
         let data_contract = app_context
             .get_contract_by_id(data_contract_id)?
-            .ok_or_else(|| TaskError::Generic("Contract not found".to_string()))?;
+            .ok_or_else(|| TaskError::DataContractNotFound)?;
         Ok(Self {
             token_id: *token_id,
             token_alias: token_alias.clone(),
@@ -218,10 +218,10 @@ impl IdentityTokenInfo {
         } = identity_token_balance;
         let identity = app_context
             .get_identity_by_id(identity_id)?
-            .ok_or_else(|| TaskError::Generic("Identity not found".to_string()))?;
+            .ok_or_else(|| TaskError::IdentityNotFoundLocally)?;
         let data_contract = app_context
             .get_contract_by_id(data_contract_id)?
-            .ok_or_else(|| TaskError::Generic("Contract not found".to_string()))?;
+            .ok_or_else(|| TaskError::DataContractNotFound)?;
         Ok(Self {
             token_id: *token_id,
             token_alias: token_alias.clone(),

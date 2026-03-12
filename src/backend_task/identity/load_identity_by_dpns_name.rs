@@ -161,8 +161,11 @@ impl AppContext {
             dpns_names: owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .filter_map(|wallet| wallet.read().ok().map(|w| (w.seed_hash(), wallet.clone())))
-                .collect(),
+                .map(|wallet| {
+                    let w = wallet.read()?;
+                    Ok::<_, TaskError>((w.seed_hash(), wallet.clone()))
+                })
+                .collect::<Result<_, _>>()?,
             wallet_index: None,
             top_ups: Default::default(),
             status: IdentityStatus::Active,

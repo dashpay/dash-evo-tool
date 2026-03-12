@@ -559,7 +559,9 @@ impl AppContext {
                     &token_info.token_configuration,
                     bincode::config::standard(),
                 )
-                .map_err(|e| TaskError::Generic(e.to_string()))?;
+                .map_err(|e| TaskError::SerializationError {
+                    detail: e.to_string(),
+                })?;
 
                 self.db.insert_token(
                     &token_info.token_id,

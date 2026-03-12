@@ -19,14 +19,6 @@ const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
-    /// Legacy string error — backwards compatible with all existing code.
-    #[error("{0}")]
-    Generic(String),
-
-    /// Boxed error — catch-all for errors without a dedicated variant.
-    #[error(transparent)]
-    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
-
     /// SPV subsystem errors.
     #[error(transparent)]
     Spv(#[from] crate::spv::SpvError),
@@ -259,6 +251,59 @@ pub enum TaskError {
         "The data contract could not be found. It may have been removed or the ID is incorrect."
     )]
     DataContractNotFound,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Serialization errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A data serialization or deserialization operation failed (e.g. bincode).
+    #[error("Could not process the data. Please retry the operation.")]
+    SerializationError { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Identity creation / parsing errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The provided identifier could not be parsed from the input.
+    #[error("The identifier you entered could not be read. Please check the format and try again.")]
+    IdentifierParsingError { input: String },
+
+    /// The identity could not be constructed from the given parameters.
+    #[error("Could not create the identity. Please check your input and try again.")]
+    IdentityCreationError {
+        #[source]
+        source: Box<ProtocolError>,
+    },
+
+    /// A private key could not be parsed or is invalid.
+    #[error("The private key you entered is invalid. Please check the format and try again.")]
+    InvalidPrivateKey { detail: String },
+
+    /// Fetching DPNS names for an identity failed.
+    #[error("Could not look up names for this identity. Please check your connection and retry.")]
+    DpnsFetchError {
+        #[source]
+        source: Box<SdkError>,
+    },
+
+    /// An asset lock's private key could not be matched to a wallet address.
+    #[error(
+        "The address for this asset lock could not be matched to your wallet. \
+         Make sure you are using the correct wallet."
+    )]
+    AssetLockNotValidForWallet,
+
+    /// The instant lock proof has expired and the transaction is not yet chain-locked.
+    #[error(
+        "This asset lock cannot be used right now. The verification has expired and the \
+         transaction is not yet confirmed. Please wait a few minutes and retry."
+    )]
+    AssetLockInstantLockExpiredNotChainlocked,
+
+    /// Fetching address information from the platform failed.
+    #[error("Could not retrieve address information from the platform. Please retry.")]
+    PlatformFetchError {
+        #[source]
+        source: Box<SdkError>,
+    },
 }
 
 /// Produce a user-friendly message by inspecting the SDK error variant.
@@ -320,7 +365,9 @@ impl From<String> for TaskError {
         if s.contains("Wallet file not specified") {
             TaskError::CoreWalletNotConfigured
         } else {
-            TaskError::Generic(s)
+            // Legacy bridge: strings are treated as user-facing messages.
+            // All callers should be migrated to typed variants over time.
+            TaskError::UserInput(s)
         }
     }
 }
@@ -437,8 +484,8 @@ mod tests {
     fn from_string_passes_through_other_errors() {
         let err: TaskError = "Connection refused".to_string().into();
         assert!(
-            matches!(err, TaskError::Generic(ref s) if s == "Connection refused"),
-            "Expected Generic, got: {err:?}",
+            matches!(err, TaskError::UserInput(ref s) if s == "Connection refused"),
+            "Expected UserInput, got: {err:?}",
         );
     }
 

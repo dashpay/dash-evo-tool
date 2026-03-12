@@ -1027,7 +1027,7 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if StyledCheckbox::new(&mut self.developer_mode, "Developer mode")
+                    if StyledCheckbox::new(&mut self.developer_mode, "Expert mode")
                         .show(ui)
                         .clicked()
                     {

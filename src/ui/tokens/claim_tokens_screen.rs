@@ -456,16 +456,12 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.heading("2. Public note (optional)");
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
+                    ui.label("Public note (optional):").info_tooltip(
+                        "A note about the transaction that can be seen by the public.",
+                    );
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui
-                        .text_edit_singleline(&mut txt)
-                        .info_tooltip(
-                            "A note about the transaction that can be seen by the public.",
-                        )
-                        .changed()
-                    {
+                    if ui.text_edit_singleline(&mut txt).changed() {
                         self.public_note = Some(txt);
                     }
                 });

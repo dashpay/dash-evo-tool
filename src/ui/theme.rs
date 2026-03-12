@@ -958,7 +958,7 @@ impl ResponseExt for egui::Response {
     }
 
     fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
-        self.on_hover_text(text)
+        self.on_disabled_hover_text(text)
             .on_hover_cursor(CursorIcon::NotAllowed)
     }
 }

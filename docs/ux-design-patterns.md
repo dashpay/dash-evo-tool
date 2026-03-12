@@ -182,8 +182,8 @@ Use `ResponseExt` methods (defined in `src/ui/theme.rs`) instead of raw `.on_hov
 | `.disabled_tooltip("text")` | `NotAllowed` | Disabled elements explaining why the action is unavailable |
 
 - Import: `use crate::ui::theme::ResponseExt;`
-- `StyledButton` helpers (`add_primary_button`, etc.) set `PointingHand` automatically -- no tooltip helper needed
-- Never use bare `.on_hover_text()` -- always use the `ResponseExt` methods above
+- `ComponentStyles` button constructors (`add_primary_button`, etc.) set `PointingHand` automatically -- no tooltip helper needed
+- Never use bare `.on_hover_text()` or `.on_disabled_hover_text()` -- always use the `ResponseExt` methods above
 - `ResponseExt` is the general extension point for `egui::Response` behavior policies; future methods may enforce hover effects, accessibility, or other conventions
 
 ## 11. Progressive Disclosure

@@ -168,13 +168,16 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                         app_context.repaint_animation(ui.ctx());
                     }
                     let tip = status.tooltip_text(app_context);
-                    let resp = resp.info_tooltip(tip);
-
-                    if resp.clicked()
-                        && overall == OverallConnectionState::Disconnected
+                    let can_start_dash_qt = overall == OverallConnectionState::Disconnected
                         && backend_mode == CoreBackendMode::Rpc
-                        && !status.rpc_online()
-                    {
+                        && !status.rpc_online();
+                    let resp = if can_start_dash_qt {
+                        resp.clickable_tooltip(tip)
+                    } else {
+                        resp.info_tooltip(tip)
+                    };
+
+                    if resp.clicked() && can_start_dash_qt {
                         let settings = app_context.get_settings().ok().flatten();
 
                         let (custom_path, overwrite) = settings

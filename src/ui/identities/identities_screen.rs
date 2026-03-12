@@ -608,7 +608,9 @@ impl IdentitiesScreen {
                                                         .corner_radius(3.0)
                                                         .min_size(egui::vec2(60.0, 20.0));
 
-                                                    let actions_response = ui.add(actions_button).clickable_tooltip("Manage identity credits");
+                                                    let actions_response = ui.add(actions_button)
+                                                        .clickable_tooltip("Manage identity credits")
+                                                        .disabled_tooltip("Identity actions are unavailable until this identity becomes active");
 
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)

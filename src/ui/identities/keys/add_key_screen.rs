@@ -563,7 +563,7 @@ impl ScreenLike for AddKeyScreen {
                             egui::Id::new("security_level_tooltip"),
                             egui::Sense::hover(),
                         );
-                        hover_response.disabled_tooltip(format!(
+                        hover_response.info_tooltip(format!(
                             "{:?} purpose requires {:?} security level",
                             self.purpose, self.security_level
                         ));

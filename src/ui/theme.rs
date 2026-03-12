@@ -983,7 +983,10 @@ pub trait ResponseExt {
 
 impl ResponseExt for egui::Response {
     fn info_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
-        self.on_hover_text(text).on_hover_cursor(CursorIcon::Help)
+        let text = text.into();
+        self.on_hover_text(text.clone())
+            .on_disabled_hover_text(text)
+            .on_hover_cursor(CursorIcon::Help)
     }
 
     fn clickable_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {

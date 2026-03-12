@@ -5,7 +5,12 @@
 //! `From<String>` → backwards compatible with existing `Result<T, String>` code.
 //!   Parses known error patterns into typed variants automatically.
 
+use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc;
+use dash_sdk::dpp::ProtocolError;
+use dash_sdk::dpp::consensus::ConsensusError;
+use dash_sdk::dpp::consensus::state::state_error::StateError;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use thiserror::Error;
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
@@ -46,6 +51,13 @@ pub enum TaskError {
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
+    /// Failed to persist an identity update to the local database.
+    #[error("Could not save identity changes. Check available disk space and retry.")]
+    IdentitySaveError {
+        #[source]
+        source: rusqlite::Error,
+    },
+
     /// Tokio task join errors.
     #[error(transparent)]
     JoinError(#[from] tokio::task::JoinError),
@@ -63,17 +75,112 @@ pub enum TaskError {
 
     /// Duplicate identity public key — the key data already exists on the platform.
     #[error("This public key is already registered on the platform. Try a different key.")]
-    DuplicateIdentityPublicKey,
+    DuplicateIdentityPublicKey {
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// Duplicate identity public key ID — the key hash is already taken platform-wide.
-    #[error("This key hash is already registered on the platform. Try a different key.")]
-    DuplicateIdentityPublicKeyId,
+    #[error("This key is already registered on the platform. Try a different key.")]
+    DuplicateIdentityPublicKeyId {
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     /// Identity public key conflicts with an existing key's unique contract bounds.
     #[error(
         "This key conflicts with an existing key bound to contract {contract_id}. Use a different key or purpose."
     )]
-    IdentityPublicKeyContractBoundsConflict { contract_id: String },
+    IdentityPublicKeyContractBoundsConflict {
+        contract_id: String,
+        /// The original SDK error returned by the broadcast API.
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// The identity could not be found in the local wallet database.
+    #[error(
+        "This identity could not be found in your local wallet. Try refreshing your identities list."
+    )]
+    IdentityNotFoundLocally,
+
+    /// Failed to build the identity update state transition.
+    #[error("Could not build the key update transaction. Please retry.")]
+    IdentityUpdateTransitionError {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// Failed to send a result back to the UI — the receiver was dropped.
+    #[error("Internal update failed. Please retry the operation.")]
+    InternalSendError,
+
+    /// Unclassified SDK error — the operation failed for an unrecognised reason.
+    /// Display is implemented manually via [`sdk_error_user_message`] to inspect
+    /// the source error and produce an actionable, user-friendly message.
+    #[error("{}", sdk_error_user_message(source_error))]
+    SdkError {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+}
+
+/// Produce a user-friendly message by inspecting the SDK error variant.
+///
+/// The returned text is shown in `MessageBanner` via `Display`.
+/// Technical details remain available through the `#[source]` chain / `Debug`.
+///
+/// TODO: Expand match arms as we encounter more SDK error variants in the wild.
+/// Each arm should explain *what happened* and *what the user can do*.
+fn sdk_error_user_message(error: &SdkError) -> String {
+    match error {
+        SdkError::StateTransitionBroadcastError(_) => {
+            // Known broadcast rejection that didn't match a typed consensus variant
+            // above (DuplicateKey, DuplicateKeyId, ContractBoundsConflict).
+            // TODO: classify more consensus causes into dedicated TaskError variants
+            //       so fewer errors reach this fallback.
+            "The platform rejected this request. Please check your input and try again."
+                .to_string()
+        }
+        SdkError::TimeoutReached(duration, _) => {
+            format!(
+                "The operation did not complete within {} seconds. Please retry — it often succeeds on the second attempt.",
+                duration.as_secs()
+            )
+        }
+        SdkError::StaleNode(_) => {
+            "The server you connected to is behind. Please retry — the app will pick a different server automatically.".to_string()
+        }
+        SdkError::DapiClientError(_) => {
+            // TODO: inspect inner DapiClientError for connection refused vs TLS vs DNS.
+            "Could not connect to the Dash network. Please retry in a few moments.".to_string()
+        }
+        SdkError::NoAvailableAddressesToRetry(_) => {
+            "All Dash network servers are temporarily unreachable. Please wait a minute and retry.".to_string()
+        }
+        SdkError::Cancelled(_) => "The operation was cancelled.".to_string(),
+        SdkError::AlreadyExists(_) => {
+            "This object already exists on the platform.".to_string()
+        }
+        SdkError::NonceOverflow(_) => {
+            "This identity has reached its maximum number of operations. Please try again later.".to_string()
+        }
+        SdkError::IdentityNonceNotFound(_) => {
+            "The platform has not indexed this identity yet. Please retry in a few moments.".to_string()
+        }
+        // TODO: add arms for Protocol (consensus sub-errors), InvalidCreditTransfer,
+        //       MissingDependency, Config, etc.
+        _ => {
+            // TODO(i18n/ux): This fallback embeds the raw SDK error Display string,
+            // which may contain jargon or technical details. Add dedicated arms for
+            // remaining SdkError variants (Protocol, InvalidCreditTransfer,
+            // MissingDependency, Config, etc.) and replace {error} with a fixed,
+            // user-friendly message once each variant's typical causes are understood.
+            format!("An unexpected error occurred: {error}. Please try again later.")
+        }
+    }
 }
 
 impl From<String> for TaskError {
@@ -98,9 +205,84 @@ impl From<dashcore_rpc::Error> for TaskError {
     }
 }
 
+impl From<SdkError> for TaskError {
+    fn from(error: SdkError) -> Self {
+        enum ConsensusKind {
+            DuplicateKey,
+            DuplicateKeyId,
+            ContractBoundsConflict(String),
+        }
+
+        let kind: Option<ConsensusKind> = {
+            let consensus_error = match &error {
+                SdkError::StateTransitionBroadcastError(broadcast_err) => {
+                    broadcast_err.cause.as_ref()
+                }
+                SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
+                _ => None,
+            };
+
+            consensus_error
+                .and_then(|ce| match ce {
+                    ConsensusError::StateError(
+                        StateError::DuplicatedIdentityPublicKeyStateError(_),
+                    ) => Some(ConsensusKind::DuplicateKey),
+                    ConsensusError::StateError(
+                        StateError::DuplicatedIdentityPublicKeyIdStateError(_),
+                    ) => Some(ConsensusKind::DuplicateKeyId),
+                    ConsensusError::StateError(
+                        StateError::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError(e),
+                    ) => Some(ConsensusKind::ContractBoundsConflict(
+                        e.contract_id().to_string(Encoding::Base58),
+                    )),
+                    _ => None,
+                })
+                .or_else(|| {
+                    // Message-based fallback: when the SDK doesn't provide a structured
+                    // consensus cause, inspect the broadcast message text. This handles
+                    // DAPI responses where cause=None but message carries the
+                    // duplicate-key signal — the exact regression guarded by issue #714.
+                    if let SdkError::StateTransitionBroadcastError(broadcast_err) = &error
+                        && broadcast_err.cause.is_none()
+                    {
+                        let msg = broadcast_err.message.to_lowercase();
+                        if msg.contains("duplicate") {
+                            return Some(ConsensusKind::DuplicateKey);
+                        }
+                    }
+                    None
+                })
+        };
+
+        let boxed = Box::new(error);
+        match kind {
+            Some(ConsensusKind::DuplicateKey) => TaskError::DuplicateIdentityPublicKey {
+                source_error: boxed,
+            },
+            Some(ConsensusKind::DuplicateKeyId) => TaskError::DuplicateIdentityPublicKeyId {
+                source_error: boxed,
+            },
+            Some(ConsensusKind::ContractBoundsConflict(contract_id)) => {
+                TaskError::IdentityPublicKeyContractBoundsConflict {
+                    contract_id,
+                    source_error: boxed,
+                }
+            }
+            None => TaskError::SdkError {
+                source_error: boxed,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
+    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
+    use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
+    use dash_sdk::dpp::identity::Purpose;
+    use dash_sdk::platform::Identifier;
 
     #[test]
     fn from_string_detects_rpc_error_minus_19() {
@@ -160,6 +342,85 @@ mod tests {
         assert!(
             matches!(err, TaskError::Generic(_)),
             "Expected Generic, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_public_key() {
+        let consensus =
+            ConsensusError::from(DuplicatedIdentityPublicKeyStateError::new(vec![1, 2]));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_public_key_id() {
+        let consensus = ConsensusError::from(DuplicatedIdentityPublicKeyIdStateError::new(vec![3]));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(
+            err,
+            TaskError::DuplicateIdentityPublicKeyId { .. }
+        ));
+    }
+
+    #[test]
+    fn from_sdk_error_contract_bounds_conflict() {
+        let contract_id = Identifier::random();
+        let identity_id = Identifier::random();
+        let consensus = ConsensusError::from(
+            IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError::new(
+                identity_id,
+                contract_id,
+                Purpose::AUTHENTICATION,
+                2,
+                1,
+            ),
+        );
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let expected_contract_id = contract_id.to_string(Encoding::Base58);
+        assert!(
+            matches!(err, TaskError::IdentityPublicKeyContractBoundsConflict { ref contract_id, .. } if *contract_id == expected_contract_id)
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_broadcast_cause_duplicate_key() {
+        let consensus = ConsensusError::from(DuplicatedIdentityPublicKeyStateError::new(vec![1]));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40206,
+            message: "duplicate key".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_generic_variant_falls_back_to_sdk_error() {
+        let sdk_err = SdkError::Generic("connection timeout".to_string());
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::SdkError { .. }),
+            "Expected SdkError, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_broadcast_cause_none_message_duplicate_falls_back_to_duplicate_key() {
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40206,
+            message: "DuplicateIdentityPublicKeyStateError".to_string(),
+            cause: None,
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::DuplicateIdentityPublicKey { .. }),
+            "Expected DuplicateIdentityPublicKey, got: {err:?}"
         );
     }
 }

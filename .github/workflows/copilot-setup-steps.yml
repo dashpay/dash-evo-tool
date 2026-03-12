@@ -1,0 +1,62 @@
+name: "Copilot Setup Steps"
+
+# Configures the environment for GitHub Copilot coding agent before it
+# starts work on issues/PRs.  The job name MUST be "copilot-setup-steps"
+# for Copilot to recognize it.
+#
+# This workflow installs all system dependencies, the pinned Rust toolchain,
+# and protoc, then pre-builds the project so that the
+# tenderdash-proto-compiler (which downloads Tenderdash sources from the
+# internet during cargo build) runs here — before the network-restricted
+# agent sandbox — and its output is available in the cached target directory.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            clang \
+            cmake \
+            unzip \
+            libsqlite3-dev \
+            libzmq3-dev
+
+      - name: Install Rust toolchain (pinned to 1.92)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+            sh -s -- -y --default-toolchain 1.92 --component rustfmt,clippy
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install protoc v25.2
+        run: |
+          curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip
+          sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc
+          sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*'
+          rm -f protoc-25.2-linux-x86_64.zip
+          protoc --version
+        env:
+          PROTOC: /usr/local/bin/protoc
+
+      - name: Pre-build project
+        # Building once here ensures that tenderdash-proto-compiler downloads
+        # and compiles the Tenderdash protobuf sources (requires internet
+        # access) before the agent's sandboxed session begins.
+        run: cargo build --all-features
+        env:
+          PROTOC: /usr/local/bin/protoc

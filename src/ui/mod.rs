@@ -1,3 +1,5 @@
+pub mod error;
+pub use error::UiError;
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;

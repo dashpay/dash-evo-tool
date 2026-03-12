@@ -129,6 +129,18 @@ pub enum TaskError {
     #[error("An internal error occurred. Please restart the application and retry.")]
     Internal(String),
 
+    /// A user input validation error — the string is a user-facing message.
+    #[error("{0}")]
+    UserInput(String),
+
+    /// The requested identity was not found on the platform.
+    #[error("Identity not found on the platform. Please check the ID or name and try again.")]
+    IdentityNotFound,
+
+    /// Timed out waiting for transaction confirmation.
+    #[error("The transaction was not confirmed within the expected time. Please check your network connection and retry.")]
+    ConfirmationTimeout,
+
     /// Dash Core peer-to-peer communication failed.
     #[error(transparent)]
     P2P(#[from] crate::components::core_p2p_handler::P2PError),

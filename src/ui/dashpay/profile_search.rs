@@ -35,7 +35,8 @@ pub struct ProfileSearchScreen {
     search_query: String,
     search_results: Vec<ProfileSearchResult>,
     loading: bool,
-    has_searched: bool, // Track if a search has been performed
+    has_searched: bool,     // Track if a search has been performed
+    search_completed: bool, // True only after backend results received (prevents flash)
     show_info_popup: bool,
 }
 
@@ -47,6 +48,7 @@ impl ProfileSearchScreen {
             search_results: Vec::new(),
             loading: false,
             has_searched: false,
+            search_completed: false,
             show_info_popup: false,
         }
     }
@@ -65,6 +67,7 @@ impl ProfileSearchScreen {
         self.loading = true;
         self.search_results.clear();
         self.has_searched = true; // Mark that a search has been performed
+        self.search_completed = false; // Reset until backend responds
 
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::SearchProfiles {
             search_query: self.search_query.trim().to_string(),
@@ -237,8 +240,8 @@ impl ProfileSearchScreen {
                         ui.add_space(4.0);
                     }
                 });
-            } else if self.has_searched && !self.loading {
-                // Only show "No users found" if we've actually performed a search
+            } else if self.search_completed && !self.loading {
+                // Only show "No users found" after backend has returned results
                 ui.group(|ui| {
                     ui.label("No users found");
                     ui.separator();
@@ -294,6 +297,7 @@ impl ScreenLike for ProfileSearchScreen {
             self.search_query.clear();
             self.search_results.clear();
             self.has_searched = false;
+            self.search_completed = false;
             action = AppAction::None; // Consume the action
         }
 
@@ -319,6 +323,7 @@ impl ScreenLike for ProfileSearchScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.loading = false;
+        self.search_completed = true;
 
         match result {
             BackendTaskSuccessResult::DashPayProfileSearchResults(results) => {

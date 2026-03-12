@@ -7,6 +7,10 @@
 
 use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc;
+use dash_sdk::dpp::ProtocolError;
+use dash_sdk::dpp::consensus::ConsensusError;
+use dash_sdk::dpp::consensus::state::state_error::StateError;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use thiserror::Error;
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
@@ -88,6 +92,13 @@ pub enum TaskError {
         #[source]
         source_error: Box<SdkError>,
     },
+
+    /// Unclassified broadcast error — the state transition failed for an unknown reason.
+    #[error("Failed to broadcast identity update. Please try again later.")]
+    BroadcastError {
+        #[source]
+        source_error: Box<SdkError>,
+    },
 }
 
 impl From<String> for TaskError {
@@ -112,9 +123,68 @@ impl From<dashcore_rpc::Error> for TaskError {
     }
 }
 
+impl From<SdkError> for TaskError {
+    fn from(error: SdkError) -> Self {
+        enum ConsensusKind {
+            DuplicateKey,
+            DuplicateKeyId,
+            ContractBoundsConflict(String),
+        }
+
+        let kind: Option<ConsensusKind> = {
+            let consensus_error = match &error {
+                SdkError::StateTransitionBroadcastError(broadcast_err) => {
+                    broadcast_err.cause.as_ref()
+                }
+                SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
+                _ => None,
+            };
+
+            consensus_error.and_then(|ce| match ce {
+                ConsensusError::StateError(StateError::DuplicatedIdentityPublicKeyStateError(
+                    _,
+                )) => Some(ConsensusKind::DuplicateKey),
+                ConsensusError::StateError(
+                    StateError::DuplicatedIdentityPublicKeyIdStateError(_),
+                ) => Some(ConsensusKind::DuplicateKeyId),
+                ConsensusError::StateError(
+                    StateError::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError(e),
+                ) => Some(ConsensusKind::ContractBoundsConflict(
+                    e.contract_id().to_string(Encoding::Base58),
+                )),
+                _ => None,
+            })
+        };
+
+        let boxed = Box::new(error);
+        match kind {
+            Some(ConsensusKind::DuplicateKey) => TaskError::DuplicateIdentityPublicKey {
+                source_error: boxed,
+            },
+            Some(ConsensusKind::DuplicateKeyId) => TaskError::DuplicateIdentityPublicKeyId {
+                source_error: boxed,
+            },
+            Some(ConsensusKind::ContractBoundsConflict(contract_id)) => {
+                TaskError::IdentityPublicKeyContractBoundsConflict {
+                    contract_id,
+                    source_error: boxed,
+                }
+            }
+            None => TaskError::BroadcastError {
+                source_error: boxed,
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
+    use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
+    use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
+    use dash_sdk::dpp::identity::Purpose;
+    use dash_sdk::platform::Identifier;
 
     #[test]
     fn from_string_detects_rpc_error_minus_19() {
@@ -174,6 +244,70 @@ mod tests {
         assert!(
             matches!(err, TaskError::Generic(_)),
             "Expected Generic, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_public_key() {
+        let consensus =
+            ConsensusError::from(DuplicatedIdentityPublicKeyStateError::new(vec![1, 2]));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_duplicate_public_key_id() {
+        let consensus = ConsensusError::from(DuplicatedIdentityPublicKeyIdStateError::new(vec![3]));
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(
+            err,
+            TaskError::DuplicateIdentityPublicKeyId { .. }
+        ));
+    }
+
+    #[test]
+    fn from_sdk_error_contract_bounds_conflict() {
+        let contract_id = Identifier::random();
+        let identity_id = Identifier::random();
+        let consensus = ConsensusError::from(
+            IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError::new(
+                identity_id,
+                contract_id,
+                Purpose::AUTHENTICATION,
+                2,
+                1,
+            ),
+        );
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let expected_contract_id = contract_id.to_string(Encoding::Base58);
+        assert!(
+            matches!(err, TaskError::IdentityPublicKeyContractBoundsConflict { ref contract_id, .. } if *contract_id == expected_contract_id)
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_broadcast_cause_duplicate_key() {
+        let consensus = ConsensusError::from(DuplicatedIdentityPublicKeyStateError::new(vec![1]));
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40206,
+            message: "duplicate key".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(matches!(err, TaskError::DuplicateIdentityPublicKey { .. }));
+    }
+
+    #[test]
+    fn from_sdk_error_unknown_falls_back_to_broadcast_error() {
+        let sdk_err = SdkError::Generic("connection timeout".to_string());
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::BroadcastError { .. }),
+            "Expected BroadcastError, got: {err:?}"
         );
     }
 }

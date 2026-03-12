@@ -548,10 +548,9 @@ impl AppContext {
             IdentityTask::RegisterDpnsName(input) => {
                 Ok(self.register_dpns_name(sdk, input).await?)
             }
-            IdentityTask::RefreshIdentity(qualified_identity) => Ok(self
-                .refresh_identity(sdk, qualified_identity, sender)
-                .await
-                .map_err(|e| format!("Error refreshing identity: {}", e))?),
+            IdentityTask::RefreshIdentity(qualified_identity) => {
+                self.refresh_identity(sdk, qualified_identity, sender).await
+            }
             IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => Ok(self
                 .transfer_to_identity(qualified_identity, to_identifier, credits, id)
                 .await?),
@@ -571,16 +570,23 @@ impl AppContext {
                 identity,
                 inputs,
                 wallet_seed_hash,
-            } => Ok(self
-                .top_up_identity_from_platform_addresses(sdk, identity, inputs, wallet_seed_hash)
-                .await?),
+            } => {
+                self.top_up_identity_from_platform_addresses(
+                    sdk,
+                    identity,
+                    inputs,
+                    wallet_seed_hash,
+                )
+                .await
+            }
             IdentityTask::TransferToAddresses {
                 identity,
                 outputs,
                 key_id,
-            } => Ok(self
-                .transfer_to_addresses(sdk, identity, outputs, key_id)
-                .await?),
+            } => {
+                self.transfer_to_addresses(sdk, identity, outputs, key_id)
+                    .await
+            }
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 Ok(self.refresh_loaded_identities_dpns_names(sender).await?)
             }
@@ -594,7 +600,7 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         wallet_seed_hash: WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
@@ -614,14 +620,18 @@ impl AppContext {
                 wallets
                     .get(&wallet_seed_hash)
                     .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
+                    .ok_or_else(|| TaskError::Generic("Wallet not found".into()))?
             };
 
-            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            let wallet_guard = wallet
+                .read()
+                .map_err(|e| TaskError::Generic(e.to_string()))?;
 
             // Ensure wallet is open
             if !wallet_guard.is_open() {
-                return Err("Wallet must be unlocked to sign Platform transactions".to_string());
+                return Err(TaskError::Generic(
+                    "Wallet must be unlocked to sign Platform transactions".into(),
+                ));
             }
 
             wallet_guard.clone()
@@ -638,7 +648,10 @@ impl AppContext {
             .await
             .map_err(|e| {
                 tracing::error!("top_up_from_addresses failed: {}", e);
-                format!("Failed to top up identity from Platform addresses: {}", e)
+                TaskError::Generic(format!(
+                    "Failed to top up identity from Platform addresses: {}",
+                    e
+                ))
             })?;
 
         tracing::info!(
@@ -658,8 +671,7 @@ impl AppContext {
         updated_identity.identity.set_balance(new_balance);
 
         // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity(&updated_identity)
-            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+        self.update_local_qualified_identity(&updated_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -675,7 +687,7 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
         outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         key_id: Option<KeyID>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
 
@@ -700,7 +712,12 @@ impl AppContext {
                 None,
             )
             .await
-            .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
+            .map_err(|e| {
+                TaskError::Generic(format!(
+                    "Failed to transfer credits to Platform addresses: {}",
+                    e
+                ))
+            })?;
 
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
@@ -742,8 +759,7 @@ impl AppContext {
         }
 
         // Store the updated identity (use update to preserve wallet association)
-        self.update_local_qualified_identity(&updated_identity)
-            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+        self.update_local_qualified_identity(&updated_identity)?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))

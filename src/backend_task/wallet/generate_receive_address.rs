@@ -8,13 +8,12 @@ impl AppContext {
     pub(crate) async fn generate_receive_address(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         let wallet_arc = {
             let wallets = self.wallets.read().unwrap();
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+            wallets.get(&seed_hash).cloned().ok_or_else(|| {
+                crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
+            })?
         };
 
         let address_string = if self.core_backend_mode() == CoreBackendMode::Spv {
@@ -33,7 +32,11 @@ impl AppContext {
 
             derived.address.to_string()
         } else {
-            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            let mut wallet = wallet_arc.write().map_err(|_| {
+                crate::backend_task::error::TaskError::Generic(
+                    "Internal lock error: wallet lock was poisoned".to_string(),
+                )
+            })?;
             wallet
                 .receive_address(self.network, true, Some(self))?
                 .to_string()

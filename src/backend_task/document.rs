@@ -180,12 +180,12 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            format!(
+                            TaskError::Generic(format!(
                                 "Error broadcasting document: {}, proof error logged",
                                 proof_error
-                            )
+                            ))
                         }
-                        e => format!("Error broadcasting document: {}", e),
+                        e => TaskError::from(e),
                     })?;
 
                 // Handle the result - DocumentCreateResult contains the created document
@@ -235,12 +235,12 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            format!(
+                            TaskError::Generic(format!(
                                 "Error deleting document: {}, proof error logged",
                                 proof_error
-                            )
+                            ))
                         }
-                        e => format!("Error deleting document: {}", e),
+                        e => TaskError::from(e),
                     })?;
 
                 // Handle the result - DocumentDeleteResult contains the deleted document ID
@@ -291,12 +291,12 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            format!(
+                            TaskError::Generic(format!(
                                 "Error replacing document: {}, proof error logged",
                                 proof_error
-                            )
+                            ))
                         }
-                        e => format!("Error replacing document: {}", e),
+                        e => TaskError::from(e),
                     })?;
 
                 // Handle the result - DocumentReplaceResult contains the replaced document
@@ -329,8 +329,8 @@ impl AppContext {
                 let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
-                    .map_err(|e| format!("Error fetching document: {}", e))?
-                    .ok_or_else(|| "Document not found".to_string())?;
+                    .map_err(TaskError::from)?
+                    .ok_or_else(|| TaskError::Generic("Document not found".to_string()))?;
                 document.bump_revision();
 
                 let mut builder = DocumentTransferTransitionBuilder::new(
@@ -365,12 +365,12 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            format!(
+                            TaskError::Generic(format!(
                                 "Error transferring document: {}, proof error logged",
                                 proof_error
-                            )
+                            ))
                         }
-                        e => format!("Error transferring document: {}", e),
+                        e => TaskError::from(e),
                     })?;
 
                 // Handle the result - DocumentTransferResult contains the transferred document
@@ -403,8 +403,8 @@ impl AppContext {
                 let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
-                    .map_err(|e| format!("Error fetching document: {}", e))?
-                    .ok_or_else(|| "Document not found".to_string())?;
+                    .map_err(TaskError::from)?
+                    .ok_or_else(|| TaskError::Generic("Document not found".to_string()))?;
                 document.bump_revision();
 
                 let mut builder = DocumentPurchaseTransitionBuilder::new(
@@ -440,12 +440,12 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            format!(
+                            TaskError::Generic(format!(
                                 "Error purchasing document: {}, proof error logged",
                                 proof_error
-                            )
+                            ))
                         }
-                        e => format!("Error purchasing document: {}", e),
+                        e => TaskError::from(e),
                     })?;
 
                 // Handle the result - DocumentPurchaseResult contains the purchased document
@@ -478,8 +478,8 @@ impl AppContext {
                 let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
-                    .map_err(|e| format!("Error fetching document: {}", e))?
-                    .ok_or_else(|| "Document not found".to_string())?;
+                    .map_err(TaskError::from)?
+                    .ok_or_else(|| TaskError::Generic("Document not found".to_string()))?;
                 document.bump_revision();
 
                 let mut builder = DocumentSetPriceTransitionBuilder::new(
@@ -514,12 +514,12 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            format!(
+                            TaskError::Generic(format!(
                                 "Error setting document price: {}, proof error logged",
                                 proof_error
-                            )
+                            ))
                         }
-                        e => format!("Error setting document price: {}", e),
+                        e => TaskError::from(e),
                     })?;
 
                 // Handle the result - DocumentSetPriceResult contains the document with updated price

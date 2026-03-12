@@ -15,16 +15,15 @@ impl AppContext {
     pub(crate) async fn fetch_platform_address_balances(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         tracing::info!("Platform address sync start");
         let start_time = std::time::Instant::now();
 
         let wallet_arc = {
             let wallets = self.wallets.read().unwrap();
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+            wallets.get(&seed_hash).cloned().ok_or_else(|| {
+                crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
+            })?
         };
 
         // Get last sync timestamp from database
@@ -33,13 +32,21 @@ impl AppContext {
 
         // Create provider (requires wallet to be open for address derivation)
         let mut provider = {
-            let wallet = wallet_arc.read().map_err(|e| e.to_string())?;
+            let wallet = wallet_arc.read().map_err(|_| {
+                crate::backend_task::error::TaskError::Generic(
+                    "Internal lock error: wallet lock was poisoned".to_string(),
+                )
+            })?;
             match WalletAddressProvider::new(&wallet, self.network) {
                 Ok(provider) => provider.with_stored_state(&wallet, self.network, last_sync_height),
                 Err(_) if !wallet.is_open() => {
-                    return Err("Wallet is locked. Please unlock it first to refresh.".to_string());
+                    return Err(crate::backend_task::error::TaskError::Generic(
+                        "Wallet is locked. Please unlock it first to refresh.".to_string(),
+                    ));
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    return Err(crate::backend_task::error::TaskError::Generic(e));
+                }
             }
         };
 
@@ -75,7 +82,7 @@ impl AppContext {
                 );
                 AddressSyncResult::default()
             }
-            Err(e) => return Err(format!("Failed to sync Platform addresses: {}", e)),
+            Err(e) => return Err(crate::backend_task::error::TaskError::from(e)),
         };
 
         tracing::info!(
@@ -114,7 +121,11 @@ impl AppContext {
 
         // Apply results to wallet and persist
         let balances = {
-            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            let mut wallet = wallet_arc.write().map_err(|_| {
+                crate::backend_task::error::TaskError::Generic(
+                    "Internal lock error: wallet lock was poisoned".to_string(),
+                )
+            })?;
 
             // Update wallet with synced balances
             provider.apply_results_to_wallet(&mut wallet);

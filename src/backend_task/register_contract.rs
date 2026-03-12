@@ -8,6 +8,7 @@ use dash_sdk::{
 use tokio::time::sleep;
 
 use super::{BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::update_data_contract::extract_contract_id_from_error;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{
@@ -29,7 +30,7 @@ impl AppContext {
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Estimate fee for contract creation
         let estimated_fee = PlatformFeeEstimator::new().estimate_contract_create_base();
 
@@ -42,14 +43,12 @@ impl AppContext {
                     true => None,
                     false => Some(alias),
                 };
-                self.db
-                    .insert_contract_if_not_exists(
-                        &returned_contract,
-                        optional_alias.as_deref(),
-                        AllTokensShouldBeAdded,
-                        self,
-                    )
-                    .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
+                self.db.insert_contract_if_not_exists(
+                    &returned_contract,
+                    optional_alias.as_deref(),
+                    AllTokensShouldBeAdded,
+                    self,
+                )?;
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 Ok(BackendTaskSuccessResult::RegisteredContract(fee_result))
             }
@@ -73,7 +72,7 @@ impl AppContext {
                             BackendTaskSuccessResult::ProofErrorLogged,
                         )))
                         .await
-                        .map_err(|e| format!("Failed to send message: {}", e))?;
+                        .map_err(|_| TaskError::InternalSendError)?;
 
                     // Try to extract contract ID and fetch the contract if it exists
                     // This handles the case where the contract was actually created despite the proof error
@@ -99,22 +98,19 @@ impl AppContext {
                                 )
                                 .ok();
 
-                            return Err(format!(
+                            return Err(TaskError::Generic(format!(
                                 "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",
                                 proof_error
-                            ));
+                            )));
                         }
                     }
 
-                    Err(format!(
+                    Err(TaskError::Generic(format!(
                         "Error broadcasting Register Contract transition: {}, proof error logged",
                         proof_error
-                    ))
+                    )))
                 }
-                e => Err(format!(
-                    "Error broadcasting Register Contract transition: {}",
-                    e
-                )),
+                e => Err(TaskError::from(e)),
             },
         }
     }

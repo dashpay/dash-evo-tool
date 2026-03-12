@@ -16,7 +16,7 @@ impl AppContext {
         output_script: CoreScript,
         core_fee_per_byte: u32,
         fee_payer_index: u16,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::dpp::withdrawal::Pooling;
         use dash_sdk::platform::transition::address_credit_withdrawal::WithdrawAddressFunds;
@@ -25,12 +25,18 @@ impl AppContext {
         let (wallet, sdk) = {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
+                wallets.get(&seed_hash).cloned().ok_or_else(|| {
+                    crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
+                })?
             };
-            let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
+            let wallet = wallet_arc
+                .read()
+                .map_err(|_| {
+                    crate::backend_task::error::TaskError::Generic(
+                        "Internal lock error: wallet lock was poisoned".to_string(),
+                    )
+                })?
+                .clone();
             let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk)
         };
@@ -53,7 +59,7 @@ impl AppContext {
                 None,
             )
             .await
-            .map_err(|e| format!("Failed to withdraw from Platform address: {}", e))?;
+            .map_err(crate::backend_task::error::TaskError::from)?;
 
         // Trigger a balance refresh
         self.fetch_platform_address_balances(seed_hash).await?;

@@ -61,7 +61,7 @@ impl AppContext {
         signing_key: IdentityPublicKey,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         // Estimate fee for contract update
         let estimated_fee = PlatformFeeEstimator::new().estimate_contract_update();
 
@@ -137,7 +137,7 @@ impl AppContext {
                             BackendTaskSuccessResult::ProofErrorLogged,
                         )))
                         .await
-                        .map_err(|e| format!("Failed to send message: {}", e))?;
+                        .map_err(|_| crate::backend_task::error::TaskError::InternalSendError)?;
 
                     // Try to extract contract ID and fetch the contract if it exists
                     // This handles the case where the contract was actually updated despite the proof error
@@ -152,22 +152,19 @@ impl AppContext {
                                 .replace_contract(contract.id(), &contract, self)
                                 .ok();
 
-                            return Err(format!(
+                            return Err(crate::backend_task::error::TaskError::Generic(format!(
                                 "Error broadcasting Contract Update transition: {}, proof error logged, contract inserted into the database",
                                 proof_error
-                            ));
+                            )));
                         }
                     }
 
-                    Err(format!(
+                    Err(crate::backend_task::error::TaskError::Generic(format!(
                         "Error broadcasting Contract Update transition: {}, proof error logged",
                         proof_error
-                    ))
+                    )))
                 }
-                e => Err(format!(
-                    "Error broadcasting Contract Update transition: {}",
-                    e
-                )),
+                e => Err(crate::backend_task::error::TaskError::from(e)),
             },
         }
     }

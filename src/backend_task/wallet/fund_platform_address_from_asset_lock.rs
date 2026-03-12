@@ -18,7 +18,7 @@ impl AppContext {
         asset_lock_proof: AssetLockProof,
         asset_lock_address: Address,
         outputs: BTreeMap<PlatformAddress, Option<Credits>>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::dpp::dashcore::OutPoint;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
@@ -27,19 +27,29 @@ impl AppContext {
         let (wallet, sdk, asset_lock_private_key) = {
             let wallet_arc = {
                 let wallets = self.wallets.read().unwrap();
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
+                wallets.get(&seed_hash).cloned().ok_or_else(|| {
+                    crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
+                })?
             };
-            let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
+            let wallet = wallet_arc
+                .read()
+                .map_err(|_| {
+                    crate::backend_task::error::TaskError::Generic(
+                        "Internal lock error: wallet lock was poisoned".to_string(),
+                    )
+                })?
+                .clone();
             let sdk = self.sdk.load().as_ref().clone();
 
             // Get the private key for the asset lock address
             let private_key = wallet
                 .private_key_for_address(&asset_lock_address, self.network)
-                .map_err(|e| format!("Failed to get private key: {}", e))?
-                .ok_or_else(|| "Asset lock address not found in wallet".to_string())?;
+                .map_err(crate::backend_task::error::TaskError::from)?
+                .ok_or_else(|| {
+                    crate::backend_task::error::TaskError::Generic(
+                        "Asset lock address not found in wallet".to_string(),
+                    )
+                })?;
 
             (wallet, sdk, private_key)
         };
@@ -65,7 +75,7 @@ impl AppContext {
                 // Check if the platform has caught up to this block height
                 let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
                     .await
-                    .map_err(|e| format!("Failed to get platform metadata: {}", e))?;
+                    .map_err(crate::backend_task::error::TaskError::from)?;
 
                 if tx_block_height <= metadata.core_chain_locked_height {
                     // Platform has synced past this block, use chain lock proof
@@ -76,12 +86,12 @@ impl AppContext {
                 } else {
                     // Platform hasn't verified this Core block yet - can't use chain lock proof
                     // and instant lock is stale. User needs to wait.
-                    return Err(format!(
+                    return Err(crate::backend_task::error::TaskError::Generic(format!(
                         "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
                             and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
                             Please wait for Platform to sync with Core chain.",
                         tx_block_height, metadata.core_chain_locked_height
-                    ));
+                    )));
                 }
             } else {
                 // Use the instant lock proof as-is (transaction is recent)
@@ -112,7 +122,7 @@ impl AppContext {
                 None,
             )
             .await
-            .map_err(|e| format!("Failed to fund Platform address from asset lock: {}", e))?;
+            .map_err(crate::backend_task::error::TaskError::from)?;
 
         // Remove the used asset lock from the wallet and database
         {
@@ -121,7 +131,11 @@ impl AppContext {
                 wallets.get(&seed_hash).cloned()
             };
             if let Some(wallet_arc) = wallet_arc {
-                let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+                let mut wallet = wallet_arc.write().map_err(|_| {
+                    crate::backend_task::error::TaskError::Generic(
+                        "Internal lock error: wallet lock was poisoned".to_string(),
+                    )
+                })?;
                 wallet
                     .unused_asset_locks
                     .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);

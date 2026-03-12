@@ -93,12 +93,69 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// Unclassified broadcast error — the state transition failed for an unknown reason.
-    #[error("Failed to broadcast identity update. Please try again later.")]
-    BroadcastError {
+    /// Unclassified SDK error — the operation failed for an unrecognised reason.
+    /// Display is implemented manually via [`sdk_error_user_message`] to inspect
+    /// the source error and produce an actionable, user-friendly message.
+    #[error("{}", sdk_error_user_message(source_error))]
+    SdkError {
         #[source]
         source_error: Box<SdkError>,
     },
+}
+
+/// Produce a user-friendly message by inspecting the SDK error variant.
+///
+/// The returned text is shown in `MessageBanner` via `Display`.
+/// Technical details remain available through the `#[source]` chain / `Debug`.
+///
+/// TODO: Expand match arms as we encounter more SDK error variants in the wild.
+/// Each arm should explain *what happened* and *what the user can do*.
+fn sdk_error_user_message(error: &SdkError) -> String {
+    match error {
+        SdkError::StateTransitionBroadcastError(e) => {
+            // Known broadcast rejection that didn't match a typed consensus variant
+            // above (DuplicateKey, DuplicateKeyId, ContractBoundsConflict).
+            // The platform message is often the most specific info we have.
+            // TODO: classify more consensus causes into dedicated TaskError variants
+            //       so fewer errors reach this fallback.
+            format!(
+                "The platform rejected this operation: {}. Try a different approach.",
+                e.message
+            )
+        }
+        SdkError::TimeoutReached(duration, _) => {
+            format!(
+                "The operation did not complete within {} seconds. Please retry — it often succeeds on the second attempt.",
+                duration.as_secs()
+            )
+        }
+        SdkError::StaleNode(_) => {
+            "The server you connected to is behind. Please retry — the app will pick a different server automatically.".to_string()
+        }
+        SdkError::DapiClientError(_) => {
+            // TODO: inspect inner DapiClientError for connection refused vs TLS vs DNS.
+            "Could not connect to the Dash network. Please retry in a few moments.".to_string()
+        }
+        SdkError::NoAvailableAddressesToRetry(_) => {
+            "All Dash network servers are temporarily unreachable. Please wait a minute and retry.".to_string()
+        }
+        SdkError::Cancelled(_) => "The operation was cancelled.".to_string(),
+        SdkError::AlreadyExists(detail) => {
+            format!("This already exists on the platform: {detail}. No action needed.")
+        }
+        SdkError::NonceOverflow(_) => {
+            "This identity has reached its maximum number of operations. Please try again later.".to_string()
+        }
+        SdkError::IdentityNonceNotFound(_) => {
+            "The platform has not indexed this identity yet. Please retry in a few moments.".to_string()
+        }
+        // TODO: add arms for Protocol (consensus sub-errors), InvalidCreditTransfer,
+        //       MissingDependency, Config, etc.
+        _ => {
+            // Fallback — the technical cause is in the #[source] chain / details panel.
+            format!("Unexpected error: {}. Please try again later.", error)
+        }
+    }
 }
 
 impl From<String> for TaskError {
@@ -170,7 +227,7 @@ impl From<SdkError> for TaskError {
                     source_error: boxed,
                 }
             }
-            None => TaskError::BroadcastError {
+            None => TaskError::SdkError {
                 source_error: boxed,
             },
         }
@@ -306,8 +363,8 @@ mod tests {
         let sdk_err = SdkError::Generic("connection timeout".to_string());
         let err = TaskError::from(sdk_err);
         assert!(
-            matches!(err, TaskError::BroadcastError { .. }),
-            "Expected BroadcastError, got: {err:?}"
+            matches!(err, TaskError::SdkError { .. }),
+            "Expected SdkError, got: {err:?}"
         );
     }
 }

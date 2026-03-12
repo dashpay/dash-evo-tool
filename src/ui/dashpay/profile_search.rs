@@ -64,7 +64,6 @@ impl ProfileSearchScreen {
 
         self.loading = true;
         self.search_results.clear();
-        self.has_searched = true; // Mark that a search has been performed
 
         let task = BackendTask::DashPayTask(Box::new(DashPayTask::SearchProfiles {
             search_query: self.search_query.trim().to_string(),
@@ -250,14 +249,10 @@ impl ProfileSearchScreen {
         action
     }
 
-    pub fn display_message(&mut self, _message: &str, message_type: MessageType) {
+    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        // Only stop loading on errors — success results are handled by display_task_result.
-        // Setting loading = false unconditionally causes "No users found" to flash briefly
-        // before results arrive (see dashpay/dash-evo-tool#684).
-        if matches!(message_type, MessageType::Error) {
-            self.loading = false;
-        }
+        self.loading = false;
+        self.has_searched = true; // Search finished (possibly with error)
     }
 }
 
@@ -324,6 +319,7 @@ impl ScreenLike for ProfileSearchScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         self.loading = false;
+        self.has_searched = true; // Mark search complete only when results arrive
 
         match result {
             BackendTaskSuccessResult::DashPayProfileSearchResults(results) => {

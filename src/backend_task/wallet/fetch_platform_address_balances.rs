@@ -47,7 +47,11 @@ impl AppContext {
                     return Err(crate::backend_task::error::TaskError::WalletLocked);
                 }
                 Err(e) => {
-                    return Err(crate::backend_task::error::TaskError::Internal(e));
+                    return Err(
+                        crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {
+                            detail: e,
+                        },
+                    );
                 }
             }
         };

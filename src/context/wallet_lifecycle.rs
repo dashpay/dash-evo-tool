@@ -468,11 +468,7 @@ impl AppContext {
                 let (tx, ..) = self
                     .db
                     .get_asset_lock_transaction(txid.as_byte_array())?
-                    .ok_or_else(|| {
-                        TaskError::Internal(
-                            "Asset lock transaction not found in DB".to_string(),
-                        )
-                    })?;
+                    .ok_or(TaskError::AssetLockTransactionNotFoundInDatabase)?;
 
                 self.received_asset_lock_finality(&tx, Some(*instant_lock), None)?;
             }
@@ -576,7 +572,7 @@ impl AppContext {
             // Log total balance for visibility
             let balance = wm
                 .get_wallet_balance(wallet_id)
-                .map_err(|e| TaskError::Internal(format!("get_wallet_balance failed: {e}")))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
 
             let Some(wallet_info) = wm.get_wallet_info(wallet_id) else {
@@ -623,7 +619,7 @@ impl AppContext {
             // Read current UTXOs from SPV and re-insert, registering unknown addresses if derivation metadata is available
             let utxos = wm
                 .wallet_utxos(wallet_id)
-                .map_err(|e| TaskError::Internal(format!("wallet_utxos failed: {e}")))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
 
             let mut per_address_sum: std::collections::BTreeMap<Address, u64> = Default::default();
             // Build in-memory UTXO map to update wallet model
@@ -746,7 +742,7 @@ impl AppContext {
 
             let history = wm
                 .wallet_transaction_history(wallet_id)
-                .map_err(|e| TaskError::Internal(format!("wallet_transaction_history failed: {e}")))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             let wallet_transactions: Vec<WalletTransaction> = history
                 .into_iter()
                 .map(|record| WalletTransaction {

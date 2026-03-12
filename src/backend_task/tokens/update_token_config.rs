@@ -94,11 +94,8 @@ impl AppContext {
         let token = data_contract
             .tokens()
             .get(&identity_token_info.token_position)
-            .ok_or_else(|| {
-                TaskError::Internal(format!(
-                    "Token with position {} not found in contract",
-                    identity_token_info.token_position
-                ))
+            .ok_or(TaskError::TokenPositionNotFound {
+                position: identity_token_info.token_position,
             })?;
 
         // Then replace the contract in the local database

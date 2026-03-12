@@ -175,9 +175,9 @@ impl AppContext {
                 })?;
                 let addr = wallet_w.change_address(self.network, Some(self))?;
                 Some(PlatformAddress::try_from(addr).map_err(|e| {
-                    crate::backend_task::error::TaskError::Internal(format!(
-                        "Failed to convert change address: {e}"
-                    ))
+                    crate::backend_task::error::TaskError::AddressConversionFailed {
+                        detail: e.to_string(),
+                    }
                 })?)
             } else {
                 None
@@ -207,9 +207,11 @@ impl AppContext {
             // amount. We use a fresh wallet-controlled change address to absorb the
             // fee estimate surplus, keeping it spendable.
             let amount_credits = amount.checked_mul(CREDITS_PER_DUFF).ok_or_else(|| {
-                crate::backend_task::error::TaskError::Internal(format!(
-                    "Overflow converting {amount} duffs to credits (CREDITS_PER_DUFF = {CREDITS_PER_DUFF})"
-                ))
+                crate::backend_task::error::TaskError::CreditCalculationOverflow {
+                    detail: format!(
+                        "Overflow converting {amount} duffs to credits (CREDITS_PER_DUFF = {CREDITS_PER_DUFF})"
+                    ),
+                }
             })?;
 
             if let Some(change_address) = change_platform_address {
@@ -222,15 +224,15 @@ impl AppContext {
                     .keys()
                     .position(|k| *k == change_address)
                     .ok_or_else(|| {
-                        crate::backend_task::error::TaskError::Internal(
-                            "Change address not found in outputs map".to_string(),
-                        )
+                        crate::backend_task::error::TaskError::ChangeAddressUnavailable {
+                            reason: "change address not found in outputs map",
+                        }
                     })? as u16;
                 vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
             } else {
-                return Err(crate::backend_task::error::TaskError::Internal(
-                    "Failed to derive a change address for platform funding".to_string(),
-                ));
+                return Err(crate::backend_task::error::TaskError::ChangeAddressUnavailable {
+                    reason: "no change address was derived for platform funding",
+                });
             }
         };
 

@@ -1,4 +1,5 @@
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -26,7 +27,7 @@ impl AppContext {
     pub(super) async fn register_identity(
         &self,
         input: IdentityRegistrationInfo,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let IdentityRegistrationInfo {
             alias_input,
             keys,
@@ -38,8 +39,7 @@ impl AppContext {
         let sdk = self.sdk.load().as_ref().clone();
 
         let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         let wallet_id;
 
@@ -50,11 +50,11 @@ impl AppContext {
 
                 // Scope the read guard so it's dropped before the async DAPI call below
                 let private_key = {
-                    let wallet = wallet.read().map_err(|e| e.to_string())?;
+                    let wallet = wallet.read().map_err(TaskError::from)?;
                     wallet_id = wallet.seed_hash();
                     wallet
                         .private_key_for_address(&address, self.network)?
-                        .ok_or("Asset Lock not valid for wallet")?
+                        .ok_or_else(|| TaskError::from("Asset Lock not valid for wallet".to_string()))?
                 };
                 let asset_lock_proof = if let AssetLockProof::Instant(instant_asset_lock_proof) =
                     asset_lock_proof.as_ref()
@@ -74,12 +74,12 @@ impl AppContext {
                             })
                         } else {
                             // Platform hasn't verified this Core block yet
-                            return Err(format!(
+                            return Err(TaskError::from(format!(
                                 "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
                                 and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
                                 Please wait for Platform to sync with Core chain.",
                                 tx_block_height, metadata.core_chain_locked_height
-                            ));
+                            )));
                         }
                     } else {
                         AssetLockProof::Instant(instant_asset_lock_proof.clone())
@@ -93,7 +93,7 @@ impl AppContext {
                 // Scope the write lock to avoid holding it across an await.
                 // UTXOs are selected but NOT removed yet — removal happens after broadcast.
                 let (asset_lock_transaction, asset_lock_proof_private_key, _, used_utxos) = {
-                    let mut wallet = wallet.write().map_err(|e| e.to_string())?;
+                    let mut wallet = wallet.write().map_err(TaskError::from)?;
                     wallet_id = wallet.seed_hash();
                     match wallet.registration_asset_lock_transaction(
                         self,
@@ -107,7 +107,7 @@ impl AppContext {
                             // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                             // Only retry if something actually changed.
                             if !wallet.reload_utxos(self)? {
-                                return Err(e);
+                                return Err(TaskError::from(e));
                             }
                             wallet.registration_asset_lock_transaction(
                                 self,
@@ -128,13 +128,11 @@ impl AppContext {
                         &wallet,
                         &used_utxos,
                     )
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
 
                 let asset_lock_proof = self
                     .wait_for_asset_lock_proof(tx_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -150,7 +148,10 @@ impl AppContext {
                     AddressInfo::fetch_many(&sdk, addresses_to_fetch.clone())
                         .await
                         .map_err(|e| {
-                            format!("Failed to fetch address info from platform: {}", e)
+                            TaskError::from(format!(
+                                "Failed to fetch address info from platform: {}",
+                                e
+                            ))
                         })?;
 
                 // Build inputs with fresh nonces incremented by 1
@@ -190,7 +191,7 @@ impl AppContext {
             ) => {
                 // Scope the write lock to avoid holding it across an await.
                 let (asset_lock_transaction, asset_lock_proof_private_key) = {
-                    let mut wallet = wallet.write().map_err(|e| e.to_string())?;
+                    let mut wallet = wallet.write().map_err(TaskError::from)?;
                     wallet_id = wallet.seed_hash();
                     wallet.registration_asset_lock_transaction_for_utxo(
                         self,
@@ -212,13 +213,11 @@ impl AppContext {
                         &wallet,
                         &used_utxos,
                     )
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
 
                 let asset_lock_proof = self
                     .wait_for_asset_lock_proof(tx_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -252,16 +251,16 @@ impl AppContext {
 
         let existing_identity = match Identity::fetch_by_identifier(&sdk, identity_id).await {
             Ok(result) => result,
-            Err(e) => return Err(format!("Error fetching identity: {}", e)),
+            Err(e) => return Err(TaskError::from(e)),
         };
 
         let identity = match existing_identity.clone() {
             Some(id) => id,
             None => Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
-                .map_err(|e| format!("Failed to create identity: {}", e))?,
+                .map_err(|e| TaskError::from(format!("Failed to create identity: {}", e)))?,
         };
 
-        let wallet_seed_hash = { wallet.read().map_err(|e| e.to_string())?.seed_hash() };
+        let wallet_seed_hash = { wallet.read().map_err(TaskError::from)?.seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -272,7 +271,7 @@ impl AppContext {
             private_keys: keys.to_key_storage(wallet_seed_hash),
             dpns_names: vec![],
             associated_wallets: BTreeMap::from([(
-                wallet.read().map_err(|e| e.to_string())?.seed_hash(),
+                wallet.read().map_err(TaskError::from)?.seed_hash(),
                 wallet.clone(),
             )]),
             wallet_index: Some(wallet_identity_index),
@@ -292,11 +291,10 @@ impl AppContext {
             self.insert_local_qualified_identity(
                 &qualified_identity,
                 &Some((wallet_id, wallet_identity_index)),
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
 
             {
-                let mut wallet = wallet.write().map_err(|e| e.to_string())?;
+                let mut wallet = wallet.write().map_err(TaskError::from)?;
                 wallet
                     .unused_asset_locks
                     .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
@@ -306,8 +304,7 @@ impl AppContext {
             }
 
             self.db
-                .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
-                .map_err(|e| e.to_string())?;
+                .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())?;
 
             let fee_result = FeeResult::new(estimated_fee, estimated_fee);
             return Ok(BackendTaskSuccessResult::RegisteredIdentity(
@@ -319,14 +316,12 @@ impl AppContext {
         self.insert_local_qualified_identity(
             &qualified_identity,
             &Some((wallet_id, wallet_identity_index)),
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         self.db
             .set_asset_lock_identity_id_before_confirmation_by_network(
                 tx_id.as_byte_array(),
                 identity_id.as_bytes(),
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
 
         match self
             .put_new_identity_to_platform(
@@ -344,8 +339,8 @@ impl AppContext {
             }
             Err(e) => {
                 // Check if this is an instant lock proof expiration error
-                if e.contains("Instant lock proof signature is invalid")
-                    || e.contains("wasn't created recently")
+                if e.to_string().contains("Instant lock proof signature is invalid")
+                    || e.to_string().contains("wasn't created recently")
                 {
                     // Try to use chain asset lock proof instead
                     let tx_info = get_transaction_info(&sdk, &tx_id).await?;
@@ -384,8 +379,7 @@ impl AppContext {
                                     self.insert_local_qualified_identity(
                                         &qualified_identity,
                                         &Some((wallet_id, wallet_identity_index)),
-                                    )
-                                    .map_err(|e| e.to_string())?;
+                                    )?;
 
                                     return Err(retry_err);
                                 }
@@ -398,15 +392,14 @@ impl AppContext {
                             self.insert_local_qualified_identity(
                                 &qualified_identity,
                                 &Some((wallet_id, wallet_identity_index)),
-                            )
-                            .map_err(|e| e.to_string())?;
+                            )?;
 
-                            return Err(format!(
+                            return Err(TaskError::from(format!(
                                 "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
                                 and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
                                 Please wait for Platform to sync with Core chain.",
                                 tx_block_height, metadata.core_chain_locked_height
-                            ));
+                            )));
                         }
                     } else {
                         qualified_identity
@@ -416,11 +409,12 @@ impl AppContext {
                         self.insert_local_qualified_identity(
                             &qualified_identity,
                             &Some((wallet_id, wallet_identity_index)),
-                        )
-                        .map_err(|e| e.to_string())?;
+                        )?;
 
-                        return Err("Cannot use this asset lock. The instant lock proof has expired and the transaction \
-                            is not yet chainlocked. Please wait for the transaction to be chainlocked.".to_string());
+                        return Err(TaskError::from(
+                            "Cannot use this asset lock. The instant lock proof has expired and the transaction \
+                            is not yet chainlocked. Please wait for the transaction to be chainlocked.".to_string(),
+                        ));
                     }
                 } else {
                     // we failed, set the status accordingly and terminate the process
@@ -431,8 +425,7 @@ impl AppContext {
                     self.insert_local_qualified_identity(
                         &qualified_identity,
                         &Some((wallet_id, wallet_identity_index)),
-                    )
-                    .map_err(|e| e.to_string())?;
+                    )?;
 
                     return Err(e);
                 }
@@ -442,10 +435,9 @@ impl AppContext {
         self.insert_local_qualified_identity(
             &qualified_identity,
             &Some((wallet_id, wallet_identity_index)),
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         {
-            let mut wallet = wallet.write().map_err(|e| e.to_string())?;
+            let mut wallet = wallet.write().map_err(TaskError::from)?;
             wallet
                 .unused_asset_locks
                 .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
@@ -453,8 +445,7 @@ impl AppContext {
         }
 
         self.db
-            .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())
-            .map_err(|e| e.to_string())?;
+            .set_asset_lock_identity_id(tx_id.as_byte_array(), identity_id.as_bytes())?;
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::RegisteredIdentity(
@@ -470,7 +461,7 @@ impl AppContext {
         asset_lock_proof: AssetLockProof,
         asset_lock_proof_private_key: &PrivateKey,
         qualified_identity: QualifiedIdentity,
-    ) -> Result<Identity, String> {
+    ) -> Result<Identity, TaskError> {
         match identity
             .put_to_platform_and_wait_for_response(
                 sdk,
@@ -497,10 +488,10 @@ impl AppContext {
                     }) {
                         tracing::warn!("Failed to persist proof log: {}", e);
                     }
-                    return Err(format!(
+                    return Err(TaskError::from(format!(
                         "Error registering identity: {}, proof error logged",
                         proof_error
-                    ));
+                    )));
                 }
 
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
@@ -532,10 +523,10 @@ impl AppContext {
                                 }) {
                                     tracing::warn!("Failed to persist proof log: {}", e);
                                 }
-                                return format!(
+                                return TaskError::from(format!(
                                     "Error registering identity: {}, proof error logged",
                                     proof_error
-                                );
+                                ));
                             }
 
                             match IdentityCreateTransition::try_from_identity_with_signer(
@@ -547,18 +538,18 @@ impl AppContext {
                                 0,
                                 self.platform_version(),
                             ) {
-                                Ok(transition) => format!(
+                                Ok(transition) => TaskError::from(format!(
                                     "error: {}, transaction is {:?}",
                                     e, transition
-                                ),
-                                Err(transition_err) => format!(
+                                )),
+                                Err(transition_err) => TaskError::from(format!(
                                     "error: {}, also failed to recreate transition for debugging: {}",
                                     e, transition_err
-                                ),
+                                )),
                             }
                         })
                 } else {
-                    Err(e.to_string())
+                    Err(TaskError::from(e))
                 }
             }
         }
@@ -579,7 +570,7 @@ impl AppContext {
             (AddressNonce, dash_sdk::dpp::fee::Credits),
         >,
         wallet_seed_hash: super::WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use dash_sdk::platform::transition::put_identity::PutIdentity;
 
         let sdk = self.sdk.load().as_ref().clone();
@@ -596,16 +587,16 @@ impl AppContext {
         );
 
         // Clone the wallet for use as the address signer (needed across async boundary)
-        let wallet_clone = { wallet.read().map_err(|e| e.to_string())?.clone() };
+        let wallet_clone = { wallet.read().map_err(TaskError::from)?.clone() };
 
         let identity = Identity::new_with_input_addresses_and_keys(
             &inputs,
             public_keys.clone(),
             sdk.version(),
         )
-        .map_err(|e| format!("Failed to create identity: {}", e))?;
+        .map_err(|e| TaskError::from(format!("Failed to create identity: {}", e)))?;
 
-        let wallet_seed_hash_actual = { wallet.read().map_err(|e| e.to_string())?.seed_hash() };
+        let wallet_seed_hash_actual = { wallet.read().map_err(TaskError::from)?.seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
             associated_voter_identity: None,
@@ -645,11 +636,10 @@ impl AppContext {
                 self.insert_local_qualified_identity(
                     &qualified_identity,
                     &Some((wallet_seed_hash, wallet_identity_index)),
-                )
-                .map_err(|e| e.to_string())?;
+                )?;
 
                 {
-                    let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+                    let mut wallet_guard = wallet.write().map_err(TaskError::from)?;
                     wallet_guard
                         .identities
                         .insert(wallet_identity_index, qualified_identity.identity.clone());
@@ -684,13 +674,12 @@ impl AppContext {
                     self.insert_local_qualified_identity(
                         &qualified_identity,
                         &Some((wallet_seed_hash, wallet_identity_index)),
-                    )
-                    .map_err(|e| e.to_string())?;
+                    )?;
 
-                    return Err(format!(
+                    return Err(TaskError::from(format!(
                         "Failed to create identity from Platform addresses: {}, proof error logged",
                         proof_error
-                    ));
+                    )));
                 }
 
                 qualified_identity
@@ -700,13 +689,12 @@ impl AppContext {
                 self.insert_local_qualified_identity(
                     &qualified_identity,
                     &Some((wallet_seed_hash, wallet_identity_index)),
-                )
-                .map_err(|e| e.to_string())?;
+                )?;
 
-                Err(format!(
+                Err(TaskError::from(format!(
                     "Failed to create identity from Platform addresses: {}",
                     e
-                ))
+                )))
             }
         }
     }

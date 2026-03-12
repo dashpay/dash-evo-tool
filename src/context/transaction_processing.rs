@@ -325,15 +325,13 @@ impl AppContext {
                 let first = payload
                     .credit_outputs
                     .first()
-                    .ok_or_else(|| TaskError::Internal(
-                        "Asset lock transaction has no credit outputs".to_string(),
-                    ))?;
+                    .ok_or(TaskError::AssetLockNoCreditOutputs)?;
 
                 let address =
                     Address::from_script(&first.script_pubkey, self.network).map_err(|e| {
-                        TaskError::Internal(format!(
-                            "Failed to derive address from asset lock credit output script: {e}"
-                        ))
+                        TaskError::AssetLockAddressDerivationFailed {
+                            detail: e.to_string(),
+                        }
                     })?;
 
                 // Add the asset lock to the wallet's unused_asset_locks

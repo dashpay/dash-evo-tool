@@ -93,6 +93,12 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
+    /// The identity could not be found in the local wallet database.
+    #[error(
+        "This identity could not be found in your local wallet. Try refreshing your identities list."
+    )]
+    IdentityNotFoundLocally,
+
     /// Unclassified SDK error — the operation failed for an unrecognised reason.
     /// Display is implemented manually via [`sdk_error_user_message`] to inspect
     /// the source error and produce an actionable, user-friendly message.
@@ -112,15 +118,13 @@ pub enum TaskError {
 /// Each arm should explain *what happened* and *what the user can do*.
 fn sdk_error_user_message(error: &SdkError) -> String {
     match error {
-        SdkError::StateTransitionBroadcastError(e) => {
+        SdkError::StateTransitionBroadcastError(_) => {
             // Known broadcast rejection that didn't match a typed consensus variant
             // above (DuplicateKey, DuplicateKeyId, ContractBoundsConflict).
             // TODO: classify more consensus causes into dedicated TaskError variants
             //       so fewer errors reach this fallback.
-            format!(
-                "The platform rejected this operation: {}. Please try a different approach.",
-                e.message
-            )
+            "The platform rejected this request. Please check your input and try again."
+                .to_string()
         }
         SdkError::TimeoutReached(duration, _) => {
             format!(

@@ -28,16 +28,14 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let new_identity_nonce = sdk
             .get_identity_nonce(qualified_identity.identity.id(), true, None)
-            .await
-            .map_err(|e| format!("Fetch nonce error: {}", e))?;
+            .await?;
         let Some(master_key) = qualified_identity.can_sign_with_master_key() else {
             return Err("Master key not found".to_string().into());
         };
         let master_key_id = master_key.identity_public_key.id();
         let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
-            .await
-            .map_err(|e| format!("Fetch identity error: {}", e))?
-            .ok_or_else(|| TaskError::Generic("Identity not found".into()))?;
+            .await?
+            .ok_or(TaskError::IdentityNotFoundLocally)?;
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
         public_key_to_add
@@ -65,7 +63,11 @@ impl AppContext {
             sdk.version(),
             None,
         )
-        .map_err(|e| format!("IdentityUpdateTransition error: {}", e))?;
+        .map_err(|_| {
+            TaskError::Generic(
+                "Could not build the key update transaction. Please retry.".to_string(),
+            )
+        })?;
 
         let result = state_transition.broadcast_and_wait(sdk, None).await?;
 
@@ -119,8 +121,7 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
-            .map_err(|e| TaskError::Generic(format!("Database error: {}", e)))
+        self.update_local_qualified_identity(&qualified_identity)?;
+        Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
     }
 }

@@ -645,14 +645,7 @@ impl AppContext {
         // Execute the top-up
         let (address_infos, new_balance) = identity
             .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
-            .await
-            .map_err(|e| {
-                tracing::error!("top_up_from_addresses failed: {}", e);
-                TaskError::Generic(format!(
-                    "Failed to top up identity from Platform addresses: {}",
-                    e
-                ))
-            })?;
+            .await?;
 
         tracing::info!(
             "top_up_from_addresses succeeded, new_balance={}",
@@ -711,13 +704,7 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
-            .await
-            .map_err(|e| {
-                TaskError::Generic(format!(
-                    "Failed to transfer credits to Platform addresses: {}",
-                    e
-                ))
-            })?;
+            .await?;
 
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)

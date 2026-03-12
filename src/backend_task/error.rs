@@ -91,9 +91,8 @@ pub enum TaskError {
 
     /// An asset lock's instant-lock proof has expired before Platform verified it.
     #[error(
-        "This asset lock cannot be used yet. The instant lock has expired and Platform has not verified \
-         Core block {tx_block_height} yet (Platform has verified up to Core block {platform_height}). \
-         Please wait for Platform to sync with Core and retry."
+        "This transaction cannot be used yet because its verification has expired. \
+         Please wait a few minutes for the network to catch up and retry."
     )]
     AssetLockExpired {
         tx_block_height: u32,
@@ -102,7 +101,7 @@ pub enum TaskError {
 
     /// The private key for the asset lock address was not found in the wallet.
     #[error(
-        "The address for this asset lock could not be found in your wallet. \
+        "The address for this transaction could not be found in your wallet. \
          Make sure you are using the correct wallet."
     )]
     AssetLockAddressNotFound,
@@ -220,18 +219,18 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// The asset lock transaction was expected in the local database but was not found.
     #[error(
-        "The asset lock transaction could not be found locally. Please check your network connection and retry."
+        "The funding transaction could not be found locally. Please check your network connection and retry."
     )]
     AssetLockTransactionNotFoundInDatabase,
 
     /// An asset lock transaction has no credit outputs (malformed transaction).
     #[error(
-        "The asset lock transaction has no credit outputs and cannot be used. Please retry creating the transaction."
+        "The funding transaction is missing required outputs and cannot be used. Please retry creating the transaction."
     )]
     AssetLockNoCreditOutputs,
 
     /// Could not derive a Core address from an asset lock output script.
-    #[error("Could not read the address from the asset lock transaction. Please retry.")]
+    #[error("Could not read the address from the funding transaction. Please retry.")]
     AssetLockAddressDerivationFailed { detail: String },
 
     // ──────────────────────────────────────────────────────────────────────────

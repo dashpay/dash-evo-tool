@@ -145,16 +145,14 @@ impl AppContext {
     }
 
     pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        {
-            let wallets = self.wallets.read()?;
-            if !wallets.contains_key(seed_hash) {
-                return Err(TaskError::WalletNotFound);
-            }
+        // Acquire write lock first to ensure atomicity — if the lock fails,
+        // no changes have been made to the database.
+        let mut wallets = self.wallets.write()?;
+        if !wallets.contains_key(seed_hash) {
+            return Err(TaskError::WalletNotFound);
         }
 
         self.db.remove_wallet(seed_hash, &self.network)?;
-
-        let mut wallets = self.wallets.write()?;
 
         wallets.remove(seed_hash);
         let has_wallet = !wallets.is_empty();

@@ -15,6 +15,9 @@ on:
   push:
     paths:
       - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
 
 jobs:
   copilot-setup-steps:
@@ -53,10 +56,10 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Pre-build project
-        # Building once here ensures that tenderdash-proto-compiler downloads
-        # and compiles the Tenderdash protobuf sources (requires internet
-        # access) before the agent's sandboxed session begins.
-        run: cargo build --all-features
+      - name: Pre-build tenderdash-proto
+        # Building tenderdash-proto is sufficient to trigger its build.rs,
+        # which downloads Tenderdash sources from the internet.  This must
+        # happen here, before the network-restricted agent sandbox starts.
+        run: cargo build -p tenderdash-proto --locked
         env:
           PROTOC: /usr/local/bin/protoc

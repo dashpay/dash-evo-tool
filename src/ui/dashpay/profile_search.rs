@@ -250,9 +250,14 @@ impl ProfileSearchScreen {
         action
     }
 
-    pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
+    pub fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        self.loading = false;
+        // Only stop loading on errors — success results are handled by display_task_result.
+        // Setting loading = false unconditionally causes "No users found" to flash briefly
+        // before results arrive (see dashpay/dash-evo-tool#684).
+        if matches!(message_type, MessageType::Error) {
+            self.loading = false;
+        }
     }
 }
 

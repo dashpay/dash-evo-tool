@@ -21,7 +21,7 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, Result
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -558,7 +558,7 @@ impl ScreenLike for TransferTokensScreen {
                     let mut txt = self.public_note.clone().unwrap_or_default();
                     if ui
                         .text_edit_singleline(&mut txt)
-                        .on_hover_text(
+                        .info_tooltip(
                             "A note about the transaction that can be seen by the public.",
                         )
                         .changed()

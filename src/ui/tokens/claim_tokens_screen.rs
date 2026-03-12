@@ -30,7 +30,7 @@ use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
@@ -461,7 +461,7 @@ impl ScreenLike for ClaimTokensScreen {
                     let mut txt = self.public_note.clone().unwrap_or_default();
                     if ui
                         .text_edit_singleline(&mut txt)
-                        .on_hover_text(
+                        .info_tooltip(
                             "A note about the transaction that can be seen by the public.",
                         )
                         .changed()

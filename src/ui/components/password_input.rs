@@ -1,7 +1,7 @@
 use egui::{Rect, Response, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::model::secret::Secret;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 
 /// Response from [`PasswordInput::show`].
 ///
@@ -201,7 +201,7 @@ impl PasswordInput {
         if eye_response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        eye_response.on_hover_text("Hold to reveal");
+        eye_response.clickable_tooltip("Hold to reveal");
 
         if self.revealing || reveal_changed {
             ui.ctx().request_repaint();

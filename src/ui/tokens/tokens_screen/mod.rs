@@ -46,7 +46,7 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::egui::{self, Color32, Context, Ui};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
 use enum_iterator::Sequence;
 use image::ImageReader;
@@ -474,7 +474,7 @@ impl ChangeControlRulesUI {
                                         .monospace()
                                         .color(Color32::LIGHT_BLUE),
                                 )
-                                    .on_hover_text("Enabling this setting allows transfers to frozen identities, reducing gas usage by approximately 20% per transfer. Disable this if you want to make sure frozen identities can not receive transfers.");
+                                    .info_tooltip("Enabling this setting allows transfers to frozen identities, reducing gas usage by approximately 20% per transfer. Disable this if you want to make sure frozen identities can not receive transfers.");
                             });
                             ui.end_row();
                         }
@@ -1915,7 +1915,7 @@ impl TokensScreen {
             };
             if ui
                 .small_button(format!("Advanced {arrow}"))
-                .on_hover_text("Configure individual history ledgers")
+                .clickable_tooltip("Configure individual history ledgers")
                 .clicked()
             {
                 self.show_advanced_keeps_history = !self.show_advanced_keeps_history;

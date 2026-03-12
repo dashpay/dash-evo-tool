@@ -926,6 +926,43 @@ impl ComponentStyles {
     }
 }
 
+/// Extension methods for [`egui::Response`] that enforce project-wide UI behavior policies.
+///
+/// This is the general-purpose extension point for `egui::Response`. Current scope:
+/// cursor icons (tooltip methods below). Future methods may enforce hover effects,
+/// accessibility attributes, interaction patterns, or other UX conventions.
+///
+/// Use these instead of raw `.on_hover_text()` to ensure consistent behavior.
+pub trait ResponseExt {
+    /// Informational tooltip with `Help` (?) cursor. For non-interactive elements
+    /// that show explanatory text on hover (status labels, setting descriptions).
+    fn info_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
+
+    /// Clickable tooltip with `PointingHand` cursor. For interactive elements
+    /// that show a tooltip and respond to clicks (custom clickable labels, links).
+    fn clickable_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
+
+    /// Disabled tooltip with `NotAllowed` cursor. For disabled elements
+    /// that explain why the action is unavailable.
+    fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self;
+}
+
+impl ResponseExt for egui::Response {
+    fn info_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
+        self.on_hover_text(text).on_hover_cursor(CursorIcon::Help)
+    }
+
+    fn clickable_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
+        self.on_hover_text(text)
+            .on_hover_cursor(CursorIcon::PointingHand)
+    }
+
+    fn disabled_tooltip(self, text: impl Into<egui::WidgetText>) -> Self {
+        self.on_hover_text(text)
+            .on_hover_cursor(CursorIcon::NotAllowed)
+    }
+}
+
 /// Configure fonts for the application
 pub fn configure_fonts() -> FontDefinitions {
     let mut fonts = FontDefinitions::default();

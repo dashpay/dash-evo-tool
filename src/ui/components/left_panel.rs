@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::components::styled::GradientButton;
-use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
+use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
 use egui::{Context, Frame, Image, RichText, SidePanel, TextureHandle};
@@ -366,7 +366,7 @@ pub fn add_left_panel(
                                             let dev_label = egui::RichText::new("🔧 Expert")
                                                 .color(DashColors::GRADIENT_PURPLE)
                                                 .size(12.0);
-                                            if ui.label(dev_label).on_hover_text("Expert mode is enabled — shows advanced options").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                            if ui.label(dev_label).clickable_tooltip("Expert mode is enabled — shows advanced options").clicked() {
                                                 action = AppAction::SetMainScreenThenGoToMainScreen(
                                                     RootScreenType::RootScreenNetworkChooser,
                                                 );

@@ -14,7 +14,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identity::Purpose;
@@ -548,7 +548,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 .corner_radius(3.0);
             if ui
                 .add_enabled(button_enabled, button)
-                .on_hover_text(&hover_text)
+                .clickable_tooltip(&hover_text)
                 .on_disabled_hover_text(&hover_text)
                 .clicked()
             {

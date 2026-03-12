@@ -20,7 +20,7 @@ use crate::ui::identities::register_dpns_name_screen::{
 };
 use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -257,7 +257,7 @@ impl IdentitiesScreen {
                 .selectable(true)
                 .truncate(),
         )
-        .on_hover_text(helper);
+        .info_tooltip(helper);
     }
 
     // Up/down reorder methods
@@ -350,14 +350,14 @@ impl IdentitiesScreen {
         };
 
         ui.add(egui::Label::new(message).sense(egui::Sense::hover()))
-            .on_hover_text(format!("{}", qualified_identity.identity.balance()));
+            .info_tooltip(format!("{}", qualified_identity.identity.balance()));
     }
 
     fn show_balance(ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
         let balance_in_dash = qualified_identity.identity.balance() as f64 * 1e-11;
         let formatted_balance = format!("{:.4} DASH", balance_in_dash);
         ui.add(egui::Label::new(formatted_balance).sense(egui::Sense::hover()))
-            .on_hover_text(format!("{}", qualified_identity.identity.balance()));
+            .info_tooltip(format!("{}", qualified_identity.identity.balance()));
     }
 
     fn format_key_name(&self, key: &IdentityPublicKey) -> String {
@@ -608,7 +608,7 @@ impl IdentitiesScreen {
                                                         .corner_radius(3.0)
                                                         .min_size(egui::vec2(60.0, 20.0));
 
-                                                    let actions_response = ui.add(actions_button).on_hover_text("Manage identity credits");
+                                                    let actions_response = ui.add(actions_button).clickable_tooltip("Manage identity credits");
 
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
@@ -632,7 +632,7 @@ impl IdentitiesScreen {
                                                                 ui.disable();
                                                             }
                                                             if ui.add_sized([width, 0.0], egui::Button::new("💸 Withdraw"))
-                                                                .on_hover_text(withdraw_hover)
+                                                                .clickable_tooltip(withdraw_hover)
                                                                 .clicked()
                                                             {
                                                                 action = AppAction::AddScreen(
@@ -644,7 +644,7 @@ impl IdentitiesScreen {
                                                             }
                                                         });
 
-                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💰 Top up")).on_hover_text("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("💰 Top up")).clickable_tooltip("Increase this identity's balance by sending it Dash from the Core chain").clicked() {
                                                             action = AppAction::AddScreen(
                                                                 Screen::TopUpIdentityScreen(TopUpIdentityScreen::new(
                                                                     qualified_identity.clone(),
@@ -668,7 +668,7 @@ impl IdentitiesScreen {
                                                                 ui.disable();
                                                             }
                                                             if ui.add_sized([width, 0.0], egui::Button::new("📤 Transfer"))
-                                                                .on_hover_text(transfer_hover)
+                                                                .clickable_tooltip(transfer_hover)
                                                                 .clicked()
                                                             {
                                                                 action = AppAction::AddScreen(
@@ -680,7 +680,7 @@ impl IdentitiesScreen {
                                                             }
                                                         });
 
-                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📛 Register DPNS Name")).on_hover_text("Register a DPNS username for this identity").clicked() {
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("📛 Register DPNS Name")).clickable_tooltip("Register a DPNS username for this identity").clicked() {
                                                             let mut screen = RegisterDpnsNameScreen::new(&self.app_context, RegisterDpnsNameSource::Identities);
                                                             screen.select_identity(qualified_identity.identity.id());
                                                             action = AppAction::AddScreen(
@@ -688,7 +688,7 @@ impl IdentitiesScreen {
                                                             );
                                                         }
 
-                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("✏ Update Alias")).on_hover_text("Change the display name for this identity").clicked() {
+                                                        if ui.add_sized([ui.available_width(), 0.0], egui::Button::new("✏ Update Alias")).clickable_tooltip("Change the display name for this identity").clicked() {
                                                             self.editing_alias_identity = Some(qualified_identity.identity.id());
                                                             self.editing_alias_value = qualified_identity.alias.clone().unwrap_or_default();
                                                             ui.close_kind(egui::UiKind::Menu);
@@ -716,7 +716,7 @@ impl IdentitiesScreen {
                                                         .corner_radius(3.0)
                                                         .min_size(egui::vec2(50.0, 20.0));
 
-                                                    let button_response = ui.add(button).on_hover_text("View and manage keys for this identity");
+                                                    let button_response = ui.add(button).clickable_tooltip("View and manage keys for this identity");
 
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
@@ -787,7 +787,7 @@ impl IdentitiesScreen {
 
                                                             // Add Key button
                                                             if qualified_identity.can_sign_with_master_key().is_some()
-                                                                && ui.add_sized([ui.available_width(), 0.0], egui::Button::new("+ Add Key")).on_hover_text("Add a new key to this identity").clicked() {
+                                                                && ui.add_sized([ui.available_width(), 0.0], egui::Button::new("+ Add Key")).clickable_tooltip("Add a new key to this identity").clicked() {
                                                                     action |= AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
                                                                         qualified_identity.clone(),
                                                                         &self.app_context,
@@ -800,7 +800,7 @@ impl IdentitiesScreen {
                                                 }
 
                                                 // Remove
-                                                if ui.button("Remove").on_hover_text("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
+                                                if ui.button("Remove").clickable_tooltip("Remove this identity from Dash Evo Tool (it'll still exist on Dash Platform)").clicked() {
                                                     let message = format!(
                                                         "Are you sure you want to no longer track this {} identity?\n\nIdentity ID: {}",
                                                         qualified_identity.identity_type,
@@ -819,9 +819,9 @@ impl IdentitiesScreen {
                                                 }
 
                                                 // Up arrow
-                                                let up_btn = ui.button("⬆").on_hover_text("Move this identity up in the list");
+                                                let up_btn = ui.button("⬆").clickable_tooltip("Move this identity up in the list");
                                                 // Down arrow
-                                                let down_btn = ui.button("⬇").on_hover_text("Move this identity down in the list");
+                                                let down_btn = ui.button("⬇").clickable_tooltip("Move this identity down in the list");
 
                                                 if up_btn.clicked() {
                                                     // If we are currently sorted (not custom),

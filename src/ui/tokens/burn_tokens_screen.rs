@@ -8,7 +8,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::{BannerHandle, Component, ComponentResponse, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::ui::tokens::validate_signing_key;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -573,7 +573,7 @@ impl ScreenLike for BurnTokensScreen {
                         let mut txt = self.public_note.clone().unwrap_or_default();
                         if ui
                             .text_edit_singleline(&mut txt)
-                            .on_hover_text(
+                            .info_tooltip(
                                 "A note about the transaction that can be seen by the public.",
                             )
                             .changed()

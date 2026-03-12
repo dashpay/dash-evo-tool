@@ -36,7 +36,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 
 /// Transfer destination type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -800,7 +800,7 @@ impl ScreenLike for TransferScreen {
 
                 if ui
                     .add_enabled(ready, button)
-                    .on_hover_text(hover_text)
+                    .clickable_tooltip(hover_text)
                     .clicked()
                 {
                     self.confirmation_popup = true;

@@ -5,7 +5,7 @@ use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
-use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
 use egui::{Align2, Context, FontId, Frame, Margin, RichText, TextureHandle, TopBottomPanel, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -168,7 +168,7 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
                         app_context.repaint_animation(ui.ctx());
                     }
                     let tip = status.tooltip_text(app_context);
-                    let resp = resp.on_hover_text(tip);
+                    let resp = resp.info_tooltip(tip);
 
                     if resp.clicked()
                         && overall == OverallConnectionState::Disconnected

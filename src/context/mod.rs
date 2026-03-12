@@ -325,7 +325,12 @@ impl AppContext {
         if let Err(e) = app_context
             .spv_context_provider
             .read()
-            .map_err(|_| "SPV provider lock poisoned".to_string())
+            .map_err(|_| {
+                TaskError::LockPoisoned {
+                    resource: "spv_context_provider",
+                }
+                .to_string()
+            })
             .and_then(|provider| provider.bind_app_context(app_context.clone()))
         {
             tracing::error!("Failed to bind SPV provider: {}", e);
@@ -337,7 +342,12 @@ impl AppContext {
             && let Err(e) = app_context
                 .rpc_context_provider
                 .read()
-                .map_err(|_| "RPC provider lock poisoned".to_string())
+                .map_err(|_| {
+                    TaskError::LockPoisoned {
+                        resource: "rpc_context_provider",
+                    }
+                    .to_string()
+                })
                 .and_then(|provider| provider.bind_app_context(app_context.clone()))
         {
             tracing::error!("Failed to bind RPC provider: {}", e);
@@ -393,7 +403,12 @@ impl AppContext {
                 if let Err(e) = self
                     .spv_context_provider
                     .read()
-                    .map_err(|_| "SPV provider lock poisoned".to_string())
+                    .map_err(|_| {
+                        TaskError::LockPoisoned {
+                            resource: "spv_context_provider",
+                        }
+                        .to_string()
+                    })
                     .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
                 {
                     tracing::error!("Failed to bind SPV provider: {}", e);
@@ -404,7 +419,12 @@ impl AppContext {
                 if let Err(e) = self
                     .rpc_context_provider
                     .read()
-                    .map_err(|_| "RPC provider lock poisoned".to_string())
+                    .map_err(|_| {
+                        TaskError::LockPoisoned {
+                            resource: "rpc_context_provider",
+                        }
+                        .to_string()
+                    })
                     .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
                 {
                     tracing::error!("Failed to bind RPC provider: {}", e);
@@ -474,7 +494,7 @@ impl AppContext {
             let cfg_lock = self
                 .config
                 .read()
-                .map_err(|_| "Config lock poisoned".to_string())?;
+                .map_err(|_| TaskError::LockPoisoned { resource: "config" }.to_string())?;
             cfg_lock.clone()
         };
 
@@ -495,7 +515,12 @@ impl AppContext {
                 let provider = self
                     .spv_context_provider
                     .read()
-                    .map_err(|_| "SPV provider lock poisoned".to_string())?
+                    .map_err(|_| {
+                        TaskError::LockPoisoned {
+                            resource: "spv_context_provider",
+                        }
+                        .to_string()
+                    })?
                     .clone();
                 initialize_sdk(&cfg, self.network, provider)?
             }
@@ -505,10 +530,12 @@ impl AppContext {
                     .map_err(|e| format!("Failed to init RPC provider: {e}"))?;
                 // Swap in the updated RPC provider for future switches
                 {
-                    let mut guard = self
-                        .rpc_context_provider
-                        .write()
-                        .map_err(|_| "RPC provider lock poisoned".to_string())?;
+                    let mut guard = self.rpc_context_provider.write().map_err(|_| {
+                        TaskError::LockPoisoned {
+                            resource: "rpc_context_provider",
+                        }
+                        .to_string()
+                    })?;
                     *guard = rpc_provider.clone();
                 }
                 initialize_sdk(&cfg, self.network, rpc_provider)?
@@ -517,10 +544,12 @@ impl AppContext {
 
         // 4. Swap them in
         {
-            let mut client_lock = self
-                .core_client
-                .write()
-                .map_err(|_| "Core client lock poisoned".to_string())?;
+            let mut client_lock = self.core_client.write().map_err(|_| {
+                TaskError::LockPoisoned {
+                    resource: "core_client",
+                }
+                .to_string()
+            })?;
             *client_lock = new_client;
         }
         self.sdk.store(Arc::new(new_sdk));
@@ -530,12 +559,22 @@ impl AppContext {
         // active provider (last bound) wins.
         self.spv_context_provider
             .read()
-            .map_err(|_| "SPV provider lock poisoned".to_string())?
+            .map_err(|_| {
+                TaskError::LockPoisoned {
+                    resource: "spv_context_provider",
+                }
+                .to_string()
+            })?
             .bind_app_context(self.clone())?;
         if self.core_backend_mode() == CoreBackendMode::Rpc {
             self.rpc_context_provider
                 .read()
-                .map_err(|_| "RPC provider lock poisoned".to_string())?
+                .map_err(|_| {
+                    TaskError::LockPoisoned {
+                        resource: "rpc_context_provider",
+                    }
+                    .to_string()
+                })?
                 .bind_app_context(self.clone())?;
         }
 

@@ -1,4 +1,5 @@
 use super::AppContext;
+use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{IdentityTokenBalance, IdentityTokenIdentifier};
@@ -145,10 +146,12 @@ impl AppContext {
 
     pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), String> {
         {
-            let wallets = self
-                .wallets
-                .read()
-                .map_err(|_| "Failed to access wallets".to_string())?;
+            let wallets = self.wallets.read().map_err(|_| {
+                TaskError::LockPoisoned {
+                    resource: "wallets",
+                }
+                .to_string()
+            })?;
             if !wallets.contains_key(seed_hash) {
                 return Err("Wallet not found".to_string());
             }
@@ -156,12 +159,14 @@ impl AppContext {
 
         self.db
             .remove_wallet(seed_hash, &self.network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| TaskError::Database { source: e }.to_string())?;
 
-        let mut wallets = self
-            .wallets
-            .write()
-            .map_err(|_| "Failed to update wallets".to_string())?;
+        let mut wallets = self.wallets.write().map_err(|_| {
+            TaskError::LockPoisoned {
+                resource: "wallets",
+            }
+            .to_string()
+        })?;
 
         wallets.remove(seed_hash);
         let has_wallet = !wallets.is_empty();

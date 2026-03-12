@@ -1,4 +1,5 @@
 use super::AppContext;
+use crate::backend_task::error::TaskError;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::spv::CoreBackendMode;
 use dash_sdk::Sdk;
@@ -20,7 +21,12 @@ impl AppContext {
             CoreBackendMode::Rpc => self
                 .core_client
                 .read()
-                .map_err(|e| format!("core client lock poisoned: {}", e))?
+                .map_err(|_| {
+                    TaskError::LockPoisoned {
+                        resource: "core_client",
+                    }
+                    .to_string()
+                })?
                 .send_raw_transaction(tx)
                 .map_err(|e| e.to_string()),
             CoreBackendMode::Spv => {
@@ -131,7 +137,7 @@ impl AppContext {
                 wallet_seed_hash,
                 self.network,
             )
-            .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+            .map_err(|e| TaskError::Database { source: e }.to_string())?;
 
         // Step 3: Broadcast. On failure, clean up DB row and finality tracker.
         // UTXOs are NOT removed on failure, preserving wallet balance.
@@ -145,7 +151,9 @@ impl AppContext {
 
         // Step 4: Broadcast succeeded — commit UTXO removal now.
         {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+            let mut wallet_guard = wallet
+                .write()
+                .map_err(|_| TaskError::LockPoisoned { resource: "wallet" }.to_string())?;
             wallet_guard.remove_selected_utxos(used_utxos, &self.db, self.network)?;
         }
 

@@ -92,13 +92,15 @@ impl AppContext {
         &self,
         task: DocumentTask,
         sdk: &Sdk,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+        use crate::backend_task::error::TaskError;
+
         match task {
             DocumentTask::FetchDocuments(document_query) => {
                 Document::fetch_many(sdk, document_query)
                     .await
                     .map(BackendTaskSuccessResult::Documents)
-                    .map_err(|e| format!("Error fetching documents: {}", e))
+                    .map_err(TaskError::from)
             }
             DocumentTask::FetchDocumentsPage(mut document_query) => {
                 // Set the limit for each page
@@ -110,7 +112,7 @@ impl AppContext {
                 // Fetch a single page
                 let docs_batch_result = Document::fetch_many(sdk, document_query)
                     .await
-                    .map_err(|e| format!("Error fetching documents: {}", e))?;
+                    .map_err(TaskError::from)?;
 
                 let batch_len = docs_batch_result.len();
 

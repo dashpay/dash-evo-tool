@@ -1,5 +1,6 @@
 use super::AppContext;
 use super::get_transaction_info;
+use crate::backend_task::error::TaskError;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
     DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
@@ -25,10 +26,10 @@ impl AppContext {
         self.spv_manager.clear_data_dir()
     }
 
-    pub fn clear_network_database(&self) -> rusqlite::Result<(), String> {
+    pub fn clear_network_database(&self) -> Result<(), String> {
         self.db
             .clear_network_data(self.network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| TaskError::Database { source: e }.to_string())?;
 
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();
@@ -243,7 +244,9 @@ impl AppContext {
                 .ok_or_else(|| "Wallet not found".to_string())?
         };
 
-        let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+        let mut wallet = wallet_arc
+            .write()
+            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" }.to_string())?;
 
         for (platform_addr, maybe_info) in address_infos.iter() {
             if let Some(info) = maybe_info {
@@ -284,7 +287,9 @@ impl AppContext {
         path_type: DerivationPathType,
         path_reference: DerivationPathReference,
     ) -> Result<bool, String> {
-        let mut guard = wallet.write().map_err(|e| e.to_string())?;
+        let mut guard = wallet
+            .write()
+            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" }.to_string())?;
         if guard.known_addresses.contains_key(&address) {
             return Ok(false);
         }
@@ -304,7 +309,7 @@ impl AppContext {
                 path_type,
                 None,
             )
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| TaskError::Database { source: e }.to_string())?;
 
         guard
             .known_addresses
@@ -470,7 +475,7 @@ impl AppContext {
                 let (tx, ..) = self
                     .db
                     .get_asset_lock_transaction(txid.as_byte_array())
-                    .map_err(|e| format!("DB error: {}", e))?
+                    .map_err(|e| TaskError::Database { source: e }.to_string())?
                     .ok_or_else(|| "Asset lock transaction not found in DB".to_string())?;
 
                 self.received_asset_lock_finality(&tx, Some(*instant_lock), None)
@@ -717,7 +722,7 @@ impl AppContext {
                         &tx_out.script_pubkey.to_bytes(),
                         self.network,
                     )
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| TaskError::Database { source: e }.to_string())?;
             }
 
             // Write per-address balances and UTXOs into wallet model
@@ -776,7 +781,7 @@ impl AppContext {
             if !wallet_transactions.is_empty() {
                 self.db
                     .replace_wallet_transactions(seed_hash, &self.network, &wallet_transactions)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| TaskError::Database { source: e }.to_string())?;
             }
 
             if let Some(wref) = wallets_guard.get(seed_hash)

@@ -74,35 +74,39 @@ fn double_sha256(data: &[u8]) -> [u8; 32] {
     result
 }
 
+/// Internal marker for non-fatal (retryable) read errors.
 #[derive(Debug)]
 enum ReadMessageError {
     Transient,
-    Fatal(String),
+    Fatal(P2PError),
 }
 
 impl CoreP2PHandler {
     pub fn new(network: Network, use_port: Option<u16>) -> Result<CoreP2PHandler, String> {
+        Self::new_p2p(network, use_port).map_err(|e| e.to_string())
+    }
+
+    fn new_p2p(network: Network, use_port: Option<u16>) -> Result<CoreP2PHandler, P2PError> {
         let port = use_port.unwrap_or(match network {
-            Network::Dash => 9999,     // Dash Mainnet default
-            Network::Testnet => 19999, // Dash Testnet default
-            Network::Devnet => 29999,  // Dash Devnet default
-            Network::Regtest => 29999, // Dash Regtest default
-            _ => return Err(format!("Unsupported network type: {:?}", network)),
+            Network::Dash => 9999,
+            Network::Testnet => 19999,
+            Network::Devnet => 29999,
+            Network::Regtest => 29999,
+            _ => return Err(P2PError::UnsupportedNetwork),
         });
         let stream = TcpStream::connect_timeout(
-            &format!("127.0.0.1:{}", port)
+            &format!("127.0.0.1:{port}")
                 .parse()
-                .map_err(|e| format!("Invalid address: {}", e))?,
+                .map_err(|_| P2PError::Io {
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid socket address",
+                    ),
+                })?,
             Duration::from_secs(5),
-        )
-        .map_err(|e| format!("Failed to connect: {}", e))?;
-        // Set per-socket timeouts so reads/writes don't block forever
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .map_err(|e| format!("set_read_timeout failed: {}", e))?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .map_err(|e| format!("set_write_timeout failed: {}", e))?;
+        )?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
         tracing::info!("Connected to Dash Core at 127.0.0.1:{}", port);
         Ok(CoreP2PHandler {
             network,
@@ -117,6 +121,14 @@ impl CoreP2PHandler {
         &mut self,
         network_message: NetworkMessage,
     ) -> Result<MnListDiff, String> {
+        self.send_dml_request_message_p2p(network_message)
+            .map_err(|e| e.to_string())
+    }
+
+    fn send_dml_request_message_p2p(
+        &mut self,
+        network_message: NetworkMessage,
+    ) -> Result<MnListDiff, P2PError> {
         if !self.handshake_success {
             self.handshake()?;
         }
@@ -126,9 +138,7 @@ impl CoreP2PHandler {
             payload: network_message,
         };
         let encoded_message = serialize(&raw_message);
-        stream
-            .write_all(&encoded_message)
-            .map_err(|e| format!("Failed to send message: {}", e))?;
+        stream.write_all(&encoded_message)?;
         tracing::debug!("Sent getmnlistdiff message to Dash Core");
 
         let (mut command, mut payload);
@@ -136,7 +146,7 @@ impl CoreP2PHandler {
         let timeout = Duration::from_secs(5);
         loop {
             if start_time.elapsed() > timeout {
-                return Err("Timeout waiting for mnlistdiff message".to_string());
+                return Err(P2PError::Timeout);
             }
             match self.read_message() {
                 Ok((c, p)) => {
@@ -157,28 +167,13 @@ impl CoreP2PHandler {
             }
         }
 
-        // let log_file_path = app_user_data_file_path("DML.DAT").expect("should create DML.dat");
-        // let mut log_file = match std::fs::File::create(log_file_path) {
-        //     Ok(file) => file,
-        //     Err(e) => panic!("Failed to create log file: {:?}", e),
-        // };
-        //
-        // log_file.write_all(&payload).expect("expected to write");
-
-        let response_message: RawNetworkMessage = deserialize(&payload).map_err(|e| {
-            format!(
-                "Failed to deserialize response: {}, payload {}",
-                e,
-                hex::encode(payload)
-            )
-        })?;
+        let response_message: RawNetworkMessage = deserialize(&payload)?;
 
         match response_message.payload {
             NetworkMessage::MnListDiff(diff) => Ok(diff),
-            network_message => Err(format!(
-                "Unexpected response type, expected MnListDiff, got {:?}",
-                network_message
-            )),
+            msg => Err(P2PError::UnexpectedMessage {
+                received: format!("{msg:?}"),
+            }),
         }
     }
 
@@ -187,6 +182,14 @@ impl CoreP2PHandler {
         &mut self,
         network_message: NetworkMessage,
     ) -> Result<QRInfo, String> {
+        self.send_qr_info_request_message_p2p(network_message)
+            .map_err(|e| e.to_string())
+    }
+
+    fn send_qr_info_request_message_p2p(
+        &mut self,
+        network_message: NetworkMessage,
+    ) -> Result<QRInfo, P2PError> {
         if !self.handshake_success {
             self.handshake()?;
         }
@@ -196,9 +199,7 @@ impl CoreP2PHandler {
             payload: network_message,
         };
         let encoded_message = serialize(&raw_message);
-        stream
-            .write_all(&encoded_message)
-            .map_err(|e| format!("Failed to send message: {}", e))?;
+        stream.write_all(&encoded_message)?;
         tracing::debug!("Sent qr info request message to Dash Core");
 
         let (mut command, mut payload);
@@ -208,22 +209,14 @@ impl CoreP2PHandler {
             Network::Dash => (Duration::from_secs(60), Duration::from_secs(60)),
             _ => (Duration::from_secs(15), Duration::from_secs(15)),
         };
-        let previous_socket_timeout = self
-            .stream
-            .read_timeout()
-            .map_err(|e| format!("get_read_timeout failed: {}", e))?;
-        self.stream
-            .set_read_timeout(Some(socket_timeout))
-            .map_err(|e| format!("set_read_timeout failed: {}", e))?;
+        let previous_socket_timeout = self.stream.read_timeout()?;
+        self.stream.set_read_timeout(Some(socket_timeout))?;
         let start_time = std::time::Instant::now();
         let timeout = overall_timeout;
         loop {
             if start_time.elapsed() > timeout {
-                // Restore previous socket timeout before returning
-                self.stream
-                    .set_read_timeout(previous_socket_timeout)
-                    .map_err(|e| format!("restore set_read_timeout failed: {}", e))?;
-                return Err("Timeout waiting for qrinfo message".to_string());
+                self.stream.set_read_timeout(previous_socket_timeout)?;
+                return Err(P2PError::Timeout);
             }
             match self.read_message() {
                 Ok((c, p)) => {
@@ -238,54 +231,26 @@ impl CoreP2PHandler {
             }
             if command == "qrinfo" {
                 tracing::debug!("Got qrinfo message");
-                // Restore previous socket timeout
-                self.stream
-                    .set_read_timeout(previous_socket_timeout)
-                    .map_err(|e| format!("restore set_read_timeout failed: {}", e))?;
+                self.stream.set_read_timeout(previous_socket_timeout)?;
                 break;
             } else {
                 thread::sleep(Duration::from_millis(10));
             }
         }
 
-        // let log_file_path = app_user_data_file_path("QR_INFO.DAT").expect("should create DML.dat");
-        // let mut log_file = match std::fs::File::create(log_file_path) {
-        //     Ok(file) => file,
-        //     Err(e) => panic!("Failed to create log file: {:?}", e),
-        // };
-        //
-        // log_file.write_all(&payload).expect("expected to write");
-
-        let response_message: RawNetworkMessage = deserialize(&payload).map_err(|e| {
-            format!(
-                "Failed to deserialize response: {}, payload {}",
-                e,
-                hex::encode(payload)
-            )
-        })?;
+        let response_message: RawNetworkMessage = deserialize(&payload)?;
 
         match response_message.payload {
-            NetworkMessage::QRInfo(qr_info) => {
-                // let bytes = serialize(&qr_info);
-                // let log_file_path = app_user_data_file_path("QR_INFO.DAT").expect("should create DML.dat");
-                // let mut log_file = match std::fs::File::create(log_file_path) {
-                //     Ok(file) => file,
-                //     Err(e) => panic!("Failed to create log file: {:?}", e),
-                // };
-                //
-                // log_file.write_all(&bytes).expect("expected to write");
-                Ok(qr_info)
-            }
-            network_message => Err(format!(
-                "Unexpected response type, expected QrInfo, got {:?}",
-                network_message
-            )),
+            NetworkMessage::QRInfo(qr_info) => Ok(qr_info),
+            msg => Err(P2PError::UnexpectedMessage {
+                received: format!("{msg:?}"),
+            }),
         }
     }
 
     // Note: get_dml_diff and get_qr_info are already defined above (lines ~351 and ~364)
     /// Perform the handshake (version/verack exchange) with the peer.
-    pub fn handshake(&mut self) -> Result<(), String> {
+    pub fn handshake(&mut self) -> Result<(), P2PError> {
         let mut rng = StdRng::from_os_rng();
 
         // Build a version message.
@@ -296,12 +261,12 @@ impl CoreP2PHandler {
             receiver: Address {
                 services: ServiceFlags::BLOOM,
                 address: Default::default(),
-                port: self.stream.peer_addr().map_err(|e| e.to_string())?.port(),
+                port: self.stream.peer_addr()?.port(),
             },
             sender: Address {
                 services: ServiceFlags::NONE,
                 address: Default::default(),
-                port: self.stream.local_addr().map_err(|e| e.to_string())?.port(),
+                port: self.stream.local_addr()?.port(),
             },
             nonce: rng.random(),
             user_agent: "/dash-evo-tool:0.9/".to_string(),
@@ -317,9 +282,7 @@ impl CoreP2PHandler {
             payload: version_msg,
         };
         let encoded_version = serialize(&raw_version);
-        self.stream
-            .write_all(&encoded_version)
-            .map_err(|e| format!("Failed to send version: {}", e))?;
+        self.stream.write_all(&encoded_version)?;
         tracing::debug!("Sent version message");
 
         thread::sleep(Duration::from_millis(50));
@@ -337,7 +300,7 @@ impl CoreP2PHandler {
             .read_exact(&mut header_buf)
             .map_err(|e| match e.kind() {
                 ErrorKind::WouldBlock | ErrorKind::TimedOut => ReadMessageError::Transient,
-                _ => ReadMessageError::Fatal(format!("Error reading header: {}", e)),
+                _ => ReadMessageError::Fatal(P2PError::Io { source: e }),
             })?;
 
         // If the first 4 bytes don't match our network magic, shift until we do.
@@ -346,9 +309,12 @@ impl CoreP2PHandler {
         while u32::from_le_bytes(header_buf[0..4].try_into().unwrap()) != self.network.magic() {
             sync_attempts += 1;
             if sync_attempts > MAX_SYNC_ATTEMPTS {
-                return Err(ReadMessageError::Fatal(
-                    "Failed to find network magic in stream".to_string(),
-                ));
+                return Err(ReadMessageError::Fatal(P2PError::Io {
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "failed to find network magic in stream",
+                    ),
+                }));
             }
             // Shift left by one byte.
             for i in 0..HEADER_LENGTH - 1 {
@@ -360,9 +326,7 @@ impl CoreP2PHandler {
                 .read_exact(&mut one_byte)
                 .map_err(|e| match e.kind() {
                     ErrorKind::WouldBlock | ErrorKind::TimedOut => ReadMessageError::Transient,
-                    _ => {
-                        ReadMessageError::Fatal(format!("Error reading while syncing magic: {}", e))
-                    }
+                    _ => ReadMessageError::Fatal(P2PError::Io { source: e }),
                 })?;
             header_buf[HEADER_LENGTH - 1] = one_byte[0];
         }
@@ -376,10 +340,12 @@ impl CoreP2PHandler {
         // Payload length (little-endian u32)
         let payload_len_u32 = u32::from_le_bytes(header_buf[16..20].try_into().unwrap());
         if payload_len_u32 > MAX_MSG_LENGTH as u32 {
-            return Err(ReadMessageError::Fatal(format!(
-                "Payload length {} exceeds maximum",
-                payload_len_u32
-            )));
+            return Err(ReadMessageError::Fatal(P2PError::Io {
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("payload length {payload_len_u32} exceeds maximum"),
+                ),
+            }));
         }
         let payload_len = payload_len_u32 as usize;
 
@@ -392,16 +358,20 @@ impl CoreP2PHandler {
             .read_exact(&mut payload_buf)
             .map_err(|e| match e.kind() {
                 ErrorKind::WouldBlock | ErrorKind::TimedOut => ReadMessageError::Transient,
-                _ => ReadMessageError::Fatal(format!("Error reading payload: {}", e)),
+                _ => ReadMessageError::Fatal(P2PError::Io { source: e }),
             })?;
 
         // Compute and verify checksum.
         let computed_checksum = &double_sha256(&payload_buf)[0..4];
         if computed_checksum != expected_checksum {
-            return Err(ReadMessageError::Fatal(format!(
-                "Checksum mismatch for {}: computed {:x?}, expected {:x?}, payload is {:x?}",
-                command, computed_checksum, expected_checksum, payload_buf
-            )));
+            return Err(ReadMessageError::Fatal(P2PError::Io {
+                source: std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "checksum mismatch for {command}: computed {computed_checksum:x?}, expected {expected_checksum:x?}"
+                    ),
+                ),
+            }));
         }
         let mut total_buf = header_buf.to_vec();
         total_buf.append(&mut payload_buf);
@@ -409,13 +379,13 @@ impl CoreP2PHandler {
     }
 
     /// The handshake loop: read messages until we complete the version/verack exchange.
-    fn run_handshake_loop(&mut self) -> Result<(), String> {
+    fn run_handshake_loop(&mut self) -> Result<(), P2PError> {
         // Expect a version message from the peer, with a timeout.
         let start_time = std::time::Instant::now();
         let timeout = Duration::from_secs(5);
         let (command, payload) = loop {
             if start_time.elapsed() > timeout {
-                return Err("Timeout waiting for version message".to_string());
+                return Err(P2PError::Timeout);
             }
             match self.read_message() {
                 Ok(res) => break res,
@@ -427,17 +397,18 @@ impl CoreP2PHandler {
             }
         };
         if command != "version" {
-            return Err(format!("Expected version message, got {}", command));
+            return Err(P2PError::UnexpectedMessage { received: command });
         }
         // Deserialize the version message payload.
-        let raw: RawNetworkMessage = deserialize(&payload)
-            .map_err(|e| format!("Failed to deserialize version payload: {}", e))?;
+        let raw: RawNetworkMessage = deserialize(&payload)?;
         match raw.payload {
             NetworkMessage::Version(peer_version) => {
                 tracing::debug!("Received peer version: {:?}", peer_version);
             }
-            _ => {
-                return Err("Deserialized message was not a version message".to_string());
+            msg => {
+                return Err(P2PError::UnexpectedMessage {
+                    received: format!("{msg:?}"),
+                });
             }
         }
 
@@ -445,7 +416,7 @@ impl CoreP2PHandler {
         let timeout = Duration::from_secs(5);
         loop {
             if start_time.elapsed() > timeout {
-                return Err("Timeout waiting for verack message".to_string());
+                return Err(P2PError::Timeout);
             }
             let (command, _) = match self.read_message() {
                 Ok(res) => res,
@@ -470,9 +441,7 @@ impl CoreP2PHandler {
             payload: verack_msg,
         };
         let encoded_verack = serialize(&raw_verack);
-        self.stream
-            .write_all(&encoded_verack)
-            .map_err(|e| format!("Failed to send verack: {}", e))?;
+        self.stream.write_all(&encoded_verack)?;
 
         tracing::debug!("Sent verack message");
         Ok(())

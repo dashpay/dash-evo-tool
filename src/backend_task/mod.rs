@@ -363,45 +363,47 @@ impl AppContext {
     async fn run_wallet_task(
         self: &Arc<Self>,
         task: WalletTask,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            WalletTask::GenerateReceiveAddress { seed_hash } => {
-                self.generate_receive_address(seed_hash).await
-            }
-            WalletTask::FetchPlatformAddressBalances { seed_hash } => {
-                self.fetch_platform_address_balances(seed_hash).await
-            }
+            WalletTask::GenerateReceiveAddress { seed_hash } => self
+                .generate_receive_address(seed_hash)
+                .await
+                .map_err(TaskError::from),
+            WalletTask::FetchPlatformAddressBalances { seed_hash } => self
+                .fetch_platform_address_balances(seed_hash)
+                .await
+                .map_err(TaskError::from),
             WalletTask::TransferPlatformCredits {
                 seed_hash,
                 inputs,
                 outputs,
                 fee_payer_index,
-            } => {
-                self.transfer_platform_credits(seed_hash, inputs, outputs, fee_payer_index)
-                    .await
-            }
+            } => self
+                .transfer_platform_credits(seed_hash, inputs, outputs, fee_payer_index)
+                .await
+                .map_err(TaskError::from),
             WalletTask::FundPlatformAddressFromAssetLock {
                 seed_hash,
                 asset_lock_proof,
                 asset_lock_address,
                 outputs,
-            } => {
-                self.fund_platform_address_from_asset_lock(
+            } => self
+                .fund_platform_address_from_asset_lock(
                     seed_hash,
                     *asset_lock_proof,
                     asset_lock_address,
                     outputs,
                 )
                 .await
-            }
+                .map_err(TaskError::from),
             WalletTask::WithdrawFromPlatformAddress {
                 seed_hash,
                 inputs,
                 output_script,
                 core_fee_per_byte,
                 fee_payer_index,
-            } => {
-                self.withdraw_from_platform_address(
+            } => self
+                .withdraw_from_platform_address(
                     seed_hash,
                     inputs,
                     output_script,
@@ -409,21 +411,21 @@ impl AppContext {
                     fee_payer_index,
                 )
                 .await
-            }
+                .map_err(TaskError::from),
             WalletTask::FundPlatformAddressFromWalletUtxos {
                 seed_hash,
                 amount,
                 destination,
                 fee_deduct_from_output,
-            } => {
-                self.fund_platform_address_from_wallet_utxos(
+            } => self
+                .fund_platform_address_from_wallet_utxos(
                     seed_hash,
                     amount,
                     destination,
                     fee_deduct_from_output,
                 )
                 .await
-            }
+                .map_err(TaskError::from),
         }
     }
 }

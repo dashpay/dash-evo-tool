@@ -250,6 +250,15 @@ pub enum TaskError {
         "Token at position {position} was not found in the contract. Please reload the contract and retry."
     )]
     TokenPositionNotFound { position: u16 },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Contract errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The requested data contract could not be found locally or on the platform.
+    #[error(
+        "The data contract could not be found. It may have been removed or the ID is incorrect."
+    )]
+    DataContractNotFound,
 }
 
 /// Produce a user-friendly message by inspecting the SDK error variant.
@@ -298,12 +307,10 @@ fn sdk_error_user_message(error: &SdkError) -> String {
         // TODO: add arms for Protocol (consensus sub-errors), InvalidCreditTransfer,
         //       MissingDependency, Config, etc.
         _ => {
-            // TODO(i18n/ux): This fallback embeds the raw SDK error Display string,
-            // which may contain jargon or technical details. Add dedicated arms for
-            // remaining SdkError variants (Protocol, InvalidCreditTransfer,
-            // MissingDependency, Config, etc.) and replace {error} with a fixed,
-            // user-friendly message once each variant's typical causes are understood.
-            format!("An unexpected error occurred: {error}. Please try again later.")
+            // Do not embed the raw SDK error in the user-facing message — it may contain
+            // jargon or technical details. The full error is available to developers via the
+            // `#[source]` chain in `Debug` and the details panel (not shown in basic mode).
+            "An unexpected error occurred. Please try again later.".to_string()
         }
     }
 }

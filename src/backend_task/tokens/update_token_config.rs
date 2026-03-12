@@ -36,7 +36,7 @@ impl AppContext {
         // First, fetch the contract from the local database
         let existing_data_contract = &self
             .get_contract_by_id(&identity_token_info.data_contract.contract.id())?
-            .ok_or(TaskError::DocumentNotFound)?
+            .ok_or(TaskError::DataContractNotFound)?
             .contract;
 
         // Then, fetch the identity from the local database

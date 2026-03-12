@@ -3,7 +3,6 @@ use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMetho
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::Error;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
@@ -51,41 +50,39 @@ impl AppContext {
                                 TaskError::from("Asset Lock not valid for wallet".to_string())
                             })?
                     };
-                    let asset_lock_proof = if let AssetLockProof::Instant(
-                        instant_asset_lock_proof,
-                    ) = asset_lock_proof.as_ref()
-                    {
-                        // we need to make sure the instant send asset lock is recent
-                        let tx_info = get_transaction_info(&sdk, &tx_id).await?;
-
-                        if tx_info.is_chain_locked
-                            && tx_info.height > 0
-                            && tx_info.confirmations > 8
+                    let asset_lock_proof =
+                        if let AssetLockProof::Instant(instant_asset_lock_proof) =
+                            asset_lock_proof.as_ref()
                         {
-                            // Transaction is old enough that instant lock may have expired
-                            let tx_block_height = tx_info.height;
+                            // we need to make sure the instant send asset lock is recent
+                            let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
-                            if tx_block_height <= metadata.core_chain_locked_height {
-                                // Platform has verified this Core block, use chain lock proof
-                                AssetLockProof::Chain(ChainAssetLockProof {
-                                    core_chain_locked_height: tx_block_height,
-                                    out_point: OutPoint::new(tx_id, 0),
-                                })
+                            if tx_info.is_chain_locked
+                                && tx_info.height > 0
+                                && tx_info.confirmations > 8
+                            {
+                                // Transaction is old enough that instant lock may have expired
+                                let tx_block_height = tx_info.height;
+
+                                if tx_block_height <= metadata.core_chain_locked_height {
+                                    // Platform has verified this Core block, use chain lock proof
+                                    AssetLockProof::Chain(ChainAssetLockProof {
+                                        core_chain_locked_height: tx_block_height,
+                                        out_point: OutPoint::new(tx_id, 0),
+                                    })
+                                } else {
+                                    // Platform hasn't verified this Core block yet
+                                    return Err(TaskError::AssetLockExpired {
+                                        tx_block_height,
+                                        platform_height: metadata.core_chain_locked_height,
+                                    });
+                                }
                             } else {
-                                // Platform hasn't verified this Core block yet
-                                return Err(TaskError::from(format!(
-                                    "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
-                                        and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
-                                        Please wait for Platform to sync with Core chain.",
-                                    tx_block_height, metadata.core_chain_locked_height
-                                )));
+                                AssetLockProof::Instant(instant_asset_lock_proof.clone())
                             }
                         } else {
-                            AssetLockProof::Instant(instant_asset_lock_proof.clone())
-                        }
-                    } else {
-                        asset_lock_proof.as_ref().clone()
-                    };
+                            asset_lock_proof.as_ref().clone()
+                        };
                     (asset_lock_proof, private_key, tx_id, None)
                 }
                 TopUpIdentityFundingMethod::FundWithWallet(
@@ -227,26 +224,6 @@ impl AppContext {
         {
             Ok(updated_identity) => updated_identity,
             Err(e) => {
-                // Log proof errors first
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
-                {
-                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                        request_type: RequestType::BroadcastStateTransition,
-                        request_bytes: vec![],
-                        verification_path_query_bytes: vec![],
-                        height: block_info.height,
-                        time_ms: block_info.time_ms,
-                        proof_bytes: proof_bytes.clone(),
-                        error: Some(proof_error.to_string()),
-                    }) {
-                        tracing::warn!("Failed to persist proof log: {}", e);
-                    }
-                    return Err(TaskError::from(format!(
-                        "Error topping up identity: {}, proof error logged",
-                        proof_error
-                    )));
-                }
-
                 let error_string = e.to_string();
 
                 // Check if this is an instant lock proof expiration error
@@ -278,41 +255,12 @@ impl AppContext {
                                     None,
                                 )
                                 .await
-                                .map_err(|e| {
-                                    // Log proof errors from retry
-                                    if let Error::DriveProofError(
-                                        ref proof_error,
-                                        ref proof_bytes,
-                                        ref block_info,
-                                    ) = e
-                                    {
-                                        if let Err(e) =
-                                            self.db.insert_proof_log_item(ProofLogItem {
-                                                request_type: RequestType::BroadcastStateTransition,
-                                                request_bytes: vec![],
-                                                verification_path_query_bytes: vec![],
-                                                height: block_info.height,
-                                                time_ms: block_info.time_ms,
-                                                proof_bytes: proof_bytes.clone(),
-                                                error: Some(proof_error.to_string()),
-                                            })
-                                        {
-                                            tracing::warn!("Failed to persist proof log: {}", e);
-                                        }
-                                        return TaskError::from(format!(
-                                            "Error topping up identity: {}, proof error logged",
-                                            proof_error
-                                        ));
-                                    }
-                                    TaskError::from(e)
-                                })?
+                                .map_err(|e| self.log_drive_proof_error(e))?
                         } else {
-                            return Err(TaskError::from(format!(
-                                "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
-                                and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
-                                Please wait for Platform to sync with Core chain.",
-                                tx_block_height, metadata.core_chain_locked_height
-                            )));
+                            return Err(TaskError::AssetLockExpired {
+                                tx_block_height,
+                                platform_height: metadata.core_chain_locked_height,
+                            });
                         }
                     } else {
                         return Err(TaskError::from(
@@ -331,32 +279,13 @@ impl AppContext {
                             None,
                         )
                         .await
-                        .map_err(|e| {
-                            // Log proof errors from retry
-                            if let Error::DriveProofError(
-                                ref proof_error,
-                                ref proof_bytes,
-                                ref block_info,
-                            ) = e
-                            {
-                                if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes: proof_bytes.clone(),
-                                    error: Some(proof_error.to_string()),
-                                }) {
-                                    tracing::warn!("Failed to persist proof log: {}", e);
-                                }
-                                return TaskError::from(format!(
-                                    "Error topping up identity: {}, proof error logged",
-                                    proof_error
-                                ));
+                        .map_err(|retry_err| {
+                            let logged = self.log_drive_proof_error(retry_err);
+                            if matches!(logged, TaskError::ProofError { .. }) {
+                                return logged;
                             }
-
-                            match IdentityTopUpTransition::try_from_identity(
+                            // Log the reconstructed transition for debugging before returning the error.
+                            if let Ok(transition) = IdentityTopUpTransition::try_from_identity(
                                 &qualified_identity.identity,
                                 asset_lock_proof,
                                 asset_lock_proof_private_key.inner.as_ref(),
@@ -364,18 +293,15 @@ impl AppContext {
                                 self.platform_version(),
                                 None,
                             ) {
-                                Ok(transition) => TaskError::from(format!(
-                                    "error: {}, transaction is {:?}",
-                                    e, transition
-                                )),
-                                Err(transition_err) => TaskError::from(format!(
-                                    "error: {}, also failed to recreate transition for debugging: {}",
-                                    e, transition_err
-                                )),
+                                tracing::debug!(
+                                    "Top-up retry failed; reconstructed transition: {:?}",
+                                    transition
+                                );
                             }
+                            logged
                         })?
                 } else {
-                    return Err(TaskError::from(error_string));
+                    return Err(self.log_drive_proof_error(e));
                 }
             }
         };

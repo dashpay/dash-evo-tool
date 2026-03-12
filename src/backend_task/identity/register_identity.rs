@@ -75,12 +75,10 @@ impl AppContext {
                             })
                         } else {
                             // Platform hasn't verified this Core block yet
-                            return Err(TaskError::from(format!(
-                                "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
-                                and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
-                                Please wait for Platform to sync with Core chain.",
-                                tx_block_height, metadata.core_chain_locked_height
-                            )));
+                            return Err(TaskError::AssetLockExpired {
+                                tx_block_height,
+                                platform_height: metadata.core_chain_locked_height,
+                            });
                         }
                     } else {
                         AssetLockProof::Instant(instant_asset_lock_proof.clone())
@@ -222,7 +220,7 @@ impl AppContext {
 
         let identity_id = asset_lock_proof
             .create_identifier()
-            .expect("expected to create an identifier");
+            .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
         let public_keys = keys.to_public_keys_map()?;
 
@@ -392,12 +390,10 @@ impl AppContext {
                                 &Some((wallet_id, wallet_identity_index)),
                             )?;
 
-                            return Err(TaskError::from(format!(
-                                "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
-                                and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
-                                Please wait for Platform to sync with Core chain.",
-                                tx_block_height, metadata.core_chain_locked_height
-                            )));
+                            return Err(TaskError::AssetLockExpired {
+                                tx_block_height,
+                                platform_height: metadata.core_chain_locked_height,
+                            });
                         }
                     } else {
                         qualified_identity
@@ -472,26 +468,6 @@ impl AppContext {
         {
             Ok(updated_identity) => Ok(updated_identity),
             Err(e) => {
-                // Log proof errors first
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
-                {
-                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                        request_type: RequestType::BroadcastStateTransition,
-                        request_bytes: vec![],
-                        verification_path_query_bytes: vec![],
-                        height: block_info.height,
-                        time_ms: block_info.time_ms,
-                        proof_bytes: proof_bytes.clone(),
-                        error: Some(proof_error.to_string()),
-                    }) {
-                        tracing::warn!("Failed to persist proof log: {}", e);
-                    }
-                    return Err(TaskError::from(format!(
-                        "Error registering identity: {}, proof error logged",
-                        proof_error
-                    )));
-                }
-
                 if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     identity
                         .put_to_platform_and_wait_for_response(
@@ -502,32 +478,14 @@ impl AppContext {
                             None,
                         )
                         .await
-                        .map_err(|e| {
-                            // Log proof errors from retry
-                            if let Error::DriveProofError(
-                                ref proof_error,
-                                ref proof_bytes,
-                                ref block_info,
-                            ) = e
-                            {
-                                if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes: proof_bytes.clone(),
-                                    error: Some(proof_error.to_string()),
-                                }) {
-                                    tracing::warn!("Failed to persist proof log: {}", e);
-                                }
-                                return TaskError::from(format!(
-                                    "Error registering identity: {}, proof error logged",
-                                    proof_error
-                                ));
+                        .map_err(|retry_err| {
+                            let logged = self.log_drive_proof_error(retry_err);
+                            // If the logged variant is ProofError, return it directly;
+                            // otherwise log the reconstructed transition for debugging.
+                            if matches!(logged, TaskError::ProofError { .. }) {
+                                return logged;
                             }
-
-                            match IdentityCreateTransition::try_from_identity_with_signer(
+                            if let Ok(transition) = IdentityCreateTransition::try_from_identity_with_signer(
                                 identity,
                                 asset_lock_proof,
                                 asset_lock_proof_private_key.inner.as_ref(),
@@ -536,18 +494,15 @@ impl AppContext {
                                 0,
                                 self.platform_version(),
                             ) {
-                                Ok(transition) => TaskError::from(format!(
-                                    "error: {}, transaction is {:?}",
-                                    e, transition
-                                )),
-                                Err(transition_err) => TaskError::from(format!(
-                                    "error: {}, also failed to recreate transition for debugging: {}",
-                                    e, transition_err
-                                )),
+                                tracing::debug!(
+                                    "Register identity retry failed; reconstructed transition: {:?}",
+                                    transition
+                                );
                             }
+                            logged
                         })
                 } else {
-                    Err(TaskError::from(e))
+                    Err(self.log_drive_proof_error(e))
                 }
             }
         }

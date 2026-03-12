@@ -1,6 +1,7 @@
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::{
     app::TaskResult,
+    backend_task::error::TaskError,
     context::AppContext,
     model::{
         fee_estimation::PlatformFeeEstimator,
@@ -72,7 +73,7 @@ impl AppContext {
         let identity_contract_nonce = sdk
             .get_identity_contract_nonce(identity.identity.id(), data_contract.id(), true, None)
             .await
-            .map_err(|_| "Failed to get nonce".to_string())?;
+            .map_err(TaskError::from)?;
 
         // Update UI
         sender
@@ -80,40 +81,35 @@ impl AppContext {
                 BackendTaskSuccessResult::FetchedNonce,
             )))
             .await
-            .map_err(|e| format!("Failed to send message: {}", e))?;
+            .map_err(|_| TaskError::InternalSendError)?;
 
         let contract_update_transition: DataContractUpdateTransition =
             (data_contract.clone(), identity_contract_nonce)
                 .try_into_platform_versioned(sdk.version())
                 .map_err(|e: dash_sdk::dpp::ProtocolError| {
-                    format!(
-                        "Failed to convert data contract to DataContractUpdateTransition: {}",
-                        e
-                    )
+                    TaskError::from(dash_sdk::Error::Protocol(e))
                 })?;
 
         let mut state_transition = StateTransition::DataContractUpdate(contract_update_transition);
 
-        state_transition.sign_external_with_options(
-            &signing_key,
-            &identity,
-            None::<fn(Identifier, String) -> Result<SecurityLevel, dash_sdk::dpp::ProtocolError>>,
-            StateTransitionSigningOptions {
-                allow_signing_with_any_security_level: false,
-                allow_signing_with_any_purpose: false,
-            },
-        ).map_err(|e| {
-            format!(
-                "Failed to sign state transition: {}",
-                e
+        state_transition
+            .sign_external_with_options(
+                &signing_key,
+                &identity,
+                None::<
+                    fn(Identifier, String) -> Result<SecurityLevel, dash_sdk::dpp::ProtocolError>,
+                >,
+                StateTransitionSigningOptions {
+                    allow_signing_with_any_security_level: false,
+                    allow_signing_with_any_purpose: false,
+                },
             )
-        })?;
+            .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
         match state_transition.broadcast_and_wait(sdk, None).await {
             Ok(returned_contract) => {
                 self.db
-                    .replace_contract(data_contract.id(), &returned_contract, self)
-                    .map_err(|e| format!("Error inserting contract into the database: {}", e))?;
+                    .replace_contract(data_contract.id(), &returned_contract, self)?;
                 let fee_result = FeeResult::new(estimated_fee, estimated_fee);
                 Ok(BackendTaskSuccessResult::UpdatedContract(fee_result))
             }
@@ -155,6 +151,15 @@ impl AppContext {
                             self.db
                                 .replace_contract(contract.id(), &contract, self)
                                 .ok();
+
+                            sender
+                                .send(TaskResult::Success(Box::new(
+                                    BackendTaskSuccessResult::ContractSavedAfterProofError,
+                                )))
+                                .await
+                                .map_err(|_| {
+                                    crate::backend_task::error::TaskError::InternalSendError
+                                })?;
 
                             return Err(crate::backend_task::error::TaskError::ProofError {
                                 source_error,

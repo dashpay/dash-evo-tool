@@ -46,19 +46,14 @@ impl AppContext {
 
         let documents = Document::fetch_many(sdk, domain_query)
             .await
-            .map_err(|e| TaskError::from(format!("Error querying DPNS: {}", e)))?;
+            .map_err(TaskError::from)?;
 
         // Get the first (and should be only) document
         let domain_doc = documents
             .values()
             .filter_map(|maybe_doc| maybe_doc.as_ref())
             .next()
-            .ok_or_else(|| {
-                TaskError::from(format!(
-                    "No identity found with DPNS name '{}.dash'",
-                    dpns_name
-                ))
-            })?;
+            .ok_or(TaskError::IdentityNotFound)?;
 
         // Extract the identity ID from the records.identity field
         let identity_id = domain_doc
@@ -85,11 +80,7 @@ impl AppContext {
                     None
                 }
             })
-            .ok_or_else(|| {
-                TaskError::from(
-                    "DPNS domain document does not contain a valid identity reference".to_string(),
-                )
-            })?;
+            .ok_or(TaskError::IdentityNotFound)?;
 
         // Fetch the identity
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
@@ -144,7 +135,7 @@ impl AppContext {
                     })
                     .collect::<Vec<DPNSNameInfo>>()
             })
-            .map_err(|e| TaskError::from(format!("Error fetching DPNS names: {}", e)))?;
+            .map_err(TaskError::from)?;
 
         let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
 
@@ -170,7 +161,7 @@ impl AppContext {
             dpns_names: owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
+                .filter_map(|wallet| wallet.read().ok().map(|w| (w.seed_hash(), wallet.clone())))
                 .collect(),
             wallet_index: None,
             top_ups: Default::default(),

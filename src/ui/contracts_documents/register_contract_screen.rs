@@ -326,11 +326,7 @@ impl ScreenLike for RegisterDataContractScreen {
             self.refresh_banner.take_and_clear();
         }
         if message_type == MessageType::Error {
-            if message.contains("proof error logged, contract inserted into the database") {
-                self.broadcast_status = BroadcastStatus::Done;
-            } else {
-                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
-            }
+            self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
         }
     }
 
@@ -346,6 +342,10 @@ impl ScreenLike for RegisterDataContractScreen {
             }
             BackendTaskSuccessResult::ProofErrorLogged => {
                 self.broadcast_status = BroadcastStatus::ProofError;
+            }
+            BackendTaskSuccessResult::ContractSavedAfterProofError => {
+                self.refresh_banner.take_and_clear();
+                self.broadcast_status = BroadcastStatus::Done;
             }
             _ => {}
         }

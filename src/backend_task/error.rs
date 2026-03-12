@@ -85,6 +85,50 @@ pub enum TaskError {
         resource: &'static str,
     },
 
+    /// The requested wallet was not found in the local wallet store.
+    #[error("Wallet not found. Please check your wallet list and try again.")]
+    WalletNotFound,
+
+    /// The wallet is locked and must be unlocked before this operation can proceed.
+    #[error("Wallet is locked. Please unlock your wallet and try again.")]
+    WalletLocked,
+
+    /// The requested document could not be found on the platform.
+    #[error(
+        "The document could not be found. It may have been deleted or the ID is incorrect."
+    )]
+    DocumentNotFound,
+
+    /// An asset lock's instant-lock proof has expired before Platform verified it.
+    #[error(
+        "This asset lock cannot be used yet. The instant lock has expired and Platform has not verified \
+         Core block {tx_block_height} yet (Platform has verified up to Core block {platform_height}). \
+         Please wait for Platform to sync with Core and retry."
+    )]
+    AssetLockExpired {
+        tx_block_height: u32,
+        platform_height: u32,
+    },
+
+    /// The private key for the asset lock address was not found in the wallet.
+    #[error(
+        "The address for this asset lock could not be found in your wallet. \
+         Make sure you are using the correct wallet."
+    )]
+    AssetLockAddressNotFound,
+
+    /// A state transition was broadcast but proof verification failed; the proof has been logged.
+    #[error(
+        "The operation could not be fully verified by the platform. The issue has been logged. \
+         Please check whether the operation completed and retry if needed."
+    )]
+    ProofError,
+
+    /// An unexpected internal error that should not occur in normal operation.
+    /// The technical detail is stored for debugging and logging only.
+    #[error("An internal error occurred. Please restart the application and retry.")]
+    Internal(String),
+
     /// Dash Core peer-to-peer communication failed.
     #[error(transparent)]
     P2P(#[from] crate::components::core_p2p_handler::P2PError),
@@ -217,7 +261,7 @@ impl From<String> for TaskError {
 impl<T> From<std::sync::PoisonError<T>> for TaskError {
     fn from(_: std::sync::PoisonError<T>) -> Self {
         TaskError::LockPoisoned {
-            resource: "unknown",
+            resource: std::any::type_name::<T>(),
         }
     }
 }

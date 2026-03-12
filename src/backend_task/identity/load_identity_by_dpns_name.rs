@@ -138,7 +138,11 @@ impl AppContext {
             })
             .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
 
-        let wallets = self.wallets.read().unwrap().clone();
+        let wallets = self
+            .wallets
+            .read()
+            .map_err(|_| "Wallets lock poisoned".to_string())?
+            .clone();
 
         // Try to derive keys from wallets if requested
         let mut encrypted_private_keys = std::collections::BTreeMap::new();

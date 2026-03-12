@@ -20,10 +20,16 @@ impl AppContext {
         let start_time = std::time::Instant::now();
 
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
-            wallets.get(&seed_hash).cloned().ok_or_else(|| {
-                crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
-            })?
+            let wallets = self
+                .wallets
+                .read()
+                .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
+                    resource: "wallets",
+                })?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
 
         // Get last sync timestamp from database
@@ -33,19 +39,15 @@ impl AppContext {
         // Create provider (requires wallet to be open for address derivation)
         let mut provider = {
             let wallet = wallet_arc.read().map_err(|_| {
-                crate::backend_task::error::TaskError::Generic(
-                    "Internal lock error: wallet lock was poisoned".to_string(),
-                )
+                crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
             })?;
             match WalletAddressProvider::new(&wallet, self.network) {
                 Ok(provider) => provider.with_stored_state(&wallet, self.network, last_sync_height),
                 Err(_) if !wallet.is_open() => {
-                    return Err(crate::backend_task::error::TaskError::Generic(
-                        "Wallet is locked. Please unlock it first to refresh.".to_string(),
-                    ));
+                    return Err(crate::backend_task::error::TaskError::WalletLocked);
                 }
                 Err(e) => {
-                    return Err(crate::backend_task::error::TaskError::Generic(e));
+                    return Err(crate::backend_task::error::TaskError::Internal(e));
                 }
             }
         };
@@ -122,9 +124,7 @@ impl AppContext {
         // Apply results to wallet and persist
         let balances = {
             let mut wallet = wallet_arc.write().map_err(|_| {
-                crate::backend_task::error::TaskError::Generic(
-                    "Internal lock error: wallet lock was poisoned".to_string(),
-                )
+                crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
             })?;
 
             // Update wallet with synced balances

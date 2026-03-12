@@ -26,17 +26,21 @@ impl AppContext {
         // Clone wallet and SDK before the async operation to avoid holding guards across await
         let (wallet, sdk, asset_lock_private_key) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
-                wallets.get(&seed_hash).cloned().ok_or_else(|| {
-                    crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
-                })?
+                let wallets = self
+                    .wallets
+                    .read()
+                    .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
+                        resource: "wallets",
+                    })?;
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
             };
             let wallet = wallet_arc
                 .read()
-                .map_err(|_| {
-                    crate::backend_task::error::TaskError::Generic(
-                        "Internal lock error: wallet lock was poisoned".to_string(),
-                    )
+                .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
+                    resource: "wallet",
                 })?
                 .clone();
             let sdk = self.sdk.load().as_ref().clone();
@@ -45,11 +49,7 @@ impl AppContext {
             let private_key = wallet
                 .private_key_for_address(&asset_lock_address, self.network)
                 .map_err(crate::backend_task::error::TaskError::from)?
-                .ok_or_else(|| {
-                    crate::backend_task::error::TaskError::Generic(
-                        "Asset lock address not found in wallet".to_string(),
-                    )
-                })?;
+                .ok_or(crate::backend_task::error::TaskError::AssetLockAddressNotFound)?;
 
             (wallet, sdk, private_key)
         };
@@ -86,12 +86,10 @@ impl AppContext {
                 } else {
                     // Platform hasn't verified this Core block yet - can't use chain lock proof
                     // and instant lock is stale. User needs to wait.
-                    return Err(crate::backend_task::error::TaskError::Generic(format!(
-                        "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
-                            and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
-                            Please wait for Platform to sync with Core chain.",
-                        tx_block_height, metadata.core_chain_locked_height
-                    )));
+                    return Err(crate::backend_task::error::TaskError::AssetLockExpired {
+                        tx_block_height,
+                        platform_height: metadata.core_chain_locked_height,
+                    });
                 }
             } else {
                 // Use the instant lock proof as-is (transaction is recent)
@@ -127,14 +125,14 @@ impl AppContext {
         // Remove the used asset lock from the wallet and database
         {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
-                wallets.get(&seed_hash).cloned()
+                self.wallets
+                    .read()
+                    .ok()
+                    .and_then(|w| w.get(&seed_hash).cloned())
             };
             if let Some(wallet_arc) = wallet_arc {
                 let mut wallet = wallet_arc.write().map_err(|_| {
-                    crate::backend_task::error::TaskError::Generic(
-                        "Internal lock error: wallet lock was poisoned".to_string(),
-                    )
+                    crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
                 })?;
                 wallet
                     .unused_asset_locks

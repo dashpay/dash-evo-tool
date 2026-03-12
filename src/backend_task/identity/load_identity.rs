@@ -80,7 +80,11 @@ impl AppContext {
 
         let mut encrypted_private_keys = BTreeMap::new();
 
-        let wallets = self.wallets.read().unwrap().clone();
+        let wallets = self
+            .wallets
+            .read()
+            .map_err(|_| "Wallets lock poisoned".to_string())?
+            .clone();
 
         if identity_type == IdentityType::User
             && derive_keys_from_wallets
@@ -334,7 +338,9 @@ impl AppContext {
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
+                .filter_map(|wallet| {
+                    wallet.read().ok().map(|w| (w.seed_hash(), wallet.clone()))
+                })
                 .collect(),
             wallet_index: None, //todo
             top_ups: Default::default(),
@@ -345,12 +351,14 @@ impl AppContext {
 
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
-            .map_err(|e| format!("Database error: {}", e))?;
+            .map_err(|e| e.to_string())?;
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
         {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc
+                .write()
+                .map_err(|_| "Wallet lock poisoned".to_string())?;
             wallet
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());
@@ -372,7 +380,10 @@ impl AppContext {
             if wallet_filter.is_some_and(|filter| filter != wallet_seed_hash) {
                 continue;
             }
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = match wallet_arc.write() {
+                Ok(guard) => guard,
+                Err(_) => continue, // Skip poisoned wallets rather than failing the whole operation
+            };
             if !wallet.is_open() {
                 continue;
             }

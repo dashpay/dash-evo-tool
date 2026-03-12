@@ -98,17 +98,11 @@ impl AppContext {
                                 )
                                 .ok();
 
-                            return Err(TaskError::Generic(format!(
-                                "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",
-                                proof_error
-                            )));
+                            return Err(TaskError::ProofError);
                         }
                     }
 
-                    Err(TaskError::Generic(format!(
-                        "Error broadcasting Register Contract transition: {}, proof error logged",
-                        proof_error
-                    )))
+                    Err(TaskError::ProofError)
                 }
                 e => Err(TaskError::from(e)),
             },

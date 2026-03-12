@@ -152,17 +152,11 @@ impl AppContext {
                                 .replace_contract(contract.id(), &contract, self)
                                 .ok();
 
-                            return Err(crate::backend_task::error::TaskError::Generic(format!(
-                                "Error broadcasting Contract Update transition: {}, proof error logged, contract inserted into the database",
-                                proof_error
-                            )));
+                            return Err(crate::backend_task::error::TaskError::ProofError);
                         }
                     }
 
-                    Err(crate::backend_task::error::TaskError::Generic(format!(
-                        "Error broadcasting Contract Update transition: {}, proof error logged",
-                        proof_error
-                    )))
+                    Err(crate::backend_task::error::TaskError::ProofError)
                 }
                 e => Err(crate::backend_task::error::TaskError::from(e)),
             },

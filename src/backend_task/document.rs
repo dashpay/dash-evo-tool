@@ -180,10 +180,7 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            TaskError::Generic(format!(
-                                "Error broadcasting document: {}, proof error logged",
-                                proof_error
-                            ))
+                            TaskError::ProofError
                         }
                         e => TaskError::from(e),
                     })?;
@@ -235,10 +232,7 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            TaskError::Generic(format!(
-                                "Error deleting document: {}, proof error logged",
-                                proof_error
-                            ))
+                            TaskError::ProofError
                         }
                         e => TaskError::from(e),
                     })?;
@@ -291,10 +285,7 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            TaskError::Generic(format!(
-                                "Error replacing document: {}, proof error logged",
-                                proof_error
-                            ))
+                            TaskError::ProofError
                         }
                         e => TaskError::from(e),
                     })?;
@@ -330,7 +321,7 @@ impl AppContext {
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
                     .map_err(TaskError::from)?
-                    .ok_or_else(|| TaskError::Generic("Document not found".to_string()))?;
+                    .ok_or_else(|| TaskError::DocumentNotFound)?;
                 document.bump_revision();
 
                 let mut builder = DocumentTransferTransitionBuilder::new(
@@ -365,10 +356,7 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            TaskError::Generic(format!(
-                                "Error transferring document: {}, proof error logged",
-                                proof_error
-                            ))
+                            TaskError::ProofError
                         }
                         e => TaskError::from(e),
                     })?;
@@ -404,7 +392,7 @@ impl AppContext {
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
                     .map_err(TaskError::from)?
-                    .ok_or_else(|| TaskError::Generic("Document not found".to_string()))?;
+                    .ok_or_else(|| TaskError::DocumentNotFound)?;
                 document.bump_revision();
 
                 let mut builder = DocumentPurchaseTransitionBuilder::new(
@@ -440,10 +428,7 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            TaskError::Generic(format!(
-                                "Error purchasing document: {}, proof error logged",
-                                proof_error
-                            ))
+                            TaskError::ProofError
                         }
                         e => TaskError::from(e),
                     })?;
@@ -479,7 +464,7 @@ impl AppContext {
                 let mut document = Document::fetch(sdk, query_with_id)
                     .await
                     .map_err(TaskError::from)?
-                    .ok_or_else(|| TaskError::Generic("Document not found".to_string()))?;
+                    .ok_or_else(|| TaskError::DocumentNotFound)?;
                 document.bump_revision();
 
                 let mut builder = DocumentSetPriceTransitionBuilder::new(
@@ -514,10 +499,7 @@ impl AppContext {
                                     error: Some(proof_error.to_string()),
                                 })
                                 .ok();
-                            TaskError::Generic(format!(
-                                "Error setting document price: {}, proof error logged",
-                                proof_error
-                            ))
+                            TaskError::ProofError
                         }
                         e => TaskError::from(e),
                     })?;

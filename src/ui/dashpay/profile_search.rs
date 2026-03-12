@@ -322,11 +322,10 @@ impl ScreenLike for ProfileSearchScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        self.loading = false;
-        self.search_completed = true;
-
         match result {
             BackendTaskSuccessResult::DashPayProfileSearchResults(results) => {
+                self.loading = false;
+                self.search_completed = true;
                 self.search_results.clear();
 
                 // Convert backend results to UI results

@@ -69,7 +69,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 1. **Audience**: Write for the Everyday User persona (`docs/personas/everyday-user.md`). No jargon — no "consensus error", "nonce", "state transition", "SDK", "RPC", or error codes.
 2. **Structure**: *What happened* + *what to do*. Every message must include a concrete action the user can take themselves: retry, wait, try a different approach. Never redirect to "contact support" — users must be able to self-resolve.
 3. **Tone**: Calm, direct, brief. Not apologetic ("Sorry!"), not alarming ("Something went wrong!"), not vague ("An error occurred").
-4. **Technical details**: Never in the message itself. Attach via `BannerHandle::with_details(e)` — the `Debug` repr goes to the collapsible details panel and logs.
+4. **Technical details**: Never in the message itself. Attach via `BannerHandle::with_details(e)` — the `Debug` repr goes to the collapsible details panel and logs. Never refer users to "details" or "details panel" — these are not visible in basic mode.
 5. **i18n-ready**: Write messages as simple, complete sentences without interpolation tricks. Avoid concatenating fragments, positional assumptions, or grammar that breaks in other languages. Messages should be straightforward to extract into [Fluent](https://projectfluent.org/) `.ftl` files later — one message ID per string, placeholders only for dynamic values (`{ $seconds }`, `{ $name }`), no logic in the text itself.
 6. **Reference implementation**: `sdk_error_user_message()` in `src/backend_task/error.rs` demonstrates the pattern for SDK errors. New `TaskError` variants should follow the same style.
 

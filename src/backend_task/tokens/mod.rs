@@ -1,4 +1,5 @@
 use super::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::ui::tokens::tokens_screen::{IdentityTokenIdentifier, IdentityTokenInfo, TokenInfo};
 use crate::{app::TaskResult, context::AppContext, model::qualified_identity::QualifiedIdentity};
 use dash_sdk::dpp::balances::credits::TokenAmount;
@@ -220,7 +221,7 @@ impl AppContext {
         task: TokenTask,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match &task {
             TokenTask::RegisterTokenContract {
                 identity,
@@ -280,7 +281,7 @@ impl AppContext {
                         *marketplace_trade_mode,
                         marketplace_rules.clone(),
                     )
-                    .map_err(|e| format!("Error building contract V1: {e}"))?;
+                    .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
                 self.register_data_contract(
                     data_contract,
@@ -292,12 +293,11 @@ impl AppContext {
                 )
                 .await
                 .map(|_| BackendTaskSuccessResult::RegisteredTokenContract)
-                .map_err(|e| format!("Failed to register token contract: {e}"))
             }
             TokenTask::QueryMyTokenBalances => self
                 .query_my_token_balances(sdk, sender)
                 .await
-                .map_err(|e| format!("Failed to fetch token balances: {e}")),
+                .map_err(TaskError::from),
             TokenTask::MintTokens {
                 sending_identity,
                 data_contract,
@@ -307,8 +307,8 @@ impl AppContext {
                 amount,
                 recipient_id,
                 group_info,
-            } => self
-                .mint_tokens(
+            } => {
+                self.mint_tokens(
                     sending_identity,
                     data_contract.clone(),
                     *token_position,
@@ -321,11 +321,11 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to mint tokens: {e}")),
+            }
             TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => self
                 .query_descriptions_by_keyword(keyword, cursor, sdk)
                 .await
-                .map_err(|e| format!("Failed to query tokens by keyword: {e}")),
+                .map_err(TaskError::from),
             TokenTask::TransferTokens {
                 sending_identity,
                 recipient_id,
@@ -334,8 +334,8 @@ impl AppContext {
                 token_position,
                 signing_key,
                 public_note,
-            } => self
-                .transfer_tokens(
+            } => {
+                self.transfer_tokens(
                     sending_identity,
                     *recipient_id,
                     *amount,
@@ -347,7 +347,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to transfer tokens: {e}")),
+            }
             TokenTask::BurnTokens {
                 owner_identity,
                 data_contract,
@@ -356,8 +356,8 @@ impl AppContext {
                 public_note,
                 amount,
                 group_info,
-            } => self
-                .burn_tokens(
+            } => {
+                self.burn_tokens(
                     owner_identity,
                     data_contract.clone(),
                     *token_position,
@@ -369,7 +369,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to burn tokens: {e}")),
+            }
             TokenTask::DestroyFrozenFunds {
                 actor_identity,
                 data_contract,
@@ -378,8 +378,8 @@ impl AppContext {
                 public_note,
                 frozen_identity,
                 group_info,
-            } => self
-                .destroy_frozen_funds(
+            } => {
+                self.destroy_frozen_funds(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -391,7 +391,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to destroy frozen funds: {e}")),
+            }
             TokenTask::FreezeTokens {
                 actor_identity,
                 data_contract,
@@ -400,8 +400,8 @@ impl AppContext {
                 public_note,
                 freeze_identity,
                 group_info,
-            } => self
-                .freeze_tokens(
+            } => {
+                self.freeze_tokens(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -413,7 +413,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to freeze tokens: {e}")),
+            }
             TokenTask::UnfreezeTokens {
                 actor_identity,
                 data_contract,
@@ -422,8 +422,8 @@ impl AppContext {
                 public_note,
                 unfreeze_identity,
                 group_info,
-            } => self
-                .unfreeze_tokens(
+            } => {
+                self.unfreeze_tokens(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -435,7 +435,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to unfreeze tokens: {e}")),
+            }
             TokenTask::PauseTokens {
                 actor_identity,
                 data_contract,
@@ -443,8 +443,8 @@ impl AppContext {
                 signing_key,
                 public_note,
                 group_info,
-            } => self
-                .pause_tokens(
+            } => {
+                self.pause_tokens(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -455,7 +455,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to pause tokens: {e}")),
+            }
             TokenTask::ResumeTokens {
                 actor_identity,
                 data_contract,
@@ -463,8 +463,8 @@ impl AppContext {
                 signing_key,
                 public_note,
                 group_info,
-            } => self
-                .resume_tokens(
+            } => {
+                self.resume_tokens(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -475,7 +475,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to resume tokens: {e}")),
+            }
             TokenTask::ClaimTokens {
                 data_contract,
                 token_position,
@@ -483,8 +483,8 @@ impl AppContext {
                 distribution_type,
                 signing_key,
                 public_note,
-            } => self
-                .claim_tokens(
+            } => {
+                self.claim_tokens(
                     data_contract.clone(),
                     *token_position,
                     actor_identity,
@@ -494,7 +494,7 @@ impl AppContext {
                     sdk,
                 )
                 .await
-                .map_err(|e| format!("Failed to claim tokens: {e}")),
+            }
             TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                 identity_id,
                 token_id,
@@ -505,7 +505,7 @@ impl AppContext {
                     sdk,
                 )
                 .await
-                .map_err(|e| format!("Failed to get estimated rewards with explanation: {e}")),
+                .map_err(TaskError::from),
             TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
                 .query_token_balance(
                     sdk,
@@ -514,14 +514,14 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to fetch token balance: {e}")),
+                .map_err(TaskError::from),
             TokenTask::FetchTokenByContractId(contract_id) => {
                 match DataContract::fetch_by_identifier(sdk, *contract_id).await {
                     Ok(Some(data_contract)) => {
                         Ok(BackendTaskSuccessResult::FetchedContract(data_contract))
                     }
                     Ok(None) => Ok(BackendTaskSuccessResult::ContractNotFound),
-                    Err(e) => Err(format!("Error fetching contracts: {}", e)),
+                    Err(e) => Err(TaskError::from(e)),
                 }
             }
             TokenTask::FetchTokenByTokenId(token_id) => {
@@ -547,11 +547,11 @@ impl AppContext {
                                 ))
                             }
                             Ok(None) => Ok(BackendTaskSuccessResult::ContractNotFound),
-                            Err(e) => Err(format!("Error fetching contract for token: {}", e)),
+                            Err(e) => Err(TaskError::from(e)),
                         }
                     }
                     Ok(None) => Ok(BackendTaskSuccessResult::TokenNotFound),
-                    Err(e) => Err(format!("Error fetching token info: {}", e)),
+                    Err(e) => Err(TaskError::from(e)),
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {
@@ -559,18 +559,16 @@ impl AppContext {
                     &token_info.token_configuration,
                     bincode::config::standard(),
                 )
-                .map_err(|e| format!("error encoding token configuration: {}", e))?;
+                .map_err(|e| TaskError::Generic(e.to_string()))?;
 
-                self.db
-                    .insert_token(
-                        &token_info.token_id,
-                        &token_info.token_name,
-                        &token_config_bytes,
-                        &token_info.data_contract_id,
-                        token_info.token_position,
-                        self,
-                    )
-                    .map_err(|e| format!("error saving token: {}", e))?;
+                self.db.insert_token(
+                    &token_info.token_id,
+                    &token_info.token_name,
+                    &token_config_bytes,
+                    &token_info.data_contract_id,
+                    token_info.token_position,
+                    self,
+                )?;
 
                 Ok(BackendTaskSuccessResult::SavedToken)
             }
@@ -580,8 +578,8 @@ impl AppContext {
                 signing_key,
                 public_note,
                 group_info,
-            } => self
-                .update_token_config(
+            } => {
+                self.update_token_config(
                     *identity_token_info.clone(),
                     change_item.clone(),
                     signing_key,
@@ -590,7 +588,7 @@ impl AppContext {
                     sdk,
                 )
                 .await
-                .map_err(|e| format!("Failed to update token config: {e}")),
+            }
             TokenTask::PurchaseTokens {
                 identity,
                 data_contract,
@@ -598,8 +596,8 @@ impl AppContext {
                 signing_key,
                 amount,
                 total_agreed_price,
-            } => self
-                .purchase_tokens(
+            } => {
+                self.purchase_tokens(
                     identity,
                     data_contract.clone(),
                     *token_position,
@@ -610,7 +608,7 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to purchase tokens: {e}")),
+            }
             TokenTask::SetDirectPurchasePrice {
                 identity,
                 data_contract,
@@ -619,8 +617,8 @@ impl AppContext {
                 token_pricing_schedule,
                 public_note,
                 group_info,
-            } => self
-                .set_direct_purchase_price(
+            } => {
+                self.set_direct_purchase_price(
                     identity,
                     data_contract.clone(),
                     *token_position,
@@ -632,11 +630,11 @@ impl AppContext {
                     sender,
                 )
                 .await
-                .map_err(|e| format!("Failed to set direct purchase price: {e}")),
+            }
             TokenTask::QueryTokenPricing(token_id) => self
                 .query_token_pricing(*token_id, sdk, sender)
                 .await
-                .map_err(|e| format!("Failed to query token pricing: {e}")),
+                .map_err(TaskError::from),
         }
     }
 

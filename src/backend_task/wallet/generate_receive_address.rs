@@ -10,10 +10,15 @@ impl AppContext {
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
-            wallets.get(&seed_hash).cloned().ok_or_else(|| {
-                crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
-            })?
+            let wallets = self.wallets.read().map_err(|_| {
+                crate::backend_task::error::TaskError::LockPoisoned {
+                    resource: "wallets",
+                }
+            })?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
 
         let address_string = if self.core_backend_mode() == CoreBackendMode::Spv {
@@ -33,9 +38,7 @@ impl AppContext {
             derived.address.to_string()
         } else {
             let mut wallet = wallet_arc.write().map_err(|_| {
-                crate::backend_task::error::TaskError::Generic(
-                    "Internal lock error: wallet lock was poisoned".to_string(),
-                )
+                crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
             })?;
             wallet
                 .receive_address(self.network, true, Some(self))?

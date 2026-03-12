@@ -85,6 +85,61 @@ pub enum TaskError {
         resource: &'static str,
     },
 
+    /// The requested wallet was not found in the local wallet store.
+    #[error("Wallet not found. Please check your wallet list and try again.")]
+    WalletNotFound,
+
+    /// The wallet is locked and must be unlocked before this operation can proceed.
+    #[error("Wallet is locked. Please unlock your wallet and try again.")]
+    WalletLocked,
+
+    /// The requested document could not be found on the platform.
+    #[error("The document could not be found. It may have been deleted or the ID is incorrect.")]
+    DocumentNotFound,
+
+    /// An asset lock's instant-lock proof has expired before Platform verified it.
+    #[error(
+        "This asset lock cannot be used yet. The instant lock has expired and Platform has not verified \
+         Core block {tx_block_height} yet (Platform has verified up to Core block {platform_height}). \
+         Please wait for Platform to sync with Core and retry."
+    )]
+    AssetLockExpired {
+        tx_block_height: u32,
+        platform_height: u32,
+    },
+
+    /// The private key for the asset lock address was not found in the wallet.
+    #[error(
+        "The address for this asset lock could not be found in your wallet. \
+         Make sure you are using the correct wallet."
+    )]
+    AssetLockAddressNotFound,
+
+    /// A state transition was broadcast but proof verification failed; the proof has been logged.
+    #[error(
+        "The operation could not be fully verified by the platform. The issue has been logged. \
+         Please check whether the operation completed and retry if needed."
+    )]
+    ProofError {
+        /// The original SDK error that triggered proof-verification failure.
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
+    /// A user input validation error — the string is a user-facing message.
+    #[error("{0}")]
+    UserInput(String),
+
+    /// The requested identity was not found on the platform.
+    #[error("Identity not found on the platform. Please check the ID or name and try again.")]
+    IdentityNotFound,
+
+    /// Timed out waiting for transaction confirmation.
+    #[error(
+        "The transaction was not confirmed within the expected time. Please check your network connection and retry."
+    )]
+    ConfirmationTimeout,
+
     /// Dash Core peer-to-peer communication failed.
     #[error(transparent)]
     P2P(#[from] crate::components::core_p2p_handler::P2PError),
@@ -146,6 +201,64 @@ pub enum TaskError {
         #[source]
         source_error: Box<SdkError>,
     },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Wallet / platform-address operation errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Wallet address provider could not be set up (wallet is open but derivation failed).
+    #[error(
+        "Could not prepare wallet addresses for sync. Please close and reopen your wallet, then retry."
+    )]
+    WalletAddressProviderSetupFailed { detail: String },
+
+    /// A Core address could not be converted to a Platform address.
+    #[error("Could not convert a wallet address for platform use. Please retry.")]
+    AddressConversionFailed { detail: String },
+
+    /// Overflow while converting duffs to platform credits.
+    #[error("The amount is too large to process. Please use a smaller amount.")]
+    CreditCalculationOverflow { detail: String },
+
+    /// A change address could not be derived or located in the outputs map.
+    #[error("Could not prepare a change address for this transaction. Please retry.")]
+    ChangeAddressUnavailable { reason: &'static str },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Asset-lock transaction errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The asset lock transaction was expected in the local database but was not found.
+    #[error(
+        "The asset lock transaction could not be found locally. Please check your network connection and retry."
+    )]
+    AssetLockTransactionNotFoundInDatabase,
+
+    /// An asset lock transaction has no credit outputs (malformed transaction).
+    #[error(
+        "The asset lock transaction has no credit outputs and cannot be used. Please retry creating the transaction."
+    )]
+    AssetLockNoCreditOutputs,
+
+    /// Could not derive a Core address from an asset lock output script.
+    #[error("Could not read the address from the asset lock transaction. Please retry.")]
+    AssetLockAddressDerivationFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Token contract errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A token at the expected position was not found in the contract.
+    #[error(
+        "Token at position {position} was not found in the contract. Please reload the contract and retry."
+    )]
+    TokenPositionNotFound { position: u16 },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Contract errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The requested data contract could not be found locally or on the platform.
+    #[error(
+        "The data contract could not be found. It may have been removed or the ID is incorrect."
+    )]
+    DataContractNotFound,
 }
 
 /// Produce a user-friendly message by inspecting the SDK error variant.
@@ -194,12 +307,10 @@ fn sdk_error_user_message(error: &SdkError) -> String {
         // TODO: add arms for Protocol (consensus sub-errors), InvalidCreditTransfer,
         //       MissingDependency, Config, etc.
         _ => {
-            // TODO(i18n/ux): This fallback embeds the raw SDK error Display string,
-            // which may contain jargon or technical details. Add dedicated arms for
-            // remaining SdkError variants (Protocol, InvalidCreditTransfer,
-            // MissingDependency, Config, etc.) and replace {error} with a fixed,
-            // user-friendly message once each variant's typical causes are understood.
-            format!("An unexpected error occurred: {error}. Please try again later.")
+            // Do not embed the raw SDK error in the user-facing message — it may contain
+            // jargon or technical details. The full error is available to developers via the
+            // `#[source]` chain in `Debug` and the details panel (not shown in basic mode).
+            "An unexpected error occurred. Please try again later.".to_string()
         }
     }
 }
@@ -217,7 +328,7 @@ impl From<String> for TaskError {
 impl<T> From<std::sync::PoisonError<T>> for TaskError {
     fn from(_: std::sync::PoisonError<T>) -> Self {
         TaskError::LockPoisoned {
-            resource: "unknown",
+            resource: std::any::type_name::<T>(),
         }
     }
 }

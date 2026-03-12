@@ -1,3 +1,4 @@
+pub mod error;
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
@@ -55,6 +56,7 @@ use dash_sdk::dpp::prelude::IdentityPublicKey;
 use dash_sdk::platform::Identifier;
 use dpns::dpns_contested_names_screen::DPNSSubscreen;
 use egui::Context;
+pub use error::UiError;
 use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;

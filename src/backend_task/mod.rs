@@ -250,6 +250,10 @@ pub enum BackendTaskSuccessResult {
     ContractNotFound,
     TokenNotFound,
     ProofErrorLogged,
+    /// Contract was saved to the local database despite a proof verification error.
+    /// Sent by `register_data_contract` / `update_data_contract` when the contract was
+    /// successfully fetched from Platform and stored after a `DriveProofError`.
+    ContractSavedAfterProofError,
 
     // Wallet operation results (replacing string messages)
     RefreshedWallet {

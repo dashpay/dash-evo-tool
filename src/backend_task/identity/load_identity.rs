@@ -1,4 +1,5 @@
 use super::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityInputToLoad, verify_key_input};
 use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget::{
@@ -41,7 +42,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         input: IdentityInputToLoad,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let IdentityInputToLoad {
             identity_id_input,
             identity_type,
@@ -68,19 +69,19 @@ impl AppContext {
             .or_else(|_| Identifier::from_string(&identity_id_input, Encoding::Hex))
         {
             Ok(id) => id,
-            Err(e) => return Err(format!("Identifier error: {}", e)),
+            Err(e) => return Err(TaskError::from(format!("Identifier error: {}", e))),
         };
 
         // Fetch the identity using the SDK
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
             Ok(Some(identity)) => identity,
-            Ok(None) => return Err("Identity not found".to_string()),
-            Err(e) => return Err(format!("Error fetching identity: {}", e)),
+            Ok(None) => return Err(TaskError::IdentityNotFound),
+            Err(e) => return Err(TaskError::from(e)),
         };
 
         let mut encrypted_private_keys = BTreeMap::new();
 
-        let wallets = self.wallets.read().unwrap().clone();
+        let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
 
         if identity_type == IdentityType::User
             && derive_keys_from_wallets
@@ -154,8 +155,8 @@ impl AppContext {
                     let voter_identity =
                         match Identity::fetch_by_identifier(sdk, voter_identifier).await {
                             Ok(Some(identity)) => identity,
-                            Ok(None) => return Err("Voter Identity not found".to_string()),
-                            Err(e) => return Err(format!("Error fetching voter identity: {}", e)),
+                            Ok(None) => return Err(TaskError::IdentityNotFound),
+                            Err(e) => return Err(TaskError::from(e)),
                         };
 
                     let key = self.verify_voting_key_exists_on_identity(
@@ -177,7 +178,9 @@ impl AppContext {
                     );
                     Some((voter_identity, key))
                 } else {
-                    return Err("Voting private key is not valid".to_string());
+                    return Err(TaskError::from(
+                        "Voting private key is not valid".to_string(),
+                    ));
                 }
             } else {
                 None
@@ -194,14 +197,15 @@ impl AppContext {
                 .filter_map(|key_string| {
                     Some(
                         verify_key_input(key_string, "User Key")
+                            .map_err(TaskError::from)
                             .transpose()?
                             .and_then(|sk| {
                                 PrivateKey::from_byte_array(&sk, self.network)
-                                    .map_err(|e| e.to_string())
+                                    .map_err(|e| TaskError::from(e.to_string()))
                             }),
                     )
                 })
-                .collect::<Result<Vec<PrivateKey>, String>>()?;
+                .collect::<Result<Vec<PrivateKey>, TaskError>>()?;
 
             let secp = Secp256k1::new();
             #[allow(clippy::type_complexity)]
@@ -312,7 +316,7 @@ impl AppContext {
                     })
                     .collect::<Vec<DPNSNameInfo>>()
             })
-            .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
+            .map_err(|e| TaskError::from(format!("Error fetching DPNS names: {}", e)))?;
 
         // Determine alias: use user input, or fall back to first DPNS name if available
         let alias = if !alias_input.is_empty() {
@@ -334,7 +338,7 @@ impl AppContext {
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .map(|wallet| (wallet.read().unwrap().seed_hash(), wallet.clone()))
+                .filter_map(|wallet| wallet.read().ok().map(|w| (w.seed_hash(), wallet.clone())))
                 .collect(),
             wallet_index: None, //todo
             top_ups: Default::default(),
@@ -344,13 +348,12 @@ impl AppContext {
         let wallet_info = qualified_identity.determine_wallet_info()?;
 
         // Insert qualified identity into the database
-        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)
-            .map_err(|e| format!("Database error: {}", e))?;
+        self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
 
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
         {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write().map_err(TaskError::from)?;
             wallet
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());
@@ -364,7 +367,7 @@ impl AppContext {
         identity: &Identity,
         wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
         wallet_filter: Option<WalletSeedHash>,
-    ) -> Result<WalletMatchResult, String> {
+    ) -> Result<WalletMatchResult, TaskError> {
         let highest_identity_key_id = identity.public_keys().keys().copied().max().unwrap_or(0);
         let top_bound = highest_identity_key_id.saturating_add(6).max(1);
 
@@ -372,7 +375,10 @@ impl AppContext {
             if wallet_filter.is_some_and(|filter| filter != wallet_seed_hash) {
                 continue;
             }
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = match wallet_arc.write() {
+                Ok(guard) => guard,
+                Err(_) => continue, // Skip poisoned wallets rather than failing the whole operation
+            };
             if !wallet.is_open() {
                 continue;
             }
@@ -403,7 +409,7 @@ impl AppContext {
         wallet: &mut Wallet,
         wallet_seed_hash: WalletSeedHash,
         top_bound: u32,
-    ) -> Result<Option<(u32, WalletKeyMap)>, String> {
+    ) -> Result<Option<(u32, WalletKeyMap)>, TaskError> {
         let identity_id = identity.id();
 
         if let Some((&identity_index, _)) = wallet

@@ -22,14 +22,12 @@ impl AppContext {
         &self.spv_manager
     }
 
-    pub fn clear_spv_data(&self) -> rusqlite::Result<(), String> {
-        self.spv_manager.clear_data_dir()
+    pub fn clear_spv_data(&self) -> Result<(), TaskError> {
+        self.spv_manager.clear_data_dir().map_err(TaskError::from)
     }
 
-    pub fn clear_network_database(&self) -> Result<(), String> {
-        self.db
-            .clear_network_data(self.network)
-            .map_err(|e| TaskError::Database { source: e }.to_string())?;
+    pub fn clear_network_database(&self) -> Result<(), TaskError> {
+        self.db.clear_network_data(self.network)?;
 
         if let Ok(mut wallets) = self.wallets.write() {
             wallets.clear();
@@ -44,7 +42,7 @@ impl AppContext {
         Ok(())
     }
 
-    pub fn start_spv(self: &Arc<Self>) -> Result<(), String> {
+    pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
         // Skip if SPV is already active — avoids orphaned listener tasks from
         // re-registering channels while existing handlers still hold old senders.
         if self.spv_manager.status().status.is_active() {
@@ -235,18 +233,16 @@ impl AppContext {
         &self,
         seed_hash: WalletSeedHash,
         address_infos: &dash_sdk::query_types::AddressInfos,
-    ) -> Result<(), String> {
+    ) -> Result<(), TaskError> {
         let wallet_arc = {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read()?;
             wallets
                 .get(&seed_hash)
                 .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+                .ok_or(TaskError::WalletNotFound)?
         };
 
-        let mut wallet = wallet_arc
-            .write()
-            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" }.to_string())?;
+        let mut wallet = wallet_arc.write()?;
 
         for (platform_addr, maybe_info) in address_infos.iter() {
             if let Some(info) = maybe_info {
@@ -286,10 +282,8 @@ impl AppContext {
         derivation_path: DerivationPath,
         path_type: DerivationPathType,
         path_reference: DerivationPathReference,
-    ) -> Result<bool, String> {
-        let mut guard = wallet
-            .write()
-            .map_err(|_| TaskError::LockPoisoned { resource: "wallet" }.to_string())?;
+    ) -> Result<bool, TaskError> {
+        let mut guard = wallet.write()?;
         if guard.known_addresses.contains_key(&address) {
             return Ok(false);
         }
@@ -299,17 +293,15 @@ impl AppContext {
 
         let seed_hash = guard.seed_hash();
 
-        self.db
-            .add_address_if_not_exists(
-                &seed_hash,
-                &address,
-                &self.network,
-                &derivation_path,
-                path_reference,
-                path_type,
-                None,
-            )
-            .map_err(|e| TaskError::Database { source: e }.to_string())?;
+        self.db.add_address_if_not_exists(
+            &seed_hash,
+            &address,
+            &self.network,
+            &derivation_path,
+            path_reference,
+            path_type,
+            None,
+        )?;
 
         guard
             .known_addresses
@@ -459,12 +451,15 @@ impl AppContext {
             });
     }
 
-    async fn handle_spv_finality_event(&self, event: AssetLockFinalityEvent) -> Result<(), String> {
+    async fn handle_spv_finality_event(
+        &self,
+        event: AssetLockFinalityEvent,
+    ) -> Result<(), TaskError> {
         match event {
             AssetLockFinalityEvent::InstantLock { txid, instant_lock } => {
                 // Check if this txid is pending in transactions_waiting_for_finality
                 let is_pending = {
-                    let transactions = self.transactions_waiting_for_finality.lock().unwrap();
+                    let transactions = self.transactions_waiting_for_finality.lock()?;
                     matches!(transactions.get(&txid), Some(None))
                 };
                 if !is_pending {
@@ -474,19 +469,17 @@ impl AppContext {
                 // Retrieve the full transaction from the database
                 let (tx, ..) = self
                     .db
-                    .get_asset_lock_transaction(txid.as_byte_array())
-                    .map_err(|e| TaskError::Database { source: e }.to_string())?
-                    .ok_or_else(|| "Asset lock transaction not found in DB".to_string())?;
+                    .get_asset_lock_transaction(txid.as_byte_array())?
+                    .ok_or(TaskError::AssetLockTransactionNotFoundInDatabase)?;
 
-                self.received_asset_lock_finality(&tx, Some(*instant_lock), None)
-                    .map_err(|e| format!("Finality processing error: {}", e))?;
+                self.received_asset_lock_finality(&tx, Some(*instant_lock), None)?;
             }
             AssetLockFinalityEvent::ChainLock {
                 height: _height, ..
             } => {
                 // Get all pending txids (where proof is None)
                 let pending_txids: Vec<dash_sdk::dpp::dashcore::Txid> = {
-                    let transactions = self.transactions_waiting_for_finality.lock().unwrap();
+                    let transactions = self.transactions_waiting_for_finality.lock()?;
                     transactions
                         .iter()
                         .filter_map(
@@ -569,19 +562,19 @@ impl AppContext {
     }
 
     /// Reconcile SPV wallet state into DET.
-    pub async fn reconcile_spv_wallets(&self) -> Result<(), String> {
+    pub async fn reconcile_spv_wallets(&self) -> Result<(), TaskError> {
         let wm_arc = self.spv_manager.wallet();
         let wm = wm_arc.read().await;
         let mapping = self.spv_manager.det_wallets_snapshot();
 
         // Take a snapshot of known addresses per wallet so we can scope DB updates
-        let wallets_guard = self.wallets.read().unwrap();
+        let wallets_guard = self.wallets.read()?;
 
         for (seed_hash, wallet_id) in mapping.iter() {
             // Log total balance for visibility
             let balance = wm
                 .get_wallet_balance(wallet_id)
-                .map_err(|e| format!("get_wallet_balance failed: {e}"))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             tracing::debug!(wallet = %hex::encode(seed_hash), spendable = balance.spendable(), unconfirmed = balance.unconfirmed(), total = balance.total(), "SPV balance snapshot");
 
             let Some(wallet_info) = wm.get_wallet_info(wallet_id) else {
@@ -613,7 +606,9 @@ impl AppContext {
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
             let mut known_addresses: std::collections::BTreeSet<Address> = {
-                let w = wallet_arc.read().unwrap();
+                let w = wallet_arc
+                    .read()
+                    .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
                 w.known_addresses.keys().cloned().collect()
             };
 
@@ -628,7 +623,7 @@ impl AppContext {
             // Read current UTXOs from SPV and re-insert, registering unknown addresses if derivation metadata is available
             let utxos = wm
                 .wallet_utxos(wallet_id)
-                .map_err(|e| format!("wallet_utxos failed: {e}"))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
 
             let mut per_address_sum: std::collections::BTreeMap<Address, u64> = Default::default();
             // Build in-memory UTXO map to update wallet model
@@ -713,16 +708,14 @@ impl AppContext {
                 }
 
                 // Insert UTXO row into DB
-                self.db
-                    .insert_utxo(
-                        outpoint.txid.as_ref(),
-                        outpoint.vout,
-                        &address,
-                        tx_out.value,
-                        &tx_out.script_pubkey.to_bytes(),
-                        self.network,
-                    )
-                    .map_err(|e| TaskError::Database { source: e }.to_string())?;
+                self.db.insert_utxo(
+                    outpoint.txid.as_ref(),
+                    outpoint.vout,
+                    &address,
+                    tx_out.value,
+                    &tx_out.script_pubkey.to_bytes(),
+                    self.network,
+                )?;
             }
 
             // Write per-address balances and UTXOs into wallet model
@@ -752,7 +745,7 @@ impl AppContext {
 
             let history = wm
                 .wallet_transaction_history(wallet_id)
-                .map_err(|e| format!("wallet_transaction_history failed: {e}"))?;
+                .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             let wallet_transactions: Vec<WalletTransaction> = history
                 .into_iter()
                 .map(|record| WalletTransaction {
@@ -779,9 +772,11 @@ impl AppContext {
             // Only replace transactions if SPV returned some, to avoid wiping
             // previously persisted history when SPV hasn't populated history yet.
             if !wallet_transactions.is_empty() {
-                self.db
-                    .replace_wallet_transactions(seed_hash, &self.network, &wallet_transactions)
-                    .map_err(|e| TaskError::Database { source: e }.to_string())?;
+                self.db.replace_wallet_transactions(
+                    seed_hash,
+                    &self.network,
+                    &wallet_transactions,
+                )?;
             }
 
             if let Some(wref) = wallets_guard.get(seed_hash)

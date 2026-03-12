@@ -65,7 +65,7 @@ impl AppContext {
                         }
                         Ok(BackendTaskSuccessResult::FetchedContracts(results))
                     }
-                    Err(e) => Err(format!("Error fetching contracts: {}", e).into()),
+                    Err(e) => Err(crate::backend_task::error::TaskError::from(e)),
                 }
             }
             ContractTask::FetchContractsWithDescriptions(identifiers) => {
@@ -148,7 +148,7 @@ impl AppContext {
                         }
                         Ok(BackendTaskSuccessResult::ContractsWithDescriptions(results))
                     }
-                    Err(e) => Err(format!("Error fetching contracts: {}", e).into()),
+                    Err(e) => Err(crate::backend_task::error::TaskError::from(e)),
                 }
             }
             ContractTask::FetchActiveGroupActions(contract, identity) => {
@@ -209,12 +209,7 @@ impl AppContext {
             ContractTask::RemoveContract(identifier) => self
                 .remove_contract(&identifier)
                 .map(|_| BackendTaskSuccessResult::RemovedContract)
-                .map_err(|e| {
-                    crate::backend_task::error::TaskError::Generic(format!(
-                        "Error removing contract: {}",
-                        e
-                    ))
-                }),
+                .map_err(crate::backend_task::error::TaskError::from),
             ContractTask::SaveDataContract(data_contract, alias, insert_tokens_too) => {
                 self.db.insert_contract_if_not_exists(
                     &data_contract,

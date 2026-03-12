@@ -40,16 +40,19 @@ impl AppContext {
         // Step 1: Create the asset lock transaction (UTXOs are selected but NOT yet removed)
         let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
-                wallets.get(&seed_hash).cloned().ok_or_else(|| {
-                    crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
-                })?
+                let wallets = self.wallets.read().map_err(|_| {
+                    crate::backend_task::error::TaskError::LockPoisoned {
+                        resource: "wallets",
+                    }
+                })?;
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
             };
 
             let mut wallet = wallet_arc.write().map_err(|_| {
-                crate::backend_task::error::TaskError::Generic(
-                    "Internal lock error: wallet lock was poisoned".to_string(),
-                )
+                crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
             })?;
 
             // Try to create the asset lock transaction, reload UTXOs if needed
@@ -81,13 +84,14 @@ impl AppContext {
         // Step 2–4: Store → broadcast → remove UTXOs (atomic pattern).
         let wallet_arc = {
             let wallets = self.wallets.read().map_err(|_| {
-                crate::backend_task::error::TaskError::Generic(
-                    "Internal lock error: wallets lock was poisoned".to_string(),
-                )
+                crate::backend_task::error::TaskError::LockPoisoned {
+                    resource: "wallets",
+                }
             })?;
-            wallets.get(&seed_hash).cloned().ok_or_else(|| {
-                crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
-            })?
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
 
         let tx_id = self
@@ -140,17 +144,22 @@ impl AppContext {
                     }
                 }
 
-                return Err(timeout_err.into());
+                return Err(timeout_err);
             }
         };
 
         // Step 6: Get wallet, SDK, and derive a fresh change address if needed
         let (wallet, sdk, change_platform_address) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
-                wallets.get(&seed_hash).cloned().ok_or_else(|| {
-                    crate::backend_task::error::TaskError::Generic("Wallet not found".to_string())
-                })?
+                let wallets = self.wallets.read().map_err(|_| {
+                    crate::backend_task::error::TaskError::LockPoisoned {
+                        resource: "wallets",
+                    }
+                })?;
+                wallets
+                    .get(&seed_hash)
+                    .cloned()
+                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
             };
 
             // Derive a fresh change address from the BIP44 internal (change) path
@@ -159,15 +168,13 @@ impl AppContext {
             // separation between receive and change addresses.
             let change_platform_address = if !fee_deduct_from_output {
                 let mut wallet_w = wallet_arc.write().map_err(|_| {
-                    crate::backend_task::error::TaskError::Generic(
-                        "Internal lock error: wallet lock was poisoned".to_string(),
-                    )
+                    crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
                 })?;
                 let addr = wallet_w.change_address(self.network, Some(self))?;
                 Some(PlatformAddress::try_from(addr).map_err(|e| {
-                    crate::backend_task::error::TaskError::Generic(format!(
-                        "Failed to convert change address: {e}"
-                    ))
+                    crate::backend_task::error::TaskError::AddressConversionFailed {
+                        detail: e.to_string(),
+                    }
                 })?)
             } else {
                 None
@@ -175,10 +182,8 @@ impl AppContext {
 
             let wallet = wallet_arc
                 .read()
-                .map_err(|_| {
-                    crate::backend_task::error::TaskError::Generic(
-                        "Internal lock error: wallet lock was poisoned".to_string(),
-                    )
+                .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
+                    resource: "wallet",
                 })?
                 .clone();
             let sdk = self.sdk.load().as_ref().clone();
@@ -199,9 +204,11 @@ impl AppContext {
             // amount. We use a fresh wallet-controlled change address to absorb the
             // fee estimate surplus, keeping it spendable.
             let amount_credits = amount.checked_mul(CREDITS_PER_DUFF).ok_or_else(|| {
-                crate::backend_task::error::TaskError::Generic(format!(
-                    "Overflow converting {amount} duffs to credits (CREDITS_PER_DUFF = {CREDITS_PER_DUFF})"
-                ))
+                crate::backend_task::error::TaskError::CreditCalculationOverflow {
+                    detail: format!(
+                        "Overflow converting {amount} duffs to credits (CREDITS_PER_DUFF = {CREDITS_PER_DUFF})"
+                    ),
+                }
             })?;
 
             if let Some(change_address) = change_platform_address {
@@ -214,15 +221,17 @@ impl AppContext {
                     .keys()
                     .position(|k| *k == change_address)
                     .ok_or_else(|| {
-                        crate::backend_task::error::TaskError::Generic(
-                            "Change address not found in outputs map".to_string(),
-                        )
+                        crate::backend_task::error::TaskError::ChangeAddressUnavailable {
+                            reason: "change address not found in outputs map",
+                        }
                     })? as u16;
                 vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
             } else {
-                return Err(crate::backend_task::error::TaskError::Generic(
-                    "Failed to derive a change address for platform funding".to_string(),
-                ));
+                return Err(
+                    crate::backend_task::error::TaskError::ChangeAddressUnavailable {
+                        reason: "no change address was derived for platform funding",
+                    },
+                );
             }
         };
 

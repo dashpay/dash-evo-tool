@@ -54,6 +54,7 @@ impl AppContext {
             }
             Err(e) => match e {
                 Error::DriveProofError(proof_error, proof_bytes, block_info) => {
+                    let proof_error_str = proof_error.to_string();
                     // Log the proof error first, before any other operations
                     self.db
                         .insert_proof_log_item(ProofLogItem {
@@ -62,10 +63,14 @@ impl AppContext {
                             verification_path_query_bytes: vec![],
                             height: block_info.height,
                             time_ms: block_info.time_ms,
-                            proof_bytes,
-                            error: Some(proof_error.to_string()),
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(proof_error_str.clone()),
                         })
                         .ok();
+
+                    // Reconstruct the SDK error to preserve as source
+                    let source_error =
+                        Box::new(Error::DriveProofError(proof_error, proof_bytes, block_info));
 
                     sender
                         .send(TaskResult::Success(Box::new(
@@ -76,8 +81,7 @@ impl AppContext {
 
                     // Try to extract contract ID and fetch the contract if it exists
                     // This handles the case where the contract was actually created despite the proof error
-                    if let Ok(id) = extract_contract_id_from_error(proof_error.to_string().as_str())
-                    {
+                    if let Ok(id) = extract_contract_id_from_error(&proof_error_str) {
                         match self.network {
                             Network::Regtest => sleep(Duration::from_secs(3)).await,
                             _ => sleep(Duration::from_secs(10)).await,
@@ -98,17 +102,18 @@ impl AppContext {
                                 )
                                 .ok();
 
-                            return Err(TaskError::Generic(format!(
-                                "Error broadcasting Register Contract transition: {}, proof error logged, contract inserted into the database",
-                                proof_error
-                            )));
+                            sender
+                                .send(TaskResult::Success(Box::new(
+                                    BackendTaskSuccessResult::ContractSavedAfterProofError,
+                                )))
+                                .await
+                                .map_err(|_| TaskError::InternalSendError)?;
+
+                            return Err(TaskError::ProofError { source_error });
                         }
                     }
 
-                    Err(TaskError::Generic(format!(
-                        "Error broadcasting Register Contract transition: {}, proof error logged",
-                        proof_error
-                    )))
+                    Err(TaskError::ProofError { source_error })
                 }
                 e => Err(TaskError::from(e)),
             },

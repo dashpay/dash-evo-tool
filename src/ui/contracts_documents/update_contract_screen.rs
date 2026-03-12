@@ -337,11 +337,7 @@ impl ScreenLike for UpdateDataContractScreen {
             self.refresh_banner.take_and_clear();
         }
         if message_type == MessageType::Error {
-            if message.contains("proof error logged, contract inserted into the database") {
-                self.broadcast_status = BroadcastStatus::Done;
-            } else {
-                self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
-            }
+            self.broadcast_status = BroadcastStatus::BroadcastError(message.to_string());
         }
     }
 
@@ -365,6 +361,10 @@ impl ScreenLike for UpdateDataContractScreen {
                 if let Some(handle) = &self.refresh_banner {
                     handle.set_message("Fetching contract from Platform...");
                 }
+            }
+            BackendTaskSuccessResult::ContractSavedAfterProofError => {
+                self.refresh_banner.take_and_clear();
+                self.broadcast_status = BroadcastStatus::Done;
             }
             _ => {}
         }

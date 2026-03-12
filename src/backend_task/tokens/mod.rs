@@ -307,8 +307,8 @@ impl AppContext {
                 amount,
                 recipient_id,
                 group_info,
-            } => self
-                .mint_tokens(
+            } => {
+                self.mint_tokens(
                     sending_identity,
                     data_contract.clone(),
                     *token_position,
@@ -320,7 +320,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => self
                 .query_descriptions_by_keyword(keyword, cursor, sdk)
                 .await
@@ -333,8 +334,8 @@ impl AppContext {
                 token_position,
                 signing_key,
                 public_note,
-            } => self
-                .transfer_tokens(
+            } => {
+                self.transfer_tokens(
                     sending_identity,
                     *recipient_id,
                     *amount,
@@ -345,7 +346,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::BurnTokens {
                 owner_identity,
                 data_contract,
@@ -354,8 +356,8 @@ impl AppContext {
                 public_note,
                 amount,
                 group_info,
-            } => self
-                .burn_tokens(
+            } => {
+                self.burn_tokens(
                     owner_identity,
                     data_contract.clone(),
                     *token_position,
@@ -366,7 +368,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::DestroyFrozenFunds {
                 actor_identity,
                 data_contract,
@@ -375,8 +378,8 @@ impl AppContext {
                 public_note,
                 frozen_identity,
                 group_info,
-            } => self
-                .destroy_frozen_funds(
+            } => {
+                self.destroy_frozen_funds(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -387,7 +390,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::FreezeTokens {
                 actor_identity,
                 data_contract,
@@ -396,8 +400,8 @@ impl AppContext {
                 public_note,
                 freeze_identity,
                 group_info,
-            } => self
-                .freeze_tokens(
+            } => {
+                self.freeze_tokens(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -408,7 +412,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::UnfreezeTokens {
                 actor_identity,
                 data_contract,
@@ -417,8 +422,8 @@ impl AppContext {
                 public_note,
                 unfreeze_identity,
                 group_info,
-            } => self
-                .unfreeze_tokens(
+            } => {
+                self.unfreeze_tokens(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -429,7 +434,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::PauseTokens {
                 actor_identity,
                 data_contract,
@@ -437,8 +443,8 @@ impl AppContext {
                 signing_key,
                 public_note,
                 group_info,
-            } => self
-                .pause_tokens(
+            } => {
+                self.pause_tokens(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -448,7 +454,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::ResumeTokens {
                 actor_identity,
                 data_contract,
@@ -456,8 +463,8 @@ impl AppContext {
                 signing_key,
                 public_note,
                 group_info,
-            } => self
-                .resume_tokens(
+            } => {
+                self.resume_tokens(
                     actor_identity,
                     data_contract.clone(),
                     *token_position,
@@ -467,7 +474,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::ClaimTokens {
                 data_contract,
                 token_position,
@@ -475,8 +483,8 @@ impl AppContext {
                 distribution_type,
                 signing_key,
                 public_note,
-            } => self
-                .claim_tokens(
+            } => {
+                self.claim_tokens(
                     data_contract.clone(),
                     *token_position,
                     actor_identity,
@@ -485,7 +493,8 @@ impl AppContext {
                     public_note.clone(),
                     sdk,
                 )
-                .await,
+                .await
+            }
             TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                 identity_id,
                 token_id,
@@ -552,16 +561,14 @@ impl AppContext {
                 )
                 .map_err(|e| TaskError::Generic(e.to_string()))?;
 
-                self.db
-                    .insert_token(
-                        &token_info.token_id,
-                        &token_info.token_name,
-                        &token_config_bytes,
-                        &token_info.data_contract_id,
-                        token_info.token_position,
-                        self,
-                    )
-                    ?;
+                self.db.insert_token(
+                    &token_info.token_id,
+                    &token_info.token_name,
+                    &token_config_bytes,
+                    &token_info.data_contract_id,
+                    token_info.token_position,
+                    self,
+                )?;
 
                 Ok(BackendTaskSuccessResult::SavedToken)
             }
@@ -571,8 +578,8 @@ impl AppContext {
                 signing_key,
                 public_note,
                 group_info,
-            } => self
-                .update_token_config(
+            } => {
+                self.update_token_config(
                     *identity_token_info.clone(),
                     change_item.clone(),
                     signing_key,
@@ -580,7 +587,8 @@ impl AppContext {
                     *group_info,
                     sdk,
                 )
-                .await,
+                .await
+            }
             TokenTask::PurchaseTokens {
                 identity,
                 data_contract,
@@ -588,8 +596,8 @@ impl AppContext {
                 signing_key,
                 amount,
                 total_agreed_price,
-            } => self
-                .purchase_tokens(
+            } => {
+                self.purchase_tokens(
                     identity,
                     data_contract.clone(),
                     *token_position,
@@ -599,7 +607,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::SetDirectPurchasePrice {
                 identity,
                 data_contract,
@@ -608,8 +617,8 @@ impl AppContext {
                 token_pricing_schedule,
                 public_note,
                 group_info,
-            } => self
-                .set_direct_purchase_price(
+            } => {
+                self.set_direct_purchase_price(
                     identity,
                     data_contract.clone(),
                     *token_position,
@@ -620,7 +629,8 @@ impl AppContext {
                     sdk,
                     sender,
                 )
-                .await,
+                .await
+            }
             TokenTask::QueryTokenPricing(token_id) => self
                 .query_token_pricing(*token_id, sdk, sender)
                 .await

@@ -1,5 +1,5 @@
-use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::error::TaskError;
+use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -38,8 +38,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
-            .await?;
+        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None).await?;
 
         let wallet_id;
 
@@ -54,7 +53,9 @@ impl AppContext {
                     wallet_id = wallet.seed_hash();
                     wallet
                         .private_key_for_address(&address, self.network)?
-                        .ok_or_else(|| TaskError::from("Asset Lock not valid for wallet".to_string()))?
+                        .ok_or_else(|| {
+                            TaskError::from("Asset Lock not valid for wallet".to_string())
+                        })?
                 };
                 let asset_lock_proof = if let AssetLockProof::Instant(instant_asset_lock_proof) =
                     asset_lock_proof.as_ref()
@@ -130,9 +131,7 @@ impl AppContext {
                     )
                     .await?;
 
-                let asset_lock_proof = self
-                    .wait_for_asset_lock_proof(tx_id)
-                    .await?;
+                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -215,9 +214,7 @@ impl AppContext {
                     )
                     .await?;
 
-                let asset_lock_proof = self
-                    .wait_for_asset_lock_proof(tx_id)
-                    .await?;
+                let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
                 (asset_lock_proof, asset_lock_proof_private_key, tx_id)
             }
@@ -339,7 +336,8 @@ impl AppContext {
             }
             Err(e) => {
                 // Check if this is an instant lock proof expiration error
-                if e.to_string().contains("Instant lock proof signature is invalid")
+                if e.to_string()
+                    .contains("Instant lock proof signature is invalid")
                     || e.to_string().contains("wasn't created recently")
                 {
                     // Try to use chain asset lock proof instead

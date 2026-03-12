@@ -3,6 +3,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -10,7 +11,6 @@ use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::tokens::builders::set_price::TokenChangeDirectPurchasePriceTransitionBuilder;
 use dash_sdk::platform::tokens::transitions::SetPriceResult;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
-use dash_sdk::Sdk;
 use std::sync::Arc;
 
 impl AppContext {

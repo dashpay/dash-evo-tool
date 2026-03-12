@@ -616,10 +616,9 @@ impl AppContext {
         // Get the wallet for signing - clone it to avoid holding guard across await
         let wallet_clone = {
             let wallet = {
-                let wallets = self
-                    .wallets
-                    .read()
-                    .map_err(|_| TaskError::LockPoisoned { resource: "wallets" })?;
+                let wallets = self.wallets.read().map_err(|_| TaskError::LockPoisoned {
+                    resource: "wallets",
+                })?;
                 wallets
                     .get(&wallet_seed_hash)
                     .cloned()
@@ -711,10 +710,9 @@ impl AppContext {
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
         {
-            let wallets = self
-                .wallets
-                .read()
-                .map_err(|_| TaskError::LockPoisoned { resource: "wallets" })?;
+            let wallets = self.wallets.read().map_err(|_| TaskError::LockPoisoned {
+                resource: "wallets",
+            })?;
             for (seed_hash, wallet_arc) in wallets.iter() {
                 if let Err(e) =
                     self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)

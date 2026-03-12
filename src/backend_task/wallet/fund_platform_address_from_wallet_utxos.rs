@@ -40,12 +40,11 @@ impl AppContext {
         // Step 1: Create the asset lock transaction (UTXOs are selected but NOT yet removed)
         let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
             let wallet_arc = {
-                let wallets = self
-                    .wallets
-                    .read()
-                    .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
+                let wallets = self.wallets.read().map_err(|_| {
+                    crate::backend_task::error::TaskError::LockPoisoned {
                         resource: "wallets",
-                    })?;
+                    }
+                })?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
@@ -84,12 +83,11 @@ impl AppContext {
 
         // Step 2–4: Store → broadcast → remove UTXOs (atomic pattern).
         let wallet_arc = {
-            let wallets = self
-                .wallets
-                .read()
-                .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
+            let wallets = self.wallets.read().map_err(|_| {
+                crate::backend_task::error::TaskError::LockPoisoned {
                     resource: "wallets",
-                })?;
+                }
+            })?;
             wallets
                 .get(&seed_hash)
                 .cloned()
@@ -153,12 +151,11 @@ impl AppContext {
         // Step 6: Get wallet, SDK, and derive a fresh change address if needed
         let (wallet, sdk, change_platform_address) = {
             let wallet_arc = {
-                let wallets = self
-                    .wallets
-                    .read()
-                    .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
+                let wallets = self.wallets.read().map_err(|_| {
+                    crate::backend_task::error::TaskError::LockPoisoned {
                         resource: "wallets",
-                    })?;
+                    }
+                })?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
@@ -230,9 +227,11 @@ impl AppContext {
                     })? as u16;
                 vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
             } else {
-                return Err(crate::backend_task::error::TaskError::ChangeAddressUnavailable {
-                    reason: "no change address was derived for platform funding",
-                });
+                return Err(
+                    crate::backend_task::error::TaskError::ChangeAddressUnavailable {
+                        reason: "no change address was derived for platform funding",
+                    },
+                );
             }
         };
 

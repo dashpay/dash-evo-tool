@@ -1,5 +1,5 @@
-use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::error::TaskError;
+use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -31,8 +31,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
-            .await?;
+        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None).await?;
 
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id, top_up_index) =
             match identity_funding_method {
@@ -48,7 +47,9 @@ impl AppContext {
                         let wallet = wallet.read().map_err(TaskError::from)?;
                         wallet
                             .private_key_for_address(&address, self.network)?
-                            .ok_or_else(|| TaskError::from("Asset Lock not valid for wallet".to_string()))?
+                            .ok_or_else(|| {
+                                TaskError::from("Asset Lock not valid for wallet".to_string())
+                            })?
                     };
                     let asset_lock_proof = if let AssetLockProof::Instant(
                         instant_asset_lock_proof,
@@ -147,9 +148,7 @@ impl AppContext {
                         )
                         .await?;
 
-                    let asset_lock_proof = self
-                        .wait_for_asset_lock_proof(tx_id)
-                        .await?;
+                    let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
                     (
                         asset_lock_proof,
@@ -194,9 +193,7 @@ impl AppContext {
                         )
                         .await?;
 
-                    let asset_lock_proof = self
-                        .wait_for_asset_lock_proof(tx_id)
-                        .await?;
+                    let asset_lock_proof = self.wait_for_asset_lock_proof(tx_id).await?;
 
                     (
                         asset_lock_proof,
@@ -433,19 +430,17 @@ impl AppContext {
                 .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
         }
 
-        self.db
-            .set_asset_lock_identity_id(
-                tx_id.as_byte_array(),
-                qualified_identity.identity.id().as_bytes(),
-            )?;
+        self.db.set_asset_lock_identity_id(
+            tx_id.as_byte_array(),
+            qualified_identity.identity.id().as_bytes(),
+        )?;
 
         if let Some((amount, top_up_index)) = top_up_index {
-            self.db
-                .insert_top_up(
-                    qualified_identity.identity.id().as_bytes(),
-                    top_up_index,
-                    amount,
-                )?;
+            self.db.insert_top_up(
+                qualified_identity.identity.id().as_bytes(),
+                top_up_index,
+                amount,
+            )?;
         }
 
         // Calculate actual fee for the FeeResult

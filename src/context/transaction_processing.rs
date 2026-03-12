@@ -15,7 +15,10 @@ use std::sync::{Arc, RwLock};
 
 impl AppContext {
     /// Broadcast a raw transaction via Core RPC or SPV depending on backend mode.
-    pub(crate) async fn broadcast_raw_transaction(&self, tx: &Transaction) -> Result<Txid, TaskError> {
+    pub(crate) async fn broadcast_raw_transaction(
+        &self,
+        tx: &Transaction,
+    ) -> Result<Txid, TaskError> {
         match self.core_backend_mode() {
             CoreBackendMode::Rpc => self
                 .core_client
@@ -51,12 +54,11 @@ impl AppContext {
         match tokio::time::timeout(timeout_duration, async {
             loop {
                 {
-                    let proofs = self
-                        .transactions_waiting_for_finality
-                        .lock()
-                        .map_err(|_| TaskError::LockPoisoned {
+                    let proofs = self.transactions_waiting_for_finality.lock().map_err(|_| {
+                        TaskError::LockPoisoned {
                             resource: "transactions_waiting_for_finality",
-                        });
+                        }
+                    });
                     if let Ok(proofs) = proofs
                         && let Some(Some(proof)) = proofs.get(&tx_id)
                     {
@@ -127,14 +129,13 @@ impl AppContext {
         }
 
         // Step 2: Store the asset lock transaction in the database *before* broadcast.
-        self.db
-            .store_asset_lock_transaction(
-                asset_lock_transaction,
-                amount,
-                None,
-                wallet_seed_hash,
-                self.network,
-            )?;
+        self.db.store_asset_lock_transaction(
+            asset_lock_transaction,
+            amount,
+            None,
+            wallet_seed_hash,
+            self.network,
+        )?;
 
         // Step 3: Broadcast. On failure, clean up DB row and finality tracker.
         if let Err(e) = self.broadcast_raw_transaction(asset_lock_transaction).await {

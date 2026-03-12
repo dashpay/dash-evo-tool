@@ -53,7 +53,12 @@ impl AppContext {
             .values()
             .filter_map(|maybe_doc| maybe_doc.as_ref())
             .next()
-            .ok_or_else(|| TaskError::from(format!("No identity found with DPNS name '{}.dash'", dpns_name)))?;
+            .ok_or_else(|| {
+                TaskError::from(format!(
+                    "No identity found with DPNS name '{}.dash'",
+                    dpns_name
+                ))
+            })?;
 
         // Extract the identity ID from the records.identity field
         let identity_id = domain_doc
@@ -141,11 +146,7 @@ impl AppContext {
             })
             .map_err(|e| TaskError::from(format!("Error fetching DPNS names: {}", e)))?;
 
-        let wallets = self
-            .wallets
-            .read()
-            .map_err(TaskError::from)?
-            .clone();
+        let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
 
         // Try to derive keys from wallets if requested
         let mut encrypted_private_keys = std::collections::BTreeMap::new();

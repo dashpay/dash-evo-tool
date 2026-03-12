@@ -293,16 +293,15 @@ impl AppContext {
 
         let seed_hash = guard.seed_hash();
 
-        self.db
-            .add_address_if_not_exists(
-                &seed_hash,
-                &address,
-                &self.network,
-                &derivation_path,
-                path_reference,
-                path_type,
-                None,
-            )?;
+        self.db.add_address_if_not_exists(
+            &seed_hash,
+            &address,
+            &self.network,
+            &derivation_path,
+            path_reference,
+            path_type,
+            None,
+        )?;
 
         guard
             .known_addresses
@@ -452,7 +451,10 @@ impl AppContext {
             });
     }
 
-    async fn handle_spv_finality_event(&self, event: AssetLockFinalityEvent) -> Result<(), TaskError> {
+    async fn handle_spv_finality_event(
+        &self,
+        event: AssetLockFinalityEvent,
+    ) -> Result<(), TaskError> {
         match event {
             AssetLockFinalityEvent::InstantLock { txid, instant_lock } => {
                 // Check if this txid is pending in transactions_waiting_for_finality
@@ -604,7 +606,9 @@ impl AppContext {
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
             let mut known_addresses: std::collections::BTreeSet<Address> = {
-                let w = wallet_arc.read().map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
+                let w = wallet_arc
+                    .read()
+                    .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
                 w.known_addresses.keys().cloned().collect()
             };
 
@@ -704,15 +708,14 @@ impl AppContext {
                 }
 
                 // Insert UTXO row into DB
-                self.db
-                    .insert_utxo(
-                        outpoint.txid.as_ref(),
-                        outpoint.vout,
-                        &address,
-                        tx_out.value,
-                        &tx_out.script_pubkey.to_bytes(),
-                        self.network,
-                    )?;
+                self.db.insert_utxo(
+                    outpoint.txid.as_ref(),
+                    outpoint.vout,
+                    &address,
+                    tx_out.value,
+                    &tx_out.script_pubkey.to_bytes(),
+                    self.network,
+                )?;
             }
 
             // Write per-address balances and UTXOs into wallet model
@@ -769,8 +772,11 @@ impl AppContext {
             // Only replace transactions if SPV returned some, to avoid wiping
             // previously persisted history when SPV hasn't populated history yet.
             if !wallet_transactions.is_empty() {
-                self.db
-                    .replace_wallet_transactions(seed_hash, &self.network, &wallet_transactions)?;
+                self.db.replace_wallet_transactions(
+                    seed_hash,
+                    &self.network,
+                    &wallet_transactions,
+                )?;
             }
 
             if let Some(wref) = wallets_guard.get(seed_hash)

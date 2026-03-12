@@ -94,9 +94,7 @@ pub enum TaskError {
     WalletLocked,
 
     /// The requested document could not be found on the platform.
-    #[error(
-        "The document could not be found. It may have been deleted or the ID is incorrect."
-    )]
+    #[error("The document could not be found. It may have been deleted or the ID is incorrect.")]
     DocumentNotFound,
 
     /// An asset lock's instant-lock proof has expired before Platform verified it.
@@ -137,7 +135,9 @@ pub enum TaskError {
     IdentityNotFound,
 
     /// Timed out waiting for transaction confirmation.
-    #[error("The transaction was not confirmed within the expected time. Please check your network connection and retry.")]
+    #[error(
+        "The transaction was not confirmed within the expected time. Please check your network connection and retry."
+    )]
     ConfirmationTimeout,
 
     /// Dash Core peer-to-peer communication failed.
@@ -205,7 +205,6 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet / platform-address operation errors
     // ──────────────────────────────────────────────────────────────────────────
-
     /// Wallet address provider could not be set up (wallet is open but derivation failed).
     #[error(
         "Could not prepare wallet addresses for sync. Please close and reopen your wallet, then retry."
@@ -227,7 +226,6 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Asset-lock transaction errors
     // ──────────────────────────────────────────────────────────────────────────
-
     /// The asset lock transaction was expected in the local database but was not found.
     #[error(
         "The asset lock transaction could not be found locally. Please check your network connection and retry."
@@ -241,15 +239,12 @@ pub enum TaskError {
     AssetLockNoCreditOutputs,
 
     /// Could not derive a Core address from an asset lock output script.
-    #[error(
-        "Could not read the address from the asset lock transaction. Please retry."
-    )]
+    #[error("Could not read the address from the asset lock transaction. Please retry.")]
     AssetLockAddressDerivationFailed { detail: String },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Token contract errors
     // ──────────────────────────────────────────────────────────────────────────
-
     /// A token at the expected position was not found in the contract.
     #[error(
         "Token at position {position} was not found in the contract. Please reload the contract and retry."

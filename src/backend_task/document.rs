@@ -2,6 +2,7 @@ use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
+use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
 use dash_sdk::dpp::document::{DocumentV0Getters, DocumentV0Setters};
@@ -25,7 +26,6 @@ use dash_sdk::platform::{
     DataContract, Document, DocumentQuery, Fetch, FetchMany, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::IndexMap;
-use dash_sdk::Sdk;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]

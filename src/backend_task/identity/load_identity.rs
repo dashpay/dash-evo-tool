@@ -81,11 +81,7 @@ impl AppContext {
 
         let mut encrypted_private_keys = BTreeMap::new();
 
-        let wallets = self
-            .wallets
-            .read()
-            .map_err(TaskError::from)?
-            .clone();
+        let wallets = self.wallets.read().map_err(TaskError::from)?.clone();
 
         if identity_type == IdentityType::User
             && derive_keys_from_wallets
@@ -182,7 +178,9 @@ impl AppContext {
                     );
                     Some((voter_identity, key))
                 } else {
-                    return Err(TaskError::from("Voting private key is not valid".to_string()));
+                    return Err(TaskError::from(
+                        "Voting private key is not valid".to_string(),
+                    ));
                 }
             } else {
                 None
@@ -340,9 +338,7 @@ impl AppContext {
             dpns_names: maybe_owned_dpns_names,
             associated_wallets: wallets
                 .values()
-                .filter_map(|wallet| {
-                    wallet.read().ok().map(|w| (w.seed_hash(), wallet.clone()))
-                })
+                .filter_map(|wallet| wallet.read().ok().map(|w| (w.seed_hash(), wallet.clone())))
                 .collect(),
             wallet_index: None, //todo
             top_ups: Default::default(),
@@ -357,9 +353,7 @@ impl AppContext {
         if let Some((wallet_seed_hash, identity_index)) = wallet_info
             && let Some(wallet_arc) = wallets.get(&wallet_seed_hash)
         {
-            let mut wallet = wallet_arc
-                .write()
-                .map_err(TaskError::from)?;
+            let mut wallet = wallet_arc.write().map_err(TaskError::from)?;
             wallet
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());

@@ -8,7 +8,7 @@ name: "Copilot Setup Steps"
 # and protoc, then pre-builds tenderdash-proto so that
 # tenderdash-proto-compiler (which downloads Tenderdash sources from the
 # internet during cargo build) runs here — before the network-restricted
-# agent sandbox — and its output is available in the cached target directory.
+# agent sandbox — and its output is available to subsequent steps.
 
 on:
   workflow_dispatch:

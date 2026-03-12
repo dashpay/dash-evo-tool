@@ -63,10 +63,8 @@ impl AppContext {
             sdk.version(),
             None,
         )
-        .map_err(|_| {
-            TaskError::Generic(
-                "Could not build the key update transaction. Please retry.".to_string(),
-            )
+        .map_err(|e| TaskError::IdentityUpdateTransitionError {
+            source: Box::new(e),
         })?;
 
         let result = state_transition.broadcast_and_wait(sdk, None).await?;
@@ -121,7 +119,8 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        self.update_local_qualified_identity(&qualified_identity)?;
+        self.update_local_qualified_identity(&qualified_identity)
+            .map_err(|e| TaskError::IdentitySaveError { source: e })?;
         Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
     }
 }

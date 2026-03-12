@@ -623,6 +623,8 @@ impl AppContext {
                     .ok_or_else(|| TaskError::Generic("Wallet not found".into()))?
             };
 
+            // TODO: Replace Generic with a dedicated TaskError::LockPoisoned variant
+            //       that preserves the PoisonError as #[source] with a user-friendly Display.
             let wallet_guard = wallet
                 .read()
                 .map_err(|e| TaskError::Generic(e.to_string()))?;

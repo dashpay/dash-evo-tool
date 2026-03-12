@@ -52,9 +52,12 @@ impl AppContext {
         self.update_local_qualified_identity(&qualified_identity_to_update)?;
 
         // Send refresh message to refresh the Identities Screen
-        sender.send(TaskResult::Refresh).await.map_err(|_| {
-            TaskError::Generic("Internal update failed. Please retry the operation.".to_string())
-        })?;
+        sender
+            .send(TaskResult::Refresh)
+            .await
+            .map_err(|e| TaskError::InternalSendError {
+                source: Box::new(e),
+            })?;
 
         Ok(BackendTaskSuccessResult::RefreshedIdentity(
             qualified_identity,

@@ -103,11 +103,10 @@ impl ContactRequests {
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
-            // Get wallet for the selected identity
+            // Get wallet for the selected identity (don't show error on auto-select;
+            // some identities like evonodes may lack document signing keys)
             new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None)
-                    .or_show_error(app_context.egui_ctx())
-                    .unwrap_or(None);
+                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or(None);
 
             // Load requests from database for this identity
             new_self.load_requests_from_database();

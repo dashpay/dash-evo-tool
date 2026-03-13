@@ -77,11 +77,10 @@ impl QRCodeGeneratorScreen {
             new_self.selected_identity_string =
                 identities[0].identity.id().to_string(Encoding::Base58);
 
-            // Get wallet for the selected identity
+            // Get wallet for the selected identity (don't show error on auto-select;
+            // some identities like evonodes may lack document signing keys)
             new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None)
-                    .or_show_error(app_context.egui_ctx())
-                    .unwrap_or(None);
+                get_selected_wallet(&identities[0], Some(&app_context), None).unwrap_or(None);
         }
 
         new_self

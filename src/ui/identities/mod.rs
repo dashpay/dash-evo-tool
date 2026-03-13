@@ -78,8 +78,17 @@ pub fn get_selected_wallet(
         qualified_identity
             .document_signing_key(&preorder_document_type)
             .ok_or_else(|| {
-                "Identity doesn't have an authentication key for signing document transitions"
-                    .to_string()
+                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                let identity_label = qualified_identity
+                    .alias
+                    .as_deref()
+                    .or_else(|| qualified_identity.dpns_names.first().map(|n| n.name.as_str()))
+                    .unwrap_or("unknown");
+                format!(
+                    "Identity '{}' ({}) doesn't have an authentication key for signing document transitions",
+                    identity_label,
+                    qualified_identity.identity.id()
+                )
             })?
     } else {
         // Fallback: directly use the provided selected key.

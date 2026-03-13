@@ -1129,7 +1129,7 @@ impl ScreenLike for SetTokenPriceScreen {
                     ComponentStyles::add_primary_button_enabled(ui, button_active, set_price_text);
 
                 if let Err(hover_message) = validation_result {
-                    button_response.on_disabled_hover_text(hover_message);
+                    button_response.disabled_tooltip(hover_message);
                 } else if button_response.clicked() {
                     self.show_confirmation_popup = true;
                 }

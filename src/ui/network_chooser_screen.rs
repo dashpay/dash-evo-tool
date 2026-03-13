@@ -1637,7 +1637,7 @@ impl NetworkChooserScreen {
         let mut button_response = ui.add_enabled(!is_active, clear_button);
         if is_active {
             button_response =
-                button_response.on_disabled_hover_text("Stop the SPV client before clearing data");
+                button_response.disabled_tooltip("Stop the SPV client before clearing data");
         }
 
         if button_response.clicked() {

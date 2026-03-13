@@ -610,7 +610,7 @@ impl ScreenLike for TransferTokensScreen {
                 };
 
                 if ComponentStyles::add_primary_button_enabled(ui, ready, "Transfer")
-                    .on_disabled_hover_text(&hover_text)
+                    .disabled_tooltip(&hover_text)
                     .clicked()
                 {
                     // Use the amount value directly since it's already parsed

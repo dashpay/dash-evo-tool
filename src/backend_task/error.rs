@@ -304,6 +304,36 @@ pub enum TaskError {
         #[source]
         source: Box<SdkError>,
     },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Dash Core lifecycle errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Dash Core could not be started (binary missing, config error, I/O failure).
+    #[error("Could not start Dash Core. Please check your Dash Core path and try again.")]
+    DashCoreStartError {
+        #[source]
+        source: std::io::Error,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Network restriction errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The requested operation is not available on the current network.
+    #[error(
+        "{operation} is only available on {allowed_networks}. Switch to a supported network and retry."
+    )]
+    OperationNotAvailableOnNetwork {
+        operation: &'static str,
+        allowed_networks: &'static str,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Legacy bridge
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Legacy string error — temporary bridge for callers that still return `Result<_, String>`.
+    /// All callers should be migrated to typed variants over time.
+    #[error("{0}")]
+    LegacyError(String),
 }
 
 /// Produce a user-friendly message by inspecting the SDK error variant.
@@ -365,9 +395,9 @@ impl From<String> for TaskError {
         if s.contains("Wallet file not specified") {
             TaskError::CoreWalletNotConfigured
         } else {
-            // Legacy bridge: strings are treated as user-facing messages.
+            // Legacy bridge for callers that still return `Result<_, String>`.
             // All callers should be migrated to typed variants over time.
-            TaskError::UserInput(s)
+            TaskError::LegacyError(s)
         }
     }
 }
@@ -484,8 +514,8 @@ mod tests {
     fn from_string_passes_through_other_errors() {
         let err: TaskError = "Connection refused".to_string().into();
         assert!(
-            matches!(err, TaskError::UserInput(ref s) if s == "Connection refused"),
-            "Expected UserInput, got: {err:?}",
+            matches!(err, TaskError::LegacyError(ref s) if s == "Connection refused"),
+            "Expected LegacyError, got: {err:?}",
         );
     }
 

@@ -275,7 +275,7 @@ impl AppContext {
             }
             CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
                 .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
-                .map_err(|e| TaskError::UserInput(e.to_string()))
+                .map_err(|e| TaskError::DashCoreStartError { source: e })
                 .map(|_| BackendTaskSuccessResult::None),
             CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
@@ -325,9 +325,10 @@ impl AppContext {
                 wallet,
             } => {
                 if !matches!(self.network, Network::Regtest | Network::Devnet) {
-                    return Err(TaskError::UserInput(
-                        "Mining is only available on Regtest and Devnet".to_string(),
-                    ));
+                    return Err(TaskError::OperationNotAvailableOnNetwork {
+                        operation: "Mining",
+                        allowed_networks: "Regtest and Devnet",
+                    });
                 }
                 let ctx = self.clone();
                 let mined = tokio::task::spawn_blocking(move || {

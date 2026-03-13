@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
+use crate::backend_task::error::TaskError;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
@@ -26,7 +27,7 @@ impl AppContext {
         &self,
         sdk: &Sdk,
         input: RegisterDpnsNameInput,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let mut rng = StdRng::from_entropy();
         let dpns_contract = self.dpns_contract.clone();
 
@@ -35,10 +36,10 @@ impl AppContext {
         let entropy = Bytes32::random_with_rng(&mut rng);
         let preorder_document_type = dpns_contract
             .document_type_for_name("preorder")
-            .map_err(|_| "DPNS preorder document type not found".to_string())?;
+            .map_err(|_| TaskError::DataContractNotFound)?;
         let domain_document_type = dpns_contract
             .document_type_for_name("domain")
-            .map_err(|_| "DPNS domain document type not found".to_string())?;
+            .map_err(|_| TaskError::DataContractNotFound)?;
 
         let preorder_id = Document::generate_document_id_v0(
             &dpns_contract.id(),
@@ -125,16 +126,14 @@ impl AppContext {
 
         let public_key = qualified_identity
             .document_signing_key(&preorder_document_type)
-            .ok_or(
+            .ok_or(TaskError::UserInput(
                 "Identity doesn't have an authentication key for signing document transitions"
                     .to_string(),
-            )?;
+            ))?;
 
-        // Estimate fees for DPNS registration (2 document batch transitions)
         let fee_estimator = PlatformFeeEstimator::new();
         let estimated_fee = fee_estimator.estimate_document_batch(2);
 
-        // Track balance before registration
         let balance_before = qualified_identity.identity.balance();
 
         let _ = preorder_document
@@ -147,8 +146,7 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         let _ = domain_document
             .put_to_platform_and_wait_for_response(
@@ -160,11 +158,8 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
-        // Re-fetch the identity's DPNS names from Platform
-        // TODO: Use the proof in the response to see if the name is contested or not (document is returned whether it's contested or not)
         let dpns_names_document_query = DocumentQuery {
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -205,24 +200,22 @@ impl AppContext {
                     })
                     .collect::<Vec<DPNSNameInfo>>()
             })
-            .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
+            .map_err(|e| TaskError::DpnsFetchError {
+                source: Box::new(e),
+            })?;
 
         qualified_identity.dpns_names = owned_dpns_names;
 
-        // If alias is not set, set it to the newly registered DPNS name
         if qualified_identity.alias.is_none() {
             qualified_identity.alias = Some(format!("{}.dash", input.name_input));
         }
 
-        // Calculate actual fee paid
-        // Note: We need to re-fetch the identity to get the updated balance
         let refreshed_identity = dash_sdk::platform::Identity::fetch_by_identifier(
             sdk,
             qualified_identity.identity.id(),
         )
-        .await
-        .map_err(|e| format!("Failed to fetch identity balance: {}", e))?
-        .ok_or_else(|| "Identity not found".to_string())?;
+        .await?
+        .ok_or(TaskError::IdentityNotFound)?;
 
         let balance_after = refreshed_identity.balance();
         let actual_fee = balance_before.saturating_sub(balance_after);
@@ -241,12 +234,10 @@ impl AppContext {
             );
         }
 
-        // Update qualified identity with new balance
         qualified_identity.identity = refreshed_identity;
 
-        // Update local qualified identity in the database
         self.update_local_qualified_identity(&qualified_identity)
-            .map_err(|e| format!("Database error: {}", e))?;
+            .map_err(|e| TaskError::IdentitySaveError { source: e })?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))

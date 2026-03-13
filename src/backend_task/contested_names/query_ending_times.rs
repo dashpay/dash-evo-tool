@@ -1,3 +1,4 @@
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use chrono::{DateTime, Duration, Utc};
@@ -15,7 +16,7 @@ impl AppContext {
         self: &Arc<Self>,
         sdk: Sdk,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<(), TaskError> {
         let now: DateTime<Utc> = Utc::now();
         let start_time_dt = now - Duration::weeks(2);
         let end_time_dt = now + Duration::weeks(2);
@@ -68,29 +69,26 @@ impl AppContext {
                         error,
                     }) = &e
                     {
-                        // Encode the query using bincode
-                        let encoded_query = match bincode::encode_to_vec(
-                            &end_time_query,
-                            bincode::config::standard(),
-                        )
-                        .map_err(|encode_err| {
-                            tracing::error!("Error encoding query: {}", encode_err);
-                            format!("Error encoding query: {}", encode_err)
-                        }) {
-                            Ok(encoded_query) => encoded_query,
-                            Err(e) => return Err(e),
-                        };
+                        let encoded_query =
+                            bincode::encode_to_vec(&end_time_query, bincode::config::standard())
+                                .map_err(|encode_err| {
+                                    tracing::error!("Error encoding query: {}", encode_err);
+                                    TaskError::SerializationError {
+                                        detail: format!("Error encoding query: {}", encode_err),
+                                    }
+                                })?;
 
-                        // Encode the path_query using bincode
                         let verification_path_query_bytes =
-                            match bincode::encode_to_vec(path_query, bincode::config::standard())
+                            bincode::encode_to_vec(path_query, bincode::config::standard())
                                 .map_err(|encode_err| {
                                     tracing::error!("Error encoding path_query: {}", encode_err);
-                                    format!("Error encoding path_query: {}", encode_err)
-                                }) {
-                                Ok(encoded_path_query) => encoded_path_query,
-                                Err(e) => return Err(e),
-                            };
+                                    TaskError::SerializationError {
+                                        detail: format!(
+                                            "Error encoding path_query: {}",
+                                            encode_err
+                                        ),
+                                    }
+                                })?;
 
                         self.db
                             .insert_proof_log_item(ProofLogItem {
@@ -102,7 +100,7 @@ impl AppContext {
                                 proof_bytes: proof_bytes.clone(),
                                 error: Some(error.clone()),
                             })
-                            .map_err(|e| e.to_string())?
+                            .map_err(|e| TaskError::Database { source: e })?
                     }
                     // TODO: Replace the "contract not found" string match with a
                     // structural SDK variant when one is available.
@@ -114,13 +112,12 @@ impl AppContext {
                         retries += 1;
                         if retries > MAX_RETRIES {
                             tracing::error!("Max retries reached for query: {}", e);
-                            return Err(format!("Error fetching vote polls after retries: {}", e));
+                            return Err(TaskError::from(e));
                         } else {
-                            // Retry
                             continue;
                         }
                     } else {
-                        return Err(format!("Error fetching vote polls: {}", e));
+                        return Err(TaskError::from(e));
                     }
                 }
             };
@@ -141,6 +138,6 @@ impl AppContext {
 
         self.db
             .update_ending_time(contests_end_times, self)
-            .map_err(|e| format!("Error updating ending time: {}", e))
+            .map_err(|e| TaskError::Database { source: e })
     }
 }

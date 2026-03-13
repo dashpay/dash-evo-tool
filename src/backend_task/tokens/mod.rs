@@ -294,10 +294,7 @@ impl AppContext {
                 .await
                 .map(|_| BackendTaskSuccessResult::RegisteredTokenContract)
             }
-            TokenTask::QueryMyTokenBalances => self
-                .query_my_token_balances(sdk, sender)
-                .await
-                .map_err(TaskError::from),
+            TokenTask::QueryMyTokenBalances => self.query_my_token_balances(sdk, sender).await,
             TokenTask::MintTokens {
                 sending_identity,
                 data_contract,
@@ -322,10 +319,10 @@ impl AppContext {
                 )
                 .await
             }
-            TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => self
-                .query_descriptions_by_keyword(keyword, cursor, sdk)
-                .await
-                .map_err(TaskError::from),
+            TokenTask::QueryDescriptionsByKeyword(keyword, cursor) => {
+                self.query_descriptions_by_keyword(keyword, cursor, sdk)
+                    .await
+            }
             TokenTask::TransferTokens {
                 sending_identity,
                 recipient_id,
@@ -498,23 +495,23 @@ impl AppContext {
             TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
                 identity_id,
                 token_id,
-            } => self
-                .query_token_non_claimed_perpetual_distribution_rewards_with_explanation(
+            } => {
+                self.query_token_non_claimed_perpetual_distribution_rewards_with_explanation(
                     *identity_id,
                     *token_id,
                     sdk,
                 )
                 .await
-                .map_err(TaskError::from),
-            TokenTask::QueryIdentityTokenBalance(identity_token_pair) => self
-                .query_token_balance(
+            }
+            TokenTask::QueryIdentityTokenBalance(identity_token_pair) => {
+                self.query_token_balance(
                     sdk,
                     identity_token_pair.identity_id,
                     identity_token_pair.token_id,
                     sender,
                 )
                 .await
-                .map_err(TaskError::from),
+            }
             TokenTask::FetchTokenByContractId(contract_id) => {
                 match DataContract::fetch_by_identifier(sdk, *contract_id).await {
                     Ok(Some(data_contract)) => {
@@ -633,10 +630,9 @@ impl AppContext {
                 )
                 .await
             }
-            TokenTask::QueryTokenPricing(token_id) => self
-                .query_token_pricing(*token_id, sdk, sender)
-                .await
-                .map_err(TaskError::from),
+            TokenTask::QueryTokenPricing(token_id) => {
+                self.query_token_pricing(*token_id, sdk, sender).await
+            }
         }
     }
 

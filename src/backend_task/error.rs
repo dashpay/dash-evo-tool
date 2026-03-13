@@ -2,8 +2,6 @@
 //!
 //! `Display` → user-friendly text (shown in `MessageBanner`).
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
-//! `From<String>` → backwards compatible with existing `Result<T, String>` code.
-//!   Parses known error patterns into typed variants automatically.
 
 use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc;
@@ -359,9 +357,7 @@ pub enum TaskError {
     // Wallet persistence errors
     // ──────────────────────────────────────────────────────────────────────────
     /// A wallet record could not be found or updated in the local database.
-    #[error(
-        "Could not update wallet settings. Please restart the application and try again."
-    )]
+    #[error("Could not update wallet settings. Please restart the application and try again.")]
     WalletDatabasePersistError,
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -386,14 +382,6 @@ pub enum TaskError {
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Legacy bridge
-    // ──────────────────────────────────────────────────────────────────────────
-    /// Legacy string error — temporary bridge for callers that still return `Result<_, String>`.
-    /// All callers should be migrated to typed variants over time.
-    #[error("{0}")]
-    LegacyError(String),
 }
 
 /// Returns `true` when the SDK error indicates an invalid instant asset lock
@@ -463,18 +451,6 @@ fn sdk_error_user_message(error: &SdkError) -> String {
             // jargon or technical details. The full error is available to developers via the
             // `#[source]` chain in `Debug` and the details panel (not shown in basic mode).
             "An unexpected error occurred. Please try again later.".to_string()
-        }
-    }
-}
-
-impl From<String> for TaskError {
-    fn from(s: String) -> Self {
-        if s.contains("Wallet file not specified") {
-            TaskError::CoreWalletNotConfigured
-        } else {
-            // Legacy bridge for callers that still return `Result<_, String>`.
-            // All callers should be migrated to typed variants over time.
-            TaskError::LegacyError(s)
         }
     }
 }
@@ -590,24 +566,6 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
-
-    #[test]
-    fn from_string_detects_rpc_error_minus_19() {
-        let err: TaskError = "JSON-RPC error: RPC error response: RpcError { code: -19, message: \"Wallet file not specified\" }".to_string().into();
-        assert!(
-            matches!(err, TaskError::CoreWalletNotConfigured),
-            "Expected CoreWalletNotConfigured, got: {err:?}",
-        );
-    }
-
-    #[test]
-    fn from_string_passes_through_other_errors() {
-        let err: TaskError = "Connection refused".to_string().into();
-        assert!(
-            matches!(err, TaskError::LegacyError(ref s) if s == "Connection refused"),
-            "Expected LegacyError, got: {err:?}",
-        );
-    }
 
     #[test]
     fn display_message_is_user_friendly() {

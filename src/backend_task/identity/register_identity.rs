@@ -52,7 +52,8 @@ impl AppContext {
                     let wallet = wallet.read().map_err(TaskError::from)?;
                     wallet_id = wallet.seed_hash();
                     wallet
-                        .private_key_for_address(&address, self.network)?
+                        .private_key_for_address(&address, self.network)
+                        .map_err(TaskError::UserInput)?
                         .ok_or(TaskError::AssetLockNotValidForWallet)?
                 };
                 let asset_lock_proof = if let AssetLockProof::Instant(instant_asset_lock_proof) =
@@ -103,16 +104,18 @@ impl AppContext {
                         Err(e) => {
                             // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                             // Only retry if something actually changed.
-                            if !wallet.reload_utxos(self)? {
-                                return Err(TaskError::from(e));
+                            if !wallet.reload_utxos(self).map_err(TaskError::UserInput)? {
+                                return Err(TaskError::UserInput(e));
                             }
-                            wallet.registration_asset_lock_transaction(
-                                self,
-                                sdk.network,
-                                amount,
-                                true,
-                                identity_index,
-                            )?
+                            wallet
+                                .registration_asset_lock_transaction(
+                                    self,
+                                    sdk.network,
+                                    amount,
+                                    true,
+                                    identity_index,
+                                )
+                                .map_err(TaskError::UserInput)?
                         }
                     }
                 };
@@ -185,14 +188,16 @@ impl AppContext {
                 let (asset_lock_transaction, asset_lock_proof_private_key) = {
                     let mut wallet = wallet.write().map_err(TaskError::from)?;
                     wallet_id = wallet.seed_hash();
-                    wallet.registration_asset_lock_transaction_for_utxo(
-                        self,
-                        sdk.network,
-                        utxo,
-                        tx_out.clone(),
-                        input_address.clone(),
-                        identity_index,
-                    )?
+                    wallet
+                        .registration_asset_lock_transaction_for_utxo(
+                            self,
+                            sdk.network,
+                            utxo,
+                            tx_out.clone(),
+                            input_address.clone(),
+                            identity_index,
+                        )
+                        .map_err(TaskError::UserInput)?
                 };
 
                 let used_utxos = BTreeMap::from([(utxo, (tx_out.clone(), input_address.clone()))]);
@@ -217,7 +222,7 @@ impl AppContext {
             .create_identifier()
             .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
-        let public_keys = keys.to_public_keys_map()?;
+        let public_keys = keys.to_public_keys_map().map_err(TaskError::UserInput)?;
 
         // Debug: Log the keys being registered to verify contract bounds are set
         for (key_id, key) in &public_keys {
@@ -518,7 +523,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys.to_public_keys_map()?;
+        let public_keys = keys.to_public_keys_map().map_err(TaskError::UserInput)?;
 
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();

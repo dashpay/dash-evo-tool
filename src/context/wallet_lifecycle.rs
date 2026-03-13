@@ -23,7 +23,9 @@ impl AppContext {
     }
 
     pub fn clear_spv_data(&self) -> Result<(), TaskError> {
-        self.spv_manager.clear_data_dir().map_err(TaskError::from)
+        self.spv_manager
+            .clear_data_dir()
+            .map_err(TaskError::UserInput)
     }
 
     pub fn clear_network_database(&self) -> Result<(), TaskError> {
@@ -69,7 +71,9 @@ impl AppContext {
         // (spawned inside run_spv_loop) always capture a valid sender.
         self.spv_setup_reconcile_listener();
         self.spv_setup_finality_listener();
-        self.spv_manager.start(expected_wallets)?;
+        self.spv_manager
+            .start(expected_wallets)
+            .map_err(TaskError::UserInput)?;
         // Immediately reflect the new SPV status in ConnectionStatus so the
         // UI sees the change on the next frame instead of waiting for the
         // next throttled trigger_refresh() cycle (2-10 seconds).

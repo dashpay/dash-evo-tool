@@ -21,7 +21,8 @@ impl AppContext {
             let derived = self
                 .spv_manager
                 .next_bip44_receive_address(seed_hash, 0)
-                .await?;
+                .await
+                .map_err(crate::backend_task::error::TaskError::UserInput)?;
 
             let _ = self.register_spv_address(
                 &wallet_arc,
@@ -35,7 +36,8 @@ impl AppContext {
         } else {
             let mut wallet = wallet_arc.write()?;
             wallet
-                .receive_address(self.network, true, Some(self))?
+                .receive_address(self.network, true, Some(self))
+                .map_err(crate::backend_task::error::TaskError::UserInput)?
                 .to_string()
         };
 

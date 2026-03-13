@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -60,8 +61,8 @@ impl AppContext {
                 Err(e) => {
                     // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                     // Only retry if something actually changed.
-                    if !wallet.reload_utxos(self)? {
-                        return Err(e.into());
+                    if !wallet.reload_utxos(self).map_err(TaskError::UserInput)? {
+                        return Err(TaskError::UserInput(e));
                     }
                     let (tx, private_key, address, _change, utxos) = wallet
                         .generic_asset_lock_transaction(
@@ -69,7 +70,8 @@ impl AppContext {
                             self.network,
                             asset_lock_amount,
                             allow_take_fee_from_amount,
-                        )?;
+                        )
+                        .map_err(TaskError::UserInput)?;
                     (tx, private_key, address, utxos)
                 }
             }
@@ -154,9 +156,11 @@ impl AppContext {
             // separation between receive and change addresses.
             let change_platform_address = if !fee_deduct_from_output {
                 let mut wallet_w = wallet_arc.write()?;
-                let addr = wallet_w.change_address(self.network, Some(self))?;
+                let addr = wallet_w
+                    .change_address(self.network, Some(self))
+                    .map_err(TaskError::UserInput)?;
                 Some(PlatformAddress::try_from(addr).map_err(|e| {
-                    crate::backend_task::error::TaskError::AddressConversionFailed {
+                    TaskError::AddressConversionFailed {
                         detail: e.to_string(),
                     }
                 })?)

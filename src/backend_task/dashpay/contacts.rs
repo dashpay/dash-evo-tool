@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -199,13 +200,15 @@ pub async fn load_contacts(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for contact requests where we are the sender (ownerId)
     let mut outgoing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+        .map_err(|e| TaskError::DpnsFetchError {
+            source: Box::new(e),
+        })?;
 
     outgoing_query = outgoing_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -216,7 +219,9 @@ pub async fn load_contacts(
 
     // Query for contact requests where we are the recipient (toUserId)
     let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+        .map_err(|e| TaskError::DpnsFetchError {
+            source: Box::new(e),
+        })?;
 
     incoming_query = incoming_query.with_where(WhereClause {
         field: "toUserId".to_string(),
@@ -232,13 +237,9 @@ pub async fn load_contacts(
     incoming_query.limit = 100;
 
     // Fetch both incoming and outgoing contact requests
-    let outgoing_docs = Document::fetch_many(sdk, outgoing_query)
-        .await
-        .map_err(|e| format!("Error fetching outgoing contacts: {}", e))?;
+    let outgoing_docs = Document::fetch_many(sdk, outgoing_query).await?;
 
-    let incoming_docs = Document::fetch_many(sdk, incoming_query)
-        .await
-        .map_err(|e| format!("Error fetching incoming contacts: {}", e))?;
+    let incoming_docs = Document::fetch_many(sdk, incoming_query).await?;
 
     // Convert to vectors for easier processing
     let outgoing: Vec<(Identifier, Document)> = outgoing_docs
@@ -278,7 +279,9 @@ pub async fn load_contacts(
 
     // Now query for contact info documents
     let mut contact_info_query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+        .map_err(|e| TaskError::DpnsFetchError {
+            source: Box::new(e),
+        })?;
 
     contact_info_query = contact_info_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -287,9 +290,7 @@ pub async fn load_contacts(
     });
     contact_info_query.limit = 100;
 
-    let contact_info_docs = Document::fetch_many(sdk, contact_info_query)
-        .await
-        .map_err(|e| format!("Error fetching contact info: {}", e))?;
+    let contact_info_docs = Document::fetch_many(sdk, contact_info_query).await?;
 
     // Build a map of contact ID to contact info
     let mut contact_info_map: HashMap<Identifier, ContactData> = HashMap::new();
@@ -517,13 +518,13 @@ pub async fn add_contact(
     _identity: QualifiedIdentity,
     _contact_username: String,
     _account_label: Option<String>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     // TODO: Steps to implement:
     // 1. Resolve username to identity ID via DPNS
     // 2. Generate encryption keys for this contact relationship
     // 3. Create the contactRequest document with encrypted fields
     // 4. Broadcast the state transition
-    Err("Adding contacts via username is not yet implemented. Use the contact request workflow instead.".to_string())
+    Err(TaskError::UserInput("Adding contacts via username is not yet implemented. Use the contact request workflow instead.".to_string()))
 }
 
 pub async fn remove_contact(
@@ -531,8 +532,10 @@ pub async fn remove_contact(
     _sdk: &Sdk,
     _identity: QualifiedIdentity,
     _contact_id: Identifier,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     // TODO: Implement contact removal
     // This would involve deleting the contactInfo document if it exists
-    Err("Contact removal is not yet implemented".to_string())
+    Err(TaskError::UserInput(
+        "Contact removal is not yet implemented".to_string(),
+    ))
 }

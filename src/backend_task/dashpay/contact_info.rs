@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
@@ -289,13 +290,16 @@ pub async fn create_or_update_contact_info(
     note: Option<String>,
     display_hidden: bool,
     accepted_accounts: Vec<u32>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     let dashpay_contract = app_context.dashpay_contract.clone();
     let identity_id = identity.identity.id();
 
     // Query for existing contactInfo document
-    let mut query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+    let mut query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo").map_err(|e| {
+        TaskError::DpnsFetchError {
+            source: Box::new(e),
+        }
+    })?;
 
     query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -304,9 +308,7 @@ pub async fn create_or_update_contact_info(
     });
     query.limit = 100; // Get all contact info documents
 
-    let existing_docs = Document::fetch_many(sdk, query)
-        .await
-        .map_err(|e| format!("Error fetching contact info: {}", e))?;
+    let existing_docs = Document::fetch_many(sdk, query).await?;
 
     // Check if we already have a contactInfo for this contact
     let mut found_existing_doc = None;
@@ -327,7 +329,8 @@ pub async fn create_or_update_contact_info(
                 // Get the root key index to derive keys
                 if let Some(Value::U32(_root_idx)) = props.get("rootEncryptionKeyIndex") {
                     // Derive keys for this document
-                    let (enc_user_id_key, _) = derive_contact_info_keys(&identity, *deriv_idx)?;
+                    let (enc_user_id_key, _) = derive_contact_info_keys(&identity, *deriv_idx)
+                        .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
                     // Decrypt encToUserId to check if it matches
                     if let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") {
@@ -364,11 +367,12 @@ pub async fn create_or_update_contact_info(
     };
 
     // Derive encryption keys
-    let (enc_user_id_key, private_data_key) =
-        derive_contact_info_keys(&identity, derivation_index)?;
+    let (enc_user_id_key, private_data_key) = derive_contact_info_keys(&identity, derivation_index)
+        .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     // Encrypt toUserId
-    let encrypted_user_id = encrypt_to_user_id(&contact_user_id.to_buffer(), &enc_user_id_key)?;
+    let encrypted_user_id = encrypt_to_user_id(&contact_user_id.to_buffer(), &enc_user_id_key)
+        .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     // Create private data
     let mut private_data = ContactInfoPrivateData::new();
@@ -378,8 +382,8 @@ pub async fn create_or_update_contact_info(
     private_data.accepted_accounts = accepted_accounts;
 
     // Encrypt private data
-    let encrypted_private_data =
-        encrypt_private_data(&private_data.serialize(), &private_data_key)?;
+    let encrypted_private_data = encrypt_private_data(&private_data.serialize(), &private_data_key)
+        .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     // Get signing key
     let signing_key = identity
@@ -394,7 +398,7 @@ pub async fn create_or_update_contact_info(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or("No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.")?;
+        .ok_or_else(|| TaskError::UserInput("No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.".to_string()))?;
 
     // Create document properties
     let mut properties = BTreeMap::new();
@@ -443,8 +447,7 @@ pub async fn create_or_update_contact_info(
 
         let result = sdk
             .document_replace(builder, signing_key, &identity)
-            .await
-            .map_err(|e| format!("Error updating contact info: {}", e))?;
+            .await?;
 
         // Log the proof-verified document for audit trail
         match result {
@@ -501,10 +504,7 @@ pub async fn create_or_update_contact_info(
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let result = sdk
-            .document_create(builder, signing_key, &identity)
-            .await
-            .map_err(|e| format!("Error creating contact info: {}", e))?;
+        let result = sdk.document_create(builder, signing_key, &identity).await?;
 
         // Log the proof-verified document for audit trail
         match result {

@@ -1,5 +1,6 @@
 use super::{BackendTaskSuccessResult, IdentityIndex};
 use crate::app::TaskResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
@@ -29,7 +30,7 @@ impl AppContext {
         wallet_arc_ref: WalletArcRef,
         identity_index: IdentityIndex,
         _sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
 
         let mut fetched_identity: Option<Identity> = None;
@@ -39,11 +40,13 @@ impl AppContext {
         for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
             let public_key = {
                 let wallet = wallet_arc_ref.wallet.write().unwrap();
-                wallet.identity_authentication_ecdsa_public_key(
-                    self.network,
-                    identity_index,
-                    key_index,
-                )?
+                wallet
+                    .identity_authentication_ecdsa_public_key(
+                        self.network,
+                        identity_index,
+                        key_index,
+                    )
+                    .map_err(TaskError::UserInput)?
             };
 
             let key_hash = public_key.pubkey_hash().into();
@@ -52,8 +55,6 @@ impl AppContext {
                 after: None,
             };
 
-            // Only send detailed key index messages for single identity searches (not batch)
-            // The batch search (load_user_identities_up_to_index) sends its own simpler messages
             match Identity::fetch(sdk, query).await {
                 Ok(Some(identity)) => {
                     fetched_identity = Some(identity);
@@ -62,17 +63,17 @@ impl AppContext {
                     break;
                 }
                 Ok(None) => continue,
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(TaskError::from(e)),
             }
         }
 
         let identity = match fetched_identity {
             Some(identity) => identity,
             None => {
-                return Err(format!(
+                return Err(TaskError::UserInput(format!(
                     "No identity found for wallet identity index {} within the first {} derived authentication keys",
                     identity_index, AUTH_KEY_LOOKUP_WINDOW
-                ));
+                )));
             }
         };
 
@@ -92,16 +93,15 @@ impl AppContext {
         let matching_identity_key = match matching_identity_key {
             Some(key) => key,
             None => {
-                return Err(
+                return Err(TaskError::UserInput(
                     "Fetched identity does not contain the queried authentication key".to_string(),
-                );
+                ));
             }
         };
         let matching_identity_key_id = matching_identity_key.id();
 
         let identity_id = identity.id();
 
-        // Fetch DPNS names using SDK
         let dpns_names_document_query = DocumentQuery {
             data_contract: self.dpns_contract.clone(),
             document_type_name: "domain".to_string(),
@@ -142,7 +142,9 @@ impl AppContext {
                     })
                     .collect::<Vec<DPNSNameInfo>>()
             })
-            .map_err(|e| format!("Error fetching DPNS names: {}", e))?;
+            .map_err(|e| TaskError::DpnsFetchError {
+                source: Box::new(e),
+            })?;
 
         let highest_identity_key_id = identity
             .public_keys()
@@ -159,13 +161,15 @@ impl AppContext {
         let (public_key_result_map, public_key_hash_result_map) = {
             let mut wallet = wallet_arc_ref.wallet.write().unwrap();
             wallet_seed_hash = wallet.seed_hash();
-            wallet.identity_authentication_ecdsa_public_keys_data_map(
-                self,
-                true,
-                self.network,
-                identity_index,
-                0..top_bound,
-            )?
+            wallet
+                .identity_authentication_ecdsa_public_keys_data_map(
+                    self,
+                    true,
+                    self.network,
+                    identity_index,
+                    0..top_bound,
+                )
+                .map_err(TaskError::UserInput)?
         };
 
         let private_keys_map = identity
@@ -206,16 +210,18 @@ impl AppContext {
             .collect::<BTreeMap<_, _>>();
 
         if private_keys_map.is_empty() {
-            return Err("Could not match any identity keys to wallet derivation paths".to_string());
+            return Err(TaskError::UserInput(
+                "Could not match any identity keys to wallet derivation paths".to_string(),
+            ));
         }
 
         if !private_keys_map.contains_key(&(
             PrivateKeyTarget::PrivateKeyOnMainIdentity,
             matching_identity_key_id,
         )) {
-            return Err(
+            return Err(TaskError::UserInput(
                 "Unable to locate wallet derivation path for the queried identity key".to_string(),
-            );
+            ));
         }
 
         let private_keys = private_keys_map.into();
@@ -247,12 +253,11 @@ impl AppContext {
         qualified_identity.status = IdentityStatus::Active;
         qualified_identity.network = self.network;
 
-        // Insert qualified identity into the database
         self.insert_local_qualified_identity(
             &qualified_identity,
             &Some((wallet_seed_hash, identity_index)),
         )
-        .map_err(|e| format!("Database error: {}", e))?;
+        .map_err(|e| TaskError::IdentitySaveError { source: e })?;
 
         {
             let mut wallet = wallet_arc_ref.wallet.write().unwrap();
@@ -272,13 +277,12 @@ impl AppContext {
         wallet_arc_ref: WalletArcRef,
         max_identity_index: IdentityIndex,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let wallet_ref = wallet_arc_ref;
 
         let mut loaded_indices = Vec::new();
 
         for identity_index in 0..=max_identity_index {
-            // Send progress update before starting search for this index
             sender
                 .send(TaskResult::Success(Box::new(
                     BackendTaskSuccessResult::Message(format!(
@@ -287,7 +291,7 @@ impl AppContext {
                     )),
                 )))
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|_| TaskError::InternalSendError)?;
 
             match self
                 .load_user_identity_from_wallet(
@@ -301,20 +305,22 @@ impl AppContext {
                 Ok(_) => {
                     loaded_indices.push(identity_index);
                 }
+                Err(TaskError::UserInput(ref msg))
+                    if msg.starts_with("No identity found for wallet identity index") =>
+                {
+                    continue;
+                }
                 Err(error) => {
-                    // Ignore "not found" errors - just means no identity at this index
-                    if !error.starts_with("No identity found for wallet identity index") {
-                        return Err(error);
-                    }
+                    return Err(error);
                 }
             }
         }
 
         if loaded_indices.is_empty() {
-            return Err(format!(
+            return Err(TaskError::UserInput(format!(
                 "No identities found up to index {}.",
                 max_identity_index
-            ));
+            )));
         }
 
         let summary = if loaded_indices.len() == 1 {

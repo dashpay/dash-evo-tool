@@ -171,7 +171,9 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
-        let wallet_info = qualified_identity.determine_wallet_info()?;
+        let wallet_info = qualified_identity
+            .determine_wallet_info()
+            .map_err(TaskError::UserInput)?;
 
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;

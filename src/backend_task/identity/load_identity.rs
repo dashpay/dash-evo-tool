@@ -56,13 +56,16 @@ impl AppContext {
         } = input;
 
         // Verify the voting private key
-        let owner_private_key_bytes = verify_key_input(owner_private_key_input, "Owner")?;
+        let owner_private_key_bytes =
+            verify_key_input(owner_private_key_input, "Owner").map_err(TaskError::UserInput)?;
 
         // Verify the voting private key
-        let voting_private_key_bytes = verify_key_input(voting_private_key_input, "Voting")?;
+        let voting_private_key_bytes =
+            verify_key_input(voting_private_key_input, "Voting").map_err(TaskError::UserInput)?;
 
         let payout_address_private_key_bytes =
-            verify_key_input(payout_address_private_key_input, "Payout Address")?;
+            verify_key_input(payout_address_private_key_input, "Payout Address")
+                .map_err(TaskError::UserInput)?;
 
         // Parse the identity ID
         let identity_id = match Identifier::from_string(&identity_id_input, Encoding::Base58)
@@ -101,8 +104,9 @@ impl AppContext {
         if identity_type != IdentityType::User
             && let Some(owner_private_key_bytes) = owner_private_key_bytes
         {
-            let key =
-                self.verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)?;
+            let key = self
+                .verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)
+                .map_err(TaskError::UserInput)?;
             let key_id = key.id();
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -122,10 +126,12 @@ impl AppContext {
         if identity_type != IdentityType::User
             && let Some(payout_address_private_key_bytes) = payout_address_private_key_bytes
         {
-            let key = self.verify_payout_address_key_exists_on_identity(
-                &identity,
-                &payout_address_private_key_bytes,
-            )?;
+            let key = self
+                .verify_payout_address_key_exists_on_identity(
+                    &identity,
+                    &payout_address_private_key_bytes,
+                )
+                .map_err(TaskError::UserInput)?;
             let key_id = key.id();
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -163,10 +169,12 @@ impl AppContext {
                             Err(e) => return Err(TaskError::from(e)),
                         };
 
-                    let key = self.verify_voting_key_exists_on_identity(
-                        &voter_identity,
-                        &voting_private_key_bytes,
-                    )?;
+                    let key = self
+                        .verify_voting_key_exists_on_identity(
+                            &voter_identity,
+                            &voting_private_key_bytes,
+                        )
+                        .map_err(TaskError::UserInput)?;
                     let qualified_key =
                         QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                             key.clone(),
@@ -201,7 +209,7 @@ impl AppContext {
                 .filter_map(|key_string| {
                     Some(
                         verify_key_input(key_string, "User Key")
-                            .map_err(TaskError::from)
+                            .map_err(TaskError::UserInput)
                             .transpose()?
                             .and_then(|sk| {
                                 PrivateKey::from_byte_array(&sk, self.network).map_err(|e| {
@@ -357,7 +365,9 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
-        let wallet_info = qualified_identity.determine_wallet_info()?;
+        let wallet_info = qualified_identity
+            .determine_wallet_info()
+            .map_err(TaskError::UserInput)?;
 
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
@@ -436,7 +446,8 @@ impl AppContext {
                     self.network,
                     identity_index,
                     0..top_bound,
-                )?;
+                )
+                .map_err(TaskError::UserInput)?;
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,
                 wallet_seed_hash,
@@ -458,7 +469,8 @@ impl AppContext {
                     self.network,
                     candidate_index,
                     0..top_bound,
-                )?;
+                )
+                .map_err(TaskError::UserInput)?;
 
             if !Self::identity_matches_wallet_key_material(
                 identity,
@@ -475,7 +487,8 @@ impl AppContext {
                     self.network,
                     candidate_index,
                     0..top_bound,
-                )?;
+                )
+                .map_err(TaskError::UserInput)?;
 
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,

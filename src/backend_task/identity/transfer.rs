@@ -1,4 +1,5 @@
 use crate::backend_task::FeeResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -17,10 +18,9 @@ impl AppContext {
         to_identifier: Identifier,
         credits: Credits,
         id: Option<KeyID>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let sdk = self.sdk.load().as_ref().clone();
 
-        // Track balance before transfer for fee calculation
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = PlatformFeeEstimator::new().estimate_credit_transfer();
 
@@ -35,10 +35,8 @@ impl AppContext {
                 qualified_identity.clone(),
                 None,
             )
-            .await
-            .map_err(|e| format!("Transfer error: {}", e))?;
+            .await?;
 
-        // Calculate and log actual fee paid
         let actual_fee = balance_before
             .saturating_sub(sender_balance)
             .saturating_sub(credits);
@@ -59,22 +57,21 @@ impl AppContext {
 
         qualified_identity.identity.set_balance(sender_balance);
 
-        // If the receiver is a local qualified identity, update its balance too
         if let Some(receiver) = self
             .load_local_qualified_identities()
-            .map_err(|e| format!("Transfer error: {}", e))?
+            .map_err(|e| TaskError::Database { source: e })?
             .iter_mut()
             .find(|qi| qi.identity.id() == to_identifier)
         {
             receiver.identity.set_balance(receiver_balance);
             self.update_local_qualified_identity(receiver)
-                .map_err(|e| format!("Transfer error: {}", e))?;
+                .map_err(|e| TaskError::IdentitySaveError { source: e })?;
         }
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
-            .map_err(|e| e.to_string())
+            .map_err(|e| TaskError::IdentitySaveError { source: e })
     }
 }

@@ -1,5 +1,6 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use dash_sdk::Sdk;
@@ -17,15 +18,17 @@ impl AppContext {
         self: &Arc<Self>,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<(), String> {
+    ) -> Result<(), TaskError> {
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
-            .map_err(|_| "DPNS contract missing 'domain' document type".to_string())?;
+            .map_err(|_| TaskError::DataContractNotFound)?;
         let Some(contested_index) = document_type.find_contested_index() else {
-            return Err(
-                "Contested resource query failed: No contested index on dpns domains.".to_string(),
-            );
+            return Err(TaskError::PlatformFetchError {
+                source: Box::new(dash_sdk::Error::Generic(
+                    "No contested index on dpns domains".to_string(),
+                )),
+            });
         };
         const MAX_RETRIES: usize = 3;
         let mut start_at_value = None;
@@ -42,7 +45,6 @@ impl AppContext {
                 order_ascending: true,
             };
 
-            // Initialize retry counter
             let mut retries = 0;
 
             let contested_resources = match ContestedResource::fetch_many(sdk, query.clone()).await
@@ -58,44 +60,38 @@ impl AppContext {
                         error,
                     }) = &e
                     {
-                        // Encode the query using bincode
                         let encoded_query =
-                            match bincode::encode_to_vec(&query, bincode::config::standard())
-                                .map_err(|encode_err| {
+                            bincode::encode_to_vec(&query, bincode::config::standard()).map_err(
+                                |encode_err| {
                                     tracing::error!("Error encoding query: {}", encode_err);
-                                    format!("Error encoding query: {}", encode_err)
-                                }) {
-                                Ok(encoded_query) => encoded_query,
-                                Err(e) => return Err(e),
-                            };
+                                    TaskError::SerializationError {
+                                        detail: format!("Error encoding query: {}", encode_err),
+                                    }
+                                },
+                            )?;
 
-                        // Encode the path_query using bincode
                         let verification_path_query_bytes =
-                            match bincode::encode_to_vec(path_query, bincode::config::standard())
+                            bincode::encode_to_vec(path_query, bincode::config::standard())
                                 .map_err(|encode_err| {
                                     tracing::error!("Error encoding path_query: {}", encode_err);
-                                    format!("Error encoding path_query: {}", encode_err)
-                                }) {
-                                Ok(encoded_path_query) => encoded_path_query,
-                                Err(e) => {
-                                    return Err(format!("Contested resource query failed: {}", e));
-                                }
-                            };
+                                    TaskError::SerializationError {
+                                        detail: format!(
+                                            "Error encoding path_query: {}",
+                                            encode_err
+                                        ),
+                                    }
+                                })?;
 
-                        if let Err(e) = self
-                            .db
-                            .insert_proof_log_item(ProofLogItem {
-                                request_type: RequestType::GetContestedResources,
-                                request_bytes: encoded_query,
-                                verification_path_query_bytes,
-                                height: *height,
-                                time_ms: *time_ms,
-                                proof_bytes: proof_bytes.clone(),
-                                error: Some(error.clone()),
-                            })
-                            .map_err(|e| e.to_string())
-                        {
-                            return Err(format!("Contested resource query failed: {}", e));
+                        if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::GetContestedResources,
+                            request_bytes: encoded_query,
+                            verification_path_query_bytes,
+                            height: *height,
+                            time_ms: *time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(error.clone()),
+                        }) {
+                            return Err(TaskError::Database { source: e });
                         }
                     }
                     // TODO: Replace the "contract not found" string match with a
@@ -108,16 +104,12 @@ impl AppContext {
                         retries += 1;
                         if retries > MAX_RETRIES {
                             tracing::error!("Max retries reached for query: {}", e);
-                            return Err(format!(
-                                "Contested resource query failed after retries: {}",
-                                e
-                            ));
+                            return Err(TaskError::from(e));
                         } else {
-                            // Retry
                             continue;
                         }
                     } else {
-                        return Err(format!("Contested resource query failed: {}", e));
+                        return Err(TaskError::from(e));
                     }
                 }
             };
@@ -149,16 +141,14 @@ impl AppContext {
             let new_names_to_be_updated = self
                 .db
                 .insert_name_contests_as_normalized_names(contested_resources_as_strings, self)
-                .map_err(|e| format!("Contested resource query failed. Failed to insert name contests into database: {}", e))?;
+                .map_err(|e| TaskError::Database { source: e })?;
 
             names_to_be_updated.extend(new_names_to_be_updated);
 
-            sender.send(TaskResult::Refresh).await.map_err(|e| {
-                format!(
-                    "Contested resource query failed. Sender failed to send TaskResult: {}",
-                    e
-                )
-            })?;
+            sender
+                .send(TaskResult::Refresh)
+                .await
+                .map_err(|_| TaskError::InternalSendError)?;
 
             if contested_resources_len < 100 {
                 break;
@@ -166,7 +156,6 @@ impl AppContext {
             start_at_value = Some((Value::Text(last_found_name), false))
         }
 
-        // Create a semaphore with 15 permits
         let semaphore = Arc::new(Semaphore::new(24));
 
         let mut handles = Vec::new();
@@ -178,7 +167,6 @@ impl AppContext {
             let self_ref = self.clone();
 
             tokio::spawn(async move {
-                // Acquire a permit from the semaphore
                 let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
                     Ok(permit) => permit,
                     Err(e) => {
@@ -189,7 +177,6 @@ impl AppContext {
 
                 match self_ref.query_dpns_ending_times(sdk, sender.clone()).await {
                     Ok(_) => {
-                        // Send a refresh message if the query succeeded
                         if let Err(e) = sender.send(TaskResult::Refresh).await {
                             tracing::warn!(
                                 "Failed to send refresh after dpns end times query: {}",
@@ -199,7 +186,7 @@ impl AppContext {
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns end times: {}", e);
-                        if let Err(send_err) = sender.send(TaskResult::Error(e.into())).await {
+                        if let Err(send_err) = sender.send(TaskResult::Error(e)).await {
                             tracing::warn!(
                                 "Failed to send error for dpns end times query: {}",
                                 send_err
@@ -213,15 +200,12 @@ impl AppContext {
         handles.push(handle);
 
         for name in names_to_be_updated {
-            // Clone the semaphore, sdk, and sender for each task
             let semaphore = semaphore.clone();
             let sdk = sdk.clone();
             let sender = sender.clone();
-            let self_ref = self.clone(); // Assuming self is cloneable
+            let self_ref = self.clone();
 
-            // Spawn each task with a permit from the semaphore
             let handle = tokio::spawn(async move {
-                // Acquire a permit from the semaphore
                 let _permit: OwnedSemaphorePermit = match semaphore.acquire_owned().await {
                     Ok(permit) => permit,
                     Err(e) => {
@@ -234,13 +218,11 @@ impl AppContext {
                     }
                 };
 
-                // Perform the query
                 match self_ref
                     .query_dpns_vote_contenders(&name, &sdk, sender.clone())
                     .await
                 {
                     Ok(_) => {
-                        // Send a refresh message if the query succeeded
                         if let Err(e) = sender.send(TaskResult::Refresh).await {
                             tracing::warn!(
                                 "Failed to send refresh after vote contenders query for {}: {}",
@@ -251,7 +233,7 @@ impl AppContext {
                     }
                     Err(e) => {
                         tracing::error!("Error querying dpns vote contenders for {}: {}", name, e);
-                        if let Err(send_err) = sender.send(TaskResult::Error(e.into())).await {
+                        if let Err(send_err) = sender.send(TaskResult::Error(e)).await {
                             tracing::warn!(
                                 "Failed to send error for vote contenders query for {}: {}",
                                 name,
@@ -262,11 +244,9 @@ impl AppContext {
                 }
             });
 
-            // Collect all task handles
             handles.push(handle);
         }
 
-        // Await all tasks
         for handle in handles {
             if let Err(e) = handle.await {
                 tracing::error!("Task failed: {:?}", e);
@@ -278,12 +258,7 @@ impl AppContext {
                 BackendTaskSuccessResult::RefreshedDpnsContests,
             )))
             .await
-            .map_err(|e| {
-                format!(
-                    "Successfully refreshed DPNS contests but sender failed to send TaskResult: {}",
-                    e
-                )
-            })?;
+            .map_err(|_| TaskError::InternalSendError)?;
         Ok(())
     }
 }

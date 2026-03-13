@@ -100,8 +100,9 @@ impl CreateAssetLockScreen {
         let mut wallet = self.wallet.write().unwrap();
 
         // Generate a new asset lock funding address
-        let receive_address =
-            wallet.receive_address(self.app_context.network, true, Some(&self.app_context))?;
+        let receive_address = wallet
+            .receive_address(self.app_context.network, true, Some(&self.app_context))
+            .map_err(TaskError::UserInput)?;
         let core_wallet_name = wallet.core_wallet_name.clone();
         drop(wallet);
 

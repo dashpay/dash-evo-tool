@@ -157,8 +157,8 @@ impl AppContext {
     /// Extract the seed hash and first known address from an HD wallet.
     fn core_wallet_first_address(
         wallet: &Arc<RwLock<Wallet>>,
-    ) -> Result<([u8; 32], Option<Address>), String> {
-        let g = wallet.read().map_err(|e| e.to_string())?;
+    ) -> Result<([u8; 32], Option<Address>), TaskError> {
+        let g = wallet.read()?;
         Ok((g.seed_hash(), g.known_addresses.keys().next().cloned()))
     }
 
@@ -251,7 +251,7 @@ impl AppContext {
             }
             CoreTask::RefreshSingleKeyWalletInfo(wallet) => {
                 let (key_hash, address) = {
-                    let g = wallet.read().map_err(TaskError::from)?;
+                    let g = wallet.read()?;
                     (g.key_hash, g.address.clone())
                 };
                 let wallet_for_retry = wallet.clone();
@@ -281,35 +281,27 @@ impl AppContext {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
                 let result = self
                     .create_registration_asset_lock(wallet, amount, true, identity_index)
-                    .await
-                    .map_err(TaskError::from);
+                    .await;
                 self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
             }
             CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, top_up_index) => {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
                 let result = self
                     .create_top_up_asset_lock(wallet, amount, true, identity_index, top_up_index)
-                    .await
-                    .map_err(TaskError::from);
+                    .await;
                 self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
             }
             CoreTask::SendWalletPayment { wallet, request } => {
                 let (seed_hash, first_addr) = Self::core_wallet_first_address(&wallet)?;
-                let result = self
-                    .send_wallet_payment(wallet, request)
-                    .await
-                    .map_err(TaskError::from);
+                let result = self.send_wallet_payment(wallet, request).await;
                 self.with_wallet_recovery(&seed_hash, first_addr.as_ref(), false, result)
             }
             CoreTask::SendSingleKeyWalletPayment { wallet, request } => {
                 let (key_hash, address) = {
-                    let g = wallet.read().map_err(TaskError::from)?;
+                    let g = wallet.read()?;
                     (g.key_hash, g.address.clone())
                 };
-                let result = self
-                    .send_single_key_wallet_payment(wallet, request)
-                    .await
-                    .map_err(TaskError::from);
+                let result = self.send_single_key_wallet_payment(wallet, request).await;
                 self.with_wallet_recovery(&key_hash, Some(&address), true, result)
             }
             CoreTask::RecoverAssetLocks(wallet) => {
@@ -388,10 +380,7 @@ impl AppContext {
                             .db
                             .set_single_key_wallet_core_wallet_name(wallet_id, Some(&wallet_name))?
                         {
-                            return Err(TaskError::from(
-                                "Wallet not found in database when persisting Core wallet name"
-                                    .to_string(),
-                            ));
+                            return Err(TaskError::WalletDatabasePersistError);
                         }
                         if let Ok(skw) = self.single_key_wallets.read()
                             && let Some(w) = skw.get(wallet_id)
@@ -404,10 +393,7 @@ impl AppContext {
                             .db
                             .set_wallet_core_wallet_name(wallet_id, Some(&wallet_name))?
                         {
-                            return Err(TaskError::from(
-                                "Wallet not found in database when persisting Core wallet name"
-                                    .to_string(),
-                            ));
+                            return Err(TaskError::WalletDatabasePersistError);
                         }
                         if let Ok(wallets) = self.wallets.read()
                             && let Some(w) = wallets.get(wallet_id)
@@ -475,10 +461,16 @@ impl AppContext {
         &self,
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match self.core_backend_mode() {
-            CoreBackendMode::Spv => self.send_wallet_payment_via_spv(wallet, request).await,
-            CoreBackendMode::Rpc => self.send_wallet_payment_via_rpc(wallet, request).await,
+            CoreBackendMode::Spv => self
+                .send_wallet_payment_via_spv(wallet, request)
+                .await
+                .map_err(TaskError::UserInput),
+            CoreBackendMode::Rpc => self
+                .send_wallet_payment_via_rpc(wallet, request)
+                .await
+                .map_err(TaskError::UserInput),
         }
     }
 }

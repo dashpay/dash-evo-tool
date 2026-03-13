@@ -171,7 +171,9 @@ impl AppContext {
             ),
             DashPayTask::LoadPaymentHistory { identity } => {
                 let identity_id = identity.identity.id();
-                let records = payments::load_payment_history(self, &identity_id, None).await?;
+                let records = payments::load_payment_history(self, &identity_id, None)
+                    .await
+                    .map_err(TaskError::UserInput)?;
 
                 let network_str = self.network.to_string();
                 let contacts = self
@@ -251,7 +253,8 @@ impl AppContext {
             DashPayTask::RegisterDashPayAddresses { identity } => {
                 let result =
                     incoming_payments::register_dashpay_addresses_for_identity(self, &identity)
-                        .await?;
+                        .await
+                        .map_err(TaskError::UserInput)?;
 
                 Ok(BackendTaskSuccessResult::Message(format!(
                     "Registered {} DashPay addresses for {} contacts{}",

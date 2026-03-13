@@ -46,7 +46,8 @@ impl AppContext {
                     let private_key = {
                         let wallet = wallet.read().map_err(TaskError::from)?;
                         wallet
-                            .private_key_for_address(&address, self.network)?
+                            .private_key_for_address(&address, self.network)
+                            .map_err(TaskError::UserInput)?
                             .ok_or(TaskError::AssetLockNotValidForWallet)?
                     };
                     let asset_lock_proof =
@@ -112,17 +113,19 @@ impl AppContext {
                             Err(e) => {
                                 // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                                 // Only retry if something actually changed.
-                                if !wallet.reload_utxos(self)? {
-                                    return Err(TaskError::from(e));
+                                if !wallet.reload_utxos(self).map_err(TaskError::UserInput)? {
+                                    return Err(TaskError::UserInput(e));
                                 }
-                                wallet.top_up_asset_lock_transaction(
-                                    self,
-                                    sdk.network,
-                                    amount,
-                                    true,
-                                    identity_index,
-                                    top_up_index,
-                                )?
+                                wallet
+                                    .top_up_asset_lock_transaction(
+                                        self,
+                                        sdk.network,
+                                        amount,
+                                        true,
+                                        identity_index,
+                                        top_up_index,
+                                    )
+                                    .map_err(TaskError::UserInput)?
                             }
                         };
                         (
@@ -164,15 +167,17 @@ impl AppContext {
                     let (asset_lock_transaction, asset_lock_proof_private_key, wallet_seed_hash) = {
                         let mut wallet = wallet.write().map_err(TaskError::from)?;
                         let seed_hash = wallet.seed_hash();
-                        let tx_result = wallet.top_up_asset_lock_transaction_for_utxo(
-                            self,
-                            sdk.network,
-                            utxo,
-                            tx_out.clone(),
-                            input_address.clone(),
-                            identity_index,
-                            top_up_index,
-                        )?;
+                        let tx_result = wallet
+                            .top_up_asset_lock_transaction_for_utxo(
+                                self,
+                                sdk.network,
+                                utxo,
+                                tx_out.clone(),
+                                input_address.clone(),
+                                identity_index,
+                                top_up_index,
+                            )
+                            .map_err(TaskError::UserInput)?;
                         (tx_result.0, tx_result.1, seed_hash)
                     };
 

@@ -1,4 +1,5 @@
 use crate::backend_task::FeeResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -20,10 +21,9 @@ impl AppContext {
         to_address: Option<Address>,
         credits: Credits,
         id: Option<KeyID>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let sdk = self.sdk.load().as_ref().clone();
 
-        // First, refresh the identity from Platform to get the latest revision and balance
         tracing::info!(
             identity_id = %qualified_identity.identity.id().to_string(Encoding::Base58),
             local_revision = qualified_identity.identity.revision(),
@@ -32,9 +32,8 @@ impl AppContext {
 
         let refreshed_identity =
             Identity::fetch_by_identifier(&sdk, qualified_identity.identity.id())
-                .await
-                .map_err(|e| format!("Failed to fetch identity from Platform: {}", e))?
-                .ok_or_else(|| "Identity not found on Platform".to_string())?;
+                .await?
+                .ok_or(TaskError::IdentityNotFound)?;
 
         tracing::info!(
             platform_revision = refreshed_identity.revision(),
@@ -42,10 +41,8 @@ impl AppContext {
             "Fetched identity from Platform"
         );
 
-        // Update the qualified identity with the refreshed identity data
         qualified_identity.identity = refreshed_identity;
 
-        // Log withdrawal attempt details
         tracing::info!(
             identity_id = %qualified_identity.identity.id().to_string(Encoding::Base58),
             to_address = ?to_address,
@@ -56,7 +53,6 @@ impl AppContext {
             "Starting withdrawal from identity"
         );
 
-        // Log the key being used
         let signing_key =
             id.and_then(|key_id| qualified_identity.identity.get_public_key_by_id(key_id));
         if let Some(key) = &signing_key {
@@ -71,14 +67,12 @@ impl AppContext {
             tracing::warn!("No signing key specified for withdrawal");
         }
 
-        // Log available private keys in the qualified identity
         tracing::debug!(
             num_private_keys = qualified_identity.private_keys.private_keys.len(),
             num_wallets = qualified_identity.associated_wallets.len(),
             "Qualified identity key info"
         );
 
-        // Track balance before withdrawal for fee calculation
         let balance_before = qualified_identity.identity.balance();
         let estimated_fee = PlatformFeeEstimator::new().estimate_credit_withdrawal();
 
@@ -94,13 +88,8 @@ impl AppContext {
                 qualified_identity.clone(),
                 None,
             )
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "Withdrawal failed");
-                format!("Withdrawal error: {}", e)
-            })?;
+            .await?;
 
-        // Calculate and log actual fee paid
         let actual_fee = balance_before
             .saturating_sub(remaining_balance)
             .saturating_sub(credits);
@@ -125,6 +114,6 @@ impl AppContext {
 
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
-            .map_err(|e| format!("Database error: {}", e))
+            .map_err(|e| TaskError::IdentitySaveError { source: e })
     }
 }

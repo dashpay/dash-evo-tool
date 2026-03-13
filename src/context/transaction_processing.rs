@@ -26,7 +26,10 @@ impl AppContext {
                 .send_raw_transaction(tx)
                 .map_err(TaskError::from),
             CoreBackendMode::Spv => {
-                self.spv_manager.broadcast_transaction(tx).await?;
+                self.spv_manager
+                    .broadcast_transaction(tx)
+                    .await
+                    .map_err(TaskError::UserInput)?;
                 Ok(tx.txid())
             }
         }
@@ -146,7 +149,7 @@ impl AppContext {
             let mut wallet_guard = wallet.write()?;
             wallet_guard
                 .remove_selected_utxos(used_utxos, &self.db, self.network)
-                .map_err(TaskError::from)?;
+                .map_err(TaskError::UserInput)?;
         }
 
         Ok(tx_id)
@@ -354,7 +357,7 @@ pub(crate) struct DapiTransactionInfo {
 pub(crate) async fn get_transaction_info(
     sdk: &Sdk,
     tx_id: &Txid,
-) -> Result<DapiTransactionInfo, String> {
+) -> Result<DapiTransactionInfo, TaskError> {
     use dash_sdk::dapi_client::{DapiRequestExecutor, IntoInner, RequestSettings};
     use dash_sdk::dapi_grpc::core::v0::GetTransactionRequest;
 
@@ -367,7 +370,9 @@ pub(crate) async fn get_transaction_info(
         )
         .await
         .into_inner()
-        .map_err(|e| format!("DAPI GetTransaction failed: {}", e))?;
+        .map_err(|e| TaskError::PlatformFetchError {
+            source: Box::new(dash_sdk::Error::DapiClientError(e)),
+        })?;
 
     Ok(DapiTransactionInfo {
         is_chain_locked: response.is_chain_locked,

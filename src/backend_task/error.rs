@@ -309,7 +309,7 @@ pub enum TaskError {
     // Dash Core lifecycle errors
     // ──────────────────────────────────────────────────────────────────────────
     /// Dash Core could not be started (binary missing, config error, I/O failure).
-    #[error("Could not start Dash Core. Please check your Dash Core path and try again.")]
+    #[error("Could not start Dash Core. Verify the installation and try again.")]
     DashCoreStartError {
         #[source]
         source: std::io::Error,
@@ -320,7 +320,7 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// The requested operation is not available on the current network.
     #[error(
-        "{operation} is only available on {allowed_networks}. Switch to a supported network and retry."
+        "This operation is only available on test networks. Switch to a supported network and retry."
     )]
     OperationNotAvailableOnNetwork {
         operation: &'static str,

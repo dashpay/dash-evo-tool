@@ -816,7 +816,7 @@ impl MasternodeListDiffScreen {
         let qr_info = match p2p_handler.get_qr_info(known_block_hashes, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return None;
             }
         };
@@ -933,7 +933,7 @@ impl MasternodeListDiffScreen {
         let list_diff = match p2p_handler.get_dml_diff(base_block_hash, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1228,7 +1228,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1260,7 +1260,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1327,7 +1327,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1350,7 +1350,7 @@ impl MasternodeListDiffScreen {
             None => match CoreP2PHandler::new(self.app_context.network, None) {
                 Ok(p2p_handler) => p2p_handler,
                 Err(e) => {
-                    self.ui_state.error = Some(e);
+                    self.ui_state.error = Some(e.to_string());
                     return;
                 }
             },
@@ -4107,7 +4107,7 @@ impl MasternodeListDiffScreen {
             let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
                 Ok(p2p_handler) => p2p_handler,
                 Err(e) => {
-                    self.ui_state.error = Some(e);
+                    self.ui_state.error = Some(e.to_string());
                     return;
                 }
             };

@@ -18,7 +18,7 @@ impl AppContext {
         amount: u64,
         destination: PlatformAddress,
         fee_deduct_from_output: bool,
-    ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
@@ -45,7 +45,7 @@ impl AppContext {
                 wallets
                     .get(&seed_hash)
                     .cloned()
-                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
+                    .ok_or(TaskError::WalletNotFound)?
             };
 
             let mut wallet = wallet_arc.write()?;
@@ -83,7 +83,7 @@ impl AppContext {
             wallets
                 .get(&seed_hash)
                 .cloned()
-                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
+                .ok_or(TaskError::WalletNotFound)?
         };
 
         let tx_id = self
@@ -147,7 +147,7 @@ impl AppContext {
                 wallets
                     .get(&seed_hash)
                     .cloned()
-                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
+                    .ok_or(TaskError::WalletNotFound)?
             };
 
             // Derive a fresh change address from the BIP44 internal (change) path
@@ -187,7 +187,7 @@ impl AppContext {
             // amount. We use a fresh wallet-controlled change address to absorb the
             // fee estimate surplus, keeping it spendable.
             let amount_credits = amount.checked_mul(CREDITS_PER_DUFF).ok_or_else(|| {
-                crate::backend_task::error::TaskError::CreditCalculationOverflow {
+                TaskError::CreditCalculationOverflow {
                     amount,
                     credits_per_duff: CREDITS_PER_DUFF,
                 }
@@ -202,18 +202,14 @@ impl AppContext {
                 let change_index = outputs
                     .keys()
                     .position(|k| *k == change_address)
-                    .ok_or_else(|| {
-                        crate::backend_task::error::TaskError::ChangeAddressUnavailable {
-                            reason: "change address not found in outputs map",
-                        }
+                    .ok_or_else(|| TaskError::ChangeAddressUnavailable {
+                        reason: "change address not found in outputs map",
                     })? as u16;
                 vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
             } else {
-                return Err(
-                    crate::backend_task::error::TaskError::ChangeAddressUnavailable {
-                        reason: "no change address was derived for platform funding",
-                    },
-                );
+                return Err(TaskError::ChangeAddressUnavailable {
+                    reason: "no change address was derived for platform funding",
+                });
             }
         };
 
@@ -227,7 +223,7 @@ impl AppContext {
                 None,
             )
             .await
-            .map_err(crate::backend_task::error::TaskError::from)?;
+            .map_err(TaskError::from)?;
 
         // Step 9: Refresh platform address balances
         self.fetch_platform_address_balances(seed_hash).await?;

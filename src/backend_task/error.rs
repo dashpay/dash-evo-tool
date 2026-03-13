@@ -361,13 +361,6 @@ pub enum TaskError {
     WalletDatabasePersistError,
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Avatar processing errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// Could not process the profile image.
-    #[error("Could not load the profile image. Please check the URL and try again.")]
-    AvatarProcessingError { detail: String },
-
-    // ──────────────────────────────────────────────────────────────────────────
     // Identity key errors
     // ──────────────────────────────────────────────────────────────────────────
     /// The identity's master key was not found in the local key store.
@@ -382,6 +375,22 @@ pub enum TaskError {
     /// Querying token data from the platform failed.
     #[error("Could not retrieve token information from the platform. Please retry.")]
     TokenQueryError { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Contract schema errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The contract structure does not match expectations (e.g. missing contested index).
+    #[error("The contract structure is unexpected. Please update the application.")]
+    ContractSchemaMismatch { detail: &'static str },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Withdrawal document parsing errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A withdrawal document could not be fully read (missing timestamp, invalid status, etc.).
+    #[error(
+        "Could not read the withdrawal details. The data may be incomplete or in an unexpected format. Please retry."
+    )]
+    WithdrawalDocumentParsingError { detail: String },
 }
 
 /// Returns `true` when the SDK error indicates an invalid instant asset lock

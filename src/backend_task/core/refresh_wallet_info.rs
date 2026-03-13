@@ -207,19 +207,16 @@ impl AppContext {
         // Step 11: Persist all changes to database (no wallet lock needed)
         for (address, balance) in &changed_balances {
             self.db
-                .update_address_balance(&seed_hash, address, *balance)
-                .map_err(|e| TaskError::Database { source: e })?;
+                .update_address_balance(&seed_hash, address, *balance)?;
         }
 
         for (address, total_received) in &changed_total_received {
             self.db
-                .update_address_total_received(&seed_hash, address, *total_received)
-                .map_err(|e| TaskError::Database { source: e })?;
+                .update_address_total_received(&seed_hash, address, *total_received)?;
         }
 
         self.db
-            .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)
-            .map_err(|e| TaskError::Database { source: e })?;
+            .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)?;
 
         Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
     }

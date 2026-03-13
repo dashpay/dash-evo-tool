@@ -1230,7 +1230,7 @@ fn check_address_for_network(
 /// Error type for wallet operations.
 pub enum WalletError {
     /// Invalid address format.
-    #[error("Error in address: {0}")]
+    #[error("The wallet address could not be read. Please check the format and try again.")]
     AddressError(#[from] dashcore::address::Error),
 
     /// HD key derivation failed (BIP-32/BIP-44).

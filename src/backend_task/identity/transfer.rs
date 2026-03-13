@@ -58,8 +58,7 @@ impl AppContext {
         qualified_identity.identity.set_balance(sender_balance);
 
         if let Some(receiver) = self
-            .load_local_qualified_identities()
-            .map_err(|e| TaskError::Database { source: e })?
+            .load_local_qualified_identities()?
             .iter_mut()
             .find(|qi| qi.identity.id() == to_identifier)
         {

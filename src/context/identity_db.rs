@@ -54,14 +54,14 @@ impl AppContext {
 
     /// Fetches all local qualified identities from the database
     pub fn load_local_qualified_identities(&self) -> Result<Vec<QualifiedIdentity>> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         self.db.get_local_qualified_identities(self, &wallets)
     }
 
     /// Fetches all local qualified identities from the database
     #[allow(dead_code)] // May be used for loading identities in wallets
     pub fn load_local_qualified_identities_in_wallets(&self) -> Result<Vec<QualifiedIdentity>> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         self.db
             .get_local_qualified_identities_in_wallets(self, &wallets)
     }
@@ -70,7 +70,7 @@ impl AppContext {
         &self,
         identity_id: &Identifier,
     ) -> Result<Option<QualifiedIdentity>> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         // Get the identity from the database
         let result = self.db.get_identity_by_id(identity_id, self, &wallets)?;
 
@@ -118,7 +118,7 @@ impl AppContext {
         identity: &mut QualifiedIdentity,
         wallet_hashes: &[WalletSeedHash],
     ) -> Result<()> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         for wallet_hash in wallet_hashes {
             if let Some(wallet) = wallets.get(wallet_hash) {
                 identity
@@ -181,7 +181,7 @@ impl AppContext {
 
     /// Fetches the local identities from the database and then maps them to their DPNS names.
     pub fn local_dpns_names(&self) -> Result<Vec<(Identifier, DPNSNameInfo)>> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         let qualified_identities = self.db.get_local_qualified_identities(self, &wallets)?;
 
         // Map each identity's DPNS names to (Identifier, DPNSNameInfo) tuples

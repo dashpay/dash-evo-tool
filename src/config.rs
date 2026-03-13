@@ -31,7 +31,9 @@ pub enum ConfigError {
     },
 
     /// No valid network configurations found.
-    #[error("No valid network configurations found in .env file or environment variables")]
+    #[error(
+        "No network configuration found. Please reinstall the application or check your settings."
+    )]
     NoValidConfigs,
 }
 

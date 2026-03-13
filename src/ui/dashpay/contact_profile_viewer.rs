@@ -128,16 +128,14 @@ impl ContactProfileViewerScreen {
     }
 
     fn save_private_info(&mut self) -> Result<(), TaskError> {
-        self.app_context
-            .db
-            .save_contact_private_info(
-                &self.identity.identity.id(),
-                &self.contact_id,
-                &self.nickname,
-                &self.notes,
-                self.is_hidden,
-            )
-            .map_err(|e| TaskError::Database { source: e })
+        self.app_context.db.save_contact_private_info(
+            &self.identity.identity.id(),
+            &self.contact_id,
+            &self.nickname,
+            &self.notes,
+            self.is_hidden,
+        )?;
+        Ok(())
     }
 
     fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {

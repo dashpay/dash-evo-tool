@@ -24,10 +24,8 @@ impl AppContext {
             .document_type_for_name("domain")
             .map_err(|_| TaskError::DataContractNotFound)?;
         let Some(contested_index) = document_type.find_contested_index() else {
-            return Err(TaskError::PlatformFetchError {
-                source: Box::new(dash_sdk::Error::Generic(
-                    "No contested index on dpns domains".to_string(),
-                )),
+            return Err(TaskError::ContractSchemaMismatch {
+                detail: "No contested index found on DPNS domain document type",
             });
         };
         const MAX_RETRIES: usize = 3;
@@ -91,7 +89,7 @@ impl AppContext {
                             proof_bytes: proof_bytes.clone(),
                             error: Some(error.clone()),
                         }) {
-                            return Err(TaskError::Database { source: e });
+                            return Err(TaskError::from(e));
                         }
                     }
                     // TODO: Replace the "contract not found" string match with a
@@ -140,8 +138,7 @@ impl AppContext {
 
             let new_names_to_be_updated = self
                 .db
-                .insert_name_contests_as_normalized_names(contested_resources_as_strings, self)
-                .map_err(|e| TaskError::Database { source: e })?;
+                .insert_name_contests_as_normalized_names(contested_resources_as_strings, self)?;
 
             names_to_be_updated.extend(new_names_to_be_updated);
 

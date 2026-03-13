@@ -90,17 +90,15 @@ impl AppContext {
                                     }
                                 })?;
 
-                        self.db
-                            .insert_proof_log_item(ProofLogItem {
-                                request_type: RequestType::GetVotePollsByEndDate,
-                                request_bytes: encoded_query,
-                                verification_path_query_bytes,
-                                height: *height,
-                                time_ms: *time_ms,
-                                proof_bytes: proof_bytes.clone(),
-                                error: Some(error.clone()),
-                            })
-                            .map_err(|e| TaskError::Database { source: e })?
+                        self.db.insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::GetVotePollsByEndDate,
+                            request_bytes: encoded_query,
+                            verification_path_query_bytes,
+                            height: *height,
+                            time_ms: *time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(error.clone()),
+                        })?
                     }
                     // TODO: Replace the "contract not found" string match with a
                     // structural SDK variant when one is available.
@@ -136,8 +134,7 @@ impl AppContext {
             }
         }
 
-        self.db
-            .update_ending_time(contests_end_times, self)
-            .map_err(|e| TaskError::Database { source: e })
+        self.db.update_ending_time(contests_end_times, self)?;
+        Ok(())
     }
 }

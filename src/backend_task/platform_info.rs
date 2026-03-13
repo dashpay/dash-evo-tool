@@ -212,7 +212,7 @@ fn format_withdrawal_documents_with_daily_limit(
             document
                 .properties()
                 .get_integer::<Credits>(AMOUNT)
-                .map_err(|e| TaskError::SerializationError {
+                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
                     detail: format!("Failed to get withdrawal amount: {}", e),
                 })
         })
@@ -220,65 +220,65 @@ fn format_withdrawal_documents_with_daily_limit(
         .into_iter()
         .sum();
 
-    let amounts: Vec<String> = withdrawal_documents
-        .iter()
-        .map(|document| {
-            let index = document
-                .created_at()
-                .ok_or_else(|| TaskError::SerializationError {
-                    detail: "Withdrawal document missing created_at timestamp".to_string(),
-                })?;
-            let utc_datetime =
-                DateTime::<Utc>::from_timestamp_millis(index as i64).ok_or_else(|| {
-                    TaskError::SerializationError {
-                        detail: "Invalid withdrawal created_at timestamp".to_string(),
+    let amounts: Vec<String> =
+        withdrawal_documents
+            .iter()
+            .map(|document| {
+                let index = document.created_at().ok_or_else(|| {
+                    TaskError::WithdrawalDocumentParsingError {
+                        detail: "Withdrawal document missing created_at timestamp".to_string(),
                     }
                 })?;
-            let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
-
-            let amount = document
-                .properties()
-                .get_integer::<Credits>(AMOUNT)
-                .map_err(|e| TaskError::SerializationError {
-                    detail: format!("Failed to get withdrawal amount: {}", e),
-                })?;
-            let status_u8: u8 = document
-                .properties()
-                .get_integer::<u8>(STATUS)
-                .map_err(|e| TaskError::SerializationError {
-                    detail: format!("Failed to get withdrawal status: {}", e),
-                })?;
-            let status: WithdrawalStatus =
-                status_u8
-                    .try_into()
-                    .map_err(|_| TaskError::SerializationError {
-                        detail: format!("Invalid withdrawal status value: {}", status_u8),
+                let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
+                    .ok_or_else(|| TaskError::WithdrawalDocumentParsingError {
+                        detail: "Invalid withdrawal created_at timestamp".to_string(),
                     })?;
-            let owner_id = document.owner_id();
-            let address_bytes = document
-                .properties()
-                .get_bytes(OUTPUT_SCRIPT)
-                .map_err(|e| TaskError::SerializationError {
-                    detail: format!("Failed to get withdrawal output script: {}", e),
+                let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+
+                let amount = document
+                    .properties()
+                    .get_integer::<Credits>(AMOUNT)
+                    .map_err(|e| TaskError::WithdrawalDocumentParsingError {
+                        detail: format!("Failed to get withdrawal amount: {}", e),
+                    })?;
+                let status_u8: u8 =
+                    document
+                        .properties()
+                        .get_integer::<u8>(STATUS)
+                        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
+                            detail: format!("Failed to get withdrawal status: {}", e),
+                        })?;
+                let status: WithdrawalStatus = status_u8.try_into().map_err(|_| {
+                    TaskError::WithdrawalDocumentParsingError {
+                        detail: format!("Invalid withdrawal status value: {}", status_u8),
+                    }
                 })?;
-            let output_script = ScriptBuf::from_bytes(address_bytes);
-            let address = Address::from_script(&output_script, network)
-                .map(|addr| addr.to_string())
-                .unwrap_or_else(|e| format!("Invalid Address: {}", e));
-            Ok(format!(
-                "{}: {:.8} Dash for {} towards {} ({})",
-                local_datetime.format("%Y-%m-%d %H:%M:%S"),
-                amount as f64 / (dash_to_credits!(1) as f64),
-                owner_id,
-                address,
-                status,
-            ))
-        })
-        .collect::<Result<Vec<String>, TaskError>>()?;
+                let owner_id = document.owner_id();
+                let address_bytes =
+                    document
+                        .properties()
+                        .get_bytes(OUTPUT_SCRIPT)
+                        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
+                            detail: format!("Failed to get withdrawal output script: {}", e),
+                        })?;
+                let output_script = ScriptBuf::from_bytes(address_bytes);
+                let address = Address::from_script(&output_script, network)
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|e| format!("Invalid Address: {}", e));
+                Ok(format!(
+                    "{}: {:.8} Dash for {} towards {} ({})",
+                    local_datetime.format("%Y-%m-%d %H:%M:%S"),
+                    amount as f64 / (dash_to_credits!(1) as f64),
+                    owner_id,
+                    address,
+                    status,
+                ))
+            })
+            .collect::<Result<Vec<String>, TaskError>>()?;
 
     let daily_withdrawal_limit =
         daily_withdrawal_limit(total_credits_on_platform, PlatformVersion::latest()).map_err(
-            |e| TaskError::SerializationError {
+            |e| TaskError::WithdrawalDocumentParsingError {
                 detail: format!("Failed to calculate daily withdrawal limit: {}", e),
             },
         )?;
@@ -305,7 +305,7 @@ fn format_withdrawal_documents_to_bare_info(
             document
                 .properties()
                 .get_integer::<Credits>(AMOUNT)
-                .map_err(|e| TaskError::SerializationError {
+                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
                     detail: format!("Failed to get withdrawal amount: {}", e),
                 })
         })
@@ -313,61 +313,61 @@ fn format_withdrawal_documents_to_bare_info(
         .into_iter()
         .sum();
 
-    let amounts: Vec<String> = withdrawal_documents
-        .iter()
-        .map(|document| {
-            let index = document
-                .created_at()
-                .ok_or_else(|| TaskError::SerializationError {
-                    detail: "Withdrawal document missing created_at timestamp".to_string(),
-                })?;
-            let utc_datetime =
-                DateTime::<Utc>::from_timestamp_millis(index as i64).ok_or_else(|| {
-                    TaskError::SerializationError {
-                        detail: "Invalid withdrawal created_at timestamp".to_string(),
+    let amounts: Vec<String> =
+        withdrawal_documents
+            .iter()
+            .map(|document| {
+                let index = document.created_at().ok_or_else(|| {
+                    TaskError::WithdrawalDocumentParsingError {
+                        detail: "Withdrawal document missing created_at timestamp".to_string(),
                     }
                 })?;
-            let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
-
-            let amount = document
-                .properties()
-                .get_integer::<Credits>(AMOUNT)
-                .map_err(|e| TaskError::SerializationError {
-                    detail: format!("Failed to get withdrawal amount: {}", e),
-                })?;
-            let status_u8: u8 = document
-                .properties()
-                .get_integer::<u8>(STATUS)
-                .map_err(|e| TaskError::SerializationError {
-                    detail: format!("Failed to get withdrawal status: {}", e),
-                })?;
-            let status: WithdrawalStatus =
-                status_u8
-                    .try_into()
-                    .map_err(|_| TaskError::SerializationError {
-                        detail: format!("Invalid withdrawal status value: {}", status_u8),
+                let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
+                    .ok_or_else(|| TaskError::WithdrawalDocumentParsingError {
+                        detail: "Invalid withdrawal created_at timestamp".to_string(),
                     })?;
-            let owner_id = document.owner_id();
-            let address_bytes = document
-                .properties()
-                .get_bytes(OUTPUT_SCRIPT)
-                .map_err(|e| TaskError::SerializationError {
-                    detail: format!("Failed to get withdrawal output script: {}", e),
+                let local_datetime: DateTime<Local> = utc_datetime.with_timezone(&Local);
+
+                let amount = document
+                    .properties()
+                    .get_integer::<Credits>(AMOUNT)
+                    .map_err(|e| TaskError::WithdrawalDocumentParsingError {
+                        detail: format!("Failed to get withdrawal amount: {}", e),
+                    })?;
+                let status_u8: u8 =
+                    document
+                        .properties()
+                        .get_integer::<u8>(STATUS)
+                        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
+                            detail: format!("Failed to get withdrawal status: {}", e),
+                        })?;
+                let status: WithdrawalStatus = status_u8.try_into().map_err(|_| {
+                    TaskError::WithdrawalDocumentParsingError {
+                        detail: format!("Invalid withdrawal status value: {}", status_u8),
+                    }
                 })?;
-            let output_script = ScriptBuf::from_bytes(address_bytes);
-            let address = Address::from_script(&output_script, network)
-                .map(|addr| addr.to_string())
-                .unwrap_or_else(|e| format!("Invalid Address: {}", e));
-            Ok(format!(
-                "{}: {:.8} Dash for {} towards {} ({})",
-                local_datetime.format("%Y-%m-%d %H:%M:%S"),
-                amount as f64 / (dash_to_credits!(1) as f64),
-                owner_id,
-                address,
-                status,
-            ))
-        })
-        .collect::<Result<Vec<String>, TaskError>>()?;
+                let owner_id = document.owner_id();
+                let address_bytes =
+                    document
+                        .properties()
+                        .get_bytes(OUTPUT_SCRIPT)
+                        .map_err(|e| TaskError::WithdrawalDocumentParsingError {
+                            detail: format!("Failed to get withdrawal output script: {}", e),
+                        })?;
+                let output_script = ScriptBuf::from_bytes(address_bytes);
+                let address = Address::from_script(&output_script, network)
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_else(|e| format!("Invalid Address: {}", e));
+                Ok(format!(
+                    "{}: {:.8} Dash for {} towards {} ({})",
+                    local_datetime.format("%Y-%m-%d %H:%M:%S"),
+                    amount as f64 / (dash_to_credits!(1) as f64),
+                    owner_id,
+                    address,
+                    status,
+                ))
+            })
+            .collect::<Result<Vec<String>, TaskError>>()?;
 
     Ok(format!(
         "Withdrawal Information:\n\n\
@@ -409,11 +409,9 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::CurrentEpochInfo => {
-                let epoch_info = ExtendedEpochInfo::fetch_current(sdk).await.map_err(|e| {
-                    TaskError::SdkError {
-                        source_error: Box::new(e),
-                    }
-                })?;
+                let epoch_info = ExtendedEpochInfo::fetch_current(sdk)
+                    .await
+                    .map_err(TaskError::from)?;
 
                 let fee_multiplier = epoch_info.fee_multiplier_permille();
                 self.set_fee_multiplier_permille(fee_multiplier);
@@ -428,12 +426,9 @@ impl AppContext {
                 ))
             }
             PlatformInfoTaskRequestType::TotalCreditsOnPlatform => {
-                let total_credits =
-                    TotalCreditsInPlatform::fetch_current(sdk)
-                        .await
-                        .map_err(|e| TaskError::SdkError {
-                            source_error: Box::new(e),
-                        })?;
+                let total_credits = TotalCreditsInPlatform::fetch_current(sdk)
+                    .await
+                    .map_err(TaskError::from)?;
 
                 let dash_amount = total_credits.0 as f64 * 10f64.powf(-11.0);
                 let formatted = format!(
@@ -449,9 +444,7 @@ impl AppContext {
             PlatformInfoTaskRequestType::CurrentVersionVotingState => {
                 let votes: ProtocolVersionUpgrades = ProtocolVersionVoteCount::fetch_many(sdk, ())
                     .await
-                    .map_err(|e| TaskError::SdkError {
-                        source_error: Box::new(e),
-                    })?;
+                    .map_err(TaskError::from)?;
 
                 let votes_info = votes
                     .into_iter()
@@ -485,9 +478,7 @@ impl AppContext {
                             "No current quorum information available".to_string(),
                         ),
                     )),
-                    Err(e) => Err(TaskError::SdkError {
-                        source_error: Box::new(e),
-                    }),
+                    Err(e) => Err(TaskError::from(e)),
                 }
             }
             PlatformInfoTaskRequestType::CurrentWithdrawalsInQueue => {
@@ -495,9 +486,7 @@ impl AppContext {
                     SystemDataContract::Withdrawals,
                     PlatformVersion::latest(),
                 )
-                .map_err(|e| TaskError::SdkError {
-                    source_error: Box::new(SdkError::Protocol(e)),
-                })?;
+                .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let queued_document_query = DocumentQuery {
                     data_contract: Arc::new(withdrawal_contract),
@@ -510,9 +499,7 @@ impl AppContext {
 
                 let documents = Document::fetch_many(sdk, queued_document_query.clone())
                     .await
-                    .map_err(|e| TaskError::SdkError {
-                        source_error: Box::new(e),
-                    })?;
+                    .map_err(TaskError::from)?;
 
                 let withdrawal_docs: Vec<Document> =
                     documents.values().filter_map(|a| a.clone()).collect();
@@ -544,9 +531,7 @@ impl AppContext {
                     SystemDataContract::Withdrawals,
                     PlatformVersion::latest(),
                 )
-                .map_err(|e| TaskError::SdkError {
-                    source_error: Box::new(SdkError::Protocol(e)),
-                })?;
+                .map_err(|e| TaskError::from(SdkError::Protocol(e)))?;
 
                 let completed_document_query = DocumentQuery {
                     data_contract: Arc::new(withdrawal_contract),
@@ -575,9 +560,7 @@ impl AppContext {
 
                 let documents = Document::fetch_many(sdk, completed_document_query)
                     .await
-                    .map_err(|e| TaskError::SdkError {
-                        source_error: Box::new(e),
-                    })?;
+                    .map_err(TaskError::from)?;
 
                 let mut withdrawal_docs: Vec<Document> =
                     documents.values().filter_map(|a| a.clone()).collect();
@@ -603,7 +586,7 @@ impl AppContext {
                             document
                                 .properties()
                                 .get_integer::<Credits>(AMOUNT)
-                                .map_err(|e| TaskError::SerializationError {
+                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
                                     detail: format!("Failed to get withdrawal amount: {}", e),
                                 })
                         })
@@ -615,13 +598,13 @@ impl AppContext {
                         .iter()
                         .map(|document| {
                             let index = document.updated_at().ok_or_else(|| {
-                                TaskError::SerializationError {
+                                TaskError::WithdrawalDocumentParsingError {
                                     detail: "Withdrawal document missing updated_at timestamp"
                                         .to_string(),
                                 }
                             })?;
                             let utc_datetime = DateTime::<Utc>::from_timestamp_millis(index as i64)
-                                .ok_or_else(|| TaskError::SerializationError {
+                                .ok_or_else(|| TaskError::WithdrawalDocumentParsingError {
                                     detail: "Invalid withdrawal updated_at timestamp".to_string(),
                                 })?;
                             let local_datetime: DateTime<Local> =
@@ -630,17 +613,17 @@ impl AppContext {
                             let amount = document
                                 .properties()
                                 .get_integer::<Credits>(AMOUNT)
-                                .map_err(|e| TaskError::SerializationError {
+                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
                                     detail: format!("Failed to get withdrawal amount: {}", e),
                                 })?;
                             let status_u8: u8 = document
                                 .properties()
                                 .get_integer::<u8>(STATUS)
-                                .map_err(|e| TaskError::SerializationError {
+                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
                                     detail: format!("Failed to get withdrawal status: {}", e),
                                 })?;
                             let status: WithdrawalStatus = status_u8.try_into().map_err(|_| {
-                                TaskError::SerializationError {
+                                TaskError::WithdrawalDocumentParsingError {
                                     detail: format!(
                                         "Invalid withdrawal status value: {}",
                                         status_u8
@@ -651,7 +634,7 @@ impl AppContext {
                             let address_bytes = document
                                 .properties()
                                 .get_bytes(OUTPUT_SCRIPT)
-                                .map_err(|e| TaskError::SerializationError {
+                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
                                     detail: format!(
                                         "Failed to get withdrawal output script: {}",
                                         e
@@ -660,7 +643,7 @@ impl AppContext {
                             let transaction_index = document
                                 .properties()
                                 .get_integer::<u64>(TRANSACTION_INDEX)
-                                .map_err(|e| TaskError::SerializationError {
+                                .map_err(|e| TaskError::WithdrawalDocumentParsingError {
                                     detail: format!("Failed to get transaction index: {}", e),
                                 })?;
                             let output_script = ScriptBuf::from_bytes(address_bytes);
@@ -704,11 +687,9 @@ impl AppContext {
 
                 let mut addresses = std::collections::BTreeSet::new();
                 addresses.insert(platform_address);
-                let address_infos = AddressInfo::fetch_many(sdk, addresses).await.map_err(|e| {
-                    TaskError::SdkError {
-                        source_error: Box::new(e),
-                    }
-                })?;
+                let address_infos = AddressInfo::fetch_many(sdk, addresses)
+                    .await
+                    .map_err(TaskError::from)?;
 
                 let result: Option<&Option<AddressInfo>> = address_infos.get(&platform_address);
                 if let Some(Some(info)) = result {

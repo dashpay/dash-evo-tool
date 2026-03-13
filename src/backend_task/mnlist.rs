@@ -48,10 +48,8 @@ pub async fn run_mnlist_task(
             validate_quorums: _,
         } => {
             let network = app.network;
-            let mut p2p = CoreP2PHandler::new(network, None).map_err(TaskError::UserInput)?;
-            let diff = p2p
-                .get_dml_diff(base_block_hash, block_hash)
-                .map_err(TaskError::UserInput)?;
+            let mut p2p = CoreP2PHandler::new(network, None)?;
+            let diff = p2p.get_dml_diff(base_block_hash, block_hash)?;
             Ok(BackendTaskSuccessResult::MnListFetchedDiff {
                 base_height: base_block_height,
                 height: block_height,
@@ -63,10 +61,8 @@ pub async fn run_mnlist_task(
             block_hash,
         } => {
             let network = app.network;
-            let mut p2p = CoreP2PHandler::new(network, None).map_err(TaskError::UserInput)?;
-            let qr_info = p2p
-                .get_qr_info(known_block_hashes, block_hash)
-                .map_err(TaskError::UserInput)?;
+            let mut p2p = CoreP2PHandler::new(network, None)?;
+            let qr_info = p2p.get_qr_info(known_block_hashes, block_hash)?;
             Ok(BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info })
         }
         MnListTask::FetchEndQrInfoWithDmls {
@@ -74,10 +70,8 @@ pub async fn run_mnlist_task(
             block_hash,
         } => {
             let network = app.network;
-            let mut p2p = CoreP2PHandler::new(network, None).map_err(TaskError::UserInput)?;
-            let qr_info = p2p
-                .get_qr_info(known_block_hashes, block_hash)
-                .map_err(TaskError::UserInput)?;
+            let mut p2p = CoreP2PHandler::new(network, None)?;
+            let qr_info = p2p.get_qr_info(known_block_hashes, block_hash)?;
             Ok(BackendTaskSuccessResult::MnListFetchedQrInfo { qr_info })
         }
         MnListTask::FetchChainLocks {
@@ -119,12 +113,10 @@ pub async fn run_mnlist_task(
         }
         MnListTask::FetchDiffsChain { chain } => {
             let network = app.network;
-            let mut p2p = CoreP2PHandler::new(network, None).map_err(TaskError::UserInput)?;
+            let mut p2p = CoreP2PHandler::new(network, None)?;
             let mut items = Vec::with_capacity(chain.len());
             for (base_h, base_hash, h, hash) in chain {
-                let diff = p2p
-                    .get_dml_diff(base_hash, hash)
-                    .map_err(TaskError::UserInput)?;
+                let diff = p2p.get_dml_diff(base_hash, hash)?;
                 items.push(((base_h, h), diff));
             }
             Ok(BackendTaskSuccessResult::MnListFetchedDiffs { items })

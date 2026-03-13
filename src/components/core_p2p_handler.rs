@@ -49,6 +49,10 @@ pub enum P2PError {
     /// Network type is not supported for P2P connections.
     #[error("This network type does not support direct peer connections.")]
     UnsupportedNetwork,
+
+    /// A protocol-level error (bad checksum, oversized message, unexpected format).
+    #[error("Received a malformed message from Dash Core. The node may need to be updated.")]
+    ProtocolError { detail: String },
 }
 
 #[derive(Debug)]
@@ -82,11 +86,7 @@ enum ReadMessageError {
 }
 
 impl CoreP2PHandler {
-    pub fn new(network: Network, use_port: Option<u16>) -> Result<CoreP2PHandler, String> {
-        Self::new_p2p(network, use_port).map_err(|e| e.to_string())
-    }
-
-    fn new_p2p(network: Network, use_port: Option<u16>) -> Result<CoreP2PHandler, P2PError> {
+    pub fn new(network: Network, use_port: Option<u16>) -> Result<CoreP2PHandler, P2PError> {
         let port = use_port.unwrap_or(match network {
             Network::Dash => 9999,
             Network::Testnet => 19999,
@@ -118,14 +118,6 @@ impl CoreP2PHandler {
 
     /// Sends a network message over the provided stream and waits for a response.
     pub fn send_dml_request_message(
-        &mut self,
-        network_message: NetworkMessage,
-    ) -> Result<MnListDiff, String> {
-        self.send_dml_request_message_p2p(network_message)
-            .map_err(|e| e.to_string())
-    }
-
-    fn send_dml_request_message_p2p(
         &mut self,
         network_message: NetworkMessage,
     ) -> Result<MnListDiff, P2PError> {
@@ -179,14 +171,6 @@ impl CoreP2PHandler {
 
     /// Sends a network message over the provided stream and waits for a response.
     pub fn send_qr_info_request_message(
-        &mut self,
-        network_message: NetworkMessage,
-    ) -> Result<QRInfo, String> {
-        self.send_qr_info_request_message_p2p(network_message)
-            .map_err(|e| e.to_string())
-    }
-
-    fn send_qr_info_request_message_p2p(
         &mut self,
         network_message: NetworkMessage,
     ) -> Result<QRInfo, P2PError> {
@@ -309,11 +293,8 @@ impl CoreP2PHandler {
         while u32::from_le_bytes(header_buf[0..4].try_into().unwrap()) != self.network.magic() {
             sync_attempts += 1;
             if sync_attempts > MAX_SYNC_ATTEMPTS {
-                return Err(ReadMessageError::Fatal(P2PError::Io {
-                    source: std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "failed to find network magic in stream",
-                    ),
+                return Err(ReadMessageError::Fatal(P2PError::ProtocolError {
+                    detail: "failed to find network magic in stream".to_string(),
                 }));
             }
             // Shift left by one byte.
@@ -340,11 +321,8 @@ impl CoreP2PHandler {
         // Payload length (little-endian u32)
         let payload_len_u32 = u32::from_le_bytes(header_buf[16..20].try_into().unwrap());
         if payload_len_u32 > MAX_MSG_LENGTH as u32 {
-            return Err(ReadMessageError::Fatal(P2PError::Io {
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("payload length {payload_len_u32} exceeds maximum"),
-                ),
+            return Err(ReadMessageError::Fatal(P2PError::ProtocolError {
+                detail: format!("payload length {payload_len_u32} exceeds maximum"),
             }));
         }
         let payload_len = payload_len_u32 as usize;
@@ -364,12 +342,9 @@ impl CoreP2PHandler {
         // Compute and verify checksum.
         let computed_checksum = &double_sha256(&payload_buf)[0..4];
         if computed_checksum != expected_checksum {
-            return Err(ReadMessageError::Fatal(P2PError::Io {
-                source: std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "checksum mismatch for {command}: computed {computed_checksum:x?}, expected {expected_checksum:x?}"
-                    ),
+            return Err(ReadMessageError::Fatal(P2PError::ProtocolError {
+                detail: format!(
+                    "checksum mismatch for {command}: computed {computed_checksum:x?}, expected {expected_checksum:x?}"
                 ),
             }));
         }
@@ -452,7 +427,7 @@ impl CoreP2PHandler {
         &mut self,
         base_block_hash: BlockHash,
         block_hash: BlockHash,
-    ) -> Result<MnListDiff, String> {
+    ) -> Result<MnListDiff, P2PError> {
         let get_mnlist_diff_msg = NetworkMessage::GetMnListD(GetMnListDiff {
             base_block_hash,
             block_hash,
@@ -465,7 +440,7 @@ impl CoreP2PHandler {
         &mut self,
         known_block_hashes: Vec<BlockHash>,
         block_request_hash: BlockHash,
-    ) -> Result<QRInfo, String> {
+    ) -> Result<QRInfo, P2PError> {
         let get_mnlist_diff_msg = NetworkMessage::GetQRInfo(message_qrinfo::GetQRInfo {
             base_block_hashes: known_block_hashes,
             block_request_hash,

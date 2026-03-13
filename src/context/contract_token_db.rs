@@ -180,10 +180,9 @@ impl AppContext {
         &self,
         token_id: &Identifier,
     ) -> Result<Option<QualifiedContract>> {
-        let contract_id = self
-            .db
-            .get_contract_id_by_token_id(token_id, self)?
-            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let Some(contract_id) = self.db.get_contract_id_by_token_id(token_id, self)? else {
+            return Ok(None);
+        };
         self.db.get_contract_by_id(contract_id, self)
     }
 }

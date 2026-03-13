@@ -58,7 +58,7 @@ impl AppContext {
                     return self
                         .db
                         .insert_or_update_contenders(name, &contenders, document_type, self)
-                        .map_err(|e| TaskError::Database { source: e });
+                        .map_err(TaskError::from);
                 }
                 Err(e) => {
                     tracing::error!("Error fetching vote contenders: {}", e);
@@ -91,17 +91,15 @@ impl AppContext {
                                     }
                                 })?;
 
-                        self.db
-                            .insert_proof_log_item(ProofLogItem {
-                                request_type: RequestType::GetContestedResourceIdentityVotes,
-                                request_bytes: encoded_query,
-                                verification_path_query_bytes,
-                                height: *height,
-                                time_ms: *time_ms,
-                                proof_bytes: proof_bytes.clone(),
-                                error: Some(error.clone()),
-                            })
-                            .map_err(|e| TaskError::Database { source: e })?
+                        self.db.insert_proof_log_item(ProofLogItem {
+                            request_type: RequestType::GetContestedResourceIdentityVotes,
+                            request_bytes: encoded_query,
+                            verification_path_query_bytes,
+                            height: *height,
+                            time_ms: *time_ms,
+                            proof_bytes: proof_bytes.clone(),
+                            error: Some(error.clone()),
+                        })?
                     }
                     // TODO: Replace the "contract not found" string match with a
                     // structural SDK variant when one is available.

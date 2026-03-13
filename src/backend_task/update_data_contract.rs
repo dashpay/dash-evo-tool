@@ -152,18 +152,7 @@ impl AppContext {
                                 .replace_contract(contract.id(), &contract, self)
                                 .ok();
 
-                            sender
-                                .send(TaskResult::Success(Box::new(
-                                    BackendTaskSuccessResult::ContractSavedAfterProofError,
-                                )))
-                                .await
-                                .map_err(|_| {
-                                    crate::backend_task::error::TaskError::InternalSendError
-                                })?;
-
-                            return Err(crate::backend_task::error::TaskError::ProofError {
-                                source_error,
-                            });
+                            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
                         }
                     }
 

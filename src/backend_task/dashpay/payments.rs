@@ -328,17 +328,14 @@ pub async fn send_payment_to_contact_impl(
     );
 
     // Save to database using the db interface - propagate errors
-    app_context
-        .db
-        .save_payment(
-            &txid,
-            &from_identity.identity.id(),
-            &to_contact_id,
-            amount_duffs as i64,
-            memo.as_deref(),
-            "sent",
-        )
-        .map_err(|e| TaskError::Database { source: e })?;
+    app_context.db.save_payment(
+        &txid,
+        &from_identity.identity.id(),
+        &to_contact_id,
+        amount_duffs as i64,
+        memo.as_deref(),
+        "sent",
+    )?;
 
     // Convert to Dash for display
     let amount_dash = amount_duffs as f64 / 100_000_000.0;

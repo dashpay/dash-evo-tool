@@ -326,7 +326,7 @@ impl AppContext {
         if let Err(e) = app_context
             .spv_context_provider
             .read()
-            .map_err(|e| TaskError::from(e).to_string())
+            .map_err(|e| e.to_string())
             .and_then(|provider| provider.bind_app_context(app_context.clone()))
         {
             tracing::error!("Failed to bind SPV provider: {}", e);
@@ -338,7 +338,7 @@ impl AppContext {
             && let Err(e) = app_context
                 .rpc_context_provider
                 .read()
-                .map_err(|e| TaskError::from(e).to_string())
+                .map_err(|e| e.to_string())
                 .and_then(|provider| provider.bind_app_context(app_context.clone()))
         {
             tracing::error!("Failed to bind RPC provider: {}", e);
@@ -394,7 +394,7 @@ impl AppContext {
                 if let Err(e) = self
                     .spv_context_provider
                     .read()
-                    .map_err(|e| TaskError::from(e).to_string())
+                    .map_err(|e| e.to_string())
                     .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
                 {
                     tracing::error!("Failed to bind SPV provider: {}", e);
@@ -405,7 +405,7 @@ impl AppContext {
                 if let Err(e) = self
                     .rpc_context_provider
                     .read()
-                    .map_err(|e| TaskError::from(e).to_string())
+                    .map_err(|e| e.to_string())
                     .and_then(|provider| provider.bind_app_context(Arc::clone(self)))
                 {
                     tracing::error!("Failed to bind RPC provider: {}", e);

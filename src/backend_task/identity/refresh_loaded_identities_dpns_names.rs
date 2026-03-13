@@ -14,9 +14,7 @@ impl AppContext {
         &self,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let qualified_identities = self
-            .load_local_qualified_identities()
-            .map_err(|e| TaskError::Database { source: e })?;
+        let qualified_identities = self.load_local_qualified_identities()?;
 
         let sdk = self.sdk.load().as_ref().clone();
 

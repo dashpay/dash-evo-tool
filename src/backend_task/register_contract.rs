@@ -102,14 +102,7 @@ impl AppContext {
                                 )
                                 .ok();
 
-                            sender
-                                .send(TaskResult::Success(Box::new(
-                                    BackendTaskSuccessResult::ContractSavedAfterProofError,
-                                )))
-                                .await
-                                .map_err(|_| TaskError::InternalSendError)?;
-
-                            return Err(TaskError::ProofError { source_error });
+                            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
                         }
                     }
 

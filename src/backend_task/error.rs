@@ -287,22 +287,22 @@ pub enum TaskError {
 
     /// An asset lock's private key could not be matched to a wallet address.
     #[error(
-        "The address for this asset lock could not be matched to your wallet. \
+        "The funding transaction does not match your wallet. \
          Make sure you are using the correct wallet."
     )]
     AssetLockNotValidForWallet,
 
     /// The instant lock proof has expired and the transaction is not yet chain-locked.
     #[error(
-        "This asset lock cannot be used right now. The verification has expired and the \
+        "This funding transaction cannot be used right now. The verification has expired and the \
          transaction is not yet confirmed. Please wait a few minutes and retry."
     )]
     AssetLockInstantLockExpiredNotChainlocked,
 
     /// The instant lock proof signature could not be verified by the platform.
     #[error(
-        "The instant lock proof could not be verified. \
-         Please try using a chain lock proof instead."
+        "The transaction could not be verified instantly. \
+         Please wait for it to be included in a block and retry."
     )]
     AssetLockInstantLockProofInvalid {
         #[source]

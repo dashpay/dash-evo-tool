@@ -92,7 +92,8 @@ pub enum TaskError {
     /// An asset lock's instant-lock proof has expired before Platform verified it.
     #[error(
         "This transaction cannot be used yet because its verification has expired. \
-         Please wait a few minutes for the network to catch up and retry."
+         The network is still processing earlier blocks. \
+         Please wait a few minutes and retry."
     )]
     AssetLockExpired {
         tx_block_height: u32,

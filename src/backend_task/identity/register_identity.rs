@@ -332,6 +332,8 @@ impl AppContext {
                 // Check if this is an instant lock proof expiration error.
                 // Use the Debug representation to inspect the original SDK error,
                 // since Display returns user-friendly text that won't contain raw error strings.
+                // TODO: Replace with a typed SDK error variant when the SDK provides one,
+                //       as string matching on Debug output is fragile.
                 let debug_msg = format!("{:?}", e);
                 if debug_msg.contains("Instant lock proof signature is invalid")
                     || debug_msg.contains("wasn't created recently")

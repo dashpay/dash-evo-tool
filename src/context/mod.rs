@@ -716,7 +716,12 @@ impl AppContext {
                     proof_bytes: proof_bytes.clone(),
                     error: Some(proof_error.to_string()),
                 }) {
-                    tracing::warn!("Failed to persist proof log entry: {}", db_err);
+                    tracing::warn!(
+                        height = block_info.height,
+                        proof_error = %proof_error,
+                        "Failed to persist proof log entry for BroadcastStateTransition: {}",
+                        db_err
+                    );
                 }
                 TaskError::ProofError {
                     source_error: Box::new(dash_sdk::Error::DriveProofError(

@@ -125,10 +125,12 @@ impl AppContext {
 
         let public_key = qualified_identity
             .document_signing_key(&preorder_document_type)
-            .ok_or(format!(
-                "Identity {} doesn't have an authentication key for signing document transitions",
-                qualified_identity.display_string()
-            ))?;
+            .ok_or_else(|| {
+                format!(
+                    "Identity {} doesn't have an authentication key for signing document transitions",
+                    qualified_identity.display_string()
+                )
+            })?;
 
         // Estimate fees for DPNS registration (2 document batch transitions)
         let fee_estimator = PlatformFeeEstimator::new();

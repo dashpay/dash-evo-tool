@@ -104,8 +104,9 @@ impl AppContext {
             &data_contract,
         )?;
 
-        self.remove_token(&identity_token_info.token_id)?;
-
+        // insert_token uses upsert (ON CONFLICT DO UPDATE), so a separate
+        // remove_token is not needed and avoids a window where the token is
+        // missing if insert_token were to fail after remove_token.
         self.insert_token(
             &identity_token_info.token_id,
             &identity_token_info.token_alias,

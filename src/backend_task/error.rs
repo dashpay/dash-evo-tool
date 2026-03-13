@@ -19,14 +19,6 @@ const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 /// App-level error envelope for backend tasks.
 #[derive(Debug, Error)]
 pub enum TaskError {
-    /// Legacy string error — backwards compatible with all existing code.
-    #[error("{0}")]
-    Generic(String),
-
-    /// Boxed error — catch-all for errors without a dedicated variant.
-    #[error(transparent)]
-    Other(#[from] Box<dyn std::error::Error + Send + Sync>),
-
     /// SPV subsystem errors.
     #[error(transparent)]
     Spv(#[from] crate::spv::SpvError),
@@ -99,9 +91,9 @@ pub enum TaskError {
 
     /// An asset lock's instant-lock proof has expired before Platform verified it.
     #[error(
-        "This asset lock cannot be used yet. The instant lock has expired and Platform has not verified \
-         Core block {tx_block_height} yet (Platform has verified up to Core block {platform_height}). \
-         Please wait for Platform to sync with Core and retry."
+        "This transaction cannot be used yet because its verification has expired. \
+         The network is still processing earlier blocks. \
+         Please wait a few minutes and retry."
     )]
     AssetLockExpired {
         tx_block_height: u32,
@@ -110,7 +102,7 @@ pub enum TaskError {
 
     /// The private key for the asset lock address was not found in the wallet.
     #[error(
-        "The address for this asset lock could not be found in your wallet. \
+        "The address for this transaction could not be found in your wallet. \
          Make sure you are using the correct wallet."
     )]
     AssetLockAddressNotFound,
@@ -228,18 +220,18 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// The asset lock transaction was expected in the local database but was not found.
     #[error(
-        "The asset lock transaction could not be found locally. Please check your network connection and retry."
+        "The funding transaction could not be found locally. Please check your network connection and retry."
     )]
     AssetLockTransactionNotFoundInDatabase,
 
     /// An asset lock transaction has no credit outputs (malformed transaction).
     #[error(
-        "The asset lock transaction has no credit outputs and cannot be used. Please retry creating the transaction."
+        "The funding transaction is missing required outputs and cannot be used. Please retry creating the transaction."
     )]
     AssetLockNoCreditOutputs,
 
     /// Could not derive a Core address from an asset lock output script.
-    #[error("Could not read the address from the asset lock transaction. Please retry.")]
+    #[error("Could not read the address from the funding transaction. Please retry.")]
     AssetLockAddressDerivationFailed { detail: String },
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -259,6 +251,89 @@ pub enum TaskError {
         "The data contract could not be found. It may have been removed or the ID is incorrect."
     )]
     DataContractNotFound,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Serialization errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A data serialization or deserialization operation failed (e.g. bincode).
+    #[error("Could not process the data. Please retry the operation.")]
+    SerializationError { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Identity creation / parsing errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The provided identifier could not be parsed from the input.
+    #[error("The identifier you entered could not be read. Please check the format and try again.")]
+    IdentifierParsingError { input: String },
+
+    /// The identity could not be constructed from the given parameters.
+    #[error("Could not create the identity. Please check your input and try again.")]
+    IdentityCreationError {
+        #[source]
+        source: Box<ProtocolError>,
+    },
+
+    /// A private key could not be parsed or is invalid.
+    #[error("The private key you entered is invalid. Please check the format and try again.")]
+    InvalidPrivateKey { detail: String },
+
+    /// Fetching DPNS names for an identity failed.
+    #[error("Could not look up names for this identity. Please check your connection and retry.")]
+    DpnsFetchError {
+        #[source]
+        source: Box<SdkError>,
+    },
+
+    /// An asset lock's private key could not be matched to a wallet address.
+    #[error(
+        "The address for this asset lock could not be matched to your wallet. \
+         Make sure you are using the correct wallet."
+    )]
+    AssetLockNotValidForWallet,
+
+    /// The instant lock proof has expired and the transaction is not yet chain-locked.
+    #[error(
+        "This asset lock cannot be used right now. The verification has expired and the \
+         transaction is not yet confirmed. Please wait a few minutes and retry."
+    )]
+    AssetLockInstantLockExpiredNotChainlocked,
+
+    /// Fetching address information from the platform failed.
+    #[error("Could not retrieve address information from the platform. Please retry.")]
+    PlatformFetchError {
+        #[source]
+        source: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Dash Core lifecycle errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Dash Core could not be started (binary missing, config error, I/O failure).
+    #[error("Could not start Dash Core. Verify the installation and try again.")]
+    DashCoreStartError {
+        #[source]
+        source: std::io::Error,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Network restriction errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The requested operation is not available on the current network.
+    #[error(
+        "This operation is only available on test networks. Switch to a supported network and retry."
+    )]
+    OperationNotAvailableOnNetwork {
+        operation: &'static str,
+        allowed_networks: &'static str,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Legacy bridge
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Legacy string error — temporary bridge for callers that still return `Result<_, String>`.
+    /// All callers should be migrated to typed variants over time.
+    #[error("{0}")]
+    LegacyError(String),
 }
 
 /// Produce a user-friendly message by inspecting the SDK error variant.
@@ -320,7 +395,9 @@ impl From<String> for TaskError {
         if s.contains("Wallet file not specified") {
             TaskError::CoreWalletNotConfigured
         } else {
-            TaskError::Generic(s)
+            // Legacy bridge for callers that still return `Result<_, String>`.
+            // All callers should be migrated to typed variants over time.
+            TaskError::LegacyError(s)
         }
     }
 }
@@ -437,8 +514,8 @@ mod tests {
     fn from_string_passes_through_other_errors() {
         let err: TaskError = "Connection refused".to_string().into();
         assert!(
-            matches!(err, TaskError::Generic(ref s) if s == "Connection refused"),
-            "Expected Generic, got: {err:?}",
+            matches!(err, TaskError::LegacyError(ref s) if s == "Connection refused"),
+            "Expected LegacyError, got: {err:?}",
         );
     }
 

@@ -54,15 +54,9 @@ impl AppContext {
         match tokio::time::timeout(timeout_duration, async {
             loop {
                 {
-                    let proofs = self.transactions_waiting_for_finality.lock().map_err(|_| {
-                        TaskError::LockPoisoned {
-                            resource: "transactions_waiting_for_finality",
-                        }
-                    });
-                    if let Ok(proofs) = proofs
-                        && let Some(Some(proof)) = proofs.get(&tx_id)
-                    {
-                        return proof.clone();
+                    let proofs = self.transactions_waiting_for_finality.lock()?;
+                    if let Some(Some(proof)) = proofs.get(&tx_id) {
+                        return Ok::<_, TaskError>(proof.clone());
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -70,11 +64,15 @@ impl AppContext {
         })
         .await
         {
-            Ok(proof) => {
+            Ok(Ok(proof)) => {
                 if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
                     proofs.remove(&tx_id);
                 }
                 Ok(proof)
+            }
+            Ok(Err(e)) => {
+                // Lock poisoned — return immediately instead of spinning
+                Err(e)
             }
             Err(_) => {
                 if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {

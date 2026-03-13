@@ -46,9 +46,7 @@ impl AppContext {
                         let wallet = wallet.read().map_err(TaskError::from)?;
                         wallet
                             .private_key_for_address(&address, self.network)?
-                            .ok_or_else(|| {
-                                TaskError::from("Asset Lock not valid for wallet".to_string())
-                            })?
+                            .ok_or(TaskError::AssetLockNotValidForWallet)?
                     };
                     let asset_lock_proof =
                         if let AssetLockProof::Instant(instant_asset_lock_proof) =
@@ -224,11 +222,14 @@ impl AppContext {
         {
             Ok(updated_identity) => updated_identity,
             Err(e) => {
-                let error_string = e.to_string();
-
-                // Check if this is an instant lock proof expiration error
-                if error_string.contains("Instant lock proof signature is invalid")
-                    || error_string.contains("wasn't created recently")
+                // Check if this is an instant lock proof expiration error.
+                // Use the Debug representation to inspect the original SDK error,
+                // since Display returns user-friendly text that won't contain raw error strings.
+                // TODO: Replace with a typed SDK error variant when the SDK provides one,
+                //       as string matching on Debug output is fragile.
+                let debug_msg = format!("{:?}", e);
+                if debug_msg.contains("Instant lock proof signature is invalid")
+                    || debug_msg.contains("wasn't created recently")
                 {
                     // Try to use chain asset lock proof instead
                     let tx_info = get_transaction_info(&sdk, &tx_id).await?;
@@ -263,10 +264,7 @@ impl AppContext {
                             });
                         }
                     } else {
-                        return Err(TaskError::from(
-                            "Cannot use this asset lock. The instant lock proof has expired and the transaction \
-                            is not yet chainlocked. Please wait for the transaction to be chainlocked.".to_string(),
-                        ));
+                        return Err(TaskError::AssetLockInstantLockExpiredNotChainlocked);
                     }
                 } else if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     qualified_identity

@@ -707,7 +707,7 @@ impl AppContext {
         use crate::model::proof_log_item::{ProofLogItem, RequestType};
         match e {
             dash_sdk::Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                let _ = self.db.insert_proof_log_item(ProofLogItem {
+                if let Err(db_err) = self.db.insert_proof_log_item(ProofLogItem {
                     request_type: RequestType::BroadcastStateTransition,
                     request_bytes: vec![],
                     verification_path_query_bytes: vec![],
@@ -715,7 +715,14 @@ impl AppContext {
                     time_ms: block_info.time_ms,
                     proof_bytes: proof_bytes.clone(),
                     error: Some(proof_error.to_string()),
-                });
+                }) {
+                    tracing::warn!(
+                        height = block_info.height,
+                        proof_error = %proof_error,
+                        "Failed to persist proof log entry for BroadcastStateTransition: {}",
+                        db_err
+                    );
+                }
                 TaskError::ProofError {
                     source_error: Box::new(dash_sdk::Error::DriveProofError(
                         proof_error,

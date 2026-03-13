@@ -3,7 +3,6 @@ use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFu
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::ProtocolError;
@@ -53,9 +52,7 @@ impl AppContext {
                     wallet_id = wallet.seed_hash();
                     wallet
                         .private_key_for_address(&address, self.network)?
-                        .ok_or_else(|| {
-                            TaskError::from("Asset Lock not valid for wallet".to_string())
-                        })?
+                        .ok_or(TaskError::AssetLockNotValidForWallet)?
                 };
                 let asset_lock_proof = if let AssetLockProof::Instant(instant_asset_lock_proof) =
                     asset_lock_proof.as_ref()
@@ -144,11 +141,8 @@ impl AppContext {
                 let fetched_address_infos =
                     AddressInfo::fetch_many(&sdk, addresses_to_fetch.clone())
                         .await
-                        .map_err(|e| {
-                            TaskError::from(format!(
-                                "Failed to fetch address info from platform: {}",
-                                e
-                            ))
+                        .map_err(|e| TaskError::PlatformFetchError {
+                            source: Box::new(e),
                         })?;
 
                 // Build inputs with fresh nonces incremented by 1
@@ -252,7 +246,9 @@ impl AppContext {
         let identity = match existing_identity.clone() {
             Some(id) => id,
             None => Identity::new_with_id_and_keys(identity_id, public_keys, sdk.version())
-                .map_err(|e| TaskError::from(format!("Failed to create identity: {}", e)))?,
+                .map_err(|e| TaskError::IdentityCreationError {
+                    source: Box::new(e),
+                })?,
         };
 
         let wallet_seed_hash = { wallet.read().map_err(TaskError::from)?.seed_hash() };
@@ -333,10 +329,14 @@ impl AppContext {
                 qualified_identity.status = IdentityStatus::Unknown; // force refresh of the status
             }
             Err(e) => {
-                // Check if this is an instant lock proof expiration error
-                if e.to_string()
-                    .contains("Instant lock proof signature is invalid")
-                    || e.to_string().contains("wasn't created recently")
+                // Check if this is an instant lock proof expiration error.
+                // Use the Debug representation to inspect the original SDK error,
+                // since Display returns user-friendly text that won't contain raw error strings.
+                // TODO: Replace with a typed SDK error variant when the SDK provides one,
+                //       as string matching on Debug output is fragile.
+                let debug_msg = format!("{:?}", e);
+                if debug_msg.contains("Instant lock proof signature is invalid")
+                    || debug_msg.contains("wasn't created recently")
                 {
                     // Try to use chain asset lock proof instead
                     let tx_info = get_transaction_info(&sdk, &tx_id).await?;
@@ -405,10 +405,7 @@ impl AppContext {
                             &Some((wallet_id, wallet_identity_index)),
                         )?;
 
-                        return Err(TaskError::from(
-                            "Cannot use this asset lock. The instant lock proof has expired and the transaction \
-                            is not yet chainlocked. Please wait for the transaction to be chainlocked.".to_string(),
-                        ));
+                        return Err(TaskError::AssetLockInstantLockExpiredNotChainlocked);
                     }
                 } else {
                     // we failed, set the status accordingly and terminate the process
@@ -547,7 +544,9 @@ impl AppContext {
             public_keys.clone(),
             sdk.version(),
         )
-        .map_err(|e| TaskError::from(format!("Failed to create identity: {}", e)))?;
+        .map_err(|e| TaskError::IdentityCreationError {
+            source: Box::new(e),
+        })?;
 
         let wallet_seed_hash_actual = { wallet.read().map_err(TaskError::from)?.seed_hash() };
         let mut qualified_identity = QualifiedIdentity {
@@ -605,35 +604,8 @@ impl AppContext {
                 ))
             }
             Err(e) => {
-                // Log proof errors
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
-                {
-                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                        request_type: RequestType::BroadcastStateTransition,
-                        request_bytes: vec![],
-                        verification_path_query_bytes: vec![],
-                        height: block_info.height,
-                        time_ms: block_info.time_ms,
-                        proof_bytes: proof_bytes.clone(),
-                        error: Some(proof_error.to_string()),
-                    }) {
-                        tracing::warn!("Failed to persist proof log: {}", e);
-                    }
-
-                    qualified_identity
-                        .status
-                        .update(IdentityStatus::FailedCreation);
-
-                    self.insert_local_qualified_identity(
-                        &qualified_identity,
-                        &Some((wallet_seed_hash, wallet_identity_index)),
-                    )?;
-
-                    return Err(TaskError::from(format!(
-                        "Failed to create identity from Platform addresses: {}, proof error logged",
-                        proof_error
-                    )));
-                }
+                // Log proof errors and convert via log_drive_proof_error for consistent handling
+                let task_error = self.log_drive_proof_error(e);
 
                 qualified_identity
                     .status
@@ -644,10 +616,7 @@ impl AppContext {
                     &Some((wallet_seed_hash, wallet_identity_index)),
                 )?;
 
-                Err(TaskError::from(format!(
-                    "Failed to create identity from Platform addresses: {}",
-                    e
-                )))
+                Err(task_error)
             }
         }
     }

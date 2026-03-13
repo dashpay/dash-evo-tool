@@ -3,7 +3,10 @@ use std::sync::{Arc, RwLock};
 use dash_sdk::{
     dpp::{
         data_contract::accessors::v0::DataContractV0Getters,
-        identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
+        identity::{
+            accessors::IdentityGettersV0,
+            identity_public_key::accessors::v0::IdentityPublicKeyGettersV0,
+        },
     },
     platform::IdentityPublicKey,
 };
@@ -78,8 +81,17 @@ pub fn get_selected_wallet(
         qualified_identity
             .document_signing_key(&preorder_document_type)
             .ok_or_else(|| {
-                "Identity doesn't have an authentication key for signing document transitions"
-                    .to_string()
+                let id_string = qualified_identity.identity.id().to_string(
+                    dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+                );
+                let identity_label = qualified_identity
+                    .alias
+                    .as_deref()
+                    .unwrap_or(&id_string);
+                format!(
+                    "Identity '{}' doesn't have an authentication key for signing document transitions",
+                    identity_label
+                )
             })?
     } else {
         // Fallback: directly use the provided selected key.

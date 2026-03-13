@@ -171,6 +171,21 @@ Reference: `MessageBanner` in `src/ui/components/message_banner.rs`.
 - All interactive elements: WCAG AA compliant click targets
 - Note: egui has limited a11y support -- no screen reader annotations available
 
+### Cursor Icons and Tooltips
+
+Use `ResponseExt` methods (defined in `src/ui/theme.rs`) instead of raw `.on_hover_text()`. These enforce the correct cursor automatically.
+
+| Method | Cursor | When to use |
+|---|---|---|
+| `.clickable_tooltip("text")` | `PointingHand` | Interactive elements with click handlers (buttons, links, clickable labels) |
+| `.info_tooltip("text")` | `Help` (?) | Non-interactive elements showing explanatory text (status labels, settings, column headers) |
+| `.disabled_tooltip("text")` | `NotAllowed` | Disabled elements explaining why the action is unavailable |
+
+- Import: `use crate::ui::theme::ResponseExt;`
+- `ComponentStyles` button constructors (`add_primary_button`, etc.) set `PointingHand` automatically -- no `clickable_tooltip` needed for the cursor. You still need `disabled_tooltip` when the button can be disabled
+- Never use bare `.on_hover_text()` or `.on_disabled_hover_text()` -- always use the `ResponseExt` methods above
+- `ResponseExt` is the general extension point for `egui::Response` behavior policies; future methods may enforce hover effects, accessibility, or other conventions
+
 ## 11. Progressive Disclosure
 
 Reference personas in `docs/personas/`.

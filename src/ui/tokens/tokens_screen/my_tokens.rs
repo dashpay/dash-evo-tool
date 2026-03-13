@@ -4,7 +4,7 @@ use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
 use crate::ui::components::MessageBanner;
 use crate::ui::helpers::clicked_outside_window;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::burn_tokens_screen::BurnTokensScreen;
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::destroy_frozen_funds_screen::DestroyFrozenFundsScreen;
@@ -445,7 +445,7 @@ impl TokensScreen {
                                                 ui.label(
                                                     RichText::new(itb.identity_id.to_string(Encoding::Base58))
                                                         .color(Color32::from_rgb(0, 100, 0)) // Dark green
-                                                ).on_hover_text("Owner of the contract");
+                                                ).info_tooltip("Owner of the contract");
                                             } else {
                                                 ui.label(itb.identity_id.to_string(Encoding::Base58));
                                             }
@@ -533,7 +533,7 @@ impl TokensScreen {
                                             // Remove
                                             if ui
                                                 .button("X")
-                                                .on_hover_text(
+                                                .clickable_tooltip(
                                                     "Remove identity token balance from DET",
                                                 )
                                                 .clicked()
@@ -681,7 +681,7 @@ impl TokensScreen {
                     false,
                     egui::Button::new(RichText::new("Transfer").color(Color32::GRAY)),
                 )
-                .on_hover_text("Transfer not available");
+                .disabled_tooltip("Transfer not available");
             }
         }
 
@@ -944,7 +944,7 @@ impl TokensScreen {
                                 false,
                                 egui::Button::new(RichText::new("Purchase").color(egui::Color32::GRAY)),
                             )
-                            .on_hover_text({
+                            .disabled_tooltip({
                                 if let Some(Some(pricing)) = self.token_pricing_data.get(&itb.token_id) {
                                     let min_price = get_min_token_price(pricing);
                                     format!("Insufficient credits. Need at least {} credits to purchase one token", min_price)
@@ -1060,7 +1060,7 @@ impl TokensScreen {
                                 // Remove button
                                 if ui
                                     .button("X")
-                                    .on_hover_text("Remove token from DET")
+                                    .clickable_tooltip("Remove token from DET")
                                     .clicked()
                                 {
                                     self.confirm_remove_token_popup = true;

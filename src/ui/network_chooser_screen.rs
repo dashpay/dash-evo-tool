@@ -15,7 +15,7 @@ use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::{DashColors, Shape, ThemeMode};
+use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
@@ -415,7 +415,9 @@ impl NetworkChooserScreen {
                         });
 
                         if is_spv_connected {
-                            response.response.on_hover_text("Disconnect from SPV first");
+                            response
+                                .response
+                                .disabled_tooltip("Disconnect from SPV first");
                         }
                     });
 
@@ -1029,7 +1031,7 @@ impl NetworkChooserScreen {
                 ui.horizontal(|ui| {
                     if StyledCheckbox::new(&mut self.developer_mode, "Expert mode")
                         .show(ui)
-                        .on_hover_text("Show advanced options for power users and developers")
+                        .clickable_tooltip("Show advanced options for power users and developers")
                         .clicked()
                     {
                         // Always update all contexts first to keep UI in sync
@@ -1635,7 +1637,7 @@ impl NetworkChooserScreen {
         let mut button_response = ui.add_enabled(!is_active, clear_button);
         if is_active {
             button_response =
-                button_response.on_disabled_hover_text("Stop the SPV client before clearing data");
+                button_response.disabled_tooltip("Stop the SPV client before clearing data");
         }
 
         if button_response.clicked() {

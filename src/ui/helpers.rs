@@ -1,3 +1,4 @@
+use crate::ui::theme::ResponseExt;
 use dash_sdk::dpp::address_funds::{PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET};
 use std::sync::Arc;
 
@@ -262,9 +263,7 @@ pub fn info_icon_button(ui: &mut egui::Ui, hover_text: &str) -> Response {
         );
     }
 
-    response
-        .on_hover_text(hover_text)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    response.clickable_tooltip(hover_text)
 }
 
 pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {

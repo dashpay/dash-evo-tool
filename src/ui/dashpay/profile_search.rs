@@ -1,5 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -254,8 +255,12 @@ impl ProfileSearchScreen {
     }
 
     pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        self.loading = false;
+        // Keep loading state tied to the profile-search task lifecycle:
+        // - display_task_result() clears loading on successful results
+        // - display_task_error() clears loading on task failure
+        // Don't clear loading here — AppState calls display_message on the
+        // visible screen for ANY completed task, which would hide the spinner
+        // before our search results arrive.
     }
 }
 
@@ -319,6 +324,12 @@ impl ScreenLike for ProfileSearchScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         self.display_message(message, message_type);
+    }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // Clear loading on task errors so the spinner doesn't hang forever.
+        self.loading = false;
+        false // Don't suppress the global error banner
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {

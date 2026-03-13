@@ -2,6 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::group::GroupStateTransitionInfoStatus;
@@ -54,7 +55,7 @@ impl AppContext {
         let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
-            .map_err(|e| self.log_drive_proof_error(e))?;
+            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
 
         // Log proof result for audit trail
         tracing::info!("DestroyFrozenFunds proof result: {}", proof_result);

@@ -39,6 +39,8 @@ enum BroadcastStatus {
     FetchingNonce,
     Broadcasting,
     ProofError,
+    // TODO(#660): BroadcastError should preserve the source error instead of a String.
+    // This requires changing the ScreenLike::display_message trait to pass typed errors.
     BroadcastError(String),
     Done,
 }

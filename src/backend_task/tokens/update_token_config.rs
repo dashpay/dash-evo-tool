@@ -1,6 +1,7 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::proof_log_item::RequestType;
 use crate::ui::tokens::tokens_screen::IdentityTokenInfo;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -77,7 +78,7 @@ impl AppContext {
         let proof_result = state_transition
             .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
             .await
-            .map_err(|e| self.log_drive_proof_error(e))?;
+            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
 
         // Log proof result for audit trail
         tracing::info!("TokenConfigUpdate proof result: {}", proof_result);
@@ -89,7 +90,7 @@ impl AppContext {
             DataContract::fetch(sdk, identity_token_info.data_contract.contract.id())
                 .await
                 .map_err(TaskError::from)?
-                .ok_or(TaskError::DocumentNotFound)?;
+                .ok_or(TaskError::DataContractNotFound)?;
 
         let token = data_contract
             .tokens()

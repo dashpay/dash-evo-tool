@@ -2,6 +2,7 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -52,7 +53,7 @@ impl AppContext {
         let result = sdk
             .token_burn(builder, &signing_key, owner_identity)
             .await
-            .map_err(|e| self.log_drive_proof_error(e))?;
+            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
 
         // Using the result, update the balance of the owner identity
         if let Some(token_id) = data_contract.token_id(token_position) {

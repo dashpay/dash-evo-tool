@@ -81,6 +81,8 @@ impl AppContext {
             .await
         {
             Ok(res) => res,
+            // TODO: Replace with structural match when the SDK exposes a typed
+            // variant for empty-tree proof responses.
             Err(e) if e.to_string().contains("empty tree") => {
                 tracing::debug!(
                     "Platform address balance tree is empty. Returning empty sync result."

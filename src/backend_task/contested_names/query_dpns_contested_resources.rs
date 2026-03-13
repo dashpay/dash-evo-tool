@@ -98,7 +98,9 @@ impl AppContext {
                             return Err(format!("Contested resource query failed: {}", e));
                         }
                     }
-                    if e.to_string().contains("try another server")
+                    // TODO: Replace the "contract not found" string match with a
+                    // structural SDK variant when one is available.
+                    if matches!(e, dash_sdk::Error::StaleNode(_))
                         || e.to_string().contains(
                             "contract not found when querying from value with contract info",
                         )

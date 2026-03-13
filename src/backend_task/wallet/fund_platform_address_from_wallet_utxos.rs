@@ -205,9 +205,8 @@ impl AppContext {
             // fee estimate surplus, keeping it spendable.
             let amount_credits = amount.checked_mul(CREDITS_PER_DUFF).ok_or_else(|| {
                 crate::backend_task::error::TaskError::CreditCalculationOverflow {
-                    detail: format!(
-                        "Overflow converting {amount} duffs to credits (CREDITS_PER_DUFF = {CREDITS_PER_DUFF})"
-                    ),
+                    amount,
+                    credits_per_duff: CREDITS_PER_DUFF,
                 }
             })?;
 

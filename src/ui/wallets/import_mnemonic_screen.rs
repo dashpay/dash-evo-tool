@@ -31,6 +31,19 @@ use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
 
+fn is_unique_constraint_violation(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                ..
+            },
+            _,
+        )
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportType {
     Mnemonic,
@@ -178,7 +191,7 @@ impl ImportMnemonicScreen {
             .db
             .store_single_key_wallet(&wallet, self.app_context.network)
             .map_err(|e| {
-                if e.to_string().contains("UNIQUE constraint failed") {
+                if is_unique_constraint_violation(&e) {
                     "This key has already been imported.".to_string()
                 } else {
                     e.to_string()
@@ -285,7 +298,7 @@ impl ImportMnemonicScreen {
                 .db
                 .store_wallet(&wallet, &self.app_context.network)
                 .map_err(|e| {
-                    if e.to_string().contains("UNIQUE constraint failed: wallet.seed_hash") {
+                    if is_unique_constraint_violation(&e) {
                         "This wallet has already been imported for another network. Each wallet can only be imported once per network. If you want to use this wallet on a different network, please switch networks first.".to_string()
                     } else {
                         e.to_string()

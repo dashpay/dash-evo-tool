@@ -3,6 +3,7 @@ use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFu
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
+use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::ProtocolError;
@@ -329,15 +330,7 @@ impl AppContext {
                 qualified_identity.status = IdentityStatus::Unknown; // force refresh of the status
             }
             Err(e) => {
-                // Check if this is an instant lock proof expiration error.
-                // Use the Debug representation to inspect the original SDK error,
-                // since Display returns user-friendly text that won't contain raw error strings.
-                // TODO: Replace with a typed SDK error variant when the SDK provides one,
-                //       as string matching on Debug output is fragile.
-                let debug_msg = format!("{:?}", e);
-                if debug_msg.contains("Instant lock proof signature is invalid")
-                    || debug_msg.contains("wasn't created recently")
-                {
+                if matches!(e, TaskError::AssetLockInstantLockProofInvalid { .. }) {
                     // Try to use chain asset lock proof instead
                     let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
@@ -476,7 +469,7 @@ impl AppContext {
                         )
                         .await
                         .map_err(|retry_err| {
-                            let logged = self.log_drive_proof_error(retry_err);
+                            let logged = self.log_drive_proof_error(retry_err, RequestType::BroadcastStateTransition);
                             // If the logged variant is ProofError, return it directly;
                             // otherwise log the reconstructed transition for debugging.
                             if matches!(logged, TaskError::ProofError { .. }) {
@@ -499,7 +492,7 @@ impl AppContext {
                             logged
                         })
                 } else {
-                    Err(self.log_drive_proof_error(e))
+                    Err(self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))
                 }
             }
         }
@@ -605,7 +598,8 @@ impl AppContext {
             }
             Err(e) => {
                 // Log proof errors and convert via log_drive_proof_error for consistent handling
-                let task_error = self.log_drive_proof_error(e);
+                let task_error =
+                    self.log_drive_proof_error(e, RequestType::BroadcastStateTransition);
 
                 qualified_identity
                     .status

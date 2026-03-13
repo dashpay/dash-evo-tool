@@ -3,6 +3,7 @@ use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMetho
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
+use crate::model::proof_log_item::RequestType;
 use dash_sdk::Error;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
@@ -222,15 +223,7 @@ impl AppContext {
         {
             Ok(updated_identity) => updated_identity,
             Err(e) => {
-                // Check if this is an instant lock proof expiration error.
-                // Use the Debug representation to inspect the original SDK error,
-                // since Display returns user-friendly text that won't contain raw error strings.
-                // TODO: Replace with a typed SDK error variant when the SDK provides one,
-                //       as string matching on Debug output is fragile.
-                let debug_msg = format!("{:?}", e);
-                if debug_msg.contains("Instant lock proof signature is invalid")
-                    || debug_msg.contains("wasn't created recently")
-                {
+                if crate::backend_task::error::is_instant_lock_proof_invalid(&e) {
                     // Try to use chain asset lock proof instead
                     let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
@@ -256,7 +249,12 @@ impl AppContext {
                                     None,
                                 )
                                 .await
-                                .map_err(|e| self.log_drive_proof_error(e))?
+                                .map_err(|e| {
+                                    self.log_drive_proof_error(
+                                        e,
+                                        RequestType::BroadcastStateTransition,
+                                    )
+                                })?
                         } else {
                             return Err(TaskError::AssetLockExpired {
                                 tx_block_height,
@@ -278,7 +276,10 @@ impl AppContext {
                         )
                         .await
                         .map_err(|retry_err| {
-                            let logged = self.log_drive_proof_error(retry_err);
+                            let logged = self.log_drive_proof_error(
+                                retry_err,
+                                RequestType::BroadcastStateTransition,
+                            );
                             if matches!(logged, TaskError::ProofError { .. }) {
                                 return logged;
                             }
@@ -299,7 +300,9 @@ impl AppContext {
                             logged
                         })?
                 } else {
-                    return Err(self.log_drive_proof_error(e));
+                    return Err(
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    );
                 }
             }
         };

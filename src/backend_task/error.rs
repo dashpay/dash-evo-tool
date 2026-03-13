@@ -9,6 +9,7 @@ use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::consensus::ConsensusError;
+use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use thiserror::Error;
@@ -209,7 +210,7 @@ pub enum TaskError {
 
     /// Overflow while converting duffs to platform credits.
     #[error("The amount is too large to process. Please use a smaller amount.")]
-    CreditCalculationOverflow { detail: String },
+    CreditCalculationOverflow { amount: u64, credits_per_duff: u64 },
 
     /// A change address could not be derived or located in the outputs map.
     #[error("Could not prepare a change address for this transaction. Please retry.")]
@@ -298,6 +299,16 @@ pub enum TaskError {
     )]
     AssetLockInstantLockExpiredNotChainlocked,
 
+    /// The instant lock proof signature could not be verified by the platform.
+    #[error(
+        "The instant lock proof could not be verified. \
+         Please try using a chain lock proof instead."
+    )]
+    AssetLockInstantLockProofInvalid {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     /// Fetching address information from the platform failed.
     #[error("Could not retrieve address information from the platform. Please retry.")]
     PlatformFetchError {
@@ -334,6 +345,23 @@ pub enum TaskError {
     /// All callers should be migrated to typed variants over time.
     #[error("{0}")]
     LegacyError(String),
+}
+
+/// Returns `true` when the SDK error indicates an invalid instant asset lock
+/// proof signature — the structured equivalent of the old string-matching
+/// on `"Instant lock proof signature is invalid"`.
+pub fn is_instant_lock_proof_invalid(error: &SdkError) -> bool {
+    let consensus_error = match error {
+        SdkError::StateTransitionBroadcastError(broadcast_err) => broadcast_err.cause.as_ref(),
+        SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
+        _ => None,
+    };
+    matches!(
+        consensus_error,
+        Some(ConsensusError::BasicError(
+            BasicError::InvalidInstantAssetLockProofSignatureError(_),
+        ))
+    )
 }
 
 /// Produce a user-friendly message by inspecting the SDK error variant.
@@ -402,6 +430,9 @@ impl From<String> for TaskError {
     }
 }
 
+/// Blanket conversion for lock poisoning errors. This is the recommended approach:
+/// use `?` on `.read()`, `.write()`, or `.lock()` calls instead of explicit `map_err`.
+/// The resource name is derived from `type_name::<T>()` automatically.
 impl<T> From<std::sync::PoisonError<T>> for TaskError {
     fn from(_: std::sync::PoisonError<T>) -> Self {
         TaskError::LockPoisoned {
@@ -428,6 +459,7 @@ impl From<SdkError> for TaskError {
             DuplicateKey,
             DuplicateKeyId,
             ContractBoundsConflict(String),
+            InvalidInstantLockProof,
         }
 
         let kind: Option<ConsensusKind> = {
@@ -452,6 +484,9 @@ impl From<SdkError> for TaskError {
                     ) => Some(ConsensusKind::ContractBoundsConflict(
                         e.contract_id().to_string(Encoding::Base58),
                     )),
+                    ConsensusError::BasicError(
+                        BasicError::InvalidInstantAssetLockProofSignatureError(_),
+                    ) => Some(ConsensusKind::InvalidInstantLockProof),
                     _ => None,
                 })
                 .or_else(|| {
@@ -485,6 +520,11 @@ impl From<SdkError> for TaskError {
                     source_error: boxed,
                 }
             }
+            Some(ConsensusKind::InvalidInstantLockProof) => {
+                TaskError::AssetLockInstantLockProofInvalid {
+                    source_error: boxed,
+                }
+            }
             None => TaskError::SdkError {
                 source_error: boxed,
             },
@@ -495,6 +535,7 @@ impl From<SdkError> for TaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
@@ -639,5 +680,60 @@ mod tests {
             matches!(err, TaskError::DuplicateIdentityPublicKey { .. }),
             "Expected DuplicateIdentityPublicKey, got: {err:?}"
         );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_instant_lock_proof_via_consensus() {
+        let consensus = ConsensusError::from(InvalidInstantAssetLockProofSignatureError::new());
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::AssetLockInstantLockProofInvalid { .. }),
+            "Expected AssetLockInstantLockProofInvalid, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_sdk_error_invalid_instant_lock_proof_via_broadcast() {
+        let consensus = ConsensusError::from(InvalidInstantAssetLockProofSignatureError::new());
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40001,
+            message: "instant lock proof invalid".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::AssetLockInstantLockProofInvalid { .. }),
+            "Expected AssetLockInstantLockProofInvalid, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn is_instant_lock_proof_invalid_detects_broadcast_error() {
+        let consensus = ConsensusError::from(InvalidInstantAssetLockProofSignatureError::new());
+        let broadcast_err = dash_sdk::error::StateTransitionBroadcastError {
+            code: 40001,
+            message: "instant lock proof invalid".to_string(),
+            cause: Some(consensus),
+        };
+        let sdk_err = SdkError::StateTransitionBroadcastError(broadcast_err);
+        assert!(is_instant_lock_proof_invalid(&sdk_err));
+    }
+
+    #[test]
+    fn is_instant_lock_proof_invalid_rejects_unrelated_error() {
+        let sdk_err = SdkError::Generic("connection timeout".to_string());
+        assert!(!is_instant_lock_proof_invalid(&sdk_err));
+    }
+
+    #[test]
+    fn display_message_for_instant_lock_proof_invalid() {
+        let consensus = ConsensusError::from(InvalidInstantAssetLockProofSignatureError::new());
+        let sdk_err = SdkError::from(consensus);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(msg.contains("instant lock proof could not be verified"));
+        assert!(msg.contains("chain lock proof"));
     }
 }

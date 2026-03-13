@@ -37,6 +37,7 @@ fn is_unique_constraint_violation(e: &rusqlite::Error) -> bool {
         rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error {
                 code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                extended_code: 2067, // SQLITE_CONSTRAINT_UNIQUE
                 ..
             },
             _,

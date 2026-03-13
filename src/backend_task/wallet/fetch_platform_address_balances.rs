@@ -20,11 +20,7 @@ impl AppContext {
         let start_time = std::time::Instant::now();
 
         let wallet_arc = {
-            let wallets = self.wallets.read().map_err(|_| {
-                crate::backend_task::error::TaskError::LockPoisoned {
-                    resource: "wallets",
-                }
-            })?;
+            let wallets = self.wallets.read()?;
             wallets
                 .get(&seed_hash)
                 .cloned()
@@ -37,9 +33,7 @@ impl AppContext {
 
         // Create provider (requires wallet to be open for address derivation)
         let mut provider = {
-            let wallet = wallet_arc.read().map_err(|_| {
-                crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
-            })?;
+            let wallet = wallet_arc.read()?;
             match WalletAddressProvider::new(&wallet, self.network) {
                 Ok(provider) => provider.with_stored_state(&wallet, self.network, last_sync_height),
                 Err(_) if !wallet.is_open() => {
@@ -128,9 +122,7 @@ impl AppContext {
 
         // Apply results to wallet and persist
         let balances = {
-            let mut wallet = wallet_arc.write().map_err(|_| {
-                crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
-            })?;
+            let mut wallet = wallet_arc.write()?;
 
             // Update wallet with synced balances
             provider.apply_results_to_wallet(&mut wallet);

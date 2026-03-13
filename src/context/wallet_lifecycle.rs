@@ -606,9 +606,7 @@ impl AppContext {
 
             // Get the wallet's known addresses (only update those to avoid cross-wallet churn)
             let mut known_addresses: std::collections::BTreeSet<Address> = {
-                let w = wallet_arc
-                    .read()
-                    .map_err(|_| TaskError::LockPoisoned { resource: "wallet" })?;
+                let w = wallet_arc.read()?;
                 w.known_addresses.keys().cloned().collect()
             };
 

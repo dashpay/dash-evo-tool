@@ -40,20 +40,14 @@ impl AppContext {
         // Step 1: Create the asset lock transaction (UTXOs are selected but NOT yet removed)
         let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().map_err(|_| {
-                    crate::backend_task::error::TaskError::LockPoisoned {
-                        resource: "wallets",
-                    }
-                })?;
+                let wallets = self.wallets.read()?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
                     .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
             };
 
-            let mut wallet = wallet_arc.write().map_err(|_| {
-                crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
-            })?;
+            let mut wallet = wallet_arc.write()?;
 
             // Try to create the asset lock transaction, reload UTXOs if needed
             match wallet.generic_asset_lock_transaction(
@@ -83,11 +77,7 @@ impl AppContext {
 
         // Step 2–4: Store → broadcast → remove UTXOs (atomic pattern).
         let wallet_arc = {
-            let wallets = self.wallets.read().map_err(|_| {
-                crate::backend_task::error::TaskError::LockPoisoned {
-                    resource: "wallets",
-                }
-            })?;
+            let wallets = self.wallets.read()?;
             wallets
                 .get(&seed_hash)
                 .cloned()
@@ -151,11 +141,7 @@ impl AppContext {
         // Step 6: Get wallet, SDK, and derive a fresh change address if needed
         let (wallet, sdk, change_platform_address) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().map_err(|_| {
-                    crate::backend_task::error::TaskError::LockPoisoned {
-                        resource: "wallets",
-                    }
-                })?;
+                let wallets = self.wallets.read()?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
@@ -167,9 +153,7 @@ impl AppContext {
             // from the output). Using change_address() ensures proper BIP44
             // separation between receive and change addresses.
             let change_platform_address = if !fee_deduct_from_output {
-                let mut wallet_w = wallet_arc.write().map_err(|_| {
-                    crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
-                })?;
+                let mut wallet_w = wallet_arc.write()?;
                 let addr = wallet_w.change_address(self.network, Some(self))?;
                 Some(PlatformAddress::try_from(addr).map_err(|e| {
                     crate::backend_task::error::TaskError::AddressConversionFailed {
@@ -180,12 +164,7 @@ impl AppContext {
                 None
             };
 
-            let wallet = wallet_arc
-                .read()
-                .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
-                    resource: "wallet",
-                })?
-                .clone();
+            let wallet = wallet_arc.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk, change_platform_address)
         };

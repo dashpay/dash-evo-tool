@@ -21,22 +21,13 @@ impl AppContext {
         // Clone wallet and SDK before the async operation to avoid holding guards across await
         let (wallet, sdk) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().map_err(|_| {
-                    crate::backend_task::error::TaskError::LockPoisoned {
-                        resource: "wallets",
-                    }
-                })?;
+                let wallets = self.wallets.read()?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
                     .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
             };
-            let wallet = wallet_arc
-                .read()
-                .map_err(|_| crate::backend_task::error::TaskError::LockPoisoned {
-                    resource: "wallet",
-                })?
-                .clone();
+            let wallet = wallet_arc.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk)
         };

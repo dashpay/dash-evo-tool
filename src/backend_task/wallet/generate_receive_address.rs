@@ -10,11 +10,7 @@ impl AppContext {
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         let wallet_arc = {
-            let wallets = self.wallets.read().map_err(|_| {
-                crate::backend_task::error::TaskError::LockPoisoned {
-                    resource: "wallets",
-                }
-            })?;
+            let wallets = self.wallets.read()?;
             wallets
                 .get(&seed_hash)
                 .cloned()
@@ -37,9 +33,7 @@ impl AppContext {
 
             derived.address.to_string()
         } else {
-            let mut wallet = wallet_arc.write().map_err(|_| {
-                crate::backend_task::error::TaskError::LockPoisoned { resource: "wallet" }
-            })?;
+            let mut wallet = wallet_arc.write()?;
             wallet
                 .receive_address(self.network, true, Some(self))?
                 .to_string()

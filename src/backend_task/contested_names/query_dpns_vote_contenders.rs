@@ -103,9 +103,10 @@ impl AppContext {
                             })
                             .map_err(|e| e.to_string())?
                     }
-                    let error_str = e.to_string();
-                    if error_str.contains("try another server")
-                        || error_str.contains(
+                    // TODO: Replace the "contract not found" string match with a
+                    // structural SDK variant when one is available.
+                    if matches!(e, dash_sdk::Error::StaleNode(_))
+                        || e.to_string().contains(
                             "contract not found when querying from value with contract info",
                         )
                     {

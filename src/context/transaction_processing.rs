@@ -22,10 +22,7 @@ impl AppContext {
         match self.core_backend_mode() {
             CoreBackendMode::Rpc => self
                 .core_client
-                .read()
-                .map_err(|_| TaskError::LockPoisoned {
-                    resource: "core_client",
-                })?
+                .read()?
                 .send_raw_transaction(tx)
                 .map_err(TaskError::from),
             CoreBackendMode::Spv => {

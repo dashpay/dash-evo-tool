@@ -331,7 +331,7 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// The requested operation is not available on the current network.
     #[error(
-        "This operation is only available on test networks. Switch to a supported network and retry."
+        "{operation} is only available on {allowed_networks}. Switch to a supported network and retry."
     )]
     OperationNotAvailableOnNetwork {
         operation: &'static str,

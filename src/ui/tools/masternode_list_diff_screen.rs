@@ -9,7 +9,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::QuorumType;
@@ -1529,7 +1529,7 @@ impl MasternodeListDiffScreen {
                     }
                     if ui
                         .button("Clear")
-                        .on_hover_text("Clear all data and reset to initial state.")
+                        .clickable_tooltip("Clear all data and reset to initial state.")
                         .clicked()
                     {
                         self.clear();
@@ -1537,7 +1537,7 @@ impl MasternodeListDiffScreen {
                     }
                     if ui
                         .button("Clear keep base")
-                        .on_hover_text(
+                        .clickable_tooltip(
                             "Clear all data except the oldest MNList diff starting from height 0.",
                         )
                         .clicked()

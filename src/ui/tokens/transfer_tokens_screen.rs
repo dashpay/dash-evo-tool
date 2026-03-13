@@ -21,7 +21,7 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, Result
 use crate::ui::helpers::{TransactionType, add_key_chooser};
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -553,16 +553,12 @@ impl ScreenLike for TransferTokensScreen {
                 ui.heading(format!("{}. Public note (optional)", step_num));
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
+                    ui.label("Public note (optional):").info_tooltip(
+                        "A note about the transaction that can be seen by the public.",
+                    );
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui
-                        .text_edit_singleline(&mut txt)
-                        .on_hover_text(
-                            "A note about the transaction that can be seen by the public.",
-                        )
-                        .changed()
-                    {
+                    if ui.text_edit_singleline(&mut txt).changed() {
                         self.public_note = Some(txt);
                     }
                 });
@@ -614,7 +610,7 @@ impl ScreenLike for TransferTokensScreen {
                 };
 
                 if ComponentStyles::add_primary_button_enabled(ui, ready, "Transfer")
-                    .on_disabled_hover_text(&hover_text)
+                    .disabled_tooltip(&hover_text)
                     .clicked()
                 {
                     // Use the amount value directly since it's already parsed

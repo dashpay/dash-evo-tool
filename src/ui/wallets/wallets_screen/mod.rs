@@ -23,7 +23,7 @@ use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlock
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::wallets::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
@@ -1225,10 +1225,10 @@ impl WalletsBalancesScreen {
                             let full_txid = tx.txid.to_string();
                             ui.horizontal(|ui| {
                                 let response = ui.label(RichText::new(&full_txid).monospace());
-                                response.on_hover_text(&full_txid);
+                                response.info_tooltip(&full_txid);
                                 if ui
                                     .small_button("Copy")
-                                    .on_hover_text("Copy transaction ID")
+                                    .clickable_tooltip("Copy transaction ID")
                                     .clicked()
                                 {
                                     let _ = copy_text_to_clipboard(&full_txid);

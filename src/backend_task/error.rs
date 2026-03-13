@@ -339,6 +339,55 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Platform info errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Fetching platform information failed.
+    #[error("Could not retrieve platform information. Please check your connection and retry.")]
+    PlatformInfoFetchError {
+        #[source]
+        source: Box<SdkError>,
+    },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Encryption errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// An encryption or decryption operation failed.
+    #[error("Could not process encrypted data. Please check your keys and try again.")]
+    EncryptionError { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Wallet persistence errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A wallet record could not be found or updated in the local database.
+    #[error(
+        "Could not update wallet settings. Please restart the application and try again."
+    )]
+    WalletDatabasePersistError,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Avatar processing errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Could not process the profile image.
+    #[error("Could not load the profile image. Please check the URL and try again.")]
+    AvatarProcessingError { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Identity key errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The identity's master key was not found in the local key store.
+    #[error(
+        "The master key for this identity could not be found. Make sure the identity was created from this wallet."
+    )]
+    MasterKeyNotFound,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Token query errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// Querying token data from the platform failed.
+    #[error("Could not retrieve token information from the platform. Please retry.")]
+    TokenQueryError { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Legacy bridge
     // ──────────────────────────────────────────────────────────────────────────
     /// Legacy string error — temporary bridge for callers that still return `Result<_, String>`.
@@ -733,7 +782,7 @@ mod tests {
         let sdk_err = SdkError::from(consensus);
         let err = TaskError::from(sdk_err);
         let msg = err.to_string();
-        assert!(msg.contains("instant lock proof could not be verified"));
-        assert!(msg.contains("chain lock proof"));
+        assert!(msg.contains("could not be verified instantly"));
+        assert!(msg.contains("included in a block"));
     }
 }

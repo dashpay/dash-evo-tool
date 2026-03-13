@@ -78,8 +78,10 @@ pub fn get_selected_wallet(
         qualified_identity
             .document_signing_key(&preorder_document_type)
             .ok_or_else(|| {
-                "Identity doesn't have an authentication key for signing document transitions"
-                    .to_string()
+                format!(
+                    "Identity '{}' doesn't have an authentication key for signing document transitions",
+                    qualified_identity.display_string()
+                )
             })?
     } else {
         // Fallback: directly use the provided selected key.

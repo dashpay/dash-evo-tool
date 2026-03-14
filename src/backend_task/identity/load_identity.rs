@@ -65,12 +65,10 @@ impl AppContext {
             })?;
 
         // Verify the voting private key
-        let voting_private_key_bytes =
-            verify_key_input(voting_private_key_input, "Voting").map_err(|e| {
-                TaskError::KeyInputValidationFailed {
-                    key_name: "Voting".to_string(),
-                    detail: e,
-                }
+        let voting_private_key_bytes = verify_key_input(voting_private_key_input, "Voting")
+            .map_err(|e| TaskError::KeyInputValidationFailed {
+                key_name: "Voting".to_string(),
+                detail: e,
             })?;
 
         let payout_address_private_key_bytes =

@@ -281,12 +281,16 @@ pub async fn send_contact_request_with_proof(
             &wallets,
             identity.network,
         )
-        .map_err(|e| TaskError::EncryptionError { detail: format!("Error resolving ENCRYPTION private key: {}", e) })?
+        .map_err(|e| TaskError::EncryptionError {
+            detail: format!("Error resolving ENCRYPTION private key: {}", e),
+        })?
         .map(|(_, private_key)| private_key)
-        .ok_or_else(|| TaskError::DashPay(DashPayError::PrivateKeyResolution {
-            key_purpose: "ENCRYPTION".to_string(),
-            reason: "Private key not loaded into Dash Evo Tool".to_string(),
-        }))?;
+        .ok_or_else(|| {
+            TaskError::DashPay(DashPayError::PrivateKeyResolution {
+                key_purpose: "ENCRYPTION".to_string(),
+                reason: "Private key not loaded into Dash Evo Tool".to_string(),
+            })
+        })?;
 
     let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
         .map_err(|e| TaskError::EncryptionError { detail: e })?;
@@ -367,7 +371,9 @@ pub async fn send_contact_request_with_proof(
         current_height_for_validation,
     )
     .await
-    .map_err(|e| DashPayError::ValidationFailed { errors: vec![e.to_string()] })?;
+    .map_err(|e| DashPayError::ValidationFailed {
+        errors: vec![e.to_string()],
+    })?;
 
     // Check if validation passed
     if !validation.is_valid {
@@ -513,10 +519,11 @@ pub async fn send_contact_request_with_proof(
 
 async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, TaskError> {
     // Parse username (e.g., "alice.dash" -> "alice")
-    let name = username
-        .split('.')
-        .next()
-        .ok_or_else(|| TaskError::DashPay(DashPayError::InvalidUsername { username: username.to_string() }))?;
+    let name = username.split('.').next().ok_or_else(|| {
+        TaskError::DashPay(DashPayError::InvalidUsername {
+            username: username.to_string(),
+        })
+    })?;
 
     // Query DPNS for the username
     let dpns_contract_id = Identifier::from_string(
@@ -547,13 +554,17 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
 
     let results = Document::fetch_many(sdk, query).await?;
 
-    let (_, document) = results
-        .into_iter()
-        .next()
-        .ok_or_else(|| TaskError::DashPay(DashPayError::UsernameResolutionFailed { username: username.to_string() }))?;
+    let (_, document) = results.into_iter().next().ok_or_else(|| {
+        TaskError::DashPay(DashPayError::UsernameResolutionFailed {
+            username: username.to_string(),
+        })
+    })?;
 
-    let document = document
-        .ok_or_else(|| TaskError::DashPay(DashPayError::InvalidDocument { reason: format!("Invalid DPNS document for '{}'", username) }))?;
+    let document = document.ok_or_else(|| {
+        TaskError::DashPay(DashPayError::InvalidDocument {
+            reason: format!("Invalid DPNS document for '{}'", username),
+        })
+    })?;
 
     // Get the identity ID from the DPNS document
     let identity_id = document.owner_id();

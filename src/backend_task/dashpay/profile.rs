@@ -455,12 +455,11 @@ pub async fn search_profiles(
     let normalized_query = query_trimmed.to_lowercase();
 
     // Search DPNS for usernames starting with the query
-    let mut dpns_query = DocumentQuery::new(dpns_contract, "domain").map_err(|e| {
-        DashPayError::QueryCreation {
+    let mut dpns_query =
+        DocumentQuery::new(dpns_contract, "domain").map_err(|e| DashPayError::QueryCreation {
             query_target: "DPNS domain",
             source: Box::new(e),
-        }
-    })?;
+        })?;
 
     dpns_query = dpns_query
         .with_where(WhereClause {

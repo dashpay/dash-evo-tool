@@ -173,7 +173,11 @@ impl AppContext {
                 let identity_id = identity.identity.id();
                 let records = payments::load_payment_history(self, &identity_id, None)
                     .await
-                    .map_err(|e| crate::backend_task::dashpay::errors::DashPayError::Internal { message: e })?;
+                    .map_err(
+                        |e| crate::backend_task::dashpay::errors::DashPayError::Internal {
+                            message: e,
+                        },
+                    )?;
 
                 let network_str = self.network.to_string();
                 let contacts = self
@@ -254,7 +258,11 @@ impl AppContext {
                 let result =
                     incoming_payments::register_dashpay_addresses_for_identity(self, &identity)
                         .await
-                        .map_err(|e| crate::backend_task::dashpay::errors::DashPayError::Internal { message: e })?;
+                        .map_err(|e| {
+                            crate::backend_task::dashpay::errors::DashPayError::Internal {
+                                message: e,
+                            }
+                        })?;
 
                 Ok(BackendTaskSuccessResult::Message(format!(
                     "Registered {} DashPay addresses for {} contacts{}",

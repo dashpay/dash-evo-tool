@@ -309,7 +309,9 @@ impl AppContext {
         }
 
         if loaded_indices.is_empty() {
-            return Err(TaskError::NoWalletIdentitiesFound { max_index: max_identity_index });
+            return Err(TaskError::NoWalletIdentitiesFound {
+                max_index: max_identity_index,
+            });
         }
 
         let summary = if loaded_indices.len() == 1 {

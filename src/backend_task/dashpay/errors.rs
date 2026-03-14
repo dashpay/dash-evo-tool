@@ -165,9 +165,7 @@ pub enum DashPayError {
     MissingAuthenticationKey,
 
     /// A contact request has already been sent to this recipient.
-    #[error(
-        "You have already sent a contact request to '{to}'. Please wait for them to respond."
-    )]
+    #[error("You have already sent a contact request to '{to}'. Please wait for them to respond.")]
     ContactRequestAlreadySent { to: String },
 }
 

@@ -484,14 +484,17 @@ impl AppContext {
             &addr,
             Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
         )
-        .map_err(|e| TaskError::RpcProviderCreationFailed { detail: e.to_string() })?;
+        .map_err(|e| TaskError::RpcProviderCreationFailed {
+            detail: e.to_string(),
+        })?;
 
         // 3. Rebuild the Sdk with the updated config and current backend mode
         let new_sdk = match self.core_backend_mode() {
             CoreBackendMode::Spv => {
                 // Reuse existing SPV provider (rebinding below to ensure context is set)
                 let provider = self.spv_context_provider.read()?.clone();
-                initialize_sdk(&cfg, self.network, provider).map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
+                initialize_sdk(&cfg, self.network, provider)
+                    .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
             }
             CoreBackendMode::Rpc => {
                 // Create a fresh RPC provider with the new config
@@ -502,7 +505,8 @@ impl AppContext {
                     let mut guard = self.rpc_context_provider.write()?;
                     *guard = rpc_provider.clone();
                 }
-                initialize_sdk(&cfg, self.network, rpc_provider).map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
+                initialize_sdk(&cfg, self.network, rpc_provider)
+                    .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
             }
         };
 
@@ -564,7 +568,9 @@ impl AppContext {
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
                 if name.contains("..") {
-                    return Err(TaskError::InvalidCoreWalletName { name: name.to_string() });
+                    return Err(TaskError::InvalidCoreWalletName {
+                        name: name.to_string(),
+                    });
                 }
                 let encoded = urlencoding::encode(name);
                 format!("{}/wallet/{}", base, encoded)

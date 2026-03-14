@@ -61,7 +61,10 @@ impl AppContext {
                 Err(e) => {
                     // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                     // Only retry if something actually changed.
-                    if !wallet.reload_utxos(self).map_err(|e| TaskError::UtxoUpdateFailed { detail: e })? {
+                    if !wallet
+                        .reload_utxos(self)
+                        .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?
+                    {
                         return Err(TaskError::AssetLockTransactionBuildFailed { detail: e });
                     }
                     let (tx, private_key, address, _change, utxos) = wallet

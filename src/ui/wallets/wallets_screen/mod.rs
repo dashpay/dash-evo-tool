@@ -1140,7 +1140,9 @@ impl WalletsBalancesScreen {
 
         let wallet_guard = wallet_arc.read().unwrap();
         if wallet_guard.transactions.is_empty() {
-            ui.label("No transactions yet from SPV. Keep your wallet online to sync history.");
+            ui.label(
+                "No transactions found. Try refreshing your wallet to load transaction history.",
+            );
             return;
         }
 

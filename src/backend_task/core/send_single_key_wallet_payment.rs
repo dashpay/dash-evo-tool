@@ -35,11 +35,12 @@ impl AppContext {
 
         for recipient in &request.recipients {
             let address = Address::from_str(&recipient.address)
-                .map_err(|e| {
-                    TaskError::UserInput(format!("Invalid address {}: {}", recipient.address, e))
+                .map_err(|e| TaskError::InvalidRecipientAddress {
+                    address: recipient.address.clone(),
+                    detail: e.to_string(),
                 })?
                 .require_network(self.network)
-                .map_err(|e| TaskError::UserInput(format!("Address network mismatch: {}", e)))?;
+                .map_err(|e| TaskError::AddressNetworkMismatch { detail: e.to_string() })?;
 
             outputs.push(TxOut {
                 value: recipient.amount_duffs,
@@ -56,9 +57,7 @@ impl AppContext {
                 .ok_or(TaskError::WalletLocked)?;
 
             if wallet_guard.utxos.is_empty() {
-                return Err(TaskError::UserInput(
-                    "No UTXOs available to spend".to_string(),
-                ));
+                return Err(TaskError::NoUtxosAvailable);
             }
 
             let num_outputs = outputs.len() + 1;
@@ -99,12 +98,10 @@ impl AppContext {
                 .unwrap_or_else(|| FeeRate::normal().calculate_fee(final_size));
 
             if selected_total < total_output + final_fee {
-                return Err(TaskError::UserInput(format!(
-                    "Insufficient funds: have {} duffs, need {} duffs (including {} fee)",
-                    wallet_guard.total_balance,
-                    total_output + final_fee,
-                    final_fee
-                )));
+                return Err(TaskError::InsufficientFunds {
+                    available: wallet_guard.total_balance,
+                    required: total_output + final_fee,
+                });
             }
 
             let change_address = wallet_guard.address.clone();
@@ -123,10 +120,7 @@ impl AppContext {
 
         let change_amount = if request.subtract_fee_from_amount {
             if outputs[0].value <= fee {
-                return Err(TaskError::UserInput(format!(
-                    "Output amount too small to subtract fee of {} duffs",
-                    fee
-                )));
+                return Err(TaskError::OutputTooSmallForFee { fee });
             }
             outputs[0].value -= fee;
             total_input - total_output
@@ -162,7 +156,7 @@ impl AppContext {
         for (i, (_, tx_out)) in selected_utxos.iter().enumerate() {
             let sighash = SighashCache::new(&tx)
                 .legacy_signature_hash(i, &tx_out.script_pubkey, EcdsaSighashType::All as u32)
-                .map_err(|e| TaskError::UserInput(format!("Failed to compute sighash: {:?}", e)))?;
+                .map_err(|e| TaskError::SighashComputationFailed { detail: format!("{:?}", e) })?;
 
             let message =
                 dash_sdk::dpp::dashcore::secp256k1::Message::from_digest(sighash.to_byte_array());

@@ -157,6 +157,18 @@ pub enum DashPayError {
         /// Details about why the lookup failed.
         reason: String,
     },
+
+    /// The identity does not have a suitable authentication key for this operation.
+    #[error(
+        "This identity is missing an authentication key required for this operation. Please add an authentication key."
+    )]
+    MissingAuthenticationKey,
+
+    /// A contact request has already been sent to this recipient.
+    #[error(
+        "You have already sent a contact request to '{to}'. Please wait for them to respond."
+    )]
+    ContactRequestAlreadySent { to: String },
 }
 
 impl DashPayError {

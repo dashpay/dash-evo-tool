@@ -126,10 +126,7 @@ impl AppContext {
 
         let public_key = qualified_identity
             .document_signing_key(&preorder_document_type)
-            .ok_or(TaskError::UserInput(
-                "Identity doesn't have an authentication key for signing document transitions"
-                    .to_string(),
-            ))?;
+            .ok_or(TaskError::NoDocumentSigningKey)?;
 
         let fee_estimator = PlatformFeeEstimator::new();
         let estimated_fee = fee_estimator.estimate_document_batch(2);

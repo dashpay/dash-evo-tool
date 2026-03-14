@@ -117,10 +117,6 @@ pub enum TaskError {
         source_error: Box<SdkError>,
     },
 
-    /// A user input validation error — the string is a user-facing message.
-    #[error("{0}")]
-    UserInput(String),
-
     /// The requested identity was not found on the platform.
     #[error("Identity not found on the platform. Please check the ID or name and try again.")]
     IdentityNotFound,
@@ -391,6 +387,208 @@ pub enum TaskError {
         "Could not read the withdrawal details. The data may be incomplete or in an unexpected format. Please retry."
     )]
     WithdrawalDocumentParsingError { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // SDK / RPC setup errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The Dash Platform SDK could not be initialised with the current config.
+    #[error(
+        "Could not start the SDK. Please check your network settings and restart the application."
+    )]
+    SdkInitializationFailed { detail: String },
+
+    /// An RPC context provider could not be constructed.
+    #[error(
+        "Could not set up the Dash Core connection. Please check your settings and retry."
+    )]
+    RpcProviderCreationFailed { detail: String },
+
+    /// A new Core RPC client handle could not be created.
+    #[error(
+        "Could not connect to Dash Core. Please check that Dash Core is running and your settings are correct."
+    )]
+    CoreRpcClientCreationFailed { detail: String },
+
+    /// A context provider could not be bound to the current AppContext.
+    #[error("Could not register the network provider. Please restart the application.")]
+    ContextProviderBindFailed { detail: String },
+
+    /// The Core wallet name supplied by the user is syntactically invalid.
+    #[error(
+        "The Core wallet name '{name}' is invalid. Please check your wallet configuration."
+    )]
+    InvalidCoreWalletName { name: String },
+
+    /// Dash Core has no wallets loaded — required for wallet-scoped RPC calls.
+    #[error(
+        "No wallets are loaded in Dash Core. Please open a wallet in Dash Core and retry."
+    )]
+    NoCoreWalletsLoaded,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // SPV operation errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The SPV data directory could not be cleared.
+    #[error(
+        "Could not clear SPV data. Please close the application and manually delete the SPV data directory."
+    )]
+    SpvClearDataFailed { detail: String },
+
+    /// The SPV client could not be started.
+    #[error("Could not start the SPV client. Please check your network settings and retry.")]
+    SpvStartFailed { detail: String },
+
+    /// A transaction could not be broadcast via the SPV client.
+    #[error("Could not broadcast the transaction. Please check your connection and retry.")]
+    SpvBroadcastFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // UTXO / asset-lock transaction build errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A UTXO reload or removal operation failed.
+    #[error(
+        "Could not update your unspent transaction outputs. Please check your connection and retry."
+    )]
+    UtxoUpdateFailed { detail: String },
+
+    /// An asset lock transaction could not be built from the current wallet state.
+    #[error(
+        "Could not prepare the funding transaction. Please check your wallet balance and retry."
+    )]
+    AssetLockTransactionBuildFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Wallet key / address errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A private key for a wallet address could not be found.
+    #[error(
+        "Could not find the key for this address in your wallet. Please check your wallet and retry."
+    )]
+    WalletKeyLookupFailed { detail: String },
+
+    /// A new receive or change address could not be derived from the wallet.
+    #[error("Could not generate a wallet address. Please check your wallet and retry.")]
+    WalletAddressDerivationFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Payment errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A recipient address could not be parsed or is invalid.
+    #[error("The recipient address '{address}' is not valid. Please check the address and retry.")]
+    InvalidRecipientAddress { address: String, detail: String },
+
+    /// A recipient address was parsed but does not match the current network.
+    #[error(
+        "The address does not match the current network. Please check you are on the correct network."
+    )]
+    AddressNetworkMismatch { detail: String },
+
+    /// The wallet has no UTXOs available to cover the payment.
+    #[error(
+        "Your wallet has no available funds to spend. Please receive some Dash first."
+    )]
+    NoUtxosAvailable,
+
+    /// The wallet balance is too low to cover the requested amount plus fees.
+    #[error(
+        "You do not have enough Dash. You have {available} duffs but need {required} duffs. Please add more funds and retry."
+    )]
+    InsufficientFunds { available: u64, required: u64 },
+
+    /// The output amount is smaller than the transaction fee.
+    #[error(
+        "The amount is too small to cover the {fee} duff transaction fee. Please send a larger amount."
+    )]
+    OutputTooSmallForFee { fee: u64 },
+
+    /// A signature hash for a transaction input could not be computed.
+    #[error("Could not sign the transaction. Please retry.")]
+    SighashComputationFailed { detail: String },
+
+    /// A wallet payment operation failed (covers SPV and RPC payment paths).
+    #[error("Could not complete the payment. Please check your wallet balance and retry.")]
+    WalletPaymentFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Token query errors (identity / recipient validation)
+    // ──────────────────────────────────────────────────────────────────────────
+    /// No local identities are registered — a prerequisite for token queries.
+    #[error("No registered identities found. Please register an identity first.")]
+    NoIdentitiesFound,
+
+    /// The current identity is not an eligible recipient of the token's distribution.
+    #[error("{reason}")]
+    NotTokenDistributionRecipient { reason: &'static str },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Wallet-based identity loading errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// No on-chain identity was found for the requested wallet derivation index.
+    #[error(
+        "Could not find an identity for wallet index {identity_index} within the first {auth_key_count} derived keys. Try a higher search range."
+    )]
+    WalletIdentityNotFound {
+        identity_index: u32,
+        auth_key_count: usize,
+    },
+
+    /// The identity returned by the platform does not contain the queried authentication key.
+    #[error(
+        "The identity retrieved does not match your wallet key. Please check you are using the correct wallet."
+    )]
+    WalletIdentityKeyMismatch,
+
+    /// None of the identity's public keys could be matched to wallet derivation paths.
+    #[error(
+        "Could not match any identity keys to your wallet. Please check your wallet and retry."
+    )]
+    NoMatchingWalletKeys,
+
+    /// The derivation path for the queried identity key was not found in the wallet.
+    #[error("Could not find the derivation path for this identity key in your wallet.")]
+    WalletKeyDerivationPathNotFound,
+
+    /// Wallet scan completed but no identities were found up to the requested index.
+    #[error(
+        "No identities found up to wallet index {max_index}. Try a higher search range."
+    )]
+    NoWalletIdentitiesFound { max_index: u32 },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Key input validation errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A raw private-key input string failed format validation.
+    #[error(
+        "The {key_name} key is invalid: {detail}. Please check the key format and retry."
+    )]
+    KeyInputValidationFailed { key_name: String, detail: String },
+
+    /// The identity's public keys could not be converted to the platform format.
+    #[error(
+        "Could not process the identity keys. Please check your key configuration and retry."
+    )]
+    PublicKeyMapBuildFailed { detail: String },
+
+    /// The wallet-binding information for an identity could not be determined.
+    #[error(
+        "Could not read wallet information for this identity. Please check your wallet and retry."
+    )]
+    WalletInfoDeterminationFailed { detail: String },
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Voting / DPNS errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// A qualified identity does not have an associated voter identity.
+    #[error(
+        "The identity {identity_id} does not have a voting key. Please add a voting key to vote."
+    )]
+    NoVotingIdentity { identity_id: String },
+
+    /// The identity does not have an authentication key required to sign documents.
+    #[error(
+        "This identity does not have a key for signing documents. Please add an authentication key."
+    )]
+    NoDocumentSigningKey,
 }
 
 /// Returns `true` when the SDK error indicates an invalid instant asset lock

@@ -53,7 +53,7 @@ impl AppContext {
                     wallet_id = wallet.seed_hash();
                     wallet
                         .private_key_for_address(&address, self.network)
-                        .map_err(TaskError::UserInput)?
+                        .map_err(|e| TaskError::WalletKeyLookupFailed { detail: e })?
                         .ok_or(TaskError::AssetLockNotValidForWallet)?
                 };
                 let asset_lock_proof = if let AssetLockProof::Instant(instant_asset_lock_proof) =
@@ -104,8 +104,8 @@ impl AppContext {
                         Err(e) => {
                             // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                             // Only retry if something actually changed.
-                            if !wallet.reload_utxos(self).map_err(TaskError::UserInput)? {
-                                return Err(TaskError::UserInput(e));
+                            if !wallet.reload_utxos(self).map_err(|e| TaskError::UtxoUpdateFailed { detail: e })? {
+                                return Err(TaskError::AssetLockTransactionBuildFailed { detail: e });
                             }
                             wallet
                                 .registration_asset_lock_transaction(
@@ -115,7 +115,7 @@ impl AppContext {
                                     true,
                                     identity_index,
                                 )
-                                .map_err(TaskError::UserInput)?
+                                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
                         }
                     }
                 };
@@ -197,7 +197,7 @@ impl AppContext {
                             input_address.clone(),
                             identity_index,
                         )
-                        .map_err(TaskError::UserInput)?
+                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
                 };
 
                 let used_utxos = BTreeMap::from([(utxo, (tx_out.clone(), input_address.clone()))]);
@@ -222,7 +222,7 @@ impl AppContext {
             .create_identifier()
             .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
-        let public_keys = keys.to_public_keys_map().map_err(TaskError::UserInput)?;
+        let public_keys = keys.to_public_keys_map().map_err(|e| TaskError::PublicKeyMapBuildFailed { detail: e })?;
 
         // Debug: Log the keys being registered to verify contract bounds are set
         for (key_id, key) in &public_keys {
@@ -523,7 +523,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let public_keys = keys.to_public_keys_map().map_err(TaskError::UserInput)?;
+        let public_keys = keys.to_public_keys_map().map_err(|e| TaskError::PublicKeyMapBuildFailed { detail: e })?;
 
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();

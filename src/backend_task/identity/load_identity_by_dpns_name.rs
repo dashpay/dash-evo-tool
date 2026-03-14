@@ -173,7 +173,7 @@ impl AppContext {
         };
         let wallet_info = qualified_identity
             .determine_wallet_info()
-            .map_err(TaskError::UserInput)?;
+            .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
 
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;

@@ -35,17 +35,18 @@ impl AppContext {
         match recipient {
             TokenDistributionRecipient::ContractOwner => {
                 if contract_owner_id != identity_id {
-                    Err(TaskError::UserInput("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string()))
+                    Err(TaskError::NotTokenDistributionRecipient {
+                        reason: "This token's distribution recipient is the contract owner, and this identity is not the contract owner",
+                    })
                 } else {
                     Ok(())
                 }
             }
             TokenDistributionRecipient::Identity(identifier) => {
                 if identifier != identity_id {
-                    Err(TaskError::UserInput(
-                        "This identity is not a valid distribution recipient for this token"
-                            .to_string(),
-                    ))
+                    Err(TaskError::NotTokenDistributionRecipient {
+                        reason: "This identity is not a valid distribution recipient for this token",
+                    })
                 } else {
                     Ok(())
                 }
@@ -57,7 +58,9 @@ impl AppContext {
                     .find(|identity| identity.identity.id() == identity_id)
                     .ok_or(TaskError::IdentityNotFoundLocally)?;
                 if qi.identity_type != IdentityType::Evonode {
-                    Err(TaskError::UserInput("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string()))
+                    Err(TaskError::NotTokenDistributionRecipient {
+                        reason: "This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode",
+                    })
                 } else {
                     Ok(())
                 }

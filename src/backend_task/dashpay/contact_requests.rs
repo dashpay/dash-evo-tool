@@ -1,6 +1,7 @@
 use super::encryption::{
     encrypt_account_label, encrypt_extended_public_key, generate_ecdh_shared_key,
 };
+use super::errors::DashPayError;
 use super::hd_derivation::{
     calculate_account_reference, derive_dashpay_incoming_xpub, generate_contact_xpub_data,
 };
@@ -233,10 +234,10 @@ pub async fn send_contact_request_with_proof(
     let existing = Document::fetch_many(sdk, existing_query).await?;
 
     if !existing.is_empty() {
-        return Err(TaskError::UserInput(format!(
-            "Contact request already sent to {}",
-            to_username_or_id
-        )));
+        return Err(DashPayError::ContactRequestAlreadySent {
+            to: to_username_or_id.to_string(),
+        }
+        .into());
     }
 
     // Step 3: Get key indices for ECDH
@@ -252,9 +253,7 @@ pub async fn send_contact_request_with_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or_else(|| {
-            TaskError::UserInput("Sender does not have a compatible ECDSA_SECP256K1 ENCRYPTION key for ECDH. Please add a DashPay-compatible encryption key to your identity.".to_string())
-        })?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingEncryptionKey))?;
 
     // Find a recipient DECRYPTION key that supports ECDH (must be ECDSA_SECP256K1)
     // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
@@ -265,9 +264,7 @@ pub async fn send_contact_request_with_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or_else(|| {
-            TaskError::UserInput("Recipient does not have a compatible ECDSA_SECP256K1 DECRYPTION key for ECDH. They need to add a DashPay-compatible decryption key to their identity.".to_string())
-        })?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingDecryptionKey))?;
 
     // Step 4: Generate ECDH shared key and encrypt data
     let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
@@ -283,7 +280,10 @@ pub async fn send_contact_request_with_proof(
         )
         .map_err(|e| TaskError::EncryptionError { detail: format!("Error resolving ENCRYPTION private key: {}", e) })?
         .map(|(_, private_key)| private_key)
-        .ok_or_else(|| TaskError::UserInput("Sender does not have an ECDSA_SECP256K1 ENCRYPTION private key loaded into Dash Evo Tool.".to_string()))?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::PrivateKeyResolution {
+            key_purpose: "ENCRYPTION".to_string(),
+            reason: "Private key not loaded into Dash Evo Tool".to_string(),
+        }))?;
 
     let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
         .map_err(|e| TaskError::EncryptionError { detail: e })?;
@@ -364,14 +364,14 @@ pub async fn send_contact_request_with_proof(
         current_height_for_validation,
     )
     .await
-    .map_err(|e| TaskError::UserInput(format!("Validation failed: {}", e)))?;
+    .map_err(|e| DashPayError::ValidationFailed { errors: vec![e.to_string()] })?;
 
     // Check if validation passed
     if !validation.is_valid {
-        return Err(TaskError::UserInput(format!(
-            "Contact request validation failed: {}",
-            validation.errors.join("; ")
-        )));
+        return Err(DashPayError::ValidationFailed {
+            errors: validation.errors.clone(),
+        }
+        .into());
     }
 
     // Log any warnings
@@ -417,9 +417,10 @@ pub async fn send_contact_request_with_proof(
     if let Some(qr) = qr_auto_accept {
         // Ensure the QR target matches the resolved recipient
         if qr.identity_id != to_identity_id {
-            return Err(TaskError::UserInput(
-                "QR code target identity does not match recipient".to_string(),
-            ));
+            return Err(DashPayError::InvalidQrCode {
+                reason: "QR code target identity does not match recipient".to_string(),
+            }
+            .into());
         }
         let proof = create_auto_accept_proof_bytes_with_key(
             qr.expires_at,
@@ -512,7 +513,7 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
     let name = username
         .split('.')
         .next()
-        .ok_or_else(|| TaskError::UserInput(format!("Invalid username format: {}", username)))?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::InvalidUsername { username: username.to_string() }))?;
 
     // Query DPNS for the username
     let dpns_contract_id = Identifier::from_string(
@@ -545,10 +546,10 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
     let (_, document) = results
         .into_iter()
         .next()
-        .ok_or_else(|| TaskError::UserInput(format!("Username '{}' not found", username)))?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::UsernameResolutionFailed { username: username.to_string() }))?;
 
     let document = document
-        .ok_or_else(|| TaskError::UserInput(format!("Invalid DPNS document for '{}'", username)))?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::InvalidDocument { reason: format!("Invalid DPNS document for '{}'", username) }))?;
 
     // Get the identity ID from the DPNS document
     let identity_id = document.owner_id();
@@ -622,7 +623,7 @@ pub async fn accept_contact_request(
             KeyType::all_key_types().into(),
             false,
         )
-        .ok_or_else(|| TaskError::UserInput("Cannot accept contact request: This identity does not have a suitable AUTHENTICATION key. Please add an authentication key to your identity.".to_string()))?
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 
     let result = send_contact_request(

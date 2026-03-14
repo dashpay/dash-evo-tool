@@ -47,7 +47,7 @@ impl AppContext {
                         let wallet = wallet.read().map_err(TaskError::from)?;
                         wallet
                             .private_key_for_address(&address, self.network)
-                            .map_err(TaskError::UserInput)?
+                            .map_err(|e| TaskError::WalletKeyLookupFailed { detail: e })?
                             .ok_or(TaskError::AssetLockNotValidForWallet)?
                     };
                     let asset_lock_proof =
@@ -113,8 +113,8 @@ impl AppContext {
                             Err(e) => {
                                 // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                                 // Only retry if something actually changed.
-                                if !wallet.reload_utxos(self).map_err(TaskError::UserInput)? {
-                                    return Err(TaskError::UserInput(e));
+                                if !wallet.reload_utxos(self).map_err(|e| TaskError::UtxoUpdateFailed { detail: e })? {
+                                    return Err(TaskError::AssetLockTransactionBuildFailed { detail: e });
                                 }
                                 wallet
                                     .top_up_asset_lock_transaction(
@@ -125,7 +125,7 @@ impl AppContext {
                                         identity_index,
                                         top_up_index,
                                     )
-                                    .map_err(TaskError::UserInput)?
+                                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
                             }
                         };
                         (
@@ -177,7 +177,7 @@ impl AppContext {
                                 identity_index,
                                 top_up_index,
                             )
-                            .map_err(TaskError::UserInput)?;
+                            .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;
                         (tx_result.0, tx_result.1, seed_hash)
                     };
 

@@ -22,7 +22,7 @@ impl AppContext {
                 .spv_manager
                 .next_bip44_receive_address(seed_hash, 0)
                 .await
-                .map_err(crate::backend_task::error::TaskError::UserInput)?;
+                .map_err(|e| crate::backend_task::error::TaskError::WalletAddressDerivationFailed { detail: e })?;
 
             let _ = self.register_spv_address(
                 &wallet_arc,
@@ -37,7 +37,7 @@ impl AppContext {
             let mut wallet = wallet_arc.write()?;
             wallet
                 .receive_address(self.network, true, Some(self))
-                .map_err(crate::backend_task::error::TaskError::UserInput)?
+                .map_err(|e| crate::backend_task::error::TaskError::WalletAddressDerivationFailed { detail: e })?
                 .to_string()
         };
 

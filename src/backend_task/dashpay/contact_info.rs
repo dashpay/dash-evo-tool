@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -398,7 +399,7 @@ pub async fn create_or_update_contact_info(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or_else(|| TaskError::UserInput("No suitable signing key found. This operation requires a ECDSA_SECP256K1 AUTHENTICATION key.".to_string()))?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
 
     // Create document properties
     let mut properties = BTreeMap::new();

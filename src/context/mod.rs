@@ -484,25 +484,25 @@ impl AppContext {
             &addr,
             Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
         )
-        .map_err(|e| TaskError::UserInput(format!("Failed to create new Core RPC client: {e}")))?;
+        .map_err(|e| TaskError::CoreRpcClientCreationFailed { detail: e.to_string() })?;
 
         // 3. Rebuild the Sdk with the updated config and current backend mode
         let new_sdk = match self.core_backend_mode() {
             CoreBackendMode::Spv => {
                 // Reuse existing SPV provider (rebinding below to ensure context is set)
                 let provider = self.spv_context_provider.read()?.clone();
-                initialize_sdk(&cfg, self.network, provider).map_err(TaskError::UserInput)?
+                initialize_sdk(&cfg, self.network, provider).map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
             }
             CoreBackendMode::Rpc => {
                 // Create a fresh RPC provider with the new config
                 let rpc_provider = RpcProvider::new(self.db.clone(), self.network, &cfg)
-                    .map_err(TaskError::UserInput)?;
+                    .map_err(|e| TaskError::RpcProviderCreationFailed { detail: e })?;
                 // Swap in the updated RPC provider for future switches
                 {
                     let mut guard = self.rpc_context_provider.write()?;
                     *guard = rpc_provider.clone();
                 }
-                initialize_sdk(&cfg, self.network, rpc_provider).map_err(TaskError::UserInput)?
+                initialize_sdk(&cfg, self.network, rpc_provider).map_err(|e| TaskError::SdkInitializationFailed { detail: e })?
             }
         };
 
@@ -519,12 +519,12 @@ impl AppContext {
         self.spv_context_provider
             .read()?
             .bind_app_context(self.clone())
-            .map_err(TaskError::UserInput)?;
+            .map_err(|e| TaskError::ContextProviderBindFailed { detail: e })?;
         if self.core_backend_mode() == CoreBackendMode::Rpc {
             self.rpc_context_provider
                 .read()?
                 .bind_app_context(self.clone())
-                .map_err(TaskError::UserInput)?;
+                .map_err(|e| TaskError::ContextProviderBindFailed { detail: e })?;
         }
 
         Ok(())
@@ -564,10 +564,7 @@ impl AppContext {
         let url = match wallet_name {
             Some(name) if !name.is_empty() => {
                 if name.contains("..") {
-                    return Err(TaskError::UserInput(format!(
-                        "Invalid Core wallet name: '{}'",
-                        name
-                    )));
+                    return Err(TaskError::InvalidCoreWalletName { name: name.to_string() });
                 }
                 let encoded = urlencoding::encode(name);
                 format!("{}/wallet/{}", base, encoded)
@@ -624,9 +621,7 @@ impl AppContext {
     ) -> Result<Option<String>, TaskError> {
         let core_wallets = self.list_core_wallets()?;
         if core_wallets.is_empty() {
-            return Err(TaskError::UserInput(
-                "No wallets loaded in Dash Core".to_string(),
-            ));
+            return Err(TaskError::NoCoreWalletsLoaded);
         }
         if core_wallets.len() == 1 {
             return Ok(Some(core_wallets.into_iter().next().unwrap()));

@@ -29,7 +29,7 @@ impl AppContext {
                 self.spv_manager
                     .broadcast_transaction(tx)
                     .await
-                    .map_err(TaskError::UserInput)?;
+                    .map_err(|e| TaskError::SpvBroadcastFailed { detail: e })?;
                 Ok(tx.txid())
             }
         }
@@ -149,7 +149,7 @@ impl AppContext {
             let mut wallet_guard = wallet.write()?;
             wallet_guard
                 .remove_selected_utxos(used_utxos, &self.db, self.network)
-                .map_err(TaskError::UserInput)?;
+                .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?;
         }
 
         Ok(tx_id)

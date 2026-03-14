@@ -1,5 +1,6 @@
 use super::avatar_processing::{calculate_avatar_hash, calculate_dhash_fingerprint};
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -123,9 +124,7 @@ pub async fn update_profile(
             KeyType::all_key_types().into(),
             false,
         )
-        .ok_or_else(|| {
-            TaskError::UserInput("No suitable authentication key found for identity".to_string())
-        })?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
 
     // Check if profile already exists
     let mut profile_query =
@@ -373,7 +372,7 @@ pub async fn load_payment_history(
         contact_id.as_ref(),
     )
     .await
-    .map_err(TaskError::UserInput)?;
+    .map_err(|e| DashPayError::Internal { message: e })?;
 
     // Format the results
     if history.is_empty() {

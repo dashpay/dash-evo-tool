@@ -207,7 +207,8 @@ pub async fn load_contacts(
 
     // Query for contact requests where we are the sender (ownerId)
     let mut outgoing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| TaskError::DpnsFetchError {
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
             source: Box::new(e),
         })?;
 
@@ -220,7 +221,8 @@ pub async fn load_contacts(
 
     // Query for contact requests where we are the recipient (toUserId)
     let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| TaskError::DpnsFetchError {
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
             source: Box::new(e),
         })?;
 
@@ -280,7 +282,8 @@ pub async fn load_contacts(
 
     // Now query for contact info documents
     let mut contact_info_query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo")
-        .map_err(|e| TaskError::DpnsFetchError {
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactInfo",
             source: Box::new(e),
         })?;
 

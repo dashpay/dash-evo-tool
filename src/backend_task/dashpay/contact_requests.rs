@@ -46,7 +46,8 @@ pub async fn load_contact_requests(
 
     // Query for incoming contact requests (where toUserId == our identity)
     let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| TaskError::DpnsFetchError {
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
             source: Box::new(e),
         })?;
 
@@ -68,7 +69,8 @@ pub async fn load_contact_requests(
     // Query for outgoing contact requests (where $ownerId == our identity)
     let mut outgoing_query =
         DocumentQuery::new(dashpay_contract, "contactRequest").map_err(|e| {
-            TaskError::DpnsFetchError {
+            DashPayError::QueryCreation {
+                query_target: "DashPay contactRequest",
                 source: Box::new(e),
             }
         })?;
@@ -214,7 +216,8 @@ pub async fn send_contact_request_with_proof(
     // Step 2: Check if a contact request already exists
     let dashpay_contract = app_context.dashpay_contract.clone();
     let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| TaskError::DpnsFetchError {
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
             source: Box::new(e),
         })?;
 
@@ -529,7 +532,8 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
         .ok_or(TaskError::DataContractNotFound)?;
 
     let mut query = DocumentQuery::new(Arc::new(dpns_contract), "domain").map_err(|e| {
-        TaskError::DpnsFetchError {
+        DashPayError::QueryCreation {
+            query_target: "DPNS domain",
             source: Box::new(e),
         }
     })?;
@@ -573,7 +577,8 @@ pub async fn accept_contact_request(
 
     // Fetch the specific contact request document by creating a query with its ID
     let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
-        TaskError::DpnsFetchError {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
             source: Box::new(e),
         }
     })?;
@@ -588,7 +593,8 @@ pub async fn accept_contact_request(
 
     // Check if we already sent a contact request to this identity
     let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| TaskError::DpnsFetchError {
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
             source: Box::new(e),
         })?;
 
@@ -657,7 +663,8 @@ pub async fn reject_contact_request(
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
-        TaskError::DpnsFetchError {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
             source: Box::new(e),
         }
     })?;

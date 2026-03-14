@@ -28,10 +28,12 @@ pub async fn load_profile(
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for profile document owned by this identity
-    let mut profile_query =
-        DocumentQuery::new(dashpay_contract, "profile").map_err(|e| TaskError::DpnsFetchError {
+    let mut profile_query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay profile",
             source: Box::new(e),
-        })?;
+        }
+    })?;
 
     profile_query = profile_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -129,7 +131,8 @@ pub async fn update_profile(
     // Check if profile already exists
     let mut profile_query =
         DocumentQuery::new(dashpay_contract.clone(), "profile").map_err(|e| {
-            TaskError::DpnsFetchError {
+            DashPayError::QueryCreation {
+                query_target: "DashPay profile",
                 source: Box::new(e),
             }
         })?;
@@ -406,10 +409,12 @@ pub async fn fetch_contact_profile(
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for the contact's profile document
-    let mut query =
-        DocumentQuery::new(dashpay_contract, "profile").map_err(|e| TaskError::DpnsFetchError {
+    let mut query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay profile",
             source: Box::new(e),
-        })?;
+        }
+    })?;
 
     query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -450,10 +455,12 @@ pub async fn search_profiles(
     let normalized_query = query_trimmed.to_lowercase();
 
     // Search DPNS for usernames starting with the query
-    let mut dpns_query =
-        DocumentQuery::new(dpns_contract, "domain").map_err(|e| TaskError::DpnsFetchError {
+    let mut dpns_query = DocumentQuery::new(dpns_contract, "domain").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DPNS domain",
             source: Box::new(e),
-        })?;
+        }
+    })?;
 
     dpns_query = dpns_query
         .with_where(WhereClause {
@@ -496,7 +503,8 @@ pub async fn search_profiles(
         // Query for profile document owned by this identity
         let mut profile_query =
             DocumentQuery::new(dashpay_contract.clone(), "profile").map_err(|e| {
-                TaskError::DpnsFetchError {
+                DashPayError::QueryCreation {
+                    query_target: "DashPay profile",
                     source: Box::new(e),
                 }
             })?;

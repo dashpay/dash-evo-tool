@@ -64,13 +64,13 @@ impl AppContext {
         {
             receiver.identity.set_balance(receiver_balance);
             self.update_local_qualified_identity(receiver)
-                .map_err(|e| TaskError::IdentitySaveError { source: e })?;
+                .map_err(|e| TaskError::Database { source: e })?;
         }
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::TransferredCredits(fee_result))
-            .map_err(|e| TaskError::IdentitySaveError { source: e })
+            .map_err(|e| TaskError::Database { source: e })
     }
 }

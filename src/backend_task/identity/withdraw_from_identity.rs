@@ -114,6 +114,6 @@ impl AppContext {
 
         self.update_local_qualified_identity(&qualified_identity)
             .map(|_| BackendTaskSuccessResult::WithdrewFromIdentity(fee_result))
-            .map_err(|e| TaskError::IdentitySaveError { source: e })
+            .map_err(|e| TaskError::Database { source: e })
     }
 }

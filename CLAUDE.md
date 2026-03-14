@@ -134,7 +134,7 @@ Screen::ui() → AppAction::BackendTask(task)
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
-**Error handling**: Backend tasks return `Result<T, TaskError>` (`src/backend_task/error.rs`). `TaskError` is a typed error envelope — `Display` produces user-friendly text for `MessageBanner`, `Debug` provides technical details for logs. `From<String>` ensures backwards compatibility: existing `Result<T, String>` code works unchanged. Domain errors (`DashPayError`, `SpvError`, etc.) are wired as `#[from]` variants for automatic conversion via `?`. When adding new backend error types, add a `#[from]` variant to `TaskError` rather than converting to `String`.
+**Error handling**: Backend tasks return `Result<T, TaskError>` (`src/backend_task/error.rs`). `TaskError` is a typed error envelope — `Display` produces user-friendly text for `MessageBanner`, `Debug` provides technical details for logs. Domain errors (`DashPayError`, `SpvError`, etc.) are wired as `#[from]` variants for automatic conversion via `?`. When adding new backend error types, add a dedicated `TaskError` variant rather than converting to `String`.
 
 ## Screen Pattern
 

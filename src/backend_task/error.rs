@@ -20,7 +20,7 @@ const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 #[derive(Debug, Error)]
 pub enum TaskError {
     /// SPV subsystem errors.
-    #[error(transparent)]
+    #[error("{}", spv_user_message(.0))]
     Spv(#[from] crate::spv::SpvError),
 
     /// DashPay domain errors.
@@ -32,7 +32,7 @@ pub enum TaskError {
     Config(#[from] crate::config::ConfigError),
 
     /// GroveSTARK prover errors.
-    #[error(transparent)]
+    #[error("Could not verify platform data. Please retry.")]
     GroveStark(#[from] crate::model::grovestark_prover::GroveSTARKError),
 
     /// Wallet errors.
@@ -46,15 +46,8 @@ pub enum TaskError {
         source: rusqlite::Error,
     },
 
-    /// Failed to persist an identity update to the local database.
-    #[error("Could not save identity changes. Check available disk space and retry.")]
-    IdentitySaveError {
-        #[source]
-        source: rusqlite::Error,
-    },
-
     /// Tokio task join errors.
-    #[error(transparent)]
+    #[error("An internal operation failed unexpectedly. Please restart the application.")]
     JoinError(#[from] tokio::task::JoinError),
 
     /// Core wallet not configured for this wallet on a multi-wallet Core node.
@@ -401,7 +394,7 @@ pub enum TaskError {
     /// The Dash Platform SDK could not be initialised with the current config,
     /// or a context provider could not be bound to the current AppContext.
     #[error(
-        "Could not start the SDK. Please check your network settings and restart the application."
+        "Could not connect to the Dash network. Please check your network settings and restart the application."
     )]
     SdkInitializationFailed { detail: String },
 
@@ -628,6 +621,31 @@ pub fn is_instant_lock_proof_invalid(error: &SdkError) -> bool {
             BasicError::InvalidInstantAssetLockProofSignatureError(_),
         ))
     )
+}
+
+/// Produce a user-friendly message for SPV subsystem errors.
+///
+/// Inspects the specific `SpvError` variant to give actionable guidance.
+fn spv_user_message(e: &crate::spv::SpvError) -> &'static str {
+    use crate::spv::SpvError;
+    match e {
+        SpvError::LockPoisoned(_) | SpvError::ChannelError(_) => {
+            "An internal error occurred. Please restart the application."
+        }
+        SpvError::ClientNotInitialized | SpvError::NotRunning => {
+            "The wallet sync service is not ready. Please restart the application."
+        }
+        SpvError::NetworkError(_) | SpvError::SyncFailed(_) => {
+            "Could not sync wallet data. Please check your connection and retry."
+        }
+        SpvError::WalletError(_) => {
+            "Could not process wallet data. Please check your wallet and retry."
+        }
+        SpvError::ConfigError(_) => {
+            "Wallet sync is not configured properly. Please check your settings."
+        }
+        SpvError::Other(_) => "Could not sync wallet data. Please retry.",
+    }
 }
 
 /// Produce a user-friendly message by inspecting the SDK error variant.

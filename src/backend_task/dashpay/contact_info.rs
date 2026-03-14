@@ -297,7 +297,8 @@ pub async fn create_or_update_contact_info(
 
     // Query for existing contactInfo document
     let mut query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo").map_err(|e| {
-        TaskError::DpnsFetchError {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactInfo",
             source: Box::new(e),
         }
     })?;

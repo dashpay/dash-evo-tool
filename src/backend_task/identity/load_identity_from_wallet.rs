@@ -251,7 +251,7 @@ impl AppContext {
             &qualified_identity,
             &Some((wallet_seed_hash, identity_index)),
         )
-        .map_err(|e| TaskError::IdentitySaveError { source: e })?;
+        .map_err(|e| TaskError::Database { source: e })?;
 
         {
             let mut wallet = wallet_arc_ref.wallet.write().unwrap();

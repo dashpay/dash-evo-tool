@@ -1,5 +1,6 @@
 use crate::backend_task::dashpay::auto_accept_proof::verify_auto_accept_proof;
 use crate::backend_task::dashpay::contact_requests::accept_contact_request;
+use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -26,7 +27,8 @@ pub async fn process_auto_accept_requests(
 
     // Query for incoming contact requests
     let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| TaskError::DpnsFetchError {
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
             source: Box::new(e),
         })?;
 

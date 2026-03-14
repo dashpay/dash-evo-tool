@@ -234,7 +234,7 @@ impl AppContext {
         qualified_identity.identity = refreshed_identity;
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map_err(|e| TaskError::IdentitySaveError { source: e })?;
+            .map_err(|e| TaskError::Database { source: e })?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::RegisteredDpnsName(fee_result))

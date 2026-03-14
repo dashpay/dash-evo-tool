@@ -37,10 +37,10 @@ impl AppContext {
             let address = Address::from_str(&recipient.address)
                 .map_err(|e| TaskError::InvalidRecipientAddress {
                     address: recipient.address.clone(),
-                    detail: e.to_string(),
+                    source: e,
                 })?
                 .require_network(self.network)
-                .map_err(|e| TaskError::AddressNetworkMismatch { detail: e.to_string() })?;
+                .map_err(|e| TaskError::AddressNetworkMismatch { source: e })?;
 
             outputs.push(TxOut {
                 value: recipient.amount_duffs,
@@ -156,7 +156,7 @@ impl AppContext {
         for (i, (_, tx_out)) in selected_utxos.iter().enumerate() {
             let sighash = SighashCache::new(&tx)
                 .legacy_signature_hash(i, &tx_out.script_pubkey, EcdsaSighashType::All as u32)
-                .map_err(|e| TaskError::SighashComputationFailed { detail: format!("{:?}", e) })?;
+                .map_err(|e| TaskError::SighashComputationFailed { source: e })?;
 
             let message =
                 dash_sdk::dpp::dashcore::secp256k1::Message::from_digest(sighash.to_byte_array());

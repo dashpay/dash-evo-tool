@@ -161,7 +161,7 @@ impl AppContext {
                     .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
                 Some(PlatformAddress::try_from(addr).map_err(|e| {
                     TaskError::AddressConversionFailed {
-                        detail: e.to_string(),
+                        source: Box::new(e),
                     }
                 })?)
             } else {

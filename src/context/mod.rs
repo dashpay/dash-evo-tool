@@ -484,7 +484,7 @@ impl AppContext {
             &addr,
             Auth::UserPass(cfg.core_rpc_user.clone(), cfg.core_rpc_password.clone()),
         )
-        .map_err(|e| TaskError::CoreRpcClientCreationFailed { detail: e.to_string() })?;
+        .map_err(|e| TaskError::RpcProviderCreationFailed { detail: e.to_string() })?;
 
         // 3. Rebuild the Sdk with the updated config and current backend mode
         let new_sdk = match self.core_backend_mode() {
@@ -519,12 +519,12 @@ impl AppContext {
         self.spv_context_provider
             .read()?
             .bind_app_context(self.clone())
-            .map_err(|e| TaskError::ContextProviderBindFailed { detail: e })?;
+            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
         if self.core_backend_mode() == CoreBackendMode::Rpc {
             self.rpc_context_provider
                 .read()?
                 .bind_app_context(self.clone())
-                .map_err(|e| TaskError::ContextProviderBindFailed { detail: e })?;
+                .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
         }
 
         Ok(())

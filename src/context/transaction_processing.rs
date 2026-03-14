@@ -328,9 +328,7 @@ impl AppContext {
 
                 let address =
                     Address::from_script(&first.script_pubkey, self.network).map_err(|e| {
-                        TaskError::AssetLockAddressDerivationFailed {
-                            detail: e.to_string(),
-                        }
+                        TaskError::AssetLockAddressDerivationFailed { source: e }
                     })?;
 
                 // Add the asset lock to the wallet's unused_asset_locks

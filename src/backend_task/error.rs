@@ -6,6 +6,7 @@
 use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
+use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
@@ -200,7 +201,10 @@ pub enum TaskError {
 
     /// A Core address could not be converted to a Platform address.
     #[error("Could not convert a wallet address for platform use. Please retry.")]
-    AddressConversionFailed { detail: String },
+    AddressConversionFailed {
+        #[source]
+        source: Box<ProtocolError>,
+    },
 
     /// Overflow while converting duffs to platform credits.
     #[error("The amount is too large to process. Please use a smaller amount.")]
@@ -227,7 +231,10 @@ pub enum TaskError {
 
     /// Could not derive a Core address from an asset lock output script.
     #[error("Could not read the address from the funding transaction. Please retry.")]
-    AssetLockAddressDerivationFailed { detail: String },
+    AssetLockAddressDerivationFailed {
+        #[source]
+        source: dashcore::address::Error,
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Token contract errors
@@ -391,27 +398,18 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // SDK / RPC setup errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// The Dash Platform SDK could not be initialised with the current config.
+    /// The Dash Platform SDK could not be initialised with the current config,
+    /// or a context provider could not be bound to the current AppContext.
     #[error(
         "Could not start the SDK. Please check your network settings and restart the application."
     )]
     SdkInitializationFailed { detail: String },
 
-    /// An RPC context provider could not be constructed.
+    /// An RPC context provider or Core RPC client could not be constructed.
     #[error(
         "Could not set up the Dash Core connection. Please check your settings and retry."
     )]
     RpcProviderCreationFailed { detail: String },
-
-    /// A new Core RPC client handle could not be created.
-    #[error(
-        "Could not connect to Dash Core. Please check that Dash Core is running and your settings are correct."
-    )]
-    CoreRpcClientCreationFailed { detail: String },
-
-    /// A context provider could not be bound to the current AppContext.
-    #[error("Could not register the network provider. Please restart the application.")]
-    ContextProviderBindFailed { detail: String },
 
     /// The Core wallet name supplied by the user is syntactically invalid.
     #[error(
@@ -475,13 +473,20 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// A recipient address could not be parsed or is invalid.
     #[error("The recipient address '{address}' is not valid. Please check the address and retry.")]
-    InvalidRecipientAddress { address: String, detail: String },
+    InvalidRecipientAddress {
+        address: String,
+        #[source]
+        source: dashcore::address::Error,
+    },
 
     /// A recipient address was parsed but does not match the current network.
     #[error(
         "The address does not match the current network. Please check that you are on the correct network."
     )]
-    AddressNetworkMismatch { detail: String },
+    AddressNetworkMismatch {
+        #[source]
+        source: dashcore::address::Error,
+    },
 
     /// The wallet has no UTXOs available to cover the payment.
     #[error(
@@ -503,7 +508,10 @@ pub enum TaskError {
 
     /// A signature hash for a transaction input could not be computed.
     #[error("Could not sign the transaction. Please retry.")]
-    SighashComputationFailed { detail: String },
+    SighashComputationFailed {
+        #[source]
+        source: dashcore::sighash::Error,
+    },
 
     /// A wallet payment operation failed (covers SPV and RPC payment paths).
     #[error("Could not complete the payment. Please check your wallet balance and retry.")]
@@ -516,9 +524,23 @@ pub enum TaskError {
     #[error("No registered identities found. Please register an identity first.")]
     NoIdentitiesFound,
 
-    /// The current identity is not an eligible recipient of the token's distribution.
-    #[error("{reason}")]
-    NotTokenDistributionRecipient { reason: &'static str },
+    /// The current identity is not the contract owner who can claim this token's distribution.
+    #[error(
+        "This token distribution can only be claimed by the contract owner ({contract_owner}). Your identity is not the contract owner."
+    )]
+    NotContractOwner { contract_owner: String },
+
+    /// The current identity is not the specific identity designated as the token distribution recipient.
+    #[error(
+        "This token distribution can only be claimed by the designated recipient ({designated_recipient}). Your identity is not the designated recipient."
+    )]
+    NotDesignatedTokenRecipient { designated_recipient: String },
+
+    /// The current identity is not an evonode, which is required for this token distribution.
+    #[error(
+        "This token distribution is only for evonode identities. Your identity is not registered as an evonode."
+    )]
+    NotEvonode,
 
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet-based identity loading errors

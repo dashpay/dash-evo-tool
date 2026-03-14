@@ -19,6 +19,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution
 };
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_moment::RewardDistributionMoment;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::query::TokenLastClaimQuery;
 use dash_sdk::platform::{Fetch, FetchMany, Identifier};
@@ -35,8 +36,8 @@ impl AppContext {
         match recipient {
             TokenDistributionRecipient::ContractOwner => {
                 if contract_owner_id != identity_id {
-                    Err(TaskError::NotTokenDistributionRecipient {
-                        reason: "This token can only be claimed by the contract owner. Your identity is not the contract owner.",
+                    Err(TaskError::NotContractOwner {
+                        contract_owner: contract_owner_id.to_string(Encoding::Base58),
                     })
                 } else {
                     Ok(())
@@ -44,8 +45,8 @@ impl AppContext {
             }
             TokenDistributionRecipient::Identity(identifier) => {
                 if identifier != identity_id {
-                    Err(TaskError::NotTokenDistributionRecipient {
-                        reason: "You cannot claim this token's distribution. Only the designated recipient identity can claim it.",
+                    Err(TaskError::NotDesignatedTokenRecipient {
+                        designated_recipient: identifier.to_string(Encoding::Base58),
                     })
                 } else {
                     Ok(())
@@ -58,9 +59,7 @@ impl AppContext {
                     .find(|identity| identity.identity.id() == identity_id)
                     .ok_or(TaskError::IdentityNotFoundLocally)?;
                 if qi.identity_type != IdentityType::Evonode {
-                    Err(TaskError::NotTokenDistributionRecipient {
-                        reason: "This token distribution is only for evonode identities. Your identity is not registered as an evonode.",
-                    })
+                    Err(TaskError::NotEvonode)
                 } else {
                     Ok(())
                 }

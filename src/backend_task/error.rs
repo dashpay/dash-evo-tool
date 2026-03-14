@@ -479,7 +479,7 @@ pub enum TaskError {
 
     /// A recipient address was parsed but does not match the current network.
     #[error(
-        "The address does not match the current network. Please check you are on the correct network."
+        "The address does not match the current network. Please check that you are on the correct network."
     )]
     AddressNetworkMismatch { detail: String },
 
@@ -525,7 +525,7 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// No on-chain identity was found for the requested wallet derivation index.
     #[error(
-        "Could not find an identity for wallet index {identity_index} within the first {auth_key_count} derived keys. Try a higher search range."
+        "Could not find an identity for wallet index {identity_index} after checking {auth_key_count} keys. Try expanding the search range."
     )]
     WalletIdentityNotFound {
         identity_index: u32,
@@ -545,7 +545,7 @@ pub enum TaskError {
     NoMatchingWalletKeys,
 
     /// The derivation path for the queried identity key was not found in the wallet.
-    #[error("Could not find the derivation path for this identity key in your wallet.")]
+    #[error("Could not locate this identity key's information in your wallet. Please check your wallet configuration.")]
     WalletKeyDerivationPathNotFound,
 
     /// Wallet scan completed but no identities were found up to the requested index.

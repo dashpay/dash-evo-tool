@@ -36,7 +36,7 @@ impl AppContext {
             TokenDistributionRecipient::ContractOwner => {
                 if contract_owner_id != identity_id {
                     Err(TaskError::NotTokenDistributionRecipient {
-                        reason: "This token's distribution recipient is the contract owner, and this identity is not the contract owner",
+                        reason: "This token can only be claimed by the contract owner. Your identity is not the contract owner.",
                     })
                 } else {
                     Ok(())
@@ -45,7 +45,7 @@ impl AppContext {
             TokenDistributionRecipient::Identity(identifier) => {
                 if identifier != identity_id {
                     Err(TaskError::NotTokenDistributionRecipient {
-                        reason: "This identity is not a valid distribution recipient for this token",
+                        reason: "You cannot claim this token's distribution. Only the designated recipient identity can claim it.",
                     })
                 } else {
                     Ok(())
@@ -59,7 +59,7 @@ impl AppContext {
                     .ok_or(TaskError::IdentityNotFoundLocally)?;
                 if qi.identity_type != IdentityType::Evonode {
                     Err(TaskError::NotTokenDistributionRecipient {
-                        reason: "This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode",
+                        reason: "This token distribution is only for evonode identities. Your identity is not registered as an evonode.",
                     })
                 } else {
                     Ok(())

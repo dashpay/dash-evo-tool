@@ -6,10 +6,10 @@
 use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
-use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::consensus::ConsensusError;
 use dash_sdk::dpp::consensus::basic::basic_error::BasicError;
 use dash_sdk::dpp::consensus::state::state_error::StateError;
+use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use thiserror::Error;
 
@@ -399,21 +399,15 @@ pub enum TaskError {
     SdkInitializationFailed { detail: String },
 
     /// An RPC context provider or Core RPC client could not be constructed.
-    #[error(
-        "Could not set up the Dash Core connection. Please check your settings and retry."
-    )]
+    #[error("Could not set up the Dash Core connection. Please check your settings and retry.")]
     RpcProviderCreationFailed { detail: String },
 
     /// The Core wallet name supplied by the user is syntactically invalid.
-    #[error(
-        "The Core wallet name '{name}' is invalid. Please check your wallet configuration."
-    )]
+    #[error("The Core wallet name '{name}' is invalid. Please check your wallet configuration.")]
     InvalidCoreWalletName { name: String },
 
     /// Dash Core has no wallets loaded — required for wallet-scoped RPC calls.
-    #[error(
-        "No wallets are loaded in Dash Core. Please open a wallet in Dash Core and retry."
-    )]
+    #[error("No wallets are loaded in Dash Core. Please open a wallet in Dash Core and retry.")]
     NoCoreWalletsLoaded,
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -482,9 +476,7 @@ pub enum TaskError {
     },
 
     /// The wallet has no UTXOs available to cover the payment.
-    #[error(
-        "Your wallet has no available funds to spend. Please receive some Dash first."
-    )]
+    #[error("Your wallet has no available funds to spend. Please receive some Dash first.")]
     NoUtxosAvailable,
 
     /// The wallet balance is too low to cover the requested amount plus fees.
@@ -560,28 +552,24 @@ pub enum TaskError {
     NoMatchingWalletKeys,
 
     /// The derivation path for the queried identity key was not found in the wallet.
-    #[error("Could not locate this identity key's information in your wallet. Please check your wallet configuration.")]
+    #[error(
+        "Could not locate this identity key's information in your wallet. Please check your wallet configuration."
+    )]
     WalletKeyDerivationPathNotFound,
 
     /// Wallet scan completed but no identities were found up to the requested index.
-    #[error(
-        "No identities found up to wallet index {max_index}. Try a higher search range."
-    )]
+    #[error("No identities found up to wallet index {max_index}. Try a higher search range.")]
     NoWalletIdentitiesFound { max_index: u32 },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Key input validation errors
     // ──────────────────────────────────────────────────────────────────────────
     /// A raw private-key input string failed format validation.
-    #[error(
-        "The {key_name} key is invalid: {detail}. Please check the key format and retry."
-    )]
+    #[error("The {key_name} key is invalid: {detail}. Please check the key format and retry.")]
     KeyInputValidationFailed { key_name: String, detail: String },
 
     /// The identity's public keys could not be converted to the platform format.
-    #[error(
-        "Could not process the identity keys. Please check your key configuration and retry."
-    )]
+    #[error("Could not process the identity keys. Please check your key configuration and retry.")]
     PublicKeyMapBuildFailed { detail: String },
 
     /// The wallet-binding information for an identity could not be determined.

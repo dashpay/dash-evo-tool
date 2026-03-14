@@ -1,7 +1,7 @@
 //! Query token balances from Platform
 
-use crate::backend_task::error::TaskError;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::tokens::identity_token_balances::{

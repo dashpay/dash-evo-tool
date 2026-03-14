@@ -38,7 +38,7 @@ impl AppContext {
             // Get the private key for the asset lock address
             let private_key = wallet
                 .private_key_for_address(&asset_lock_address, self.network)
-                .map_err(crate::backend_task::error::TaskError::UserInput)?
+                .map_err(|e| crate::backend_task::error::TaskError::WalletKeyLookupFailed { detail: e })?
                 .ok_or(crate::backend_task::error::TaskError::AssetLockAddressNotFound)?;
 
             (wallet, sdk, private_key)

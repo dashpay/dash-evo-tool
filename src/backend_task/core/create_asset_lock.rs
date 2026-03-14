@@ -27,7 +27,7 @@ impl AppContext {
                     allow_take_fee_from_amount,
                     identity_index,
                 )
-                .map_err(TaskError::UserInput)?
+                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
         };
 
         let tx_id = asset_lock_transaction.txid();
@@ -79,7 +79,7 @@ impl AppContext {
                     identity_index,
                     top_up_index,
                 )
-                .map_err(TaskError::UserInput)?
+                .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?
         };
 
         let tx_id = asset_lock_transaction.txid();

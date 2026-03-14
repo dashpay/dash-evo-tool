@@ -1,7 +1,7 @@
 //! Query token balances from Platform
 
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTaskSuccessResult, NO_IDENTITIES_FOUND};
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::tokens::identity_token_balances::{
@@ -21,7 +21,7 @@ impl AppContext {
         let identities = self.load_local_qualified_identities()?;
 
         if identities.is_empty() {
-            return Err(TaskError::UserInput(NO_IDENTITIES_FOUND.to_string()));
+            return Err(TaskError::NoIdentitiesFound);
         }
 
         for identity in identities {

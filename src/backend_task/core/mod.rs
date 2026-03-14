@@ -466,11 +466,11 @@ impl AppContext {
             CoreBackendMode::Spv => self
                 .send_wallet_payment_via_spv(wallet, request)
                 .await
-                .map_err(TaskError::UserInput),
+                .map_err(|e| TaskError::WalletPaymentFailed { detail: e }),
             CoreBackendMode::Rpc => self
                 .send_wallet_payment_via_rpc(wallet, request)
                 .await
-                .map_err(TaskError::UserInput),
+                .map_err(|e| TaskError::WalletPaymentFailed { detail: e }),
         }
     }
 }

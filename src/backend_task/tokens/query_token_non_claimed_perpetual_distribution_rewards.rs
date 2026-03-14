@@ -19,6 +19,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution
 };
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::reward_distribution_moment::RewardDistributionMoment;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::query::TokenLastClaimQuery;
 use dash_sdk::platform::{Fetch, FetchMany, Identifier};
@@ -35,17 +36,18 @@ impl AppContext {
         match recipient {
             TokenDistributionRecipient::ContractOwner => {
                 if contract_owner_id != identity_id {
-                    Err(TaskError::UserInput("This token's distribution recipient is the contract owner, and this identity is not the contract owner".to_string()))
+                    Err(TaskError::NotContractOwner {
+                        contract_owner: contract_owner_id.to_string(Encoding::Base58),
+                    })
                 } else {
                     Ok(())
                 }
             }
             TokenDistributionRecipient::Identity(identifier) => {
                 if identifier != identity_id {
-                    Err(TaskError::UserInput(
-                        "This identity is not a valid distribution recipient for this token"
-                            .to_string(),
-                    ))
+                    Err(TaskError::NotDesignatedTokenRecipient {
+                        designated_recipient: identifier.to_string(Encoding::Base58),
+                    })
                 } else {
                     Ok(())
                 }
@@ -57,7 +59,7 @@ impl AppContext {
                     .find(|identity| identity.identity.id() == identity_id)
                     .ok_or(TaskError::IdentityNotFoundLocally)?;
                 if qi.identity_type != IdentityType::Evonode {
-                    Err(TaskError::UserInput("This token's distribution recipient is EvonodesByParticipation, and this identity is not an evonode".to_string()))
+                    Err(TaskError::NotEvonode)
                 } else {
                     Ok(())
                 }

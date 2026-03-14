@@ -46,7 +46,7 @@ impl AppContext {
                         identity_index,
                         key_index,
                     )
-                    .map_err(TaskError::UserInput)?
+                    .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?
             };
 
             let key_hash = public_key.pubkey_hash().into();
@@ -70,10 +70,10 @@ impl AppContext {
         let identity = match fetched_identity {
             Some(identity) => identity,
             None => {
-                return Err(TaskError::UserInput(format!(
-                    "No identity found for wallet identity index {} within the first {} derived authentication keys",
-                    identity_index, AUTH_KEY_LOOKUP_WINDOW
-                )));
+                return Err(TaskError::WalletIdentityNotFound {
+                    identity_index,
+                    auth_key_count: AUTH_KEY_LOOKUP_WINDOW as usize,
+                });
             }
         };
 
@@ -93,9 +93,7 @@ impl AppContext {
         let matching_identity_key = match matching_identity_key {
             Some(key) => key,
             None => {
-                return Err(TaskError::UserInput(
-                    "Fetched identity does not contain the queried authentication key".to_string(),
-                ));
+                return Err(TaskError::WalletIdentityKeyMismatch);
             }
         };
         let matching_identity_key_id = matching_identity_key.id();
@@ -169,7 +167,7 @@ impl AppContext {
                     identity_index,
                     0..top_bound,
                 )
-                .map_err(TaskError::UserInput)?
+                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?
         };
 
         let private_keys_map = identity
@@ -210,18 +208,14 @@ impl AppContext {
             .collect::<BTreeMap<_, _>>();
 
         if private_keys_map.is_empty() {
-            return Err(TaskError::UserInput(
-                "Could not match any identity keys to wallet derivation paths".to_string(),
-            ));
+            return Err(TaskError::NoMatchingWalletKeys);
         }
 
         if !private_keys_map.contains_key(&(
             PrivateKeyTarget::PrivateKeyOnMainIdentity,
             matching_identity_key_id,
         )) {
-            return Err(TaskError::UserInput(
-                "Unable to locate wallet derivation path for the queried identity key".to_string(),
-            ));
+            return Err(TaskError::WalletKeyDerivationPathNotFound);
         }
 
         let private_keys = private_keys_map.into();
@@ -305,9 +299,7 @@ impl AppContext {
                 Ok(_) => {
                     loaded_indices.push(identity_index);
                 }
-                Err(TaskError::UserInput(ref msg))
-                    if msg.starts_with("No identity found for wallet identity index") =>
-                {
+                Err(TaskError::WalletIdentityNotFound { .. }) => {
                     continue;
                 }
                 Err(error) => {
@@ -317,10 +309,7 @@ impl AppContext {
         }
 
         if loaded_indices.is_empty() {
-            return Err(TaskError::UserInput(format!(
-                "No identities found up to index {}.",
-                max_identity_index
-            )));
+            return Err(TaskError::NoWalletIdentitiesFound { max_index: max_identity_index });
         }
 
         let summary = if loaded_indices.len() == 1 {

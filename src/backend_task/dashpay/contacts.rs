@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -524,7 +525,10 @@ pub async fn add_contact(
     // 2. Generate encryption keys for this contact relationship
     // 3. Create the contactRequest document with encrypted fields
     // 4. Broadcast the state transition
-    Err(TaskError::UserInput("Adding contacts via username is not yet implemented. Use the contact request workflow instead.".to_string()))
+    Err(DashPayError::NotSupported {
+        operation: "add_contact_by_username".to_string(),
+    }
+    .into())
 }
 
 pub async fn remove_contact(
@@ -535,7 +539,8 @@ pub async fn remove_contact(
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     // TODO: Implement contact removal
     // This would involve deleting the contactInfo document if it exists
-    Err(TaskError::UserInput(
-        "Contact removal is not yet implemented".to_string(),
-    ))
+    Err(DashPayError::NotSupported {
+        operation: "remove_contact".to_string(),
+    }
+    .into())
 }

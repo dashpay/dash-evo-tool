@@ -77,10 +77,12 @@ impl AppContext {
 
                 vote_results.push((name.to_owned(), vote_choice, result));
             } else {
-                return Err(TaskError::UserInput(format!(
-                    "No associated voter identity for qualified identity: {}",
-                    qualified_identity.identity.id().to_string(Encoding::Base58)
-                )));
+                return Err(TaskError::NoVotingIdentity {
+                    identity_id: qualified_identity
+                        .identity
+                        .id()
+                        .to_string(Encoding::Base58),
+                });
             }
         }
 

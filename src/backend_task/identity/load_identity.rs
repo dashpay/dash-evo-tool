@@ -57,15 +57,29 @@ impl AppContext {
 
         // Verify the voting private key
         let owner_private_key_bytes =
-            verify_key_input(owner_private_key_input, "Owner").map_err(TaskError::UserInput)?;
+            verify_key_input(owner_private_key_input, "Owner").map_err(|e| {
+                TaskError::KeyInputValidationFailed {
+                    key_name: "Owner".to_string(),
+                    detail: e,
+                }
+            })?;
 
         // Verify the voting private key
         let voting_private_key_bytes =
-            verify_key_input(voting_private_key_input, "Voting").map_err(TaskError::UserInput)?;
+            verify_key_input(voting_private_key_input, "Voting").map_err(|e| {
+                TaskError::KeyInputValidationFailed {
+                    key_name: "Voting".to_string(),
+                    detail: e,
+                }
+            })?;
 
         let payout_address_private_key_bytes =
-            verify_key_input(payout_address_private_key_input, "Payout Address")
-                .map_err(TaskError::UserInput)?;
+            verify_key_input(payout_address_private_key_input, "Payout Address").map_err(|e| {
+                TaskError::KeyInputValidationFailed {
+                    key_name: "Payout Address".to_string(),
+                    detail: e,
+                }
+            })?;
 
         // Parse the identity ID
         let identity_id = match Identifier::from_string(&identity_id_input, Encoding::Base58)
@@ -106,7 +120,10 @@ impl AppContext {
         {
             let key = self
                 .verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)
-                .map_err(TaskError::UserInput)?;
+                .map_err(|e| TaskError::KeyInputValidationFailed {
+                    key_name: "Owner".to_string(),
+                    detail: e,
+                })?;
             let key_id = key.id();
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -131,7 +148,10 @@ impl AppContext {
                     &identity,
                     &payout_address_private_key_bytes,
                 )
-                .map_err(TaskError::UserInput)?;
+                .map_err(|e| TaskError::KeyInputValidationFailed {
+                    key_name: "Payout Address".to_string(),
+                    detail: e,
+                })?;
             let key_id = key.id();
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -174,7 +194,10 @@ impl AppContext {
                             &voter_identity,
                             &voting_private_key_bytes,
                         )
-                        .map_err(TaskError::UserInput)?;
+                        .map_err(|e| TaskError::KeyInputValidationFailed {
+                            key_name: "Voting".to_string(),
+                            detail: e,
+                        })?;
                     let qualified_key =
                         QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                             key.clone(),
@@ -209,7 +232,10 @@ impl AppContext {
                 .filter_map(|key_string| {
                     Some(
                         verify_key_input(key_string, "User Key")
-                            .map_err(TaskError::UserInput)
+                            .map_err(|e| TaskError::KeyInputValidationFailed {
+                                key_name: "User Key".to_string(),
+                                detail: e,
+                            })
                             .transpose()?
                             .and_then(|sk| {
                                 PrivateKey::from_byte_array(&sk, self.network).map_err(|e| {
@@ -367,7 +393,7 @@ impl AppContext {
         };
         let wallet_info = qualified_identity
             .determine_wallet_info()
-            .map_err(TaskError::UserInput)?;
+            .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
 
         // Insert qualified identity into the database
         self.insert_local_qualified_identity(&qualified_identity, &wallet_info)?;
@@ -447,7 +473,7 @@ impl AppContext {
                     identity_index,
                     0..top_bound,
                 )
-                .map_err(TaskError::UserInput)?;
+                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,
                 wallet_seed_hash,
@@ -470,7 +496,7 @@ impl AppContext {
                     candidate_index,
                     0..top_bound,
                 )
-                .map_err(TaskError::UserInput)?;
+                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
 
             if !Self::identity_matches_wallet_key_material(
                 identity,
@@ -488,7 +514,7 @@ impl AppContext {
                     candidate_index,
                     0..top_bound,
                 )
-                .map_err(TaskError::UserInput)?;
+                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
 
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,

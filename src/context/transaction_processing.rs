@@ -29,7 +29,7 @@ impl AppContext {
                 self.spv_manager
                     .broadcast_transaction(tx)
                     .await
-                    .map_err(TaskError::UserInput)?;
+                    .map_err(|e| TaskError::SpvBroadcastFailed { detail: e })?;
                 Ok(tx.txid())
             }
         }
@@ -149,7 +149,7 @@ impl AppContext {
             let mut wallet_guard = wallet.write()?;
             wallet_guard
                 .remove_selected_utxos(used_utxos, &self.db, self.network)
-                .map_err(TaskError::UserInput)?;
+                .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?;
         }
 
         Ok(tx_id)
@@ -328,9 +328,7 @@ impl AppContext {
 
                 let address =
                     Address::from_script(&first.script_pubkey, self.network).map_err(|e| {
-                        TaskError::AssetLockAddressDerivationFailed {
-                            detail: e.to_string(),
-                        }
+                        TaskError::AssetLockAddressDerivationFailed { source: e }
                     })?;
 
                 // Add the asset lock to the wallet's unused_asset_locks

@@ -19,6 +19,20 @@ pub mod top_up_identity_screen;
 pub mod transfer_screen;
 pub mod withdraw_screen;
 
+/// Substring used to identify the "missing document-signing key" error returned
+/// by [`get_selected_wallet`] when an identity has no key suitable for signing
+/// document state transitions. Callsites that auto-select an identity (e.g.
+/// DashPay startup) use this to suppress the expected case while still
+/// surfacing unrelated errors.
+const MISSING_DOCUMENT_SIGNING_KEY_MARKER: &str =
+    "doesn't have an authentication key for signing document transitions";
+
+/// Returns `true` if the given error string is the expected
+/// "identity has no document-signing key" error from [`get_selected_wallet`].
+pub fn is_missing_document_signing_key_error(error: &str) -> bool {
+    error.contains(MISSING_DOCUMENT_SIGNING_KEY_MARKER)
+}
+
 /// Retrieves the appropriate wallet (if any) associated with the given identity.
 ///
 /// # Description
@@ -70,15 +84,22 @@ pub fn get_selected_wallet(
             .document_signing_key(&preorder_document_type)
             .ok_or_else(|| {
                 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                use dash_sdk::dpp::platform_value::string_encoding::Encoding;
                 let identity_label = qualified_identity
                     .alias
                     .as_deref()
-                    .or_else(|| qualified_identity.dpns_names.first().map(|n| n.name.as_str()))
-                    .unwrap_or("unknown");
+                    .or_else(|| {
+                        qualified_identity
+                            .dpns_names
+                            .first()
+                            .map(|n| n.name.as_str())
+                    })
+                    .unwrap_or("");
                 format!(
-                    "Identity '{}' ({}) doesn't have an authentication key for signing document transitions",
+                    "Identity {} ({}) {}",
                     identity_label,
-                    qualified_identity.identity.id()
+                    qualified_identity.identity.id().to_string(Encoding::Base58),
+                    MISSING_DOCUMENT_SIGNING_KEY_MARKER,
                 )
             })?
     } else {

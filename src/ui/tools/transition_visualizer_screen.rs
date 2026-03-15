@@ -7,7 +7,7 @@ use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionB
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -191,7 +191,7 @@ impl TransitionVisualizerScreen {
                         }
                         if ui
                             .link(contract_id)
-                            .on_hover_text("Click to view contract")
+                            .clickable_tooltip("Click to view contract")
                             .clicked()
                         {
                             self.selected_contract_id = Some(contract_id.clone());

@@ -15,7 +15,7 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -563,7 +563,7 @@ impl ScreenLike for AddKeyScreen {
                             egui::Id::new("security_level_tooltip"),
                             egui::Sense::hover(),
                         );
-                        hover_response.on_hover_text(format!(
+                        hover_response.info_tooltip(format!(
                             "{:?} purpose requires {:?} security level",
                             self.purpose, self.security_level
                         ));

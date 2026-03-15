@@ -1,5 +1,7 @@
 use super::avatar_processing::{calculate_avatar_hash, calculate_dhash_fingerprint};
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::errors::DashPayError;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -21,13 +23,17 @@ pub async fn load_profile(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for profile document owned by this identity
-    let mut profile_query = DocumentQuery::new(dashpay_contract, "profile")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+    let mut profile_query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay profile",
+            source: Box::new(e),
+        }
+    })?;
 
     profile_query = profile_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -36,9 +42,7 @@ pub async fn load_profile(
     });
     profile_query.limit = 1;
 
-    let profile_docs = Document::fetch_many(sdk, profile_query)
-        .await
-        .map_err(|e| format!("Error fetching profile: {}", e))?;
+    let profile_docs = Document::fetch_many(sdk, profile_query).await?;
 
     if let Some((_, Some(doc))) = profile_docs.iter().next() {
         // Extract profile fields from the document
@@ -109,7 +113,7 @@ pub async fn update_profile(
     display_name: Option<String>,
     bio: Option<String>,
     avatar_url: Option<String>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
     let dashpay_contract = app_context.dashpay_contract.clone();
 
@@ -122,11 +126,16 @@ pub async fn update_profile(
             KeyType::all_key_types().into(),
             false,
         )
-        .ok_or("No suitable authentication key found for identity")?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
 
     // Check if profile already exists
-    let mut profile_query = DocumentQuery::new(dashpay_contract.clone(), "profile")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+    let mut profile_query =
+        DocumentQuery::new(dashpay_contract.clone(), "profile").map_err(|e| {
+            DashPayError::QueryCreation {
+                query_target: "DashPay profile",
+                source: Box::new(e),
+            }
+        })?;
 
     profile_query = profile_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -135,9 +144,7 @@ pub async fn update_profile(
     });
     profile_query.limit = 1;
 
-    let existing_profile = Document::fetch_many(sdk, profile_query)
-        .await
-        .map_err(|e| format!("Error checking for existing profile: {}", e))?;
+    let existing_profile = Document::fetch_many(sdk, profile_query).await?;
 
     // Prepare profile data
     let mut profile_data = BTreeMap::new();
@@ -223,8 +230,7 @@ pub async fn update_profile(
 
         let result = sdk
             .document_replace(builder, identity_key, &identity)
-            .await
-            .map_err(|e| format!("Error replacing profile: {}", e))?;
+            .await?;
 
         // Log the proof-verified document for audit trail
         match result {
@@ -300,8 +306,7 @@ pub async fn update_profile(
 
         let result = sdk
             .document_create(builder, identity_key, &identity)
-            .await
-            .map_err(|e| format!("Error creating profile: {}", e))?;
+            .await?;
 
         // Log the proof-verified document for audit trail
         match result {
@@ -345,7 +350,7 @@ pub async fn send_payment(
     to_contact_id: Identifier,
     amount_dash: f64,
     memo: Option<String>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     super::payments::send_payment_to_contact(
         app_context,
         sdk,
@@ -355,7 +360,6 @@ pub async fn send_payment(
         memo,
     )
     .await
-    .map_err(|e| e.to_string())
 }
 
 pub async fn load_payment_history(
@@ -363,14 +367,15 @@ pub async fn load_payment_history(
     _sdk: &Sdk,
     identity: QualifiedIdentity,
     contact_id: Option<Identifier>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     // Load payment history from local database
     let history = super::payments::load_payment_history(
         app_context,
         &identity.identity.id(),
         contact_id.as_ref(),
     )
-    .await?;
+    .await
+    .map_err(|e| DashPayError::Internal { message: e })?;
 
     // Format the results
     if history.is_empty() {
@@ -400,12 +405,16 @@ pub async fn fetch_contact_profile(
     sdk: &Sdk,
     _identity: QualifiedIdentity, // May be needed for future privacy features
     contact_id: Identifier,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for the contact's profile document
-    let mut query = DocumentQuery::new(dashpay_contract, "profile")
-        .map_err(|e| format!("Failed to create profile query: {}", e))?;
+    let mut query = DocumentQuery::new(dashpay_contract, "profile").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay profile",
+            source: Box::new(e),
+        }
+    })?;
 
     query = query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -414,21 +423,9 @@ pub async fn fetch_contact_profile(
     });
     query.limit = 1;
 
-    match Document::fetch_many(sdk, query).await {
-        Ok(results) => {
-            // Extract the profile document if found
-            let profile_doc = results.into_iter().next().and_then(|(_, doc)| doc);
-            Ok(BackendTaskSuccessResult::DashPayContactProfile(profile_doc))
-        }
-        Err(e) => {
-            // Return a more helpful error message
-            Err(format!(
-                "Failed to fetch profile for identity {}: {}. This identity may not have a public profile yet.",
-                contact_id.to_string(Encoding::Base58),
-                e
-            ))
-        }
-    }
+    let results = Document::fetch_many(sdk, query).await?;
+    let profile_doc = results.into_iter().next().and_then(|(_, doc)| doc);
+    Ok(BackendTaskSuccessResult::DashPayContactProfile(profile_doc))
 }
 
 /// Search for users on the Platform by DPNS username (per DIP-12/DIP-15)
@@ -442,7 +439,7 @@ pub async fn search_profiles(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     search_query: String,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     let dpns_contract = app_context.dpns_contract.clone();
     let dashpay_contract = app_context.dashpay_contract.clone();
     let mut results: Vec<(Identifier, Option<Document>, String)> = Vec::new();
@@ -458,8 +455,11 @@ pub async fn search_profiles(
     let normalized_query = query_trimmed.to_lowercase();
 
     // Search DPNS for usernames starting with the query
-    let mut dpns_query = DocumentQuery::new(dpns_contract, "domain")
-        .map_err(|e| format!("Failed to create DPNS query: {}", e))?;
+    let mut dpns_query =
+        DocumentQuery::new(dpns_contract, "domain").map_err(|e| DashPayError::QueryCreation {
+            query_target: "DPNS domain",
+            source: Box::new(e),
+        })?;
 
     dpns_query = dpns_query
         .with_where(WhereClause {
@@ -478,9 +478,7 @@ pub async fn search_profiles(
         }); // Required for StartsWith range query
     dpns_query.limit = 20; // Limit results
 
-    let dpns_results = Document::fetch_many(sdk, dpns_query)
-        .await
-        .map_err(|e| format!("Failed to search DPNS: {}", e))?;
+    let dpns_results = Document::fetch_many(sdk, dpns_query).await?;
 
     // Collect identity IDs and usernames from DPNS results
     let mut identity_usernames: Vec<(Identifier, String)> = Vec::new();
@@ -502,8 +500,13 @@ pub async fn search_profiles(
     // Fetch profiles for each identity
     for (identity_id, username) in identity_usernames {
         // Query for profile document owned by this identity
-        let mut profile_query = DocumentQuery::new(dashpay_contract.clone(), "profile")
-            .map_err(|e| format!("Failed to create profile query: {}", e))?;
+        let mut profile_query =
+            DocumentQuery::new(dashpay_contract.clone(), "profile").map_err(|e| {
+                DashPayError::QueryCreation {
+                    query_target: "DashPay profile",
+                    source: Box::new(e),
+                }
+            })?;
 
         profile_query = profile_query.with_where(WhereClause {
             field: "$ownerId".to_string(),

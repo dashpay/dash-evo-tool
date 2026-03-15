@@ -9,7 +9,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::QuorumType;
@@ -816,7 +816,7 @@ impl MasternodeListDiffScreen {
         let qr_info = match p2p_handler.get_qr_info(known_block_hashes, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return None;
             }
         };
@@ -933,7 +933,7 @@ impl MasternodeListDiffScreen {
         let list_diff = match p2p_handler.get_dml_diff(base_block_hash, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1228,7 +1228,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1260,7 +1260,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1327,7 +1327,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1350,7 +1350,7 @@ impl MasternodeListDiffScreen {
             None => match CoreP2PHandler::new(self.app_context.network, None) {
                 Ok(p2p_handler) => p2p_handler,
                 Err(e) => {
-                    self.ui_state.error = Some(e);
+                    self.ui_state.error = Some(e.to_string());
                     return;
                 }
             },
@@ -1529,7 +1529,7 @@ impl MasternodeListDiffScreen {
                     }
                     if ui
                         .button("Clear")
-                        .on_hover_text("Clear all data and reset to initial state.")
+                        .clickable_tooltip("Clear all data and reset to initial state.")
                         .clicked()
                     {
                         self.clear();
@@ -1537,7 +1537,7 @@ impl MasternodeListDiffScreen {
                     }
                     if ui
                         .button("Clear keep base")
-                        .on_hover_text(
+                        .clickable_tooltip(
                             "Clear all data except the oldest MNList diff starting from height 0.",
                         )
                         .clicked()
@@ -4107,7 +4107,7 @@ impl MasternodeListDiffScreen {
             let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
                 Ok(p2p_handler) => p2p_handler,
                 Err(e) => {
-                    self.ui_state.error = Some(e);
+                    self.ui_state.error = Some(e.to_string());
                     return;
                 }
             };

@@ -18,7 +18,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
 use crate::ui::components::{Component, ComponentResponse};
 use crate::ui::helpers::{TransactionType, add_key_chooser};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::fee::Credits;
@@ -624,7 +624,7 @@ impl ScreenLike for WithdrawalScreen {
 
                 if ui
                     .add_enabled(ready, button)
-                    .on_disabled_hover_text(&hover_text)
+                    .disabled_tooltip(&hover_text)
                     .clicked()
                     && self.confirmation_dialog.is_none()
                 {

@@ -31,11 +31,11 @@ const CONTACT_REQUEST_INFO_TEXT: &str = "About Contact Requests:\n\n\
     Your display name and username will be shared with the contact.\n\n\
     You can manage contacts from the Contacts screen.";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 enum ContactRequestStatus {
     NotStarted,
     Sending,
-    Success(String),     // Success message
+    Success,
     Error(DashPayError), // Structured error with user-friendly messaging
 }
 
@@ -184,7 +184,7 @@ impl AddContactScreen {
 impl ScreenLike for AddContactScreen {
     fn refresh(&mut self) {
         // Don't reset success status on refresh
-        if !matches!(self.status, ContactRequestStatus::Success(_)) {
+        if !matches!(self.status, ContactRequestStatus::Success) {
             self.status = ContactRequestStatus::NotStarted;
         }
     }
@@ -211,7 +211,7 @@ impl ScreenLike for AddContactScreen {
             let mut inner_action = AppAction::None;
 
             // Show success screen if request was successful
-            if matches!(self.status, ContactRequestStatus::Success(_)) {
+            if matches!(self.status, ContactRequestStatus::Success) {
                 return self.show_success_screen(ui);
             }
 
@@ -616,12 +616,9 @@ impl ScreenLike for AddContactScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         match result {
-            BackendTaskSuccessResult::DashPayContactRequestSent(recipient) => {
+            BackendTaskSuccessResult::DashPayContactRequestSent(_recipient) => {
                 // Contact request sent successfully - show success screen
-                self.status = ContactRequestStatus::Success(format!(
-                    "Contact request sent to {} successfully!",
-                    recipient
-                ));
+                self.status = ContactRequestStatus::Success;
                 // Clear form for next use
                 self.username_or_id.clear();
                 self.account_label.clear();

@@ -1,5 +1,7 @@
 use crate::backend_task::dashpay::auto_accept_proof::verify_auto_accept_proof;
 use crate::backend_task::dashpay::contact_requests::accept_contact_request;
+use crate::backend_task::dashpay::errors::DashPayError;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -19,13 +21,16 @@ pub async fn process_auto_accept_requests(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-) -> Result<Vec<(Identifier, bool)>, String> {
+) -> Result<Vec<(Identifier, bool)>, TaskError> {
     let identity_id = identity.identity.id();
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for incoming contact requests
     let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        })?;
 
     incoming_query = incoming_query.with_where(WhereClause {
         field: "toUserId".to_string(),
@@ -40,9 +45,7 @@ pub async fn process_auto_accept_requests(
     });
     incoming_query.limit = 100;
 
-    let incoming_docs = Document::fetch_many(sdk, incoming_query)
-        .await
-        .map_err(|e| format!("Error fetching incoming contact requests: {}", e))?;
+    let incoming_docs = Document::fetch_many(sdk, incoming_query).await?;
 
     // Stateless verification; no stored proofs needed
 

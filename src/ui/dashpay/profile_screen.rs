@@ -16,7 +16,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{MessageBanner, ResultBannerExt};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::get_selected_wallet;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use egui::{ColorImage, Frame, Margin, RichText, ScrollArea, TextEdit, TextureHandle, Ui};
 use std::collections::HashMap;
@@ -990,10 +990,9 @@ impl ProfileScreen {
                                             "Save profile changes".to_string()
                                         };
 
-                                        if ui
-                                            .add_enabled(can_save, save_button)
-                                            .on_hover_text(&hover_text)
-                                            .on_disabled_hover_text(&hover_text)
+                                        if ui.add_enabled(can_save, save_button)
+                                            .clickable_tooltip(&hover_text)
+                                            .disabled_tooltip(&hover_text)
                                             .clicked()
                                         {
                                             action |= self.save_profile();
@@ -1027,7 +1026,7 @@ impl ProfileScreen {
                                                         .fit_to_exact_size(egui::vec2(80.0, 80.0))
                                                         .corner_radius(8.0)
                                                         .sense(egui::Sense::click()),
-                                                ).on_hover_text("Click to view avatar URL");
+                                                ).clickable_tooltip("Click to view avatar URL");
                                                 if image_response.clicked() {
                                                     self.show_avatar_url_popup = true;
                                                 }
@@ -1062,7 +1061,7 @@ impl ProfileScreen {
                                                             .fit_to_exact_size(egui::vec2(80.0, 80.0))
                                                             .corner_radius(8.0)
                                                             .sense(egui::Sense::click()),
-                                                    ).on_hover_text("Click to view avatar URL");
+                                                    ).clickable_tooltip("Click to view avatar URL");
                                                     if image_response.clicked() {
                                                         self.show_avatar_url_popup = true;
                                                     }
@@ -1117,7 +1116,7 @@ impl ProfileScreen {
                                                                     .fit_to_exact_size(egui::vec2(80.0, 80.0))
                                                                     .corner_radius(8.0)
                                                                     .sense(egui::Sense::click()),
-                                                            ).on_hover_text("Click to view avatar URL");
+                                                            ).clickable_tooltip("Click to view avatar URL");
                                                             if image_response.clicked() {
                                                                 self.show_avatar_url_popup = true;
                                                             }

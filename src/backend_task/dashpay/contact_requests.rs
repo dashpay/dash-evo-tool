@@ -1,6 +1,7 @@
 use super::encryption::{
     encrypt_account_label, encrypt_extended_public_key, generate_ecdh_shared_key,
 };
+use super::errors::DashPayError;
 use super::hd_derivation::{
     calculate_account_reference, derive_dashpay_incoming_xpub, generate_contact_xpub_data,
 };
@@ -9,6 +10,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::auto_accept_proof::{
     AutoAcceptProofData, create_auto_accept_proof_bytes_with_key,
 };
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use bip39::rand::{SeedableRng, rngs::StdRng};
@@ -33,7 +35,7 @@ pub async fn load_contact_requests(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
     let dashpay_contract = app_context.dashpay_contract.clone();
 
@@ -44,7 +46,10 @@ pub async fn load_contact_requests(
 
     // Query for incoming contact requests (where toUserId == our identity)
     let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        })?;
 
     let query_value = Value::Identifier(identity_id.to_buffer());
 
@@ -62,8 +67,13 @@ pub async fn load_contact_requests(
     incoming_query.limit = 50;
 
     // Query for outgoing contact requests (where $ownerId == our identity)
-    let mut outgoing_query = DocumentQuery::new(dashpay_contract, "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+    let mut outgoing_query =
+        DocumentQuery::new(dashpay_contract, "contactRequest").map_err(|e| {
+            DashPayError::QueryCreation {
+                query_target: "DashPay contactRequest",
+                source: Box::new(e),
+            }
+        })?;
 
     outgoing_query = outgoing_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -80,15 +90,11 @@ pub async fn load_contact_requests(
 
     // Fetch both types of requests
     tracing::info!("Fetching incoming contact requests...");
-    let incoming_docs = Document::fetch_many(sdk, incoming_query)
-        .await
-        .map_err(|e| format!("Error fetching incoming requests: {}", e))?;
+    let incoming_docs = Document::fetch_many(sdk, incoming_query).await?;
     tracing::info!("Fetched {} incoming documents", incoming_docs.len());
 
     tracing::info!("Fetching outgoing contact requests...");
-    let outgoing_docs = Document::fetch_many(sdk, outgoing_query)
-        .await
-        .map_err(|e| format!("Error fetching outgoing requests: {}", e))?;
+    let outgoing_docs = Document::fetch_many(sdk, outgoing_query).await?;
     tracing::info!("Fetched {} outgoing documents", outgoing_docs.len());
 
     // Convert to vec of tuples (id, document)
@@ -159,7 +165,7 @@ pub async fn send_contact_request(
     signing_key: IdentityPublicKey,
     to_username_or_id: String,
     account_label: Option<String>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     send_contact_request_with_proof(
         app_context,
         sdk,
@@ -180,7 +186,7 @@ pub async fn send_contact_request_with_proof(
     to_username_or_id: String,
     account_label: Option<String>,
     qr_auto_accept: Option<AutoAcceptProofData>,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     // Step 1: Resolve the recipient identity
     let to_identity = if to_username_or_id.ends_with(".dash") {
         // It's a complete username, resolve via DPNS
@@ -194,9 +200,8 @@ pub async fn send_contact_request_with_proof(
             Ok(to_id) => {
                 // Successfully parsed as ID, fetch the identity
                 Identity::fetch(sdk, to_id)
-                    .await
-                    .map_err(|e| format!("Failed to fetch identity: {}", e))?
-                    .ok_or_else(|| format!("Identity {} not found", to_username_or_id))?
+                    .await?
+                    .ok_or(TaskError::IdentityNotFound)?
             }
             Err(_) => {
                 // Not a valid ID format, assume it's a username without .dash suffix
@@ -211,7 +216,10 @@ pub async fn send_contact_request_with_proof(
     // Step 2: Check if a contact request already exists
     let dashpay_contract = app_context.dashpay_contract.clone();
     let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        })?;
 
     existing_query = existing_query
         .with_where(WhereClause {
@@ -226,15 +234,13 @@ pub async fn send_contact_request_with_proof(
         });
     existing_query.limit = 1;
 
-    let existing = Document::fetch_many(sdk, existing_query)
-        .await
-        .map_err(|e| format!("Error checking existing requests: {}", e))?;
+    let existing = Document::fetch_many(sdk, existing_query).await?;
 
     if !existing.is_empty() {
-        return Err(format!(
-            "Contact request already sent to {}",
-            to_username_or_id
-        ));
+        return Err(DashPayError::ContactRequestAlreadySent {
+            to: to_username_or_id.to_string(),
+        }
+        .into());
     }
 
     // Step 3: Get key indices for ECDH
@@ -250,9 +256,7 @@ pub async fn send_contact_request_with_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or_else(|| {
-            "Sender does not have a compatible ECDSA_SECP256K1 ENCRYPTION key for ECDH. Please add a DashPay-compatible encryption key to your identity.".to_string()
-        })?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingEncryptionKey))?;
 
     // Find a recipient DECRYPTION key that supports ECDH (must be ECDSA_SECP256K1)
     // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
@@ -263,9 +267,7 @@ pub async fn send_contact_request_with_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or_else(|| {
-            "Recipient does not have a compatible ECDSA_SECP256K1 DECRYPTION key for ECDH. They need to add a DashPay-compatible decryption key to their identity.".to_string()
-        })?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingDecryptionKey))?;
 
     // Step 4: Generate ECDH shared key and encrypt data
     let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
@@ -279,12 +281,19 @@ pub async fn send_contact_request_with_proof(
             &wallets,
             identity.network,
         )
-        .map_err(|e| format!("Error resolving ENCRYPTION private key: {}", e))?
+        .map_err(|e| TaskError::EncryptionError {
+            detail: format!("Error resolving ENCRYPTION private key: {}", e),
+        })?
         .map(|(_, private_key)| private_key)
-        .ok_or_else(|| "Sender does not have an ECDSA_SECP256K1 ENCRYPTION private key loaded into Dash Evo Tool.".to_string())?;
+        .ok_or_else(|| {
+            TaskError::DashPay(DashPayError::PrivateKeyResolution {
+                key_purpose: "ENCRYPTION".to_string(),
+                reason: "Private key not loaded into Dash Evo Tool".to_string(),
+            })
+        })?;
 
     let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
-        .map_err(|e| format!("Failed to generate ECDH shared key: {}", e))?;
+        .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     // Generate extended public key for this contact using proper HD derivation
     // For now, use the sender's private key as seed material
@@ -305,7 +314,7 @@ pub async fn send_contact_request_with_proof(
         &identity.identity.id(),
         &to_identity_id,
     )
-    .map_err(|e| format!("Failed to generate contact extended public key: {}", e))?;
+    .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     // Also derive the full xpub for account reference calculation per DIP-0015
     let contact_xpub = derive_dashpay_incoming_xpub(
@@ -315,7 +324,7 @@ pub async fn send_contact_request_with_proof(
         &identity.identity.id(),
         &to_identity_id,
     )
-    .map_err(|e| format!("Failed to derive contact xpub: {}", e))?;
+    .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     // Calculate account reference per DIP-0015 (ASK-based shortening)
     // Version 0 is the current version
@@ -332,7 +341,7 @@ pub async fn send_contact_request_with_proof(
         contact_public_key,
         &shared_key,
     )
-    .map_err(|e| format!("Failed to encrypt extended public key: {}", e))?;
+    .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     // Step 5: Get the current core chain height for synchronization
     let (core_height, current_height_for_validation) =
@@ -362,15 +371,16 @@ pub async fn send_contact_request_with_proof(
         current_height_for_validation,
     )
     .await
-    .map_err(|e| format!("Validation failed: {}", e))?;
+    .map_err(|e| DashPayError::ValidationFailed {
+        errors: vec![e.to_string()],
+    })?;
 
     // Check if validation passed
     if !validation.is_valid {
-        let error_msg = format!(
-            "Contact request validation failed: {}",
-            validation.errors.join("; ")
-        );
-        return Err(error_msg);
+        return Err(DashPayError::ValidationFailed {
+            errors: validation.errors.clone(),
+        }
+        .into());
     }
 
     // Log any warnings
@@ -405,7 +415,7 @@ pub async fn send_contact_request_with_proof(
     // Add encrypted account label if provided
     if let Some(label) = account_label {
         let encrypted_label = encrypt_account_label(&label, &shared_key)
-            .map_err(|e| format!("Failed to encrypt account label: {}", e))?;
+            .map_err(|e| TaskError::EncryptionError { detail: e })?;
         properties.insert(
             "encryptedAccountLabel".to_string(),
             Value::Bytes(encrypted_label),
@@ -416,7 +426,10 @@ pub async fn send_contact_request_with_proof(
     if let Some(qr) = qr_auto_accept {
         // Ensure the QR target matches the resolved recipient
         if qr.identity_id != to_identity_id {
-            return Err("QR code target identity does not match recipient".to_string());
+            return Err(DashPayError::InvalidQrCode {
+                reason: "QR code target identity does not match recipient".to_string(),
+            }
+            .into());
         }
         let proof = create_auto_accept_proof_bytes_with_key(
             qr.expires_at,
@@ -424,7 +437,8 @@ pub async fn send_contact_request_with_proof(
             &identity.identity.id(),
             &to_identity_id,
             account_reference,
-        )?;
+        )
+        .map_err(|e| TaskError::EncryptionError { detail: e })?;
         tracing::debug!(
             "Including autoAcceptProof in contact request ({} bytes)",
             proof.len()
@@ -485,8 +499,7 @@ pub async fn send_contact_request_with_proof(
 
     let result = sdk
         .document_create(builder, identity_key, &identity)
-        .await
-        .map_err(|e| format!("Error creating contact request: {}", e))?;
+        .await?;
 
     // Log the proof-verified document for audit trail
     match result {
@@ -504,27 +517,33 @@ pub async fn send_contact_request_with_proof(
     ))
 }
 
-async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, String> {
+async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Identity, TaskError> {
     // Parse username (e.g., "alice.dash" -> "alice")
-    let name = username
-        .split('.')
-        .next()
-        .ok_or_else(|| format!("Invalid username format: {}", username))?;
+    let name = username.split('.').next().ok_or_else(|| {
+        TaskError::DashPay(DashPayError::InvalidUsername {
+            username: username.to_string(),
+        })
+    })?;
 
     // Query DPNS for the username
     let dpns_contract_id = Identifier::from_string(
         "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec",
         Encoding::Base58,
     )
-    .map_err(|e| format!("Failed to parse DPNS contract ID: {}", e))?;
+    .map_err(|e| TaskError::IdentifierParsingError {
+        input: format!("DPNS contract ID: {}", e),
+    })?;
 
     let dpns_contract = dash_sdk::platform::DataContract::fetch(sdk, dpns_contract_id)
-        .await
-        .map_err(|e| format!("Failed to fetch DPNS contract: {}", e))?
-        .ok_or("DPNS contract not found")?;
+        .await?
+        .ok_or(TaskError::DataContractNotFound)?;
 
-    let mut query = DocumentQuery::new(Arc::new(dpns_contract), "domain")
-        .map_err(|e| format!("Failed to create DPNS query: {}", e))?;
+    let mut query = DocumentQuery::new(Arc::new(dpns_contract), "domain").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DPNS domain",
+            source: Box::new(e),
+        }
+    })?;
 
     query = query.with_where(WhereClause {
         field: "normalizedLabel".to_string(),
@@ -533,25 +552,27 @@ async fn resolve_username_to_identity(sdk: &Sdk, username: &str) -> Result<Ident
     });
     query.limit = 1;
 
-    let results = Document::fetch_many(sdk, query)
-        .await
-        .map_err(|e| format!("Failed to query DPNS: {}", e))?;
+    let results = Document::fetch_many(sdk, query).await?;
 
-    let (_, document) = results
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("Username '{}' not found", username))?;
+    let (_, document) = results.into_iter().next().ok_or_else(|| {
+        TaskError::DashPay(DashPayError::UsernameResolutionFailed {
+            username: username.to_string(),
+        })
+    })?;
 
-    let document = document.ok_or_else(|| format!("Invalid DPNS document for '{}'", username))?;
+    let document = document.ok_or_else(|| {
+        TaskError::DashPay(DashPayError::InvalidDocument {
+            reason: format!("Invalid DPNS document for '{}'", username),
+        })
+    })?;
 
     // Get the identity ID from the DPNS document
     let identity_id = document.owner_id();
 
     // Fetch the identity
     Identity::fetch(sdk, identity_id)
-        .await
-        .map_err(|e| format!("Failed to fetch identity for '{}': {}", username, e))?
-        .ok_or_else(|| format!("Identity not found for username '{}'", username))
+        .await?
+        .ok_or(TaskError::IdentityNotFound)
 }
 
 pub async fn accept_contact_request(
@@ -559,28 +580,34 @@ pub async fn accept_contact_request(
     sdk: &Sdk,
     identity: QualifiedIdentity,
     request_id: Identifier,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     // According to DashPay DIP, accepting means sending a contact request back
     // First, we need to fetch the incoming contact request to get the sender's identity
 
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Fetch the specific contact request document by creating a query with its ID
-    let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+    let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        }
+    })?;
     let query_with_id = DocumentQuery::with_document_id(query, &request_id);
 
     let doc = Document::fetch(sdk, query_with_id)
-        .await
-        .map_err(|e| format!("Failed to fetch contact request: {}", e))?
-        .ok_or_else(|| format!("Contact request {} not found", request_id))?;
+        .await?
+        .ok_or(TaskError::DocumentNotFound)?;
 
     // Get the sender's identity (the owner of the incoming request)
     let from_identity_id = doc.owner_id();
 
     // Check if we already sent a contact request to this identity
     let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+        .map_err(|e| DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        })?;
 
     existing_query = existing_query
         .with_where(WhereClause {
@@ -595,9 +622,7 @@ pub async fn accept_contact_request(
         });
     existing_query.limit = 1;
 
-    let existing = Document::fetch_many(sdk, existing_query)
-        .await
-        .map_err(|e| format!("Error checking existing requests: {}", e))?;
+    let existing = Document::fetch_many(sdk, existing_query).await?;
 
     if !existing.is_empty() {
         return Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(
@@ -615,7 +640,7 @@ pub async fn accept_contact_request(
             KeyType::all_key_types().into(),
             false,
         )
-        .ok_or("Cannot accept contact request: This identity does not have a suitable AUTHENTICATION key. Please add an authentication key to your identity.")?
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 
     let result = send_contact_request(
@@ -641,21 +666,24 @@ pub async fn reject_contact_request(
     sdk: &Sdk,
     identity: QualifiedIdentity,
     request_id: Identifier,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     // According to DashPay DIP, rejecting doesn't delete the request (they're immutable)
     // Instead, we should update our contactInfo document to mark this contact as hidden
 
     // First, fetch the contact request to get the sender's identity
     let dashpay_contract = app_context.dashpay_contract.clone();
 
-    let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| format!("Failed to create query: {}", e))?;
+    let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        }
+    })?;
     let query_with_id = DocumentQuery::with_document_id(query, &request_id);
 
     let doc = Document::fetch(sdk, query_with_id)
-        .await
-        .map_err(|e| format!("Failed to fetch contact request: {}", e))?
-        .ok_or_else(|| format!("Contact request {} not found", request_id))?;
+        .await?
+        .ok_or(TaskError::DocumentNotFound)?;
 
     let from_identity_id = doc.owner_id();
 

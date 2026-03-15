@@ -37,10 +37,8 @@ impl AppContext {
             .map_err(|_| TaskError::DataContractNotFound)?;
 
         let Some(contested_index) = document_type.find_contested_index() else {
-            return Err(TaskError::PlatformFetchError {
-                source: Box::new(dash_sdk::Error::Generic(
-                    "No contested index on dpns domains".to_string(),
-                )),
+            return Err(TaskError::ContractSchemaMismatch {
+                detail: "DPNS domain document type has no contested index",
             });
         };
 

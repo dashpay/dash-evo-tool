@@ -39,7 +39,7 @@ impl AppContext {
 
         for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
             let public_key = {
-                let wallet = wallet_arc_ref.wallet.write().unwrap();
+                let wallet = wallet_arc_ref.wallet.write()?;
                 wallet
                     .identity_authentication_ecdsa_public_key(
                         self.network,
@@ -157,7 +157,7 @@ impl AppContext {
 
         let wallet_seed_hash;
         let (public_key_result_map, public_key_hash_result_map) = {
-            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            let mut wallet = wallet_arc_ref.wallet.write()?;
             wallet_seed_hash = wallet.seed_hash();
             wallet
                 .identity_authentication_ecdsa_public_keys_data_map(
@@ -220,7 +220,7 @@ impl AppContext {
 
         let private_keys = private_keys_map.into();
 
-        let wallet_seed_hash = wallet_arc_ref.wallet.read().unwrap().seed_hash();
+        let wallet_seed_hash = wallet_arc_ref.wallet.read()?.seed_hash();
 
         let mut qualified_identity = QualifiedIdentity {
             identity: identity.clone(),
@@ -254,7 +254,7 @@ impl AppContext {
         .map_err(|e| TaskError::Database { source: e })?;
 
         {
-            let mut wallet = wallet_arc_ref.wallet.write().unwrap();
+            let mut wallet = wallet_arc_ref.wallet.write()?;
             wallet
                 .identities
                 .insert(identity_index, qualified_identity.identity.clone());

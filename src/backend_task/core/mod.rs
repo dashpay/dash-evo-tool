@@ -169,8 +169,7 @@ impl AppContext {
         match task {
             CoreTask::GetBestChainLock => self
                 .core_client
-                .read()
-                .expect("Core client lock was poisoned")
+                .read()?
                 .get_best_chain_lock()
                 .map(|chain_lock| {
                     BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
@@ -463,14 +462,8 @@ impl AppContext {
         request: WalletPaymentRequest,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match self.core_backend_mode() {
-            CoreBackendMode::Spv => self
-                .send_wallet_payment_via_spv(wallet, request)
-                .await
-                .map_err(|e| TaskError::WalletPaymentFailed { detail: e }),
-            CoreBackendMode::Rpc => self
-                .send_wallet_payment_via_rpc(wallet, request)
-                .await
-                .map_err(|e| TaskError::WalletPaymentFailed { detail: e }),
+            CoreBackendMode::Spv => self.send_wallet_payment_via_spv(wallet, request).await,
+            CoreBackendMode::Rpc => self.send_wallet_payment_via_rpc(wallet, request).await,
         }
     }
 }
@@ -480,31 +473,32 @@ impl AppContext {
         &self,
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let parsed_recipients = self.parse_recipients(&request)?;
 
         const DEFAULT_TX_FEE: u64 = 1_000;
 
         let tx = {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+            let mut wallet_guard = wallet.write()?;
             if !wallet_guard.is_open() {
-                return Err("Wallet must be unlocked".to_string());
+                return Err(TaskError::WalletLocked);
             }
-            wallet_guard.build_multi_recipient_payment_transaction(
-                self,
-                self.network,
-                &parsed_recipients,
-                DEFAULT_TX_FEE,
-                request.subtract_fee_from_amount,
-            )?
+            wallet_guard
+                .build_multi_recipient_payment_transaction(
+                    self,
+                    self.network,
+                    &parsed_recipients,
+                    DEFAULT_TX_FEE,
+                    request.subtract_fee_from_amount,
+                )
+                .map_err(|e| TaskError::WalletPaymentFailed { detail: e })?
         };
 
         let txid = self
             .core_client
-            .read()
-            .expect("Core client lock was poisoned")
+            .read()?
             .send_raw_transaction(&tx)
-            .map_err(|e| format!("Failed to broadcast transaction: {e}"))?;
+            .map_err(TaskError::from)?;
 
         let total_amount: u64 = request.recipients.iter().map(|r| r.amount_duffs).sum();
         let recipients_result: Vec<(String, u64)> = request
@@ -524,16 +518,14 @@ impl AppContext {
         &self,
         wallet: Arc<RwLock<Wallet>>,
         request: WalletPaymentRequest,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        self.reconcile_spv_wallets()
-            .await
-            .map_err(|e| format!("Unable to sync wallet before send: {}", e))?;
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        self.reconcile_spv_wallets().await?;
 
         let parsed_recipients = self.parse_recipients(&request)?;
         let seed_hash = {
-            let guard = wallet.read().map_err(|e| e.to_string())?;
+            let guard = wallet.read()?;
             if !guard.is_open() {
-                return Err("Wallet must be unlocked".to_string());
+                return Err(TaskError::WalletLocked);
             }
             guard.seed_hash()
         };
@@ -541,7 +533,9 @@ impl AppContext {
         let wallet_id = self
             .spv_manager
             .wallet_id_for_seed(seed_hash)
-            .ok_or_else(|| "Wallet not loaded into SPV".to_string())?;
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "Wallet not loaded into SPV".to_string(),
+            })?;
 
         let tx = {
             let wm_arc = self.spv_manager.wallet();
@@ -558,11 +552,9 @@ impl AppContext {
         self.spv_manager
             .broadcast_transaction(&tx)
             .await
-            .map_err(|e| format!("Broadcast failed: {e}"))?;
+            .map_err(|e| TaskError::SpvBroadcastFailed { detail: e })?;
 
-        self.reconcile_spv_wallets()
-            .await
-            .map_err(|e| format!("Failed to refresh wallet after send: {}", e))?;
+        self.reconcile_spv_wallets().await?;
 
         // Calculate actual amounts sent from the transaction outputs
         let recipients_result: Vec<(String, u64)> = request
@@ -588,31 +580,40 @@ impl AppContext {
     fn parse_recipients(
         &self,
         request: &WalletPaymentRequest,
-    ) -> Result<Vec<(Address, u64)>, String> {
+    ) -> Result<Vec<(Address, u64)>, TaskError> {
         if request.recipients.is_empty() {
-            return Err("No recipients specified".to_string());
+            return Err(TaskError::WalletPaymentFailed {
+                detail: "No recipients specified".to_string(),
+            });
         }
 
         let mut parsed = Vec::with_capacity(request.recipients.len());
         for recipient in &request.recipients {
             if recipient.amount_duffs == 0 {
-                return Err(format!(
-                    "Amount must be greater than zero for address {}",
-                    recipient.address
-                ));
+                return Err(TaskError::WalletPaymentFailed {
+                    detail: format!(
+                        "Amount must be greater than zero for address {}",
+                        recipient.address
+                    ),
+                });
             }
 
             let addr = Address::from_str(&recipient.address)
-                .map_err(|e| format!("Invalid address {}: {e}", recipient.address))?
+                .map_err(|source| TaskError::InvalidRecipientAddress {
+                    address: recipient.address.clone(),
+                    source,
+                })?
                 .assume_checked();
 
             if !networks_address_compatible(addr.network(), &self.network) {
-                return Err(format!(
-                    "Recipient address {} uses {} but wallet network is {}",
-                    recipient.address,
-                    addr.network(),
-                    self.network
-                ));
+                return Err(TaskError::WalletPaymentFailed {
+                    detail: format!(
+                        "Recipient address {} uses {} but wallet network is {}",
+                        recipient.address,
+                        addr.network(),
+                        self.network
+                    ),
+                });
             }
 
             parsed.push((addr, recipient.amount_duffs));
@@ -627,7 +628,7 @@ impl AppContext {
         wallet_id: &WalletId,
         recipients: &[(Address, u64)],
         request: &WalletPaymentRequest,
-    ) -> Result<Transaction, String> {
+    ) -> Result<Transaction, TaskError> {
         const FALLBACK_STEP: u64 = 100;
 
         let network = self.wallet_network_key();
@@ -643,7 +644,9 @@ impl AppContext {
                     .ok()
                     .map(|h| h.current_height())
             })
-            .ok_or("Cannot build transaction: SPV sync height is not yet known")?;
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "Cannot build transaction: SPV sync height is not yet known".to_string(),
+            })?;
         const MAX_FEE_ITERATIONS: usize = 50;
 
         let total_amount: u64 = recipients.iter().map(|(_, amt)| *amt).sum();
@@ -659,10 +662,15 @@ impl AppContext {
                 AccountTypePreference::BIP44,
                 true,
             )
-            .map_err(|e| format!("Failed to get change address: {e}"))?;
-        let change_address = change_result
-            .address
-            .ok_or_else(|| "No change address generated".to_string())?;
+            .map_err(|e| TaskError::WalletPaymentFailed {
+                detail: format!("Failed to get change address: {e}"),
+            })?;
+        let change_address =
+            change_result
+                .address
+                .ok_or_else(|| TaskError::WalletPaymentFailed {
+                    detail: "No change address generated".to_string(),
+                })?;
 
         for _ in 0..MAX_FEE_ITERATIONS {
             let scaled_recipients: Vec<(Address, u64)> = recipients
@@ -697,17 +705,23 @@ impl AppContext {
                     };
 
                     if next_scale <= 0.0 || (next_scale - scale_factor).abs() < 0.0001 {
-                        return Err("Insufficient funds".to_string());
+                        return Err(TaskError::WalletPaymentFailed {
+                            detail: "Insufficient funds".to_string(),
+                        });
                     }
                     scale_factor = next_scale;
                 }
                 Err(err) => {
-                    return Err(format!("Failed to build transaction: {err}"));
+                    return Err(TaskError::WalletPaymentFailed {
+                        detail: format!("Failed to build transaction: {err}"),
+                    });
                 }
             }
         }
 
-        Err("Could not build transaction after maximum fee adjustment attempts".to_string())
+        Err(TaskError::WalletPaymentFailed {
+            detail: "Could not build transaction after maximum fee adjustment attempts".to_string(),
+        })
     }
 
     fn estimate_fallback_amount(
@@ -717,15 +731,19 @@ impl AppContext {
         _network: WalletNetwork,
         account_index: u32,
         current_height: u32,
-    ) -> Result<u64, String> {
-        let managed_info = wm
-            .get_wallet_info(wallet_id)
-            .ok_or_else(|| "Wallet info unavailable".to_string())?;
+    ) -> Result<u64, TaskError> {
+        let managed_info =
+            wm.get_wallet_info(wallet_id)
+                .ok_or_else(|| TaskError::WalletPaymentFailed {
+                    detail: "Wallet info unavailable".to_string(),
+                })?;
         let collection = managed_info.accounts();
         let account = collection
             .standard_bip44_accounts
             .get(&account_index)
-            .ok_or_else(|| "BIP44 account missing".to_string())?;
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "BIP44 account missing".to_string(),
+            })?;
 
         let mut spendable_total = 0u64;
         let mut spendable_inputs = 0usize;
@@ -737,7 +755,9 @@ impl AppContext {
         }
 
         if spendable_total == 0 || spendable_inputs == 0 {
-            return Err("No spendable funds available".to_string());
+            return Err(TaskError::WalletPaymentFailed {
+                detail: "No spendable funds available".to_string(),
+            });
         }
 
         let estimated_size = Self::estimate_p2pkh_tx_size(spendable_inputs, 1);
@@ -803,18 +823,24 @@ impl AppContext {
         wm: &mut WalletManager<ManagedWalletInfo>,
         wallet_id: &WalletId,
         tx: Transaction,
-    ) -> Result<Transaction, String> {
+    ) -> Result<Transaction, TaskError> {
         let wallet = wm
             .get_wallet(wallet_id)
-            .ok_or_else(|| "Wallet object not found".to_string())?;
-        let managed_info = wm
-            .get_wallet_info(wallet_id)
-            .ok_or_else(|| "Wallet info unavailable".to_string())?;
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "Wallet object not found".to_string(),
+            })?;
+        let managed_info =
+            wm.get_wallet_info(wallet_id)
+                .ok_or_else(|| TaskError::WalletPaymentFailed {
+                    detail: "Wallet info unavailable".to_string(),
+                })?;
         let accounts = managed_info.accounts();
         let account = accounts
             .standard_bip44_accounts
             .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
-            .ok_or_else(|| "BIP44 account missing".to_string())?;
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "BIP44 account missing".to_string(),
+            })?;
 
         let secp = Secp256k1::new();
         let mut tx_signed = tx;
@@ -825,28 +851,33 @@ impl AppContext {
             .iter()
             .enumerate()
             .map(|(index, input)| {
-                let utxo = account
-                    .utxos
-                    .get(&input.previous_output)
-                    .ok_or_else(|| "Missing UTXO for signing".to_string())?;
+                let utxo = account.utxos.get(&input.previous_output).ok_or_else(|| {
+                    TaskError::WalletPaymentFailed {
+                        detail: "Missing UTXO for signing".to_string(),
+                    }
+                })?;
                 let sighash = cache
                     .legacy_signature_hash(index, &utxo.txout.script_pubkey, 1)
-                    .map_err(|e| format!("Failed to compute signature hash: {e}"))?;
+                    .map_err(|source| TaskError::SighashComputationFailed { source })?;
                 Ok((sighash, utxo.address.clone()))
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect::<Result<Vec<_>, TaskError>>()?;
 
         for (input, (sighash, address)) in tx_signed.input.iter_mut().zip(signing_data.into_iter())
         {
             let digest: [u8; 32] = sighash.into();
             let message = Message::from_digest(digest);
 
-            let addr_info = account
-                .get_address_info(&address)
-                .ok_or_else(|| "Address metadata missing".to_string())?;
-            let secret_key = wallet
-                .derive_private_key(&addr_info.path)
-                .map_err(|e| format!("Failed to derive private key: {e}"))?;
+            let addr_info = account.get_address_info(&address).ok_or_else(|| {
+                TaskError::WalletPaymentFailed {
+                    detail: "Address metadata missing".to_string(),
+                }
+            })?;
+            let secret_key = wallet.derive_private_key(&addr_info.path).map_err(|e| {
+                TaskError::WalletPaymentFailed {
+                    detail: format!("Failed to derive private key: {e}"),
+                }
+            })?;
             let private_key = PrivateKey {
                 compressed: true,
                 network: self.network,

@@ -280,8 +280,9 @@ impl AppContext {
             sender
                 .send(TaskResult::Success(Box::new(
                     BackendTaskSuccessResult::Progress(format!(
-                        "Searching index {} of {}...",
-                        identity_index, max_identity_index
+                        "Searching wallet identity index {current} of {last}.",
+                        current = identity_index,
+                        last = max_identity_index,
                     )),
                 )))
                 .await

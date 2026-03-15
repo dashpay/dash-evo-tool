@@ -1049,9 +1049,19 @@ impl ScreenLike for AddExistingIdentityScreen {
                 }
             }
             BackendTaskSuccessResult::Progress(msg) => {
-                // Progress updates only update the existing banner in-place
+                // Progress updates update the existing banner in-place.
+                // If no banner exists yet (e.g. task started before UI created one),
+                // create a screen-local Info banner as a fallback.
                 if let Some(ref handle) = self.refresh_banner {
                     handle.set_message(&msg);
+                } else {
+                    let handle = MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        &msg,
+                        MessageType::Info,
+                    );
+                    handle.with_elapsed();
+                    self.refresh_banner = Some(handle);
                 }
             }
             _ => {}

@@ -106,8 +106,8 @@ pub enum BackendTaskSuccessResult {
     Message(String), // Used for: placeholder messages for
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).
-    /// Unlike `Message`, these do NOT create global banners — they only update
-    /// the originating screen's existing banner handle via `display_task_result`.
+    /// By convention, the app routes `Progress` results to the visible screen's
+    /// `display_task_result` without creating a global banner (unlike `Message`).
     Progress(String),
     WalletPayment {
         txid: String,

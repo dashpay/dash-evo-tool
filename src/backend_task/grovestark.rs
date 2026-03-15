@@ -1,11 +1,12 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::model::grovestark_prover::{GroveSTARKProver, ProofDataOutput};
 use dash_sdk::Sdk;
 
 pub async fn run_grovestark_task(
     task: GroveSTARKTask,
     sdk: &Sdk,
-) -> Result<BackendTaskSuccessResult, String> {
+) -> Result<BackendTaskSuccessResult, TaskError> {
     match task {
         GroveSTARKTask::GenerateProof {
             identity_id,
@@ -18,7 +19,7 @@ pub async fn run_grovestark_task(
         } => {
             let prover = GroveSTARKProver::new();
 
-            match prover
+            let proof_data = prover
                 .generate_proof(
                     sdk,
                     &identity_id,
@@ -29,21 +30,18 @@ pub async fn run_grovestark_task(
                     &private_key,
                     &public_key,
                 )
-                .await
-            {
-                Ok(proof_data) => Ok(BackendTaskSuccessResult::GeneratedZKProof(proof_data)),
-                Err(e) => Err(format!("Failed to generate proof: {}", e)),
-            }
+                .await?;
+
+            Ok(BackendTaskSuccessResult::GeneratedZKProof(proof_data))
         }
         GroveSTARKTask::VerifyProof { proof_data } => {
             let prover = GroveSTARKProver::new();
 
-            match prover.verify_proof(&proof_data) {
-                Ok(is_valid) => Ok(BackendTaskSuccessResult::VerifiedZKProof(
-                    is_valid, proof_data,
-                )),
-                Err(e) => Err(format!("Failed to verify proof: {}", e)),
-            }
+            let is_valid = prover.verify_proof(&proof_data)?;
+
+            Ok(BackendTaskSuccessResult::VerifiedZKProof(
+                is_valid, proof_data,
+            ))
         }
     }
 }

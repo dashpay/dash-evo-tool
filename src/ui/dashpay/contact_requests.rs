@@ -604,20 +604,23 @@ impl ContactRequests {
         }
 
         // Show structured error with action buttons if any
-        if let Some(err) = self.error.clone() {
+        let mut dismiss_error = false;
+        if let Some(err) = &self.error {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             let error_color = if dark_mode {
                 DashColors::ERROR
             } else {
                 egui::Color32::DARK_RED
             };
+            let error_msg = err.user_message();
+            let is_missing_encryption_key = matches!(err, DashPayError::MissingEncryptionKey);
 
             ui.group(|ui| {
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(err.user_message()).color(error_color));
+                    ui.label(RichText::new(error_msg).color(error_color));
 
                     // Show action button for missing encryption key
-                    if matches!(err, DashPayError::MissingEncryptionKey) {
+                    if is_missing_encryption_key {
                         ui.add_space(5.0);
                         if let Some(identity) = &self.selected_identity
                             && ui.button("Add Encryption Key").clicked()
@@ -628,12 +631,15 @@ impl ContactRequests {
                                     &self.app_context,
                                 ),
                             ));
-                            self.error = None;
+                            dismiss_error = true;
                         }
                     }
                 });
             });
             ui.separator();
+        }
+        if dismiss_error {
+            self.error = None;
         }
 
         if self.selected_identity.is_none() {

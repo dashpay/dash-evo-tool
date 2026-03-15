@@ -244,22 +244,22 @@ pub async fn send_payment_to_contact_impl(
         .associated_wallets
         .values()
         .next()
-        .ok_or_else(|| "No wallet associated with this identity".to_string())?
+        .ok_or(TaskError::WalletNotFound)?
         .clone();
 
     // Check wallet is unlocked
     {
-        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+        let wallet_guard = wallet.read()?;
         if !wallet_guard.is_open() {
-            return Err("Wallet must be unlocked to send a payment"
-                .to_string()
-                .into());
+            return Err(TaskError::WalletLocked);
         }
     }
 
     // Derive the payment address for the contact from their encrypted extended public key
     let (to_address, address_index) =
-        derive_contact_payment_address(app_context, sdk, &from_identity, to_contact_id).await?;
+        derive_contact_payment_address(app_context, sdk, &from_identity, to_contact_id)
+            .await
+            .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     tracing::info!(
         "Derived DashPay payment address {} (index {}) for contact {}",
@@ -328,17 +328,14 @@ pub async fn send_payment_to_contact_impl(
     );
 
     // Save to database using the db interface - propagate errors
-    app_context
-        .db
-        .save_payment(
-            &txid,
-            &from_identity.identity.id(),
-            &to_contact_id,
-            amount_duffs as i64,
-            memo.as_deref(),
-            "sent",
-        )
-        .map_err(|e| format!("Failed to save payment record to database: {}", e))?;
+    app_context.db.save_payment(
+        &txid,
+        &from_identity.identity.id(),
+        &to_contact_id,
+        amount_duffs as i64,
+        memo.as_deref(),
+        "sent",
+    )?;
 
     // Convert to Dash for display
     let amount_dash = amount_duffs as f64 / 100_000_000.0;

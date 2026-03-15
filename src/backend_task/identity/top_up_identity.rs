@@ -1,8 +1,9 @@
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::{AppContext, get_transaction_info};
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::{ProofLogItem, RequestType};
+use crate::model::proof_log_item::RequestType;
 use dash_sdk::Error;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::block::extended_epoch_info::ExtendedEpochInfo;
@@ -21,7 +22,7 @@ impl AppContext {
     pub(super) async fn top_up_identity(
         &self,
         input: IdentityTopUpInfo,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let IdentityTopUpInfo {
             mut qualified_identity,
             wallet,
@@ -30,9 +31,7 @@ impl AppContext {
 
         let sdk = self.sdk.load().as_ref().clone();
 
-        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None)
-            .await
-            .map_err(|e| e.to_string())?;
+        let (_, metadata) = ExtendedEpochInfo::fetch_with_metadata(&sdk, 0, None).await?;
 
         let (asset_lock_proof, asset_lock_proof_private_key, tx_id, top_up_index) =
             match identity_funding_method {
@@ -45,46 +44,45 @@ impl AppContext {
 
                     // Scope the read guard so it's dropped before the async DAPI call below
                     let private_key = {
-                        let wallet = wallet.read().map_err(|e| e.to_string())?;
+                        let wallet = wallet.read().map_err(TaskError::from)?;
                         wallet
-                            .private_key_for_address(&address, self.network)?
-                            .ok_or("Asset Lock not valid for wallet")?
+                            .private_key_for_address(&address, self.network)
+                            .map_err(|e| TaskError::WalletKeyLookupFailed { detail: e })?
+                            .ok_or(TaskError::AssetLockNotValidForWallet)?
                     };
-                    let asset_lock_proof = if let AssetLockProof::Instant(
-                        instant_asset_lock_proof,
-                    ) = asset_lock_proof.as_ref()
-                    {
-                        // we need to make sure the instant send asset lock is recent
-                        let tx_info = get_transaction_info(&sdk, &tx_id).await?;
-
-                        if tx_info.is_chain_locked
-                            && tx_info.height > 0
-                            && tx_info.confirmations > 8
+                    let asset_lock_proof =
+                        if let AssetLockProof::Instant(instant_asset_lock_proof) =
+                            asset_lock_proof.as_ref()
                         {
-                            // Transaction is old enough that instant lock may have expired
-                            let tx_block_height = tx_info.height;
+                            // we need to make sure the instant send asset lock is recent
+                            let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
-                            if tx_block_height <= metadata.core_chain_locked_height {
-                                // Platform has verified this Core block, use chain lock proof
-                                AssetLockProof::Chain(ChainAssetLockProof {
-                                    core_chain_locked_height: tx_block_height,
-                                    out_point: OutPoint::new(tx_id, 0),
-                                })
+                            if tx_info.is_chain_locked
+                                && tx_info.height > 0
+                                && tx_info.confirmations > 8
+                            {
+                                // Transaction is old enough that instant lock may have expired
+                                let tx_block_height = tx_info.height;
+
+                                if tx_block_height <= metadata.core_chain_locked_height {
+                                    // Platform has verified this Core block, use chain lock proof
+                                    AssetLockProof::Chain(ChainAssetLockProof {
+                                        core_chain_locked_height: tx_block_height,
+                                        out_point: OutPoint::new(tx_id, 0),
+                                    })
+                                } else {
+                                    // Platform hasn't verified this Core block yet
+                                    return Err(TaskError::AssetLockExpired {
+                                        tx_block_height,
+                                        platform_height: metadata.core_chain_locked_height,
+                                    });
+                                }
                             } else {
-                                // Platform hasn't verified this Core block yet
-                                return Err(format!(
-                                    "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
-                                        and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
-                                        Please wait for Platform to sync with Core chain.",
-                                    tx_block_height, metadata.core_chain_locked_height
-                                ));
+                                AssetLockProof::Instant(instant_asset_lock_proof.clone())
                             }
                         } else {
-                            AssetLockProof::Instant(instant_asset_lock_proof.clone())
-                        }
-                    } else {
-                        asset_lock_proof.as_ref().clone()
-                    };
+                            asset_lock_proof.as_ref().clone()
+                        };
                     (asset_lock_proof, private_key, tx_id, None)
                 }
                 TopUpIdentityFundingMethod::FundWithWallet(
@@ -101,7 +99,7 @@ impl AppContext {
                         used_utxos,
                         wallet_seed_hash,
                     ) = {
-                        let mut wallet = wallet.write().map_err(|e| e.to_string())?;
+                        let mut wallet = wallet.write().map_err(TaskError::from)?;
                         let seed_hash = wallet.seed_hash();
                         let tx_result = match wallet.top_up_asset_lock_transaction(
                             self,
@@ -115,17 +113,26 @@ impl AppContext {
                             Err(e) => {
                                 // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                                 // Only retry if something actually changed.
-                                if !wallet.reload_utxos(self)? {
-                                    return Err(e);
+                                if !wallet
+                                    .reload_utxos(self)
+                                    .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?
+                                {
+                                    return Err(TaskError::AssetLockTransactionBuildFailed {
+                                        detail: e,
+                                    });
                                 }
-                                wallet.top_up_asset_lock_transaction(
-                                    self,
-                                    sdk.network,
-                                    amount,
-                                    true,
-                                    identity_index,
-                                    top_up_index,
-                                )?
+                                wallet
+                                    .top_up_asset_lock_transaction(
+                                        self,
+                                        sdk.network,
+                                        amount,
+                                        true,
+                                        identity_index,
+                                        top_up_index,
+                                    )
+                                    .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
+                                        detail: e,
+                                    })?
                             }
                         };
                         (
@@ -165,17 +172,21 @@ impl AppContext {
                 ) => {
                     // Scope the write lock to avoid holding it across an await.
                     let (asset_lock_transaction, asset_lock_proof_private_key, wallet_seed_hash) = {
-                        let mut wallet = wallet.write().map_err(|e| e.to_string())?;
+                        let mut wallet = wallet.write().map_err(TaskError::from)?;
                         let seed_hash = wallet.seed_hash();
-                        let tx_result = wallet.top_up_asset_lock_transaction_for_utxo(
-                            self,
-                            sdk.network,
-                            utxo,
-                            tx_out.clone(),
-                            input_address.clone(),
-                            identity_index,
-                            top_up_index,
-                        )?;
+                        let tx_result = wallet
+                            .top_up_asset_lock_transaction_for_utxo(
+                                self,
+                                sdk.network,
+                                utxo,
+                                tx_out.clone(),
+                                input_address.clone(),
+                                identity_index,
+                                top_up_index,
+                            )
+                            .map_err(|e| TaskError::AssetLockTransactionBuildFailed {
+                                detail: e,
+                            })?;
                         (tx_result.0, tx_result.1, seed_hash)
                     };
 
@@ -207,8 +218,7 @@ impl AppContext {
             .set_asset_lock_identity_id_before_confirmation_by_network(
                 tx_id.as_byte_array(),
                 qualified_identity.identity.id().as_bytes(),
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
 
         // Track balance before top-up for fee calculation
         let balance_before = qualified_identity.identity.balance();
@@ -227,32 +237,7 @@ impl AppContext {
         {
             Ok(updated_identity) => updated_identity,
             Err(e) => {
-                // Log proof errors first
-                if let Error::DriveProofError(ref proof_error, ref proof_bytes, ref block_info) = e
-                {
-                    if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                        request_type: RequestType::BroadcastStateTransition,
-                        request_bytes: vec![],
-                        verification_path_query_bytes: vec![],
-                        height: block_info.height,
-                        time_ms: block_info.time_ms,
-                        proof_bytes: proof_bytes.clone(),
-                        error: Some(proof_error.to_string()),
-                    }) {
-                        tracing::warn!("Failed to persist proof log: {}", e);
-                    }
-                    return Err(format!(
-                        "Error topping up identity: {}, proof error logged",
-                        proof_error
-                    ));
-                }
-
-                let error_string = e.to_string();
-
-                // Check if this is an instant lock proof expiration error
-                if error_string.contains("Instant lock proof signature is invalid")
-                    || error_string.contains("wasn't created recently")
-                {
+                if crate::backend_task::error::is_instant_lock_proof_invalid(&e) {
                     // Try to use chain asset lock proof instead
                     let tx_info = get_transaction_info(&sdk, &tx_id).await?;
 
@@ -279,44 +264,19 @@ impl AppContext {
                                 )
                                 .await
                                 .map_err(|e| {
-                                    // Log proof errors from retry
-                                    if let Error::DriveProofError(
-                                        ref proof_error,
-                                        ref proof_bytes,
-                                        ref block_info,
-                                    ) = e
-                                    {
-                                        if let Err(e) =
-                                            self.db.insert_proof_log_item(ProofLogItem {
-                                                request_type: RequestType::BroadcastStateTransition,
-                                                request_bytes: vec![],
-                                                verification_path_query_bytes: vec![],
-                                                height: block_info.height,
-                                                time_ms: block_info.time_ms,
-                                                proof_bytes: proof_bytes.clone(),
-                                                error: Some(proof_error.to_string()),
-                                            })
-                                        {
-                                            tracing::warn!("Failed to persist proof log: {}", e);
-                                        }
-                                        return format!(
-                                            "Error topping up identity: {}, proof error logged",
-                                            proof_error
-                                        );
-                                    }
-                                    e.to_string()
+                                    self.log_drive_proof_error(
+                                        e,
+                                        RequestType::BroadcastStateTransition,
+                                    )
                                 })?
                         } else {
-                            return Err(format!(
-                                "Cannot use this asset lock yet. The instant lock proof has expired (quorum rotated), \
-                                and Platform hasn't verified Core block {} yet (Platform has verified up to Core block {}). \
-                                Please wait for Platform to sync with Core chain.",
-                                tx_block_height, metadata.core_chain_locked_height
-                            ));
+                            return Err(TaskError::AssetLockExpired {
+                                tx_block_height,
+                                platform_height: metadata.core_chain_locked_height,
+                            });
                         }
                     } else {
-                        return Err("Cannot use this asset lock. The instant lock proof has expired and the transaction \
-                            is not yet chainlocked. Please wait for the transaction to be chainlocked.".to_string());
+                        return Err(TaskError::AssetLockInstantLockExpiredNotChainlocked);
                     }
                 } else if matches!(e, Error::Protocol(ProtocolError::UnknownVersionError(_))) {
                     qualified_identity
@@ -329,32 +289,16 @@ impl AppContext {
                             None,
                         )
                         .await
-                        .map_err(|e| {
-                            // Log proof errors from retry
-                            if let Error::DriveProofError(
-                                ref proof_error,
-                                ref proof_bytes,
-                                ref block_info,
-                            ) = e
-                            {
-                                if let Err(e) = self.db.insert_proof_log_item(ProofLogItem {
-                                    request_type: RequestType::BroadcastStateTransition,
-                                    request_bytes: vec![],
-                                    verification_path_query_bytes: vec![],
-                                    height: block_info.height,
-                                    time_ms: block_info.time_ms,
-                                    proof_bytes: proof_bytes.clone(),
-                                    error: Some(proof_error.to_string()),
-                                }) {
-                                    tracing::warn!("Failed to persist proof log: {}", e);
-                                }
-                                return format!(
-                                    "Error topping up identity: {}, proof error logged",
-                                    proof_error
-                                );
+                        .map_err(|retry_err| {
+                            let logged = self.log_drive_proof_error(
+                                retry_err,
+                                RequestType::BroadcastStateTransition,
+                            );
+                            if matches!(logged, TaskError::ProofError { .. }) {
+                                return logged;
                             }
-
-                            match IdentityTopUpTransition::try_from_identity(
+                            // Log the reconstructed transition for debugging before returning the error.
+                            if let Ok(transition) = IdentityTopUpTransition::try_from_identity(
                                 &qualified_identity.identity,
                                 asset_lock_proof,
                                 asset_lock_proof_private_key.inner.as_ref(),
@@ -362,18 +306,17 @@ impl AppContext {
                                 self.platform_version(),
                                 None,
                             ) {
-                                Ok(transition) => format!(
-                                    "error: {}, transaction is {:?}",
-                                    e, transition
-                                ),
-                                Err(transition_err) => format!(
-                                    "error: {}, also failed to recreate transition for debugging: {}",
-                                    e, transition_err
-                                ),
+                                tracing::debug!(
+                                    "Top-up retry failed; reconstructed transition: {:?}",
+                                    transition
+                                );
                             }
+                            logged
                         })?
                 } else {
-                    return Err(error_string);
+                    return Err(
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    );
                 }
             }
         };
@@ -419,31 +362,26 @@ impl AppContext {
             );
         }
 
-        self.update_local_qualified_identity(&qualified_identity)
-            .map_err(|e| e.to_string())?;
+        self.update_local_qualified_identity(&qualified_identity)?;
 
         {
-            let mut wallet = wallet.write().map_err(|e| e.to_string())?;
+            let mut wallet = wallet.write().map_err(TaskError::from)?;
             wallet
                 .unused_asset_locks
                 .retain(|(tx, _, _, _, _)| tx.txid() != tx_id);
         }
 
-        self.db
-            .set_asset_lock_identity_id(
-                tx_id.as_byte_array(),
-                qualified_identity.identity.id().as_bytes(),
-            )
-            .map_err(|e| e.to_string())?;
+        self.db.set_asset_lock_identity_id(
+            tx_id.as_byte_array(),
+            qualified_identity.identity.id().as_bytes(),
+        )?;
 
         if let Some((amount, top_up_index)) = top_up_index {
-            self.db
-                .insert_top_up(
-                    qualified_identity.identity.id().as_bytes(),
-                    top_up_index,
-                    amount,
-                )
-                .map_err(|e| e.to_string())?;
+            self.db.insert_top_up(
+                qualified_identity.identity.id().as_bytes(),
+                top_up_index,
+                amount,
+            )?;
         }
 
         // Calculate actual fee for the FeeResult

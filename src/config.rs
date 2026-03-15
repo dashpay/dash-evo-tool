@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::str::FromStr;
 
 use crate::app_dir::app_user_data_file_path;
@@ -19,9 +19,21 @@ pub struct Config {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    /// Failed to load configuration from disk or environment.
     #[error("{0}")]
     LoadError(String),
-    #[error("No valid network configurations found in .env file or environment variables")]
+
+    /// Failed to save configuration to disk.
+    #[error("Could not save settings. Check that the application folder is writable and retry.")]
+    SaveError {
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// No valid network configurations found.
+    #[error(
+        "No network configuration found. Please reinstall the application or check your settings."
+    )]
     NoValidConfigs,
 }
 
@@ -63,18 +75,23 @@ impl Config {
     /// config corruption if a write fails partway through.
     pub fn save(&self) -> Result<(), ConfigError> {
         let env_file_path =
-            app_user_data_file_path(".env").map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            app_user_data_file_path(".env").map_err(|e| ConfigError::SaveError { source: e })?;
 
         // Write to a temporary file in the same directory first, then
         // atomically replace. This prevents corruption if the write fails
         // partway through. NamedTempFile::persist() closes the handle before
         // renaming and uses MoveFileEx with MOVEFILE_REPLACE_EXISTING on
         // Windows for atomic replacement.
-        let parent_dir = env_file_path.parent().ok_or_else(|| {
-            ConfigError::LoadError("Config file path has no parent directory".to_string())
-        })?;
+        let parent_dir = env_file_path
+            .parent()
+            .ok_or_else(|| ConfigError::SaveError {
+                source: io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "config file path has no parent directory",
+                ),
+            })?;
         let mut env_file =
-            NamedTempFile::new_in(parent_dir).map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            NamedTempFile::new_in(parent_dir).map_err(|e| ConfigError::SaveError { source: e })?;
 
         // Helper function to write a single network config to the `.env` file
         let mut write_network_config = |prefix: &str, config: &NetworkConfig| {
@@ -90,32 +107,32 @@ impl Config {
                 "{}dapi_addresses={}",
                 prefix, config.dapi_addresses
             )
-            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            .map_err(|e| ConfigError::SaveError { source: e })?;
             writeln!(env_file, "{}core_host={}", prefix, config.core_host)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                .map_err(|e| ConfigError::SaveError { source: e })?;
             writeln!(env_file, "{}core_rpc_port={}", prefix, config.core_rpc_port)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                .map_err(|e| ConfigError::SaveError { source: e })?;
             writeln!(env_file, "{}core_rpc_user={}", prefix, config.core_rpc_user)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                .map_err(|e| ConfigError::SaveError { source: e })?;
             writeln!(
                 env_file,
                 "{}core_rpc_password={}",
                 prefix, config.core_rpc_password
             )
-            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            .map_err(|e| ConfigError::SaveError { source: e })?;
             if let Some(core_zmq_endpoint) = &config.core_zmq_endpoint {
                 writeln!(
                     env_file,
                     "{}core_zmq_endpoint={}",
                     prefix, core_zmq_endpoint
                 )
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                .map_err(|e| ConfigError::SaveError { source: e })?;
             }
 
             if let Some(devnet_name) = &config.devnet_name {
                 // Only write devnet name if it exists
                 writeln!(env_file, "{}devnet_name={}", prefix, devnet_name)
-                    .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                    .map_err(|e| ConfigError::SaveError { source: e })?;
             }
             if let Some(wallet_private_key) = &config.wallet_private_key {
                 writeln!(
@@ -123,11 +140,11 @@ impl Config {
                     "{}wallet_private_key={}",
                     prefix, wallet_private_key
                 )
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                .map_err(|e| ConfigError::SaveError { source: e })?;
             }
 
             // Add a blank line after each config block
-            writeln!(env_file).map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            writeln!(env_file).map_err(|e| ConfigError::SaveError { source: e })?;
 
             Ok(())
         };
@@ -157,21 +174,21 @@ impl Config {
         // Save global developer mode
         if let Some(developer_mode) = self.developer_mode {
             writeln!(env_file, "DEVELOPER_MODE={}", developer_mode)
-                .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+                .map_err(|e| ConfigError::SaveError { source: e })?;
         }
 
         // Sync all data to disk before renaming to ensure crash-safety
         env_file
             .as_file()
             .sync_all()
-            .map_err(|e| ConfigError::LoadError(e.to_string()))?;
+            .map_err(|e| ConfigError::SaveError { source: e })?;
 
         // Atomically replace the old config with the new one.
         // persist() closes the file handle and uses platform-safe rename
         // (MoveFileEx with MOVEFILE_REPLACE_EXISTING on Windows).
-        env_file.persist(&env_file_path).map_err(|e| {
-            ConfigError::LoadError(format!("Failed to persist temp config file: {}", e))
-        })?;
+        env_file
+            .persist(&env_file_path)
+            .map_err(|e| ConfigError::SaveError { source: e.error })?;
 
         tracing::info!("Successfully saved configuration to {:?}", env_file_path);
         Ok(())

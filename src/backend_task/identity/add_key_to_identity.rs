@@ -31,7 +31,7 @@ impl AppContext {
             .get_identity_nonce(qualified_identity.identity.id(), true, None)
             .await?;
         let Some(master_key) = qualified_identity.can_sign_with_master_key() else {
-            return Err("Master key not found".to_string().into());
+            return Err(TaskError::MasterKeyNotFound);
         };
         let master_key_id = master_key.identity_public_key.id();
         let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
@@ -121,7 +121,7 @@ impl AppContext {
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map_err(|e| TaskError::IdentitySaveError { source: e })?;
+            .map_err(|e| TaskError::Database { source: e })?;
         Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
     }
 }

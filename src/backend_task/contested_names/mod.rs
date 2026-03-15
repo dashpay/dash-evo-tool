@@ -5,6 +5,7 @@ mod vote_on_dpns_name;
 
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -39,14 +40,13 @@ impl AppContext {
         task: ContestedResourceTask,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match &task {
             ContestedResourceTask::QueryDPNSContests => self
                 .query_dpns_contested_resources(sdk, sender)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
             ContestedResourceTask::VoteOnDPNSNames(votes, all_voters) => {
-                // Create a vector of async closures that will vote on each name concurrently
                 let futures = votes
                     .iter()
                     .map(|(name, choice)| {
@@ -63,58 +63,56 @@ impl AppContext {
                     })
                     .collect::<Vec<_>>();
 
-                // Run all futures concurrently
                 let results = join_all(futures).await;
 
                 let final_results = results
                     .into_iter()
-                    .flat_map(|(name, vote_choice, det_execution_result)| {
-                        match det_execution_result {
+                    .flat_map(
+                        |(name, vote_choice, det_execution_result)| match det_execution_result {
                             Ok(BackendTaskSuccessResult::DPNSVoteResults(platform_results)) => {
-                                // Voting succeeded in DET, return the Platform results
                                 platform_results
                             }
-                            Err(det_err_msg) => {
-                                // Voting failed in DET, return the error message
-                                vec![(name.clone(), *vote_choice, Err(det_err_msg))]
+                            Err(det_err) => {
+                                vec![(name.clone(), *vote_choice, Err(det_err.to_string()))]
                             }
                             Ok(_) => {
-                                // Got some other BackendTaskSuccessResult, this shouldn't occur
                                 vec![(name.clone(), *vote_choice, Ok(()))]
                             }
-                        }
-                    })
+                        },
+                    )
                     .collect::<Vec<_>>();
 
                 Ok(BackendTaskSuccessResult::DPNSVoteResults(final_results))
             }
-            ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => self
-                .insert_scheduled_votes(scheduled_votes)
-                .map(|_| BackendTaskSuccessResult::ScheduledVotes)
-                .map_err(|e| format!("Error inserting scheduled votes: {}", e)),
-            ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => self
-                .vote_on_dpns_name(
+            ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => {
+                self.insert_scheduled_votes(scheduled_votes)?;
+                Ok(BackendTaskSuccessResult::ScheduledVotes)
+            }
+            ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => {
+                self.vote_on_dpns_name(
                     &scheduled_vote.contested_name,
                     scheduled_vote.choice,
                     &[(**voter).clone()],
                     sdk,
                     sender,
                 )
-                .await
-                .map(|_| BackendTaskSuccessResult::CastScheduledVote(scheduled_vote.clone()))
-                .map_err(|e| format!("Error casting scheduled vote: {}", e)),
-            ContestedResourceTask::ClearAllScheduledVotes => self
-                .clear_all_scheduled_votes()
-                .map(|_| BackendTaskSuccessResult::Refresh)
-                .map_err(|e| format!("Error clearing all scheduled votes: {}", e)),
-            ContestedResourceTask::ClearExecutedScheduledVotes => self
-                .clear_executed_scheduled_votes()
-                .map(|_| BackendTaskSuccessResult::Refresh)
-                .map_err(|e| format!("Error clearing executed scheduled votes: {}", e)),
-            ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name) => self
-                .delete_scheduled_vote(voter_id.as_slice(), contested_name)
-                .map(|_| BackendTaskSuccessResult::Refresh)
-                .map_err(|e| format!("Error clearing scheduled vote: {}", e)),
+                .await?;
+                Ok(BackendTaskSuccessResult::CastScheduledVote(
+                    scheduled_vote.clone(),
+                ))
+            }
+            ContestedResourceTask::ClearAllScheduledVotes => {
+                self.clear_all_scheduled_votes()?;
+                Ok(BackendTaskSuccessResult::Refresh)
+            }
+            ContestedResourceTask::ClearExecutedScheduledVotes => {
+                self.clear_executed_scheduled_votes()?;
+                Ok(BackendTaskSuccessResult::Refresh)
+            }
+            ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name) => {
+                self.delete_scheduled_vote(voter_id.as_slice(), contested_name)?;
+                Ok(BackendTaskSuccessResult::Refresh)
+            }
         }
     }
 }

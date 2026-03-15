@@ -1,5 +1,5 @@
 use crate::context::AppContext;
-use crate::database::Database;
+use crate::database::{Database, WalletError};
 use crate::model::wallet::{DerivationPathHelpers, Wallet};
 use crate::spv::CoreBackendMode;
 use dash_sdk::dashcore_rpc::RpcApi;
@@ -196,8 +196,8 @@ impl Wallet {
         let current_utxos = &mut self.utxos;
         for (outpoint, tx_out) in &new_utxo_map {
             // Get the address from the script_pubkey
-            let address =
-                Address::from_script(&tx_out.script_pubkey, network).map_err(|e| e.to_string())?;
+            let address = Address::from_script(&tx_out.script_pubkey, network)
+                .map_err(|e| WalletError::AddressError(e).to_string())?;
             // Add or update the UTXO in the wallet
             current_utxos
                 .entry(address.clone())
@@ -217,7 +217,7 @@ impl Wallet {
             for outpoint in added_outpoints {
                 let tx_out = &new_utxo_map[&outpoint];
                 let address = Address::from_script(&tx_out.script_pubkey, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::AddressError(e).to_string())?;
 
                 db.insert_utxo(
                     outpoint.txid.as_ref(),

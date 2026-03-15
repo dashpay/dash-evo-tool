@@ -19,7 +19,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Step 1: Collect data from wallet with brief read lock
         let (addresses, asset_lock_txs, seed_hash, core_wallet_name) = {
-            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            let wallet_guard = wallet.read()?;
             let addrs = wallet_guard
                 .known_addresses
                 .iter()
@@ -35,7 +35,6 @@ impl AppContext {
             let cwn = wallet_guard.core_wallet_name.clone();
             (addrs, asset_locks, seed, cwn)
         };
-        // Read lock released here
 
         // Build an RPC client targeting the wallet's Core wallet (if set)
         let client = self.core_client_for_wallet(core_wallet_name.as_deref())?;
@@ -49,7 +48,6 @@ impl AppContext {
 
         // Step 3: Fetch UTXOs from Core RPC (no wallet lock needed)
         let utxo_map: HashMap<OutPoint, TxOut> = {
-            // Get UTXOs for all addresses
             let utxos = if addresses.is_empty() {
                 Vec::new()
             } else {
@@ -62,7 +60,6 @@ impl AppContext {
                 )?
             };
 
-            // Build the UTXO map
             let mut map = HashMap::new();
             for utxo in utxos {
                 let outpoint = OutPoint::new(utxo.txid, utxo.vout);
@@ -74,7 +71,6 @@ impl AppContext {
             }
             map
         };
-        // No lock was held during RPC call
 
         // Step 4: Calculate balances from UTXOs (no lock needed)
         let mut address_balances: HashMap<Address, u64> = HashMap::new();
@@ -110,7 +106,7 @@ impl AppContext {
                 .filter_map(|tx| {
                     let txid = tx.txid();
                     match client.get_tx_out(&txid, 0, Some(true)) {
-                        Ok(Some(_)) => None, // UTXO exists, keep it
+                        Ok(Some(_)) => None,
                         Ok(None) => {
                             tracing::info!(
                                 "Asset lock {} has been used (UTXO spent), removing from unused list",
@@ -130,16 +126,14 @@ impl AppContext {
         // Step 7: Insert UTXOs into database (no wallet lock needed)
         for (outpoint, tx_out) in &utxo_map {
             if let Ok(address) = Address::from_script(&tx_out.script_pubkey, self.network) {
-                self.db
-                    .insert_utxo(
-                        outpoint.txid.as_ref(),
-                        outpoint.vout,
-                        &address,
-                        tx_out.value,
-                        &tx_out.script_pubkey.to_bytes(),
-                        self.network,
-                    )
-                    .map_err(|e| e.to_string())?;
+                self.db.insert_utxo(
+                    outpoint.txid.as_ref(),
+                    outpoint.vout,
+                    &address,
+                    tx_out.value,
+                    &tx_out.script_pubkey.to_bytes(),
+                    self.network,
+                )?;
             }
         }
 
@@ -154,20 +148,16 @@ impl AppContext {
         let total_balance: u64 = utxo_map.values().map(|tx_out| tx_out.value).sum();
 
         // Step 10: Update wallet IN-MEMORY state only (brief write lock, no I/O)
-        // Collect which balances actually changed for later database update
         let (changed_balances, changed_total_received): (Vec<_>, Vec<_>) = {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+            let mut wallet_guard = wallet.write()?;
 
-            // Update wallet's UTXO map
             let new_outpoints: std::collections::HashSet<_> = utxo_map.keys().cloned().collect();
 
-            // Remove UTXOs that are no longer unspent
             for utxos in wallet_guard.utxos.values_mut() {
                 utxos.retain(|outpoint, _| new_outpoints.contains(outpoint));
             }
             wallet_guard.utxos.retain(|_, utxos| !utxos.is_empty());
 
-            // Add new UTXOs
             for (outpoint, tx_out) in &utxo_map {
                 if let Ok(address) = Address::from_script(&tx_out.script_pubkey, self.network) {
                     wallet_guard
@@ -178,11 +168,9 @@ impl AppContext {
                 }
             }
 
-            // Update address balances IN-MEMORY and collect changes
             let mut balance_changes = Vec::new();
             for address in &addresses {
                 let balance = address_balances.get(address).cloned().unwrap_or(0);
-                // Only track if balance changed
                 let current = wallet_guard.address_balances.get(address).cloned();
                 if current != Some(balance) {
                     wallet_guard
@@ -192,10 +180,8 @@ impl AppContext {
                 }
             }
 
-            // Update total received IN-MEMORY and collect changes
             let mut received_changes = Vec::new();
             for (address, total_received) in &total_received_map {
-                // Only track if changed
                 let current = wallet_guard.address_total_received.get(address).cloned();
                 if current != Some(*total_received) {
                     wallet_guard
@@ -205,7 +191,6 @@ impl AppContext {
                 }
             }
 
-            // Remove stale asset locks
             if !stale_txids.is_empty() {
                 let stale_count = stale_txids.len();
                 wallet_guard
@@ -214,32 +199,24 @@ impl AppContext {
                 tracing::info!("Removed {} stale asset locks", stale_count);
             }
 
-            // Update wallet-level balances
             wallet_guard.update_spv_balances(total_balance, 0, total_balance);
 
             (balance_changes, received_changes)
         };
-        // Write lock released here - all I/O happens below without any wallet lock
 
         // Step 11: Persist all changes to database (no wallet lock needed)
-        // Update address balances in database - propagate errors to prevent data loss
         for (address, balance) in &changed_balances {
             self.db
-                .update_address_balance(&seed_hash, address, *balance)
-                .map_err(|e| format!("Failed to persist address balance for {}: {}", address, e))?;
+                .update_address_balance(&seed_hash, address, *balance)?;
         }
 
-        // Update total received in database
         for (address, total_received) in &changed_total_received {
             self.db
-                .update_address_total_received(&seed_hash, address, *total_received)
-                .map_err(|e| format!("Failed to persist total received for {}: {}", address, e))?;
+                .update_address_total_received(&seed_hash, address, *total_received)?;
         }
 
-        // Update wallet-level balances
         self.db
-            .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)
-            .map_err(|e| format!("Failed to persist wallet balances: {}", e))?;
+            .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)?;
 
         Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
     }

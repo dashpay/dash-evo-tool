@@ -23,11 +23,9 @@ impl AddNewIdentityScreen {
                 // Get the receive address
                 if self.funding_address.is_none() {
                     let mut wallet = wallet_guard.write().unwrap();
-                    let receive_address = wallet.receive_address(
-                        self.app_context.network,
-                        true,
-                        Some(&self.app_context),
-                    )?;
+                    let receive_address = wallet
+                        .receive_address(self.app_context.network, true, Some(&self.app_context))
+                        .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
                     let core_wallet_name = wallet.core_wallet_name.clone();
                     drop(wallet);
 
@@ -56,7 +54,7 @@ impl AddNewIdentityScreen {
                     (self.funding_address.as_ref().unwrap().clone(), false)
                 }
             } else {
-                return Err("No wallet selected".to_string().into());
+                return Err(TaskError::WalletNotFound);
             }
         };
 

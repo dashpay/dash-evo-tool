@@ -14,10 +14,23 @@ use dash_sdk::drive::query::{OrderClause, WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::{
     DocumentCreateTransitionBuilder, DocumentReplaceTransitionBuilder,
 };
-use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier, Identity};
 use rand::RngCore;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+
+fn profile_authentication_key(
+    identity: &Identity,
+) -> Result<&dash_sdk::platform::IdentityPublicKey, TaskError> {
+    identity
+        .get_first_public_key_matching(
+            Purpose::AUTHENTICATION,
+            HashSet::from([SecurityLevel::CRITICAL, SecurityLevel::HIGH]),
+            KeyType::all_key_types().into(),
+            false,
+        )
+        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))
+}
 
 pub async fn load_profile(
     app_context: &Arc<AppContext>,
@@ -118,15 +131,8 @@ pub async fn update_profile(
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Get the appropriate identity key for signing
-    let identity_key = identity
-        .identity
-        .get_first_public_key_matching(
-            Purpose::AUTHENTICATION,
-            HashSet::from([SecurityLevel::CRITICAL]),
-            KeyType::all_key_types().into(),
-            false,
-        )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?;
+    // Platform requires CRITICAL or HIGH security level for document creation/update
+    let identity_key = profile_authentication_key(&identity.identity)?;
 
     // Check if profile already exists
     let mut profile_query =
@@ -529,4 +535,63 @@ pub async fn search_profiles(
     Ok(BackendTaskSuccessResult::DashPayProfileSearchResults(
         results,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::profile_authentication_key;
+    use crate::backend_task::dashpay::errors::DashPayError;
+    use crate::backend_task::error::TaskError;
+    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
+        IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
+    };
+    use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+    use dash_sdk::dpp::version::LATEST_PLATFORM_VERSION;
+    use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
+
+    fn test_identity() -> Identity {
+        let identity_id = Identifier::from_string(
+            "BCMnPwQZcH3RP9atgkmvtmN45QrVcYvh5cmUYARHBTu9",
+            Encoding::Base58,
+        )
+        .expect("test identity id should parse");
+
+        Identity::create_basic_identity(identity_id, LATEST_PLATFORM_VERSION)
+            .expect("test identity should be created")
+    }
+
+    #[test]
+    fn profile_authentication_key_accepts_high_only_authentication_key() {
+        let mut identity = test_identity();
+        let mut high_key =
+            IdentityPublicKey::random_authentication_key(1, Some(42), LATEST_PLATFORM_VERSION);
+        high_key.set_security_level(SecurityLevel::HIGH);
+        identity.add_public_key(high_key);
+
+        let selected_key = profile_authentication_key(&identity)
+            .expect("HIGH authentication key should be accepted for profile updates");
+
+        assert_eq!(selected_key.id(), 1);
+        assert_eq!(selected_key.purpose(), Purpose::AUTHENTICATION);
+        assert_eq!(selected_key.security_level(), SecurityLevel::HIGH);
+    }
+
+    #[test]
+    fn profile_authentication_key_rejects_identity_without_critical_or_high_authentication_key() {
+        let mut identity = test_identity();
+        let mut medium_auth_key =
+            IdentityPublicKey::random_authentication_key(1, Some(7), LATEST_PLATFORM_VERSION);
+        medium_auth_key.set_security_level(SecurityLevel::MEDIUM);
+        identity.add_public_key(medium_auth_key);
+
+        let error = profile_authentication_key(&identity)
+            .expect_err("missing CRITICAL/HIGH authentication key should error");
+
+        assert!(matches!(
+            error,
+            TaskError::DashPay(DashPayError::MissingAuthenticationKey)
+        ));
+    }
 }

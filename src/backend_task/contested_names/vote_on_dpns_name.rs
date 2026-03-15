@@ -73,7 +73,7 @@ impl AppContext {
                     )
                     .await
                     .map(|_| ())
-                    .map_err(|e| format!("Error voting: {}", e));
+                    .map_err(|e| TaskError::from(e).to_string());
 
                 vote_results.push((name.to_owned(), vote_choice, result));
             } else {

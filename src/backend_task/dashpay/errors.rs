@@ -99,7 +99,10 @@ pub enum DashPayError {
     NetworkError { reason: String },
 
     #[error("An unexpected error occurred while communicating with the network. Please retry.")]
-    SdkError { reason: String },
+    SdkError {
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
 
     // User Input Errors
     #[error("The username format is not valid. Usernames must end with '.dash'.")]
@@ -273,9 +276,9 @@ pub trait ToDashPayError<T> {
 }
 
 impl<T> ToDashPayError<T> for Result<T, dash_sdk::Error> {
-    fn to_dashpay_error(self, context: &str) -> DashPayResult<T> {
+    fn to_dashpay_error(self, _context: &str) -> DashPayResult<T> {
         self.map_err(|e| DashPayError::SdkError {
-            reason: format!("{}: {}", context, e),
+            source: Box::new(e),
         })
     }
 }

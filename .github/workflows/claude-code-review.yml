@@ -24,9 +24,12 @@ jobs:
       issues: write
       pull-requests: write
       id-token: write
+    env:
+      ANTHROPIC_MODEL: ${{ vars.CLAUDE_MODEL || 'opus' }}
     steps:
       - name: Claudius Review
         uses: lklimek/claudius-review-action@main
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
-          claude_model: ${{ vars.CLAUDE_MODEL || 'opus' }}
+          memcan_url: ${{ vars.MEMCAN_URL }}
+          memcan_api_key: ${{ secrets.MEMCAN_API_KEY }}

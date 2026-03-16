@@ -4,6 +4,9 @@
 //! `Debug` → variant name + fields (logged and shown in collapsible details).
 
 use dash_sdk::Error as SdkError;
+use dash_sdk::dapi_client::DapiClientError;
+use dash_sdk::dapi_client::transport::TransportError;
+use dash_sdk::dapi_grpc::tonic::Code;
 use dash_sdk::dashcore_rpc;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::consensus::ConsensusError;
@@ -636,6 +639,68 @@ fn spv_user_message(e: &crate::spv::SpvError) -> &'static str {
     }
 }
 
+/// Produce a user-friendly message for a gRPC status by inspecting the status code.
+///
+/// Distinguishes timeouts, domain errors carried as `Internal`, deadline exceeded,
+/// auth failures, and rate limiting from generic transport failures.
+fn grpc_status_user_message(status: &dash_sdk::dapi_grpc::tonic::Status) -> String {
+    match status.code() {
+        Code::Unavailable => {
+            let msg = status.message().to_lowercase();
+            if msg.contains("timed out") || msg.contains("timeout") || msg.contains("connect error")
+            {
+                "Connection to a Dash network server timed out. Please retry — the app will try a different server.".to_string()
+            } else {
+                "A Dash network server is temporarily unavailable. Please retry — the app will try a different server.".to_string()
+            }
+        }
+        Code::Internal => {
+            // gRPC Internal may carry domain errors that the SDK failed to decode
+            // into structured ConsensusError. Inspect the message text as a workaround.
+            // TODO: replace with structured decoding when the SDK exposes it.
+            let msg = status.message().to_lowercase();
+            if msg.contains("already exists") || msg.contains("duplicate") {
+                "This object already exists on the network. Please verify your input and try a different value.".to_string()
+            } else {
+                "The Dash network returned an internal error. Please retry in a few moments."
+                    .to_string()
+            }
+        }
+        Code::DeadlineExceeded => {
+            "The operation took too long. Please retry — it often succeeds on the next attempt."
+                .to_string()
+        }
+        Code::Unauthenticated | Code::PermissionDenied => {
+            "Access was denied by the network server. Please retry — the app will try a different server.".to_string()
+        }
+        Code::ResourceExhausted => {
+            "The network server is overloaded. Please wait a moment and retry.".to_string()
+        }
+        _ => "Could not connect to the Dash network. Please retry in a few moments.".to_string(),
+    }
+}
+
+/// Produce a user-friendly message by inspecting the inner `DapiClientError`.
+///
+/// Delegates to [`grpc_status_user_message`] for gRPC transport errors and
+/// provides specific messages for address-exhaustion variants.
+fn dapi_client_error_user_message(error: &DapiClientError) -> String {
+    match error {
+        DapiClientError::Transport(TransportError::Grpc(status)) => {
+            grpc_status_user_message(status)
+        }
+        DapiClientError::NoAvailableAddresses => {
+            "No Dash network servers are configured. Please check your network settings."
+                .to_string()
+        }
+        DapiClientError::NoAvailableAddressesToRetry(_) => {
+            "All Dash network servers are temporarily unreachable. Please wait a minute and retry."
+                .to_string()
+        }
+        _ => "Could not connect to the Dash network. Please retry in a few moments.".to_string(),
+    }
+}
+
 /// Produce a user-friendly message by inspecting the SDK error variant.
 ///
 /// The returned text is shown in `MessageBanner` via `Display`.
@@ -662,10 +727,7 @@ fn sdk_error_user_message(error: &SdkError) -> String {
         SdkError::StaleNode(_) => {
             "The server you connected to is behind. Please retry — the app will pick a different server automatically.".to_string()
         }
-        SdkError::DapiClientError(_) => {
-            // TODO: inspect inner DapiClientError for connection refused vs TLS vs DNS.
-            "Could not connect to the Dash network. Please retry in a few moments.".to_string()
-        }
+        SdkError::DapiClientError(dapi_err) => dapi_client_error_user_message(dapi_err),
         SdkError::NoAvailableAddressesToRetry(_) => {
             "All Dash network servers are temporarily unreachable. Please wait a minute and retry.".to_string()
         }
@@ -715,6 +777,27 @@ impl From<dashcore_rpc::Error> for TaskError {
 
 impl From<SdkError> for TaskError {
     fn from(error: SdkError) -> Self {
+        // Check DapiClientError for domain errors carried as gRPC Internal status.
+        // The SDK's From<DapiClientError> decodes `dash-serialized-consensus-error-bin`
+        // metadata, but some platform errors arrive as plain Internal with descriptive
+        // message text only. This is a message-based workaround (see also #714 fallback).
+        if let SdkError::DapiClientError(DapiClientError::Transport(TransportError::Grpc(status))) =
+            &error
+            && status.code() == Code::Internal
+        {
+            let msg = status.message().to_lowercase();
+            if msg.contains("unique key") && msg.contains("already exists") {
+                return TaskError::DuplicateIdentityPublicKey {
+                    source_error: Box::new(error),
+                };
+            }
+            if msg.contains("duplicate") && msg.contains("identity") && msg.contains("key") {
+                return TaskError::DuplicateIdentityPublicKey {
+                    source_error: Box::new(error),
+                };
+            }
+        }
+
         enum ConsensusKind {
             DuplicateKey,
             DuplicateKeyId,
@@ -795,6 +878,8 @@ impl From<SdkError> for TaskError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dapi_client::DapiClientError;
+    use dash_sdk::dapi_client::transport::TransportError;
     use dash_sdk::dpp::consensus::basic::identity::InvalidInstantAssetLockProofSignatureError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_id_state_error::DuplicatedIdentityPublicKeyIdStateError;
     use dash_sdk::dpp::consensus::state::identity::duplicated_identity_public_key_state_error::DuplicatedIdentityPublicKeyStateError;
@@ -967,6 +1052,77 @@ mod tests {
     fn is_instant_lock_proof_invalid_rejects_unrelated_error() {
         let sdk_err = SdkError::Generic("connection timeout".to_string());
         assert!(!is_instant_lock_proof_invalid(&sdk_err));
+    }
+
+    #[test]
+    fn dapi_grpc_unavailable_timeout_message() {
+        let status = dash_sdk::dapi_grpc::tonic::Status::unavailable(
+            "tcp connect error: Connection timed out",
+        );
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("timed out"),
+            "Expected timeout message, got: {msg}"
+        );
+        assert!(
+            msg.contains("different server"),
+            "Expected retry hint, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn dapi_grpc_internal_unique_key_classifies_as_duplicate() {
+        let status = dash_sdk::dapi_grpc::tonic::Status::internal(
+            "storage: identity: a unique key with that hash already exists",
+        );
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::DuplicateIdentityPublicKey { .. }),
+            "Expected DuplicateIdentityPublicKey, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn dapi_grpc_internal_generic_message() {
+        let status = dash_sdk::dapi_grpc::tonic::Status::internal("something went wrong");
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("internal error"),
+            "Expected internal error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn dapi_grpc_deadline_exceeded_message() {
+        let status = dash_sdk::dapi_grpc::tonic::Status::deadline_exceeded("timeout");
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("took too long"),
+            "Expected deadline message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn dapi_no_available_addresses_message() {
+        let dapi_err = DapiClientError::NoAvailableAddresses;
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("configured") || msg.contains("settings"),
+            "Expected config message, got: {msg}"
+        );
     }
 
     #[test]

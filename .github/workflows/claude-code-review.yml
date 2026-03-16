@@ -1,5 +1,5 @@
 ---
-name: "Claude (label: claudius-review)"
+name: "Claude review (label: claudius-review)"
 
 "on":
   pull_request:
@@ -18,101 +18,15 @@ jobs:
         (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'claudius-review'))
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     permissions:
       contents: read
-      issues: write        # needed for gh pr edit --remove-label
+      issues: write
       pull-requests: write
       id-token: write
-    env:
-      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'opus' }}
-      REPORT_DIR: ${{ github.workspace }}/review-report
     steps:
-      - name: Check for OAuth token
-        env:
-          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK != '' }}
-        run: |
-          if [ "$HAS_TOKEN" != "true" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK secret not configured. Configure the CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK secret in your repository or organization settings."
-            exit 1
-          fi
-
-      - name: Checkout repository
-        uses: actions/checkout@v6
+      - name: Claudius Review
+        uses: lklimek/claudius-review-action@main
         with:
-          # We can diff so we need history
-          fetch-depth: 0
-
-      - name: Configure git to use HTTPS instead of SSH
-        run: git config --global url."https://github.com/".insteadOf "git@github.com:"
-
-      - name: Create review report directory
-        run: mkdir -p "$REPORT_DIR"
-
-      - name: Run Claude Code Review
-        id: claude-review
-        uses: anthropics/claude-code-action@v1
-        env:
-          GH_TOKEN: ${{ github.token }}
-        with:
-          use_sticky_comment: true
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
-          plugin_marketplaces: "https://github.com/lklimek/agents.git"
-          plugins: |
-            claudius@lklimek
-            claudash@lklimek
-          show_full_output: true
-          trigger_phrase: ""
-          prompt: |
-            You are reviewing PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
-            Base branch: ${{ github.event.pull_request.base.ref }}
-            Head branch: ${{ github.event.pull_request.head.ref }}
-            PR title: ${{ github.event.pull_request.title }}
-
-            MemCan is NOT available in CI — skip memcan:recall, memcan:lessons-learned, and all mcp__plugin_memcan_brain__* tools.
-            When spawning agents, instruct them to not use memcan tools.
-
-            Use MCP tools (mcp__plugin_claudius_github__*) for GitHub operations. If an MCP call fails, fall back to gh CLI.
-
-            Sub-agents have no conversation history —
-            pass all relevant PR context explicitly when spawning them.
-            Write all PR comments in Claudius persona — witty, confident, subtly snarky,
-            but always respectful and genuinely helpful, as if advising a trusted colleague.
-
-            Follow this review flow in order. Steps 1 and 2 MUST use the Skill tool —
-            do NOT skip them or perform their work manually.
-
-            1. Invoke Skill(skill="claudius:check-pr-comments") to check previous review comments.
-               For each thread that IS fixed but NOT yet resolved, reply describing the fix
-               and resolve the thread.
-            2. Invoke Skill(skill="claudius:grumpy-review") to perform a fresh code review.
-               This spawns parallel specialist agents and produces a consolidated report.
-               Do NOT review the code yourself — the skill handles the full pipeline.
-               Generate HTML format instead of markdown (use --format html in the render step).
-               Write the final report.json and report.html to $REPORT_DIR.
-            3. Post only MEDIUM severity and higher findings as new inline PR comments.
-            4. If no unresolved comments remain after the full flow, approve the PR.
-          claude_args: |
-            --agent claudius:claudius
-            --model ${{ env.CLAUDE_MODEL }}
-            --max-turns 150
-            --allowedTools "mcp__plugin_claudius_github,Read,Write,Edit,Glob,Grep,Agent,Skill,Task,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskOutput,SendMessage,Bash(gh pr *),Bash(gh api *),Bash(git diff *),Bash(git log *),Bash(git fetch *),Bash(git branch *),Bash(git rev-parse *),Bash(git show *),Bash(git pull *),Bash(git checkout *),Bash(git status),Bash(git status *),Bash(git remote *),Bash(git merge-base *),Bash(echo *),Bash(ls *),Bash(jq *),Bash(mkdir *),Bash(mktemp *),Bash(pwd *),Bash(*gh-resolve-review-threads.sh *),Bash(*gh-fetch-review-comments.sh *),Bash(*gh-fetch-reviews.sh *),Bash(*gh-list-review-threads.sh *),Bash(*gh-request-reviewer.sh *),Bash(*gh-post-review.sh *),Bash(*gh-pr-base-sha.sh *),Bash(*consolidate_reports.py *),Bash(*validate_report.py *),Bash(*generate_review_report.py *)"
-
-      - name: Upload review report
-        if: '!cancelled()'
-        uses: actions/upload-artifact@v4
-        with:
-          name: claude-review-report-pr-${{ github.event.pull_request.number }}
-          path: |
-            ${{ env.REPORT_DIR }}/report.json
-            ${{ env.REPORT_DIR }}/report.html
-          retention-days: 14
-          if-no-files-found: ignore
-
-      - name: Remove claudius-review label
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr edit "${{ github.event.pull_request.number }}" \
-            --remove-label "claudius-review" 2>/dev/null || true
+          claude_model: ${{ vars.CLAUDE_MODEL || 'opus' }}

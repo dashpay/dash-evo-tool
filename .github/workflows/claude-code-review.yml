@@ -31,5 +31,5 @@ jobs:
         uses: lklimek/claudius-review-action@main
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
-          memcan_url: ${{ secrets.MEMCAN_URL }}
+          memcan_url: ${{ vars.MEMCAN_URL }}
           memcan_api_key: ${{ secrets.MEMCAN_API_KEY }}

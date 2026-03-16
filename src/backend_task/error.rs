@@ -647,9 +647,10 @@ fn grpc_status_user_message(status: &dash_sdk::dapi_grpc::tonic::Status) -> Stri
     match status.code() {
         Code::Unavailable => {
             let msg = status.message().to_lowercase();
-            if msg.contains("timed out") || msg.contains("timeout") || msg.contains("connect error")
-            {
+            if msg.contains("timed out") || msg.contains("timeout") {
                 "Connection to a Dash network server timed out. Please retry — the app will try a different server.".to_string()
+            } else if msg.contains("connect error") || msg.contains("connection refused") {
+                "Could not reach a Dash network server. Please retry — the app will try a different server.".to_string()
             } else {
                 "A Dash network server is temporarily unavailable. Please retry — the app will try a different server.".to_string()
             }
@@ -1241,11 +1242,9 @@ mod tests {
         );
     }
 
-    /// Requirement: "connect error" substring in Unavailable message triggers the timeout-specific
-    /// path. Document this behavior so future readers understand the broad string match.
+    /// Requirement: "connect error" with connection-refused → "Could not reach" (not "timed out").
     #[test]
-    fn qa_dapi_grpc_unavailable_connect_error_substring_routes_to_timeout_path() {
-        // "connect error" as a substring matches the timeout branch even without "timed out"
+    fn qa_dapi_grpc_unavailable_connect_error_connection_refused() {
         let status = dash_sdk::dapi_grpc::tonic::Status::unavailable(
             "tcp connect error: connection refused",
         );
@@ -1253,10 +1252,13 @@ mod tests {
         let sdk_err = SdkError::DapiClientError(dapi_err);
         let err = TaskError::from(sdk_err);
         let msg = err.to_string();
-        // Current behavior: "connect error" → timeout message branch
         assert!(
-            msg.contains("timed out"),
-            "Expected connect-error to route to timeout message, got: {msg}"
+            msg.contains("Could not reach"),
+            "Expected 'Could not reach' message for connection refused, got: {msg}"
+        );
+        assert!(
+            !msg.contains("timed out"),
+            "Connection refused should NOT say 'timed out', got: {msg}"
         );
     }
 }

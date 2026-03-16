@@ -781,6 +781,8 @@ impl From<SdkError> for TaskError {
         // The SDK's From<DapiClientError> decodes `dash-serialized-consensus-error-bin`
         // metadata, but some platform errors arrive as plain Internal with descriptive
         // message text only. This is a message-based workaround (see also #714 fallback).
+        // NOTE: a malicious node could spoof these messages; no auth/data impact.
+        // TODO: replace with structured `dash-serialized-consensus-error-bin` decoding.
         if let SdkError::DapiClientError(DapiClientError::Transport(TransportError::Grpc(status))) =
             &error
             && status.code() == Code::Internal
@@ -1133,5 +1135,128 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("could not be verified instantly"));
         assert!(msg.contains("included in a block"));
+    }
+
+    // ─── QA-added tests (edge cases not covered by the 5 new tests) ───────────
+
+    /// Requirement: Unavailable without timeout keywords → generic "temporarily unavailable" message.
+    #[test]
+    fn qa_dapi_grpc_unavailable_non_timeout_message() {
+        let status = dash_sdk::dapi_grpc::tonic::Status::unavailable("service is down");
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("temporarily unavailable"),
+            "Expected unavailable message without timeout text, got: {msg}"
+        );
+        assert!(
+            msg.contains("different server"),
+            "Expected retry hint, got: {msg}"
+        );
+    }
+
+    /// Requirement: ResourceExhausted → "overloaded" message with retry hint.
+    #[test]
+    fn qa_dapi_grpc_resource_exhausted_message() {
+        let status = dash_sdk::dapi_grpc::tonic::Status::resource_exhausted("rate limit");
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("overloaded"),
+            "Expected overloaded message, got: {msg}"
+        );
+    }
+
+    /// Requirement: Unauthenticated → "access denied" message, not a generic connection error.
+    #[test]
+    fn qa_dapi_grpc_unauthenticated_message() {
+        let status = dash_sdk::dapi_grpc::tonic::Status::unauthenticated("invalid token");
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("denied") || msg.contains("Access"),
+            "Expected access denied message, got: {msg}"
+        );
+    }
+
+    /// Requirement: NoAvailableAddressesToRetry at DapiClientError level → "unreachable" message.
+    #[test]
+    fn qa_dapi_no_available_addresses_to_retry_message() {
+        let inner_status = dash_sdk::dapi_grpc::tonic::Status::unavailable("connection refused");
+        let inner_transport = TransportError::Grpc(inner_status);
+        let dapi_err = DapiClientError::NoAvailableAddressesToRetry(Box::new(inner_transport));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unreachable") || msg.contains("unavailable"),
+            "Expected unreachable message, got: {msg}"
+        );
+        assert!(
+            msg.contains("retry") || msg.contains("wait"),
+            "Expected retry hint, got: {msg}"
+        );
+    }
+
+    /// Requirement: gRPC Internal with "already exists" (but NOT "unique key") should produce a
+    /// domain-specific user message. Must not expose raw gRPC message fragments.
+    #[test]
+    fn qa_dapi_grpc_internal_already_exists_no_raw_grpc_in_message() {
+        let status =
+            dash_sdk::dapi_grpc::tonic::Status::internal("storage: document: already exists");
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        // Must not expose gRPC storage prefix
+        assert!(
+            !msg.contains("storage:"),
+            "Must not expose gRPC storage prefix in user message, got: {msg}"
+        );
+        // Must be a user-friendly message
+        assert!(
+            msg.contains("already exists") || msg.contains("internal error"),
+            "Expected domain message, got: {msg}"
+        );
+    }
+
+    /// Requirement: gRPC Internal with "duplicate" but NOT "identity" AND "key" should NOT
+    /// classify as DuplicateIdentityPublicKey — that variant is specific to identity keys.
+    #[test]
+    fn qa_dapi_grpc_internal_duplicate_without_identity_key_stays_sdk_error() {
+        let status = dash_sdk::dapi_grpc::tonic::Status::internal("duplicate document found");
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        // "duplicate document" must NOT classify as DuplicateIdentityPublicKey
+        assert!(
+            !matches!(err, TaskError::DuplicateIdentityPublicKey { .. }),
+            "DuplicateIdentityPublicKey should only be set for identity key duplicates, got: {err:?}"
+        );
+    }
+
+    /// Requirement: "connect error" substring in Unavailable message triggers the timeout-specific
+    /// path. Document this behavior so future readers understand the broad string match.
+    #[test]
+    fn qa_dapi_grpc_unavailable_connect_error_substring_routes_to_timeout_path() {
+        // "connect error" as a substring matches the timeout branch even without "timed out"
+        let status = dash_sdk::dapi_grpc::tonic::Status::unavailable(
+            "tcp connect error: connection refused",
+        );
+        let dapi_err = DapiClientError::Transport(TransportError::Grpc(status));
+        let sdk_err = SdkError::DapiClientError(dapi_err);
+        let err = TaskError::from(sdk_err);
+        let msg = err.to_string();
+        // Current behavior: "connect error" → timeout message branch
+        assert!(
+            msg.contains("timed out"),
+            "Expected connect-error to route to timeout message, got: {msg}"
+        );
     }
 }

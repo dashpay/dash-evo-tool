@@ -1,5 +1,5 @@
 ---
-name: "Claude (label: claudius-review)"
+name: "Claude review (label: claudius-review)"
 
 "on":
   pull_request:
@@ -18,7 +18,7 @@ jobs:
         (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'claudius-review'))
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     permissions:
       contents: read
       issues: write
@@ -26,7 +26,7 @@ jobs:
       id-token: write
     steps:
       - name: Claudius Review
-        uses: lklimek/claudius-review-action@feat/composite-action
+        uses: lklimek/claudius-review-action@main
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_LKLIMEK }}
           claude_model: ${{ vars.CLAUDE_MODEL || 'opus' }}

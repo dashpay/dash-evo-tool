@@ -389,6 +389,27 @@ impl AppContext {
                 DerivationPathReference::BIP44,
                 DerivationPathType::CLEAR_FUNDS,
             )),
+            AccountType::ProviderVotingKeys => Some((
+                DerivationPathReference::ProviderVotingKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderOwnerKeys => Some((
+                DerivationPathReference::ProviderOwnerKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderOperatorKeys => Some((
+                DerivationPathReference::ProviderOperatorKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            AccountType::ProviderPlatformKeys => Some((
+                DerivationPathReference::ProviderPlatformNodeKeys,
+                DerivationPathType::CLEAR_FUNDS,
+            )),
+            // BlockchainIdentities addresses are bootstrapped by DET directly
+            // (not via SDK WalletManager accounts) and registered with SPV
+            // through register_spv_address() during wallet bootstrap. Other
+            // account types (CoinJoin, DashPay, PlatformPayment, AssetLock*)
+            // are either not yet supported or operate off-chain.
             _ => None,
         }
     }

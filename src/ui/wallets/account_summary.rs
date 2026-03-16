@@ -137,10 +137,8 @@ impl AccountCategory {
     }
 
     /// Returns true if this account category is primarily used for key
-    /// derivation and proofs rather than holding funds. Actual balances are
-    /// still displayed when available; this flag controls zero-balance filter
-    /// behavior (key-only addresses are always shown) and account dropdown
-    /// label formatting.
+    /// derivation and proofs rather than holding funds. Used for account
+    /// dropdown label formatting.
     pub fn is_key_only(&self) -> bool {
         matches!(
             self,

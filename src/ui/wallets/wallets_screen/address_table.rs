@@ -206,13 +206,7 @@ impl WalletsBalancesScreen {
 
         if !self.show_zero_balance_addresses {
             address_data.retain(|data| {
-                let is_platform_payment = data.account_category == AccountCategory::PlatformPayment;
-                // Key-only addresses (identity, provider) are always shown regardless of
-                // balance because they represent important wallet structure — hiding them
-                // when empty would make these accounts appear non-existent.
-                if data.account_category.is_key_only() {
-                    true
-                } else if is_platform_payment {
+                if data.account_category == AccountCategory::PlatformPayment {
                     data.platform_credits > 0
                 } else {
                     data.balance > 0

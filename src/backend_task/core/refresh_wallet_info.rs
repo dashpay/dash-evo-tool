@@ -103,8 +103,10 @@ impl AppContext {
         }
 
         // Step 6: Load transaction history from Core RPC (skip in SPV mode)
-        let rpc_transactions: Vec<WalletTransaction> = if is_spv_mode {
-            Vec::new()
+        // None = skip update (SPV mode or RPC failure), Some = replace DB/in-memory state
+        let mut tx_truncated = false;
+        let rpc_transactions: Option<Vec<WalletTransaction>> = if is_spv_mode {
+            None
         } else {
             let wallet_address_set: HashSet<Address> = addresses.iter().cloned().collect();
 
@@ -121,6 +123,7 @@ impl AppContext {
             match client.list_transactions(None, Some(200), None, Some(true)) {
                 Ok(list_results) => {
                     if list_results.len() >= 200 {
+                        tx_truncated = true;
                         tracing::warn!(
                             "list_transactions returned 200 entries — transaction history may be truncated"
                         );
@@ -133,6 +136,10 @@ impl AppContext {
                         let amount_sat = entry.detail.amount.to_sat();
                         let fee_sat = entry.detail.fee.map(|f| f.to_sat().unsigned_abs());
 
+                        // Safety: list_transactions targets a wallet-scoped RPC endpoint
+                        // (/wallet/<name>), so all entries belong to this wallet. Send
+                        // entries are included unconditionally because outgoing transactions
+                        // may reference external addresses not in our known set.
                         let entry_involves_wallet = entry
                             .detail
                             .address
@@ -186,17 +193,18 @@ impl AppContext {
 
                     let mut wallet_txs = Vec::new();
                     for (txid, agg) in tx_aggregates {
-                        let raw_tx = match client.get_raw_transaction(&txid, None) {
-                            Ok(tx) => tx,
-                            Err(e) => {
-                                tracing::debug!(
-                                    ?e,
-                                    %txid,
-                                    "get_raw_transaction failed, skipping"
-                                );
-                                continue;
-                            }
-                        };
+                        let raw_tx =
+                            match client.get_raw_transaction(&txid, agg.block_hash.as_ref()) {
+                                Ok(tx) => tx,
+                                Err(e) => {
+                                    tracing::debug!(
+                                        ?e,
+                                        %txid,
+                                        "get_raw_transaction failed, skipping"
+                                    );
+                                    continue;
+                                }
+                            };
 
                         wallet_txs.push(WalletTransaction {
                             txid,
@@ -215,11 +223,11 @@ impl AppContext {
                         rpc_transactions = wallet_txs.len(),
                         "loaded transaction history from Core RPC"
                     );
-                    wallet_txs
+                    Some(wallet_txs)
                 }
                 Err(e) => {
                     tracing::debug!(?e, "list_transactions failed, skipping transaction load");
-                    Vec::new()
+                    None
                 }
             }
         };
@@ -274,9 +282,9 @@ impl AppContext {
 
         // Step 11: Persist transactions to database BEFORE the write lock so we
         // can move (not clone) rpc_transactions into the wallet afterwards.
-        if !rpc_transactions.is_empty() {
+        if let Some(ref txs) = rpc_transactions {
             self.db
-                .replace_wallet_transactions(&seed_hash, &self.network, &rpc_transactions)?;
+                .replace_wallet_transactions(&seed_hash, &self.network, txs)?;
         }
 
         // Step 12: Update wallet IN-MEMORY state only (brief write lock, no I/O)
@@ -331,8 +339,8 @@ impl AppContext {
                 tracing::info!("Removed {} stale asset locks", stale_count);
             }
 
-            if !rpc_transactions.is_empty() {
-                wallet_guard.set_transactions(rpc_transactions);
+            if let Some(txs) = rpc_transactions {
+                wallet_guard.set_transactions(txs);
             }
 
             wallet_guard.update_spv_balances(total_balance, 0, total_balance);
@@ -354,6 +362,15 @@ impl AppContext {
         self.db
             .update_wallet_balances(&seed_hash, total_balance, 0, total_balance)?;
 
-        Ok(BackendTaskSuccessResult::RefreshedWallet { warning: None })
+        let warning = if tx_truncated {
+            Some(
+                "Transaction history may be incomplete. Only the most recent 200 entries are shown."
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+
+        Ok(BackendTaskSuccessResult::RefreshedWallet { warning })
     }
 }

@@ -226,7 +226,6 @@ impl ShieldCreditsScreen {
                     async move {
                         *stage.lock().unwrap() = ShieldStage::BuildingProof { nonce };
 
-                        // build_shield_credit is sync (CPU-bound proof generation)
                         let result = tokio::task::spawn_blocking(move || {
                             bundle::build_shield_credit(
                                 &app_ctx,
@@ -238,8 +237,8 @@ impl ShieldCreditsScreen {
                             )
                         })
                         .await
-                        .map_err(|e| format!("Build task panicked: {e}"))
-                        .and_then(|r| r);
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r.map_err(|e| e.to_string()));
 
                         match &result {
                             Ok(_) => {

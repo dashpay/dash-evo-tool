@@ -1,3 +1,4 @@
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState};
@@ -19,7 +20,7 @@ pub async fn sync_notes(
     seed_hash: &WalletSeedHash,
     shielded_state: &mut ShieldedWalletState,
     network: Network,
-) -> Result<(u32, u64), String> {
+) -> Result<(u32, u64), TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let network_str = network.to_string();
@@ -37,7 +38,9 @@ pub async fn sync_notes(
 
     let result = sync_shielded_notes(&sdk, &prepared_ivk, aligned_start, None)
         .await
-        .map_err(|e| format!("Failed to sync shielded notes: {e}"))?;
+        .map_err(|e| TaskError::ShieldedSyncFailed {
+            detail: e.to_string(),
+        })?;
 
     tracing::info!(
         "Sync complete: total_scanned={}, decrypted={}, next_start_index={}",
@@ -55,11 +58,14 @@ pub async fn sync_notes(
             continue; // already appended in a previous sync
         }
 
-        let cmx_bytes: [u8; 32] = raw_note
-            .cmx
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Invalid cmx length")?;
+        let cmx_bytes: [u8; 32] =
+            raw_note
+                .cmx
+                .as_slice()
+                .try_into()
+                .map_err(|_| TaskError::ShieldedSyncFailed {
+                    detail: "Invalid cmx length".into(),
+                })?;
 
         let is_ours = result
             .decrypted_notes
@@ -76,7 +82,9 @@ pub async fn sync_notes(
             .lock()
             .unwrap()
             .append(cmx_bytes, retention)
-            .map_err(|e| format!("Failed to append note to tree: {e}"))?;
+            .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
+                detail: e.to_string(),
+            })?;
 
         appended += 1;
     }
@@ -88,7 +96,9 @@ pub async fn sync_notes(
             .lock()
             .unwrap()
             .checkpoint(checkpoint_id)
-            .map_err(|e| format!("Failed to checkpoint tree: {e}"))?;
+            .map_err(|e| TaskError::ShieldedTreeUpdateFailed {
+                detail: e.to_string(),
+            })?;
     }
 
     // Persist and record decrypted notes that are new (position >= already_have).

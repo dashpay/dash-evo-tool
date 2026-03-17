@@ -1,3 +1,4 @@
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::ShieldedWalletState;
@@ -15,7 +16,7 @@ pub async fn check_nullifiers(
     seed_hash: &WalletSeedHash,
     shielded_state: &mut ShieldedWalletState,
     network: Network,
-) -> Result<u32, String> {
+) -> Result<u32, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
     let network_str = network.to_string();
@@ -54,7 +55,9 @@ pub async fn check_nullifiers(
             last_sync_timestamp,
         )
         .await
-        .map_err(|e| format!("Nullifier sync failed: {e}"))?;
+        .map_err(|e| TaskError::ShieldedNullifierSyncFailed {
+            detail: e.to_string(),
+        })?;
 
     // Mark found (spent) nullifiers
     let mut spent_count = 0u32;

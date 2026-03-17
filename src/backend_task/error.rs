@@ -592,6 +592,66 @@ pub enum TaskError {
         "This identity does not have a key for signing documents. Please add an authentication key."
     )]
     NoDocumentSigningKey,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Shielded pool errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// No unspent shielded notes are available.
+    #[error("You have no shielded funds available. Please shield some credits first.")]
+    ShieldedNoUnspentNotes,
+
+    /// Insufficient shielded balance to cover the requested amount.
+    #[error(
+        "Insufficient shielded balance: you have {available} credits but need {required}. Please shield more credits."
+    )]
+    ShieldedInsufficientBalance { available: u64, required: u64 },
+
+    /// The platform address was not found in the wallet's platform address info.
+    #[error("The platform address could not be found in your wallet. Please refresh and retry.")]
+    PlatformAddressNotFound,
+
+    /// A Merkle witness could not be obtained for a shielded note.
+    #[error("Could not prepare the shielded transaction. Please sync your notes and retry.")]
+    ShieldedMerkleWitnessUnavailable { detail: String },
+
+    /// Failed to build a shielded state transition (shield, transfer, unshield, withdrawal).
+    #[error("Could not build the shielded transaction. Please retry.")]
+    ShieldedTransitionBuildFailed { detail: String },
+
+    /// Failed to broadcast a shielded state transition.
+    #[error(
+        "Could not broadcast the shielded transaction. Please check your connection and retry."
+    )]
+    ShieldedBroadcastFailed {
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
+
+    /// Invalid recipient address for shielded transfer.
+    #[error("The recipient shielded address is invalid. Please check the address and retry.")]
+    ShieldedInvalidRecipientAddress,
+
+    /// Timed out waiting for asset lock proof during shield-from-asset-lock.
+    #[error(
+        "The funding transaction was not confirmed within 5 minutes. Please check your network connection and retry."
+    )]
+    ShieldedAssetLockTimeout,
+
+    /// Failed to sync shielded notes from the platform.
+    #[error(
+        "Could not sync shielded notes from the platform. Please check your connection and retry."
+    )]
+    ShieldedSyncFailed { detail: String },
+
+    /// Failed to append or checkpoint the shielded commitment tree.
+    #[error(
+        "Could not update the local shielded data. Please check available disk space and retry."
+    )]
+    ShieldedTreeUpdateFailed { detail: String },
+
+    /// Nullifier sync failed.
+    #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
+    ShieldedNullifierSyncFailed { detail: String },
 }
 
 /// Returns `true` when the SDK error indicates an invalid instant asset lock

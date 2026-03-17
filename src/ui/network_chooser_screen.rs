@@ -2002,9 +2002,7 @@ impl NetworkChooserScreen {
             "Sync complete".to_string()
         } else {
             match progress.state() {
-                SyncState::Initializing | SyncState::WaitingForConnections => {
-                    "Connecting to peers".to_string()
-                }
+                SyncState::WaitingForConnections => "Connecting to peers".to_string(),
                 SyncState::WaitForEvents => "Querying peer heights".to_string(),
                 SyncState::Error => "Sync error".to_string(),
                 SyncState::Syncing | SyncState::Synced => "Syncing...".to_string(),

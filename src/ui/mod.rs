@@ -1669,6 +1669,12 @@ impl ScreenLike for Screen {
             Screen::DashPayContactInfoEditorScreen(screen) => screen.display_task_error(error),
             Screen::DashPayQRGeneratorScreen(screen) => screen.display_task_error(error),
             Screen::DashPayProfileSearchScreen(screen) => screen.display_task_error(error),
+
+            // Shielded Screens
+            Screen::ShieldCreditsScreen(screen) => screen.display_task_error(error),
+            Screen::ShieldFromAssetLockScreen(screen) => screen.display_task_error(error),
+            Screen::ShieldedSendScreen(screen) => screen.display_task_error(error),
+            Screen::UnshieldCreditsScreen(screen) => screen.display_task_error(error),
         }
     }
 

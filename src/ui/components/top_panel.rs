@@ -6,9 +6,7 @@ use crate::context::connection_status::OverallConnectionState;
 use crate::spv::CoreBackendMode;
 use crate::ui::ScreenType;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
-use egui::{
-    Align2, Context, FontId, Frame, Margin, RichText, Stroke, TextureHandle, TopBottomPanel, Ui,
-};
+use egui::{Align2, Context, FontId, Frame, Margin, RichText, TextureHandle, TopBottomPanel, Ui};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
 use tracing::error;

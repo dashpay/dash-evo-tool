@@ -3,7 +3,7 @@ use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::ShieldedWalletState;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::platform::nullifier_sync::NullifierSyncConfig;
+use dash_sdk::platform::shielded::nullifier_sync::{NullifierSyncCheckpoint, NullifierSyncConfig};
 use std::sync::Arc;
 
 /// Check which unspent notes have been spent on-chain using the SDK's
@@ -36,24 +36,17 @@ pub async fn check_nullifiers(
     let last_height = shielded_state.last_nullifier_sync_height;
     let last_timestamp = shielded_state.last_nullifier_sync_timestamp;
 
-    let last_sync_height = if last_height > 0 {
-        Some(last_height)
-    } else {
-        None
-    };
-    let last_sync_timestamp = if last_timestamp > 0 {
-        Some(last_timestamp)
+    let last_sync = if last_height > 0 || last_timestamp > 0 {
+        Some(NullifierSyncCheckpoint {
+            height: last_height,
+            timestamp: last_timestamp,
+        })
     } else {
         None
     };
 
     let result = sdk
-        .sync_nullifiers(
-            &unspent_nullifiers,
-            None::<NullifierSyncConfig>,
-            last_sync_height,
-            last_sync_timestamp,
-        )
+        .sync_nullifiers(&unspent_nullifiers, None::<NullifierSyncConfig>, last_sync)
         .await
         .map_err(|e| TaskError::ShieldedNullifierSyncFailed {
             detail: e.to_string(),

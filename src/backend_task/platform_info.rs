@@ -695,7 +695,9 @@ impl AppContext {
                             PlatformInfoTaskResult::TextResult(formatted),
                         ))
                     }
-                    Err(e) => Err(format!("Failed to fetch shielded pool state: {}", e)),
+                    Err(e) => Err(TaskError::ShieldedSyncFailed {
+                        detail: format!("Failed to fetch shielded pool state: {}", e),
+                    }),
                 }
             }
             PlatformInfoTaskRequestType::FetchAddressBalance(address_string) => {

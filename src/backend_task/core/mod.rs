@@ -23,15 +23,15 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
+use dash_sdk::dpp::key_wallet::account::ECDSAAddressDerivation;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::{FeeLevel, FeeRate};
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::{
     BuilderError, TransactionBuilder,
 };
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletId, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -631,7 +631,7 @@ impl AppContext {
     ) -> Result<Transaction, TaskError> {
         const FALLBACK_STEP: u64 = 100;
 
-        let network = self.wallet_network_key();
+        let _network = self.wallet_network_key();
         let current_height = self
             .spv_manager()
             .status()
@@ -647,53 +647,83 @@ impl AppContext {
             .ok_or_else(|| TaskError::WalletPaymentFailed {
                 detail: "Cannot build transaction: SPV sync height is not yet known".to_string(),
             })?;
-        const MAX_FEE_ITERATIONS: usize = 50;
 
         let total_amount: u64 = recipients.iter().map(|(_, amt)| *amt).sum();
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;
 
-        // Obtain change address once before the retry loop to avoid marking
-        // multiple addresses as used on failed fee-adjustment attempts.
-        let change_result = wm
-            .get_change_address(
-                wallet_id,
-                DEFAULT_BIP44_ACCOUNT_INDEX,
-                AccountTypePreference::BIP44,
-                true,
-            )
-            .map_err(|e| TaskError::WalletPaymentFailed {
-                detail: format!("Failed to get change address: {e}"),
-            })?;
-        let change_address =
-            change_result
-                .address
+        // Get UTXOs and change address from the wallet account
+        let (utxos, change_index) = {
+            let managed_info =
+                wm.get_wallet_info(wallet_id)
+                    .ok_or_else(|| TaskError::WalletPaymentFailed {
+                        detail: "Wallet info unavailable".to_string(),
+                    })?;
+            let account = managed_info
+                .accounts()
+                .standard_bip44_accounts
+                .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
                 .ok_or_else(|| TaskError::WalletPaymentFailed {
-                    detail: "No change address generated".to_string(),
+                    detail: "BIP44 account missing".to_string(),
                 })?;
 
-        for _ in 0..MAX_FEE_ITERATIONS {
+            let utxos: Vec<_> = account.utxos.values().cloned().collect();
+            let change_index = account.get_next_change_address_index().unwrap_or(0);
+            (utxos, change_index)
+        };
+
+        let wallet = wm
+            .get_wallet(wallet_id)
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "Wallet object not found".to_string(),
+            })?;
+        let wallet_account = wallet
+            .accounts
+            .standard_bip44_accounts
+            .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
+            .ok_or_else(|| TaskError::WalletPaymentFailed {
+                detail: "BIP44 wallet account missing".to_string(),
+            })?;
+        let change_addr = wallet_account
+            .derive_change_address(change_index)
+            .map_err(|e| TaskError::WalletPaymentFailed {
+                detail: format!("Failed to derive change address: {e}"),
+            })?;
+
+        loop {
             let scaled_recipients: Vec<(Address, u64)> = recipients
                 .iter()
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
                 .collect();
 
-            match Self::build_unsigned_payment_tx(
-                wm,
-                wallet_id,
-                DEFAULT_BIP44_ACCOUNT_INDEX,
-                scaled_recipients,
-                current_height,
-                &change_address,
-            ) {
+            let build_result = (|| -> Result<Transaction, BuilderError> {
+                let mut builder = TransactionBuilder::new()
+                    .set_fee_rate(FeeRate::normal())
+                    .set_change_address(change_addr.clone());
+
+                for (addr, amt) in &scaled_recipients {
+                    builder = builder.add_output(addr, *amt)?;
+                }
+
+                builder = builder.select_inputs(
+                    &utxos,
+                    SelectionStrategy::LargestFirst,
+                    current_height,
+                    |_| None, // No private keys for unsigned tx
+                )?;
+
+                builder.build()
+            })();
+
+            match build_result {
                 Ok(tx) => return Ok(tx),
-                Err(WalletError::InsufficientFunds) if request.subtract_fee_from_amount => {
+                Err(BuilderError::InsufficientFunds { .. }) if request.subtract_fee_from_amount => {
                     let next_scale = if !attempted_fallback {
                         attempted_fallback = true;
                         let fallback_amount = self.estimate_fallback_amount(
                             wm,
                             wallet_id,
-                            network,
+                            _network,
                             DEFAULT_BIP44_ACCOUNT_INDEX,
                             current_height,
                         )?;
@@ -718,10 +748,6 @@ impl AppContext {
                 }
             }
         }
-
-        Err(TaskError::WalletPaymentFailed {
-            detail: "Could not build transaction after maximum fee adjustment attempts".to_string(),
-        })
     }
 
     fn estimate_fallback_amount(
@@ -763,59 +789,6 @@ impl AppContext {
         let estimated_size = Self::estimate_p2pkh_tx_size(spendable_inputs, 1);
         let fee = FeeRate::normal().calculate_fee(estimated_size);
         Ok(spendable_total.saturating_sub(fee))
-    }
-
-    /// Build an unsigned payment transaction using TransactionBuilder.
-    fn build_unsigned_payment_tx(
-        wm: &mut WalletManager<ManagedWalletInfo>,
-        wallet_id: &WalletId,
-        account_index: u32,
-        recipients: Vec<(Address, u64)>,
-        current_height: u32,
-        change_address: &Address,
-    ) -> Result<Transaction, WalletError> {
-        // Get spendable UTXOs from the managed wallet info
-        let managed_info = wm
-            .get_wallet_info(wallet_id)
-            .ok_or(WalletError::WalletNotFound(*wallet_id))?;
-        let collection = managed_info.accounts();
-        let account = collection
-            .standard_bip44_accounts
-            .get(&account_index)
-            .ok_or(WalletError::AccountNotFound(account_index))?;
-
-        let all_utxos: Vec<_> = account.utxos.values().cloned().collect();
-        if all_utxos.is_empty() {
-            return Err(WalletError::InsufficientFunds);
-        }
-
-        // Build the transaction using TransactionBuilder
-        let mut builder = TransactionBuilder::new()
-            .set_fee_level(FeeLevel::Normal)
-            .set_change_address(change_address.clone());
-
-        for (address, amount) in recipients {
-            builder = builder
-                .add_output(&address, amount)
-                .map_err(|e: BuilderError| WalletError::TransactionBuild(e.to_string()))?;
-        }
-
-        builder = builder
-            .select_inputs(
-                &all_utxos,
-                SelectionStrategy::OptimalConsolidation,
-                current_height,
-                |_| None, // No private keys for unsigned transaction
-            )
-            // TODO(RUST-002): String-based error classification — see #660
-            .map_err(|e: BuilderError| match e.to_string() {
-                msg if msg.contains("Insufficient") => WalletError::InsufficientFunds,
-                msg => WalletError::TransactionBuild(msg),
-            })?;
-
-        builder
-            .build()
-            .map_err(|e: BuilderError| WalletError::TransactionBuild(e.to_string()))
     }
 
     fn sign_spv_transaction(

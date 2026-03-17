@@ -9,14 +9,25 @@ use dash_sdk::dpp::address_funds::{
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::shielded::builder::{
-    SpendableNote, build_shield_transition, build_shielded_transfer_transition,
+    OrchardProver, SpendableNote, build_shield_transition, build_shielded_transfer_transition,
     build_shielded_withdrawal_transition, build_unshield_transition,
 };
 use dash_sdk::dpp::withdrawal::Pooling;
-use dash_sdk::grovedb_commitment_tree::{Nullifier, PaymentAddress};
+use dash_sdk::grovedb_commitment_tree::{Nullifier, PaymentAddress, ProvingKey};
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+
+/// Wrapper around a cached `ProvingKey` that implements `OrchardProver`.
+struct CachedProver {
+    key: &'static ProvingKey,
+}
+
+impl OrchardProver for CachedProver {
+    fn proving_key(&self) -> &ProvingKey {
+        self.key
+    }
+}
 
 /// Progress stage for a shield credits operation (used by batch UI).
 #[derive(Clone, Debug)]
@@ -79,8 +90,10 @@ pub fn build_shield_credit(
 ) -> Result<dash_sdk::dpp::state_transition::StateTransition, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let proving_key = get_proving_key();
-    let recipient_addr = payment_address_to_orchard(recipient_payment_address);
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
+    let recipient_addr = payment_address_to_orchard(recipient_payment_address)?;
 
     let wallet_arc = {
         let wallets = app_context.wallets.read().unwrap();
@@ -104,7 +117,7 @@ pub fn build_shield_credit(
         fee_strategy,
         &*wallet,
         0,
-        proving_key,
+        &prover,
         [0u8; 36],
         sdk.version(),
     )
@@ -128,9 +141,11 @@ pub async fn shield_credits(
 ) -> Result<(), TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let proving_key = get_proving_key();
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
 
-    let recipient_addr = payment_address_to_orchard(recipient_payment_address);
+    let recipient_addr = payment_address_to_orchard(recipient_payment_address)?;
 
     let wallet_arc = {
         let wallets = app_context.wallets.read().unwrap();
@@ -177,7 +192,7 @@ pub async fn shield_credits(
             fee_strategy,
             &*wallet,
             0,
-            proving_key,
+            &prover,
             [0u8; 36],
             sdk.version(),
         )
@@ -211,12 +226,15 @@ pub async fn shielded_transfer(
 ) -> Result<Vec<Nullifier>, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let proving_key = get_proving_key();
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
 
     let recipient_bytes: [u8; 43] = recipient_address_bytes
         .try_into()
         .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
-    let recipient_addr = OrchardAddress::from_raw_bytes(&recipient_bytes);
+    let recipient_addr = OrchardAddress::from_raw_bytes(&recipient_bytes)
+        .map_err(|_| TaskError::ShieldedInvalidRecipientAddress)?;
 
     let (spendable_notes, _total_value) = select_notes_for_amount(shielded_state, amount)?;
 
@@ -250,7 +268,7 @@ pub async fn shielded_transfer(
         (spends, anchor)
     };
 
-    let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address);
+    let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
     let state_transition = build_shielded_transfer_transition(
         spends,
@@ -260,8 +278,9 @@ pub async fn shielded_transfer(
         &shielded_state.keys.fvk,
         &shielded_state.keys.ask,
         anchor,
-        proving_key,
+        &prover,
         [0u8; 36],
+        None,
         sdk.version(),
     )
     .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
@@ -289,7 +308,9 @@ pub async fn unshield_credits(
 ) -> Result<Vec<Nullifier>, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let proving_key = get_proving_key();
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
 
     let (spendable_notes, _total_value) = select_notes_for_amount(shielded_state, amount)?;
 
@@ -323,7 +344,7 @@ pub async fn unshield_credits(
         (spends, anchor)
     };
 
-    let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address);
+    let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
     let state_transition = build_unshield_transition(
         spends,
@@ -333,8 +354,9 @@ pub async fn unshield_credits(
         &shielded_state.keys.fvk,
         &shielded_state.keys.ask,
         anchor,
-        proving_key,
+        &prover,
         [0u8; 36],
+        None,
         sdk.version(),
     )
     .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
@@ -512,7 +534,8 @@ pub async fn shield_from_asset_lock(
     // Step 7: Build and broadcast the shield-from-asset-lock transition
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let recipient = payment_address_to_orchard(&shielded_state.keys.default_address);
+    let recipient = payment_address_to_orchard(&shielded_state.keys.default_address)?;
+    let prover = CachedProver { key: proving_key };
 
     let shield_amount_credits =
         amount_duffs
@@ -527,8 +550,7 @@ pub async fn shield_from_asset_lock(
         shield_amount_credits,
         asset_lock_proof,
         asset_lock_private_key.inner.as_ref(),
-        0,
-        proving_key,
+        &prover,
         [0u8; 36],
         sdk.version(),
     )
@@ -557,7 +579,9 @@ pub async fn shielded_withdrawal(
 ) -> Result<Vec<Nullifier>, TaskError> {
     let sdk = { app_context.sdk.load().as_ref().clone() };
 
-    let proving_key = get_proving_key();
+    let prover = CachedProver {
+        key: get_proving_key(),
+    };
 
     let output_script = CoreScript::from_bytes(to_core_address.script_pubkey().to_bytes());
 
@@ -592,7 +616,7 @@ pub async fn shielded_withdrawal(
         (spends, anchor)
     };
 
-    let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address);
+    let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
     let state_transition = build_shielded_withdrawal_transition(
         spends,
@@ -604,8 +628,9 @@ pub async fn shielded_withdrawal(
         &shielded_state.keys.fvk,
         &shielded_state.keys.ask,
         anchor,
-        proving_key,
+        &prover,
         [0u8; 36],
+        None,
         sdk.version(),
     )
     .map_err(|e| TaskError::ShieldedTransitionBuildFailed {
@@ -658,7 +683,7 @@ fn select_notes_for_amount(
 }
 
 /// Convert a PaymentAddress to an OrchardAddress for the builder functions.
-fn payment_address_to_orchard(addr: &PaymentAddress) -> OrchardAddress {
+fn payment_address_to_orchard(addr: &PaymentAddress) -> Result<OrchardAddress, TaskError> {
     let raw = addr.to_raw_address_bytes();
-    OrchardAddress::from_raw_bytes(&raw)
+    OrchardAddress::from_raw_bytes(&raw).map_err(|_| TaskError::ShieldedInvalidRecipientAddress)
 }

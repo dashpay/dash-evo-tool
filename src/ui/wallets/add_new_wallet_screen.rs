@@ -185,7 +185,7 @@ impl AddNewWalletScreen {
                 ExtendedPrivKey::new_master(self.app_context.network, &seed)
                     .expect("Failed to create master ECDSA extended private key");
             let bip44_root_derivation_path: DerivationPath = match self.app_context.network {
-                Network::Dash => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
+                Network::Mainnet => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
                 _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
             };
             let secp = Secp256k1::new();
@@ -218,7 +218,7 @@ impl AddNewWalletScreen {
 
             if let Some(ref address) = first_address {
                 let full_derivation_path = DerivationPath::from(match self.app_context.network {
-                    Network::Dash => [
+                    Network::Mainnet => [
                         DASH_BIP44_ACCOUNT_0_PATH_MAINNET[0],
                         DASH_BIP44_ACCOUNT_0_PATH_MAINNET[1],
                         DASH_BIP44_ACCOUNT_0_PATH_MAINNET[2],
@@ -319,7 +319,7 @@ impl AddNewWalletScreen {
             // Save the first address to database
             if let Some(ref address) = first_address {
                 let full_derivation_path = DerivationPath::from(match self.app_context.network {
-                    Network::Dash => [
+                    Network::Mainnet => [
                         DASH_BIP44_ACCOUNT_0_PATH_MAINNET[0],
                         DASH_BIP44_ACCOUNT_0_PATH_MAINNET[1],
                         DASH_BIP44_ACCOUNT_0_PATH_MAINNET[2],

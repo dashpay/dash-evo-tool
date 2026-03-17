@@ -360,7 +360,7 @@ impl ConnectionStatus {
         local_chainlock: &Option<ChainLock>,
     ) {
         let online = match network {
-            Network::Dash => mainnet_chainlock.is_some(),
+            Network::Mainnet => mainnet_chainlock.is_some(),
             Network::Testnet => testnet_chainlock.is_some(),
             Network::Devnet => devnet_chainlock.is_some(),
             Network::Regtest => local_chainlock.is_some(),

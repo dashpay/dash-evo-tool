@@ -33,7 +33,7 @@ use std::sync::{Arc, RwLock};
 fn networks_address_compatible(a: &Network, b: &Network) -> bool {
     matches!(
         (a, b),
-        (Network::Dash, Network::Dash)
+        (Network::Mainnet, Network::Mainnet)
             | (
                 Network::Testnet | Network::Devnet | Network::Regtest,
                 Network::Testnet | Network::Devnet | Network::Regtest,
@@ -115,7 +115,7 @@ pub trait DerivationPathHelpers {
 
 pub(crate) fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
     let coin_type = match network {
-        Network::Dash => 5,
+        Network::Mainnet => 5,
         _ => 1,
     };
     let components = path.as_ref();
@@ -152,7 +152,7 @@ impl DerivationPathHelpers for DerivationPath {
 
     fn is_asset_lock_funding(&self, network: Network) -> bool {
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         let components = self.as_ref();
@@ -181,7 +181,7 @@ impl DerivationPathHelpers for DerivationPath {
     /// Check if this path is a DIP-17 Platform payment path: m/9'/coin_type'/17'/account'/key_class'/index
     fn is_platform_payment(&self, network: Network) -> bool {
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         let components = self.as_ref();
@@ -200,7 +200,7 @@ impl DerivationPathHelpers for DerivationPath {
         index: u32,
     ) -> DerivationPath {
         let coin_type = match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         };
         DerivationPath::from(vec![
@@ -1306,7 +1306,7 @@ impl Wallet {
 
     fn coin_type(network: Network) -> u32 {
         match network {
-            Network::Dash => 5,
+            Network::Mainnet => 5,
             _ => 1,
         }
     }
@@ -2053,7 +2053,7 @@ impl Signer<PlatformAddress> for Wallet {
         // 3. get_platform_address_private_key will only succeed for the correct network
         // 4. Only one network's derivation will match the wallet's seed
         let private_key = self
-            .get_platform_address_private_key(platform_address, Network::Dash)
+            .get_platform_address_private_key(platform_address, Network::Mainnet)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| {
@@ -2082,7 +2082,7 @@ impl Signer<PlatformAddress> for Wallet {
         // The Signer trait doesn't pass network info, so we try each network.
         // This is safe - see comment in sign() above for explanation.
         let private_key = self
-            .get_platform_address_private_key(platform_address, Network::Dash)
+            .get_platform_address_private_key(platform_address, Network::Mainnet)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| {
@@ -2106,7 +2106,7 @@ impl Signer<PlatformAddress> for Wallet {
         }
 
         // Check if we have the private key for this address
-        self.get_platform_address_private_key(platform_address, Network::Dash)
+        self.get_platform_address_private_key(platform_address, Network::Mainnet)
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Testnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Devnet))
             .or_else(|_| self.get_platform_address_private_key(platform_address, Network::Regtest))
@@ -3028,7 +3028,7 @@ mod tests {
             ChildNumber::Normal { index: 0 },
             ChildNumber::Normal { index: 0 },
         ]);
-        assert!(path.is_bip44(Network::Dash));
+        assert!(path.is_bip44(Network::Mainnet));
         assert!(!path.is_bip44(Network::Testnet));
     }
 
@@ -3043,7 +3043,7 @@ mod tests {
         ]);
         assert!(path.is_bip44(Network::Testnet));
         assert!(path.is_bip44(Network::Devnet));
-        assert!(!path.is_bip44(Network::Dash));
+        assert!(!path.is_bip44(Network::Mainnet));
     }
 
     #[test]
@@ -3082,7 +3082,7 @@ mod tests {
             ChildNumber::Normal { index: 0 },
         ]);
         assert!(path.is_asset_lock_funding(Network::Testnet));
-        assert!(!path.is_asset_lock_funding(Network::Dash));
+        assert!(!path.is_asset_lock_funding(Network::Mainnet));
     }
 
     #[test]
@@ -3096,7 +3096,7 @@ mod tests {
             ChildNumber::Normal { index: 0 },
         ]);
         assert!(path.is_platform_payment(Network::Testnet));
-        assert!(!path.is_platform_payment(Network::Dash));
+        assert!(!path.is_platform_payment(Network::Mainnet));
     }
 
     #[test]
@@ -3175,7 +3175,7 @@ mod tests {
 
     #[test]
     fn test_networks_address_compatible() {
-        assert!(networks_address_compatible(&Network::Dash, &Network::Dash));
+        assert!(networks_address_compatible(&Network::Mainnet, &Network::Mainnet));
         assert!(networks_address_compatible(
             &Network::Testnet,
             &Network::Testnet
@@ -3189,12 +3189,12 @@ mod tests {
             &Network::Regtest
         ));
         assert!(!networks_address_compatible(
-            &Network::Dash,
+            &Network::Mainnet,
             &Network::Testnet
         ));
         assert!(!networks_address_compatible(
             &Network::Testnet,
-            &Network::Dash
+            &Network::Mainnet
         ));
     }
 

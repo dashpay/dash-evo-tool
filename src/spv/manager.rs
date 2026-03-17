@@ -1333,7 +1333,7 @@ impl SpvManager {
 
         let host = config.core_host.as_str();
         let port = match self.network {
-            Network::Dash => 9999,
+            Network::Mainnet => 9999,
             Network::Testnet => 19999,
             Network::Devnet => 20001,
             Network::Regtest => 19899,
@@ -1351,7 +1351,7 @@ fn build_spv_data_dir(network: Network, config: &NetworkConfig) -> Result<PathBu
     fs::create_dir_all(&base).map_err(|e| format!("Failed to create SPV base dir: {e}"))?;
 
     let network_dir = match network {
-        Network::Dash => "mainnet".to_string(),
+        Network::Mainnet => "mainnet".to_string(),
         Network::Testnet => "testnet".to_string(),
         Network::Devnet => {
             let name = config

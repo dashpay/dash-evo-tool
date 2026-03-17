@@ -18,7 +18,7 @@ qrcode = "0.14.1"
 nix = { version = "0.31.1", features = ["signal"] }
 eframe = { version = "0.33.3", features = ["persistence", "wgpu"] }
 base64 = "0.22.1"
-dash-sdk = { git = "https://github.com/dashpay/platform", rev = "89c75ded905be3489dc9688cb5b6b8e0a21ab185", features = [
+dash-sdk = { path = "../platform/packages/rs-sdk", features = [
     "core_key_wallet",
     "core_key_wallet_manager",
     "core_bincode",
@@ -27,6 +27,7 @@ dash-sdk = { git = "https://github.com/dashpay/platform", rev = "89c75ded905be34
     "core_rpc_client",
     "core_spv",
 ] }
+platform-wallet = { path = "../platform/packages/rs-platform-wallet" }
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"
 thiserror = "2.0.18"
@@ -108,3 +109,19 @@ check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"
+
+# Override the git dashcore crates with local versions (since the platform
+# workspace uses `git = "https://github.com/dashpay/rust-dashcore"` for its
+# dashcore deps and we have local changes in rust-dashcore).
+[patch."https://github.com/dashpay/rust-dashcore"]
+dashcore = { path = "../rust-dashcore/dash" }
+dash-spv = { path = "../rust-dashcore/dash-spv" }
+key-wallet = { path = "../rust-dashcore/key-wallet" }
+key-wallet-manager = { path = "../rust-dashcore/key-wallet-manager" }
+dashcore-rpc = { path = "../rust-dashcore/rpc-client" }
+dashcore-rpc-json = { path = "../rust-dashcore/rpc-json" }
+
+# dashcore_hashes is published on crates.io but we need the local version
+# to match our local dashcore changes.
+[patch.crates-io]
+dashcore_hashes = { path = "../rust-dashcore/hashes" }

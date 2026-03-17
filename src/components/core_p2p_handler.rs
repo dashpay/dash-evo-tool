@@ -88,7 +88,7 @@ enum ReadMessageError {
 impl CoreP2PHandler {
     pub fn new(network: Network, use_port: Option<u16>) -> Result<CoreP2PHandler, P2PError> {
         let port = use_port.unwrap_or(match network {
-            Network::Dash => 9999,
+            Network::Mainnet => 9999,
             Network::Testnet => 19999,
             Network::Devnet => 29999,
             Network::Regtest => 29999,
@@ -190,7 +190,7 @@ impl CoreP2PHandler {
         // QRInfo on mainnet can take noticeably longer to prepare.
         // Temporarily increase socket read timeout and our overall wait.
         let (socket_timeout, overall_timeout) = match self.network {
-            Network::Dash => (Duration::from_secs(60), Duration::from_secs(60)),
+            Network::Mainnet => (Duration::from_secs(60), Duration::from_secs(60)),
             _ => (Duration::from_secs(15), Duration::from_secs(15)),
         };
         let previous_socket_timeout = self.stream.read_timeout()?;

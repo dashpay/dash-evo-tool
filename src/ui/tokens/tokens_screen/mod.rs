@@ -3262,7 +3262,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3575,7 +3575,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);
@@ -3702,7 +3702,7 @@ mod tests {
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
-            network: Network::Dash,
+            network: Network::Mainnet,
         };
 
         token_creator_ui.selected_identity = Some(mock_identity);

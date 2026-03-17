@@ -37,7 +37,30 @@ use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
+
+/// Wrapper to assert that a future is `Send`.
+///
+/// This is safe when the future only borrows owned data that lives within
+/// the same `async` block (e.g. a cloned `Sdk` or `Arc<AppContext>`).
+/// The compiler cannot prove `Send` in these cases due to higher-ranked
+/// trait-bound (HRTB) limitations with `async fn` that take references.
+struct AssertSend<F>(F);
+// SAFETY: The futures wrapped here only borrow data owned by the enclosing
+// `async move` block (`sdk: Sdk`, `this: Arc<AppContext>`). Those values are
+// `Send` and live for the entire duration of the future, so the borrows are
+// safe to send across threads.
+unsafe impl<F: Future> Send for AssertSend<F> {}
+impl<F: Future> Future for AssertSend<F> {
+    type Output = F::Output;
+    fn poll(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Self::Output> {
+        // SAFETY: We are not moving the inner future, just projecting the pin.
+        unsafe { self.map_unchecked_mut(|s| &mut s.0) }.poll(cx)
+    }
+}
 use tokens::TokenTask;
 use grovestark::GroveSTARKTask;
 
@@ -284,84 +307,94 @@ impl BackendTaskSuccessResult {}
 
 impl AppContext {
     /// Run backend tasks sequentially
-    pub async fn run_backend_tasks_sequential(
+    pub fn run_backend_tasks_sequential(
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Vec<Result<BackendTaskSuccessResult, TaskError>> {
-        let mut results = Vec::new();
-        for task in tasks {
-            match self.run_backend_task(task, sender.clone()).await {
-                Ok(result) => results.push(Ok(result)),
-                Err(e) => results.push(Err(e)),
-            };
-        }
-        results
+    ) -> Pin<Box<dyn Future<Output = Vec<Result<BackendTaskSuccessResult, TaskError>>> + Send>> {
+        let this = Arc::clone(self);
+        Box::pin(async move {
+            let mut results = Vec::new();
+            for task in tasks {
+                match this.run_backend_task(task, sender.clone()).await {
+                    Ok(result) => results.push(Ok(result)),
+                    Err(e) => results.push(Err(e)),
+                };
+            }
+            results
+        })
     }
 
     /// Run backend tasks concurrently
-    pub async fn run_backend_tasks_concurrent(
+    pub fn run_backend_tasks_concurrent(
         self: &Arc<Self>,
         tasks: Vec<BackendTask>,
         sender: SenderAsync<TaskResult>,
-    ) -> Vec<Result<BackendTaskSuccessResult, TaskError>> {
-        let futures = tasks
-            .into_iter()
-            .map(|task| {
-                let cloned_self = Arc::clone(self);
-                let cloned_sender = sender.clone();
-                async move { cloned_self.run_backend_task(task, cloned_sender).await }
-            })
-            .collect::<Vec<_>>();
+    ) -> Pin<Box<dyn Future<Output = Vec<Result<BackendTaskSuccessResult, TaskError>>> + Send>> {
+        let this = Arc::clone(self);
+        Box::pin(async move {
+            let futures = tasks
+                .into_iter()
+                .map(|task| {
+                    let cloned_self = Arc::clone(&this);
+                    let cloned_sender = sender.clone();
+                    async move { cloned_self.run_backend_task(task, cloned_sender).await }
+                })
+                .collect::<Vec<_>>();
 
-        // Wait for all to finish before returning
-        join_all(futures).await
+            join_all(futures).await
+        })
     }
 
-    pub async fn run_backend_task(
+    pub fn run_backend_task(
         self: &Arc<Self>,
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let sdk = self.sdk.load().as_ref().clone();
-        match task {
-            BackendTask::ContractTask(contract_task) => {
-                Ok(self.run_contract_task(*contract_task, &sdk, sender).await?)
+    ) -> Pin<Box<dyn Future<Output = Result<BackendTaskSuccessResult, TaskError>> + Send>> {
+        let this = Arc::clone(self);
+        Box::pin(AssertSend(async move {
+            let sdk = this.sdk.load().as_ref().clone();
+            match task {
+                BackendTask::ContractTask(contract_task) => {
+                    Ok(this.run_contract_task(*contract_task, &sdk, sender).await?)
+                }
+                BackendTask::ContestedResourceTask(contested_resource_task) => Ok(this
+                    .run_contested_resource_task(contested_resource_task, &sdk, sender)
+                    .await?),
+                BackendTask::IdentityTask(identity_task) => {
+                    Ok(this.run_identity_task(identity_task, &sdk, sender).await?)
+                }
+                BackendTask::DocumentTask(document_task) => {
+                    Ok(this.run_document_task(*document_task, &sdk).await?)
+                }
+                BackendTask::CoreTask(core_task) => Ok(this.run_core_task(core_task).await?),
+                BackendTask::DashPayTask(dashpay_task) => {
+                    Ok(this.run_dashpay_task(*dashpay_task, &sdk).await?)
+                }
+                BackendTask::BroadcastStateTransition(state_transition) => Ok(this
+                    .broadcast_state_transition(state_transition, &sdk)
+                    .await?),
+                BackendTask::TokenTask(token_task) => {
+                    Ok(this.run_token_task(*token_task, &sdk, sender).await?)
+                }
+                BackendTask::SystemTask(system_task) => {
+                    Ok(this.run_system_task(system_task, sender).await?)
+                }
+                BackendTask::MnListTask(mnlist_task) => {
+                    Ok(mnlist::run_mnlist_task(&this, mnlist_task).await?)
+                }
+                BackendTask::PlatformInfo(platform_info_task) => Ok(this
+                    .run_platform_info_task(platform_info_task, &sdk)
+                    .await?),
+                BackendTask::GroveSTARKTask(grovestark_task) => {
+                    Ok(grovestark::run_grovestark_task(grovestark_task, &sdk).await?)
+                }
+                BackendTask::WalletTask(wallet_task) => {
+                    Ok(this.run_wallet_task(wallet_task).await?)
+                }
+                BackendTask::None => Ok(BackendTaskSuccessResult::None),
             }
-            BackendTask::ContestedResourceTask(contested_resource_task) => Ok(self
-                .run_contested_resource_task(contested_resource_task, &sdk, sender)
-                .await?),
-            BackendTask::IdentityTask(identity_task) => {
-                Ok(self.run_identity_task(identity_task, &sdk, sender).await?)
-            }
-            BackendTask::DocumentTask(document_task) => {
-                Ok(self.run_document_task(*document_task, &sdk).await?)
-            }
-            BackendTask::CoreTask(core_task) => Ok(self.run_core_task(core_task).await?),
-            BackendTask::DashPayTask(dashpay_task) => {
-                Ok(self.run_dashpay_task(*dashpay_task, &sdk).await?)
-            }
-            BackendTask::BroadcastStateTransition(state_transition) => Ok(self
-                .broadcast_state_transition(state_transition, &sdk)
-                .await?),
-            BackendTask::TokenTask(token_task) => {
-                Ok(self.run_token_task(*token_task, &sdk, sender).await?)
-            }
-            BackendTask::SystemTask(system_task) => {
-                Ok(self.run_system_task(system_task, sender).await?)
-            }
-            BackendTask::MnListTask(mnlist_task) => {
-                Ok(mnlist::run_mnlist_task(self, mnlist_task).await?)
-            }
-            BackendTask::PlatformInfo(platform_info_task) => Ok(self
-                .run_platform_info_task(platform_info_task, &sdk)
-                .await?),
-            BackendTask::GroveSTARKTask(grovestark_task) => {
-                Ok(grovestark::run_grovestark_task(grovestark_task, &sdk).await?)
-            }
-            BackendTask::WalletTask(wallet_task) => Ok(self.run_wallet_task(wallet_task).await?),
-            BackendTask::None => Ok(BackendTaskSuccessResult::None),
-        }
+        }))
     }
 
     async fn run_wallet_task(

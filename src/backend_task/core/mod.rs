@@ -22,11 +22,15 @@ use dash_sdk::dpp::dashcore::{
 };
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
+use dash_sdk::dpp::key_wallet::account::ECDSAAddressDerivation;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::{
+    BuilderError, TransactionBuilder,
+};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletId, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -507,7 +511,7 @@ impl AppContext {
     ) -> Result<Transaction, String> {
         const FALLBACK_STEP: u64 = 100;
 
-        let network = self.wallet_network_key();
+        let _network = self.wallet_network_key();
         let current_height = self
             .spv_manager()
             .status()
@@ -525,28 +529,70 @@ impl AppContext {
         let mut scale_factor = 1.0f64;
         let mut attempted_fallback = false;
 
+        // Get UTXOs and change address from the wallet account
+        let (utxos, change_index) = {
+            let managed_info = wm
+                .get_wallet_info(wallet_id)
+                .ok_or_else(|| "Wallet info unavailable".to_string())?;
+            let account = managed_info
+                .accounts()
+                .standard_bip44_accounts
+                .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
+                .ok_or_else(|| "BIP44 account missing".to_string())?;
+
+            let utxos: Vec<_> = account.utxos.values().cloned().collect();
+            let change_index = account.get_next_change_address_index().unwrap_or(0);
+            (utxos, change_index)
+        };
+
+        let wallet = wm
+            .get_wallet(wallet_id)
+            .ok_or_else(|| "Wallet object not found".to_string())?;
+        let wallet_account = wallet
+            .accounts
+            .standard_bip44_accounts
+            .get(&DEFAULT_BIP44_ACCOUNT_INDEX)
+            .ok_or_else(|| "BIP44 wallet account missing".to_string())?;
+        let change_addr = wallet_account
+            .derive_change_address(change_index)
+            .map_err(|e| format!("Failed to derive change address: {e}"))?;
+
         loop {
             let scaled_recipients: Vec<(Address, u64)> = recipients
                 .iter()
                 .map(|(addr, amt)| (addr.clone(), (*amt as f64 * scale_factor) as u64))
                 .collect();
 
-            match wm.create_unsigned_payment_transaction(
-                wallet_id,
-                DEFAULT_BIP44_ACCOUNT_INDEX,
-                Some(AccountTypePreference::BIP44),
-                scaled_recipients,
-                FeeLevel::Normal,
-                current_height,
-            ) {
+            let build_result = (|| -> Result<Transaction, BuilderError> {
+                let mut builder = TransactionBuilder::new()
+                    .set_fee_rate(FeeRate::normal())
+                    .set_change_address(change_addr.clone());
+
+                for (addr, amt) in &scaled_recipients {
+                    builder = builder.add_output(addr, *amt)?;
+                }
+
+                builder = builder.select_inputs(
+                    &utxos,
+                    SelectionStrategy::LargestFirst,
+                    current_height,
+                    |_| None, // No private keys for unsigned tx
+                )?;
+
+                builder.build()
+            })();
+
+            match build_result {
                 Ok(tx) => return Ok(tx),
-                Err(WalletError::InsufficientFunds) if request.subtract_fee_from_amount => {
+                Err(BuilderError::InsufficientFunds { .. })
+                    if request.subtract_fee_from_amount =>
+                {
                     let next_scale = if !attempted_fallback {
                         attempted_fallback = true;
                         let fallback_amount = self.estimate_fallback_amount(
                             wm,
                             wallet_id,
-                            network,
+                            _network,
                             DEFAULT_BIP44_ACCOUNT_INDEX,
                             current_height,
                         )?;
@@ -600,7 +646,7 @@ impl AppContext {
         }
 
         let estimated_size = Self::estimate_p2pkh_tx_size(spendable_inputs, 1);
-        let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
+        let fee = FeeRate::normal().calculate_fee(estimated_size);
         Ok(spendable_total.saturating_sub(fee))
     }
 

@@ -3,7 +3,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::grovedb_commitment_tree::{Position, Retention};
-use dash_sdk::shielded::sync_shielded_notes;
+use dash_sdk::platform::shielded::sync_shielded_notes;
 use std::sync::Arc;
 
 /// Server-enforced chunk size — start_index must be a multiple of this.

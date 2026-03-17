@@ -12,7 +12,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use chrono::{DateTime, Utc};
-use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeLevel;
+use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::sync::{Arc, RwLock};
@@ -152,7 +152,7 @@ impl SingleKeyWalletSendScreen {
             // No valid amounts entered yet, show estimate for minimum tx
             let output_count = self.recipients.len().max(1) + 1;
             let estimated_size = Self::estimate_p2pkh_tx_size(1, output_count);
-            let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
+            let fee = FeeRate::normal().calculate_fee(estimated_size);
             return Some((fee, 1, estimated_size));
         }
 
@@ -172,7 +172,7 @@ impl SingleKeyWalletSendScreen {
 
             // Recalculate fee with current input count
             let current_size = Self::estimate_p2pkh_tx_size(selected_count, output_count);
-            let current_fee = FeeLevel::Normal.fee_rate().calculate_fee(current_size);
+            let current_fee = FeeRate::normal().calculate_fee(current_size);
 
             if selected_total >= total_output + current_fee {
                 return Some((current_fee, selected_count, current_size));
@@ -181,7 +181,7 @@ impl SingleKeyWalletSendScreen {
 
         // Not enough funds - show what we'd need with all UTXOs
         let estimated_size = Self::estimate_p2pkh_tx_size(selected_count, output_count);
-        let fee = FeeLevel::Normal.fee_rate().calculate_fee(estimated_size);
+        let fee = FeeRate::normal().calculate_fee(estimated_size);
         Some((fee, selected_count, estimated_size))
     }
 

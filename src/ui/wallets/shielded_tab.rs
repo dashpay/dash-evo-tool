@@ -341,7 +341,7 @@ impl ShieldedTabView {
         // Payment address (bech32m encoded: dash1z... or tdash1z...)
         let address_str = {
             let states = self.app_context.shielded_states.lock().unwrap();
-            states.get(&self.seed_hash).map(|state| {
+            states.get(&self.seed_hash).and_then(|state| {
                 use dash_sdk::dpp::address_funds::OrchardAddress;
                 use dash_sdk::grovedb_commitment_tree::Scope;
                 let addr = state
@@ -349,8 +349,8 @@ impl ShieldedTabView {
                     .fvk
                     .address_at(self.selected_address_index, Scope::External);
                 let raw = addr.to_raw_address_bytes();
-                let orchard_addr = OrchardAddress::from_raw_bytes(&raw);
-                orchard_addr.to_bech32m_string(self.app_context.network)
+                let orchard_addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
+                Some(orchard_addr.to_bech32m_string(self.app_context.network))
             })
         };
 

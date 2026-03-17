@@ -23,7 +23,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_t
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -38,7 +38,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Context, Ui};
 use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
@@ -613,16 +613,12 @@ impl ScreenLike for MintTokensScreen {
                     ));
                 } else {
                     ui.horizontal(|ui| {
-                        ui.label("Public note (optional):");
+                        ui.label("Public note (optional):").info_tooltip(
+                            "A note about the transaction that can be seen by the public.",
+                        );
                         ui.add_space(10.0);
                         let mut txt = self.public_note.clone().unwrap_or_default();
-                        if ui
-                            .text_edit_singleline(&mut txt)
-                            .on_hover_text(
-                                "A note about the transaction that can be seen by the public.",
-                            )
-                            .changed()
-                        {
+                        if ui.text_edit_singleline(&mut txt).changed() {
                             self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                         }
                     });
@@ -684,12 +680,7 @@ impl ScreenLike for MintTokensScreen {
                 // Mint button
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);
-                    let button =
-                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(DashColors::ACTION_BUTTON_BLUE)
-                            .corner_radius(3.0);
-
-                    if ui.add(button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, button_text).clicked() {
                         let msg = format!(
                             "Are you sure you want to mint {} tokens to {}?",
                             self.amount.clone().unwrap_or(Amount::new(0, 0)),

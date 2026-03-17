@@ -6,6 +6,7 @@ mod single_key_view;
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
@@ -14,12 +15,15 @@ use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
+use crate::ui::components::selection_dialog::{SelectionDialog, SelectionStatus};
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::wallets::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
@@ -89,8 +93,7 @@ pub struct WalletsBalancesScreen {
     rename_input: String,
     wallet_unlock_popup: WalletUnlockPopup,
     show_sk_unlock_dialog: bool,
-    sk_wallet_password: String,
-    sk_show_password: bool,
+    sk_password_input: PasswordInput,
     remove_wallet_dialog: Option<ConfirmationDialog>,
     pending_wallet_removal: Option<WalletSeedHash>,
     pending_wallet_removal_alias: Option<String>,
@@ -121,6 +124,20 @@ pub struct WalletsBalancesScreen {
     shielded_tab_view: Option<ShieldedTabView>,
     /// Cached platform sync info: (last_sync_timestamp, last_sync_height)
     platform_sync_info: Option<(u64, u64)>,
+    /// Core wallet selection dialog (shown when auto-detection fails)
+    core_wallet_dialog: Option<SelectionDialog>,
+    /// Seed/key hash of the wallet pending Core wallet selection
+    pending_core_wallet_seed_hash: Option<[u8; 32]>,
+    /// Core wallet options for the pending selection
+    pending_core_wallet_options: Option<Vec<String>>,
+    /// Whether the pending Core wallet selection is for a single-key wallet
+    pending_core_wallet_is_single_key: bool,
+    /// Whether we need to fire a ListCoreWallets backend task (set on CoreWalletNotConfigured error)
+    pending_list_core_wallets: bool,
+    /// Wallet hash pending the ListCoreWallets response
+    pending_list_wallet_hash: Option<[u8; 32]>,
+    /// Whether the wallet pending list is a single-key wallet
+    pending_list_is_single_key: bool,
 }
 
 impl WalletsBalancesScreen {
@@ -195,8 +212,7 @@ impl WalletsBalancesScreen {
             rename_input: String::new(),
             wallet_unlock_popup: WalletUnlockPopup::new(),
             show_sk_unlock_dialog: false,
-            sk_wallet_password: String::new(),
-            sk_show_password: false,
+            sk_password_input: PasswordInput::new().with_hint_text("Enter password"),
             remove_wallet_dialog: None,
             pending_wallet_removal: None,
             pending_wallet_removal_alias: None,
@@ -217,6 +233,13 @@ impl WalletsBalancesScreen {
             selected_tab: WalletViewTab::default(),
             shielded_tab_view: None,
             platform_sync_info,
+            core_wallet_dialog: None,
+            pending_core_wallet_seed_hash: None,
+            pending_core_wallet_options: None,
+            pending_core_wallet_is_single_key: false,
+            pending_list_core_wallets: false,
+            pending_list_wallet_hash: None,
+            pending_list_is_single_key: false,
         }
     }
 
@@ -238,6 +261,60 @@ impl WalletsBalancesScreen {
             .app_context
             .db
             .update_selected_single_key_hash(hash.as_ref());
+    }
+
+    /// Persist the selected Core wallet name to the DB and in-memory wallet.
+    ///
+    /// Returns `Ok(())` on success or `Err` with a user-facing message on failure.
+    fn apply_core_wallet_selection(
+        &mut self,
+        wallet_hash: &[u8; 32],
+        wallet_name: &str,
+        is_single_key: bool,
+    ) -> Result<(), String> {
+        if !is_single_key {
+            match self
+                .app_context
+                .db
+                .set_wallet_core_wallet_name(wallet_hash, Some(wallet_name))
+            {
+                Ok(false) => {
+                    return Err("Wallet not found in database".to_string());
+                }
+                Err(e) => {
+                    return Err(format!("Failed to save Dash Core wallet: {e}"));
+                }
+                Ok(true) => {}
+            }
+            if let Ok(wallets) = self.app_context.wallets.read()
+                && let Some(w) = wallets.get(wallet_hash)
+                && let Ok(mut guard) = w.write()
+            {
+                guard.core_wallet_name = Some(wallet_name.to_string());
+            }
+        } else {
+            match self
+                .app_context
+                .db
+                .set_single_key_wallet_core_wallet_name(wallet_hash, Some(wallet_name))
+            {
+                Ok(false) => {
+                    return Err("Wallet not found in database".to_string());
+                }
+                Err(e) => {
+                    return Err(format!("Failed to save Dash Core wallet: {e}"));
+                }
+                Ok(true) => {}
+            }
+            if let Ok(skw) = self.app_context.single_key_wallets.read()
+                && let Some(w) = skw.get(wallet_hash)
+                && let Ok(mut guard) = w.write()
+            {
+                guard.core_wallet_name = Some(wallet_name.to_string());
+            }
+        }
+
+        Ok(())
     }
 
     /// Refresh the cached platform sync info from the database.
@@ -344,6 +421,12 @@ impl WalletsBalancesScreen {
 
         self.selected_account = None;
         self.platform_sync_info = None;
+    }
+
+    pub(crate) fn reset_pending_list_state(&mut self) {
+        self.pending_list_core_wallets = false;
+        self.pending_list_wallet_hash = None;
+        self.pending_list_is_single_key = false;
     }
 
     fn add_receiving_address(&mut self) {
@@ -1164,10 +1247,10 @@ impl WalletsBalancesScreen {
                             let full_txid = tx.txid.to_string();
                             ui.horizontal(|ui| {
                                 let response = ui.label(RichText::new(&full_txid).monospace());
-                                response.on_hover_text(&full_txid);
+                                response.info_tooltip(&full_txid);
                                 if ui
                                     .small_button("Copy")
-                                    .on_hover_text("Copy transaction ID")
+                                    .clickable_tooltip("Copy transaction ID")
                                     .clicked()
                                 {
                                     let _ = copy_text_to_clipboard(&full_txid);
@@ -1805,10 +1888,12 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // Rename dialog
         if self.show_rename_dialog {
-            egui::Window::new("Rename Wallet")
+            let window_response = egui::Window::new("Rename Wallet")
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
+                    let dark_mode = ui.ctx().style().visuals.dark_mode;
                     ui.vertical(|ui| {
                         ui.label("Enter new wallet name:");
                         ui.add_space(5.0);
@@ -1821,7 +1906,16 @@ impl ScreenLike for WalletsBalancesScreen {
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            if ui.button("Save").clicked() {
+                            if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
+                                .clicked()
+                            {
+                                self.show_rename_dialog = false;
+                                self.rename_input.clear();
+                            }
+
+                            ui.add_space(8.0);
+
+                            if ComponentStyles::add_primary_button(ui, "Save").clicked() {
                                 // Limit the alias length to 64 characters
                                 if self.rename_input.len() > 64 {
                                     self.rename_input.truncate(64);
@@ -1863,14 +1957,16 @@ impl ScreenLike for WalletsBalancesScreen {
                                 self.show_rename_dialog = false;
                                 self.rename_input.clear();
                             }
-
-                            if ui.button("Cancel").clicked() {
-                                self.show_rename_dialog = false;
-                                self.rename_input.clear();
-                            }
                         });
                     });
                 });
+
+            if let Some(ref resp) = window_response
+                && clicked_outside_window(ctx, resp.response.rect)
+            {
+                self.show_rename_dialog = false;
+                self.rename_input.clear();
+            }
         }
 
         // HD Wallet unlock popup
@@ -1956,6 +2052,7 @@ impl ScreenLike for WalletsBalancesScreen {
             egui::Window::new("Unlock Wallet")
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {
                         if let Some(wallet_arc) = &self.selected_single_key_wallet
@@ -1972,46 +2069,37 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         ui.add_space(10.0);
 
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
                         let mut attempt_unlock = false;
 
-                        ui.horizontal(|ui| {
-                            let password_input = ui.add(
-                                egui::TextEdit::singleline(&mut self.sk_wallet_password)
-                                    .password(!self.sk_show_password)
-                                    .hint_text("Enter password")
-                                    .desired_width(250.0)
-                                    .text_color(DashColors::text_primary(dark_mode))
-                                    .background_color(DashColors::input_background(dark_mode)),
-                            );
+                        let pw_response = self.sk_password_input.show(ui);
 
-                            if password_input.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                            {
-                                attempt_unlock = true;
-                            }
-                        });
-
-                        ui.add_space(5.0);
-
-                        ui.checkbox(&mut self.sk_show_password, "Show Password");
+                        if pw_response.response.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            attempt_unlock = true;
+                        }
 
                         ui.add_space(10.0);
 
                         ui.horizontal(|ui| {
-                            if ui.button("Unlock").clicked() {
-                                attempt_unlock = true;
+                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode)
+                                .clicked()
+                            {
+                                close_dialog = true;
                             }
 
-                            if ui.button("Cancel").clicked() {
-                                close_dialog = true;
+                            ui.add_space(8.0);
+
+                            if ComponentStyles::add_primary_button(ui, "Unlock").clicked() {
+                                attempt_unlock = true;
                             }
                         });
 
                         if attempt_unlock {
                             if let Some(wallet_arc) = &self.selected_single_key_wallet {
                                 let mut wallet = wallet_arc.write().unwrap();
-                                let unlock_result = wallet.open(&self.sk_wallet_password);
+                                let unlock_result = wallet.open(self.sk_password_input.text());
 
                                 match unlock_result {
                                     Ok(_) => {
@@ -2022,7 +2110,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     }
                                 }
                             }
-                            self.sk_wallet_password.clear();
+                            self.sk_password_input.clear();
                         }
 
                         // Error display is handled by the global MessageBanner.
@@ -2031,7 +2119,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
             if close_dialog {
                 self.show_sk_unlock_dialog = false;
-                self.sk_wallet_password.clear();
+                self.sk_password_input.clear();
                 // Check if we were trying to refresh the SK wallet
                 if self.pending_refresh_after_unlock {
                     self.pending_refresh_after_unlock = false;
@@ -2110,6 +2198,64 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
+        // Dispatch the async ListCoreWallets task if pending
+        if self.pending_list_core_wallets {
+            self.pending_list_core_wallets = false;
+            action |= AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
+        }
+
+        // Show Core wallet selection dialog if active
+        if let Some(dialog) = self.core_wallet_dialog.as_mut()
+            && let Some(status) = dialog.show_modal(ctx)
+        {
+            self.core_wallet_dialog = None;
+            match status {
+                SelectionStatus::Selected(idx) => {
+                    if let Some(wallet_hash) = self.pending_core_wallet_seed_hash.take()
+                        && let Some(wallets) = self.pending_core_wallet_options.take()
+                        && let Some(wallet_name) = wallets.get(idx).cloned()
+                    {
+                        let is_single_key = self.pending_core_wallet_is_single_key;
+                        match self.apply_core_wallet_selection(
+                            &wallet_hash,
+                            &wallet_name,
+                            is_single_key,
+                        ) {
+                            Ok(()) => {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    format!(
+                                        "Dash Core wallet '{}' assigned — refreshing wallet. If you were performing another operation, please retry it.",
+                                        wallet_name
+                                    ),
+                                    MessageType::Success,
+                                );
+                                self.refresh();
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    ctx,
+                                    "Failed to save Dash Core wallet",
+                                    MessageType::Error,
+                                )
+                                .with_details(e);
+                            }
+                        }
+                    }
+                }
+                SelectionStatus::Canceled => {
+                    self.pending_core_wallet_seed_hash = None;
+                    self.pending_core_wallet_options = None;
+                    self.pending_core_wallet_is_single_key = false;
+                    MessageBanner::set_global(
+                        ctx,
+                        "Dash Core wallet not selected. Some operations may fail until a wallet is assigned.",
+                        MessageType::Info,
+                    );
+                }
+            }
+        }
+
         // Combine with pending refresh action
         action |= pending_refresh_action;
         action
@@ -2117,8 +2263,10 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn display_message(&mut self, message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // Always clear refreshing — the originating task is done regardless of result type.
+        self.refreshing = false;
+
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.refreshing = false;
             self.asset_lock_search_banner.take_and_clear();
 
             // If the fund platform dialog is processing, show error in the dialog instead
@@ -2132,6 +2280,39 @@ impl ScreenLike for WalletsBalancesScreen {
             if let Some(shielded_view) = &mut self.shielded_tab_view {
                 shielded_view.handle_error(message);
             }
+        }
+    }
+
+    /// Intercept Core-wallet-not-configured errors and schedule an async
+    /// `ListCoreWallets` backend task (instead of blocking the UI thread).
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if matches!(error, TaskError::CoreWalletNotConfigured) {
+            self.refreshing = false;
+            self.asset_lock_search_banner.take_and_clear();
+
+            // Determine the wallet hash and whether it is a single-key wallet
+            let (wallet_hash, is_single_key) = if let Some(hash) = self
+                .selected_wallet
+                .as_ref()
+                .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+            {
+                (Some(hash), false)
+            } else if let Some(hash) = self
+                .selected_single_key_wallet
+                .as_ref()
+                .and_then(|w| w.read().ok().map(|g| g.key_hash))
+            {
+                (Some(hash), true)
+            } else {
+                (None, false)
+            };
+
+            self.pending_list_core_wallets = true;
+            self.pending_list_wallet_hash = wallet_hash;
+            self.pending_list_is_single_key = is_single_key;
+            true // Suppress generic error banner
+        } else {
+            false
         }
     }
 
@@ -2298,6 +2479,53 @@ impl ScreenLike for WalletsBalancesScreen {
                     shielded_view.handle_result(&result);
                 }
             }
+            crate::ui::BackendTaskSuccessResult::CoreWalletsList(wallets) => {
+                let wallet_hash = self.pending_list_wallet_hash.take();
+                let is_single_key = self.pending_list_is_single_key;
+                self.pending_list_is_single_key = false;
+
+                if wallets.len() == 1 {
+                    if let Some(hash) = wallet_hash {
+                        match self.apply_core_wallet_selection(&hash, &wallets[0], is_single_key) {
+                            Ok(()) => {
+                                MessageBanner::set_global(
+                                    self.app_context.egui_ctx(),
+                                    format!(
+                                        "Auto-selected Core wallet '{}' — refreshing wallet. If you were performing another operation, please retry it.",
+                                        wallets[0]
+                                    ),
+                                    MessageType::Success,
+                                );
+                                self.refresh();
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    self.app_context.egui_ctx(),
+                                    "Failed to save Core wallet selection",
+                                    MessageType::Error,
+                                )
+                                .with_details(e);
+                            }
+                        }
+                    }
+                } else if wallets.len() > 1 {
+                    let dialog = SelectionDialog::new(
+                        "Select Dash Core Wallet",
+                        "Multiple wallets loaded in Dash Core. Select the one to use:",
+                        wallets.clone(),
+                    );
+                    self.core_wallet_dialog = Some(dialog);
+                    self.pending_core_wallet_seed_hash = wallet_hash;
+                    self.pending_core_wallet_options = Some(wallets);
+                    self.pending_core_wallet_is_single_key = is_single_key;
+                } else {
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "No wallets loaded in Dash Core",
+                        MessageType::Error,
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -2345,5 +2573,8 @@ impl ScreenLike for WalletsBalancesScreen {
         }
     }
 
-    fn refresh(&mut self) {}
+    fn refresh(&mut self) {
+        self.refreshing = false;
+        self.refresh_on_arrival();
+    }
 }

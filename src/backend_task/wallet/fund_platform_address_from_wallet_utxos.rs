@@ -1,4 +1,5 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -17,7 +18,7 @@ impl AppContext {
         amount: u64,
         destination: PlatformAddress,
         fee_deduct_from_output: bool,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
@@ -40,14 +41,14 @@ impl AppContext {
         // Step 1: Create the asset lock transaction (UTXOs are selected but NOT yet removed)
         let (asset_lock_transaction, asset_lock_private_key, _asset_lock_address, used_utxos) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read()?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
+                    .ok_or(TaskError::WalletNotFound)?
             };
 
-            let mut wallet = wallet_arc.write().map_err(|e| e.to_string())?;
+            let mut wallet = wallet_arc.write()?;
 
             // Try to create the asset lock transaction, reload UTXOs if needed
             match wallet.generic_asset_lock_transaction(
@@ -60,8 +61,11 @@ impl AppContext {
                 Err(e) => {
                     // Reload UTXOs (RPC: fetches from Core; SPV: no-op).
                     // Only retry if something actually changed.
-                    if !wallet.reload_utxos(self)? {
-                        return Err(e);
+                    if !wallet
+                        .reload_utxos(self)
+                        .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?
+                    {
+                        return Err(TaskError::AssetLockTransactionBuildFailed { detail: e });
                     }
                     let (tx, private_key, address, _change, utxos) = wallet
                         .generic_asset_lock_transaction(
@@ -69,7 +73,8 @@ impl AppContext {
                             self.network,
                             asset_lock_amount,
                             allow_take_fee_from_amount,
-                        )?;
+                        )
+                        .map_err(|e| TaskError::AssetLockTransactionBuildFailed { detail: e })?;
                     (tx, private_key, address, utxos)
                 }
             }
@@ -77,11 +82,11 @@ impl AppContext {
 
         // Step 2–4: Store → broadcast → remove UTXOs (atomic pattern).
         let wallet_arc = {
-            let wallets = self.wallets.read().map_err(|e| e.to_string())?;
+            let wallets = self.wallets.read()?;
             wallets
                 .get(&seed_hash)
                 .cloned()
-                .ok_or_else(|| "Wallet not found".to_string())?
+                .ok_or(TaskError::WalletNotFound)?
         };
 
         let tx_id = self
@@ -141,11 +146,11 @@ impl AppContext {
         // Step 6: Get wallet, SDK, and derive a fresh change address if needed
         let (wallet, sdk, change_platform_address) = {
             let wallet_arc = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read()?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
+                    .ok_or(TaskError::WalletNotFound)?
             };
 
             // Derive a fresh change address from the BIP44 internal (change) path
@@ -153,17 +158,20 @@ impl AppContext {
             // from the output). Using change_address() ensures proper BIP44
             // separation between receive and change addresses.
             let change_platform_address = if !fee_deduct_from_output {
-                let mut wallet_w = wallet_arc.write().map_err(|e| e.to_string())?;
-                let addr = wallet_w.change_address(self.network, Some(self))?;
-                Some(
-                    PlatformAddress::try_from(addr)
-                        .map_err(|e| format!("Failed to convert change address: {}", e))?,
-                )
+                let mut wallet_w = wallet_arc.write()?;
+                let addr = wallet_w
+                    .change_address(self.network, Some(self))
+                    .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
+                Some(PlatformAddress::try_from(addr).map_err(|e| {
+                    TaskError::AddressConversionFailed {
+                        source: Box::new(e),
+                    }
+                })?)
             } else {
                 None
             };
 
-            let wallet = wallet_arc.read().map_err(|e| e.to_string())?.clone();
+            let wallet = wallet_arc.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk, change_platform_address)
         };
@@ -182,9 +190,10 @@ impl AppContext {
             // amount. We use a fresh wallet-controlled change address to absorb the
             // fee estimate surplus, keeping it spendable.
             let amount_credits = amount.checked_mul(CREDITS_PER_DUFF).ok_or_else(|| {
-                format!(
-                    "Overflow converting {amount} duffs to credits (CREDITS_PER_DUFF = {CREDITS_PER_DUFF})"
-                )
+                TaskError::CreditCalculationOverflow {
+                    amount,
+                    credits_per_duff: CREDITS_PER_DUFF,
+                }
             })?;
 
             if let Some(change_address) = change_platform_address {
@@ -196,11 +205,14 @@ impl AppContext {
                 let change_index = outputs
                     .keys()
                     .position(|k| *k == change_address)
-                    .ok_or("Change address not found in outputs map")?
-                    as u16;
+                    .ok_or_else(|| TaskError::ChangeAddressUnavailable {
+                        reason: "change address not found in outputs map",
+                    })? as u16;
                 vec![AddressFundsFeeStrategyStep::ReduceOutput(change_index)]
             } else {
-                return Err("Failed to derive a change address for platform funding".to_string());
+                return Err(TaskError::ChangeAddressUnavailable {
+                    reason: "no change address was derived for platform funding",
+                });
             }
         };
 
@@ -214,7 +226,7 @@ impl AppContext {
                 None,
             )
             .await
-            .map_err(|e| format!("Failed to fund platform address: {}", e))?;
+            .map_err(TaskError::from)?;
 
         // Step 9: Refresh platform address balances
         self.fetch_platform_address_balances(seed_hash).await?;

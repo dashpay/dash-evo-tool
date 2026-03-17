@@ -1,0 +1,68 @@
+name: "Copilot Setup Steps"
+
+# Configures the environment for GitHub Copilot coding agent before it
+# starts work on issues/PRs.  The job name MUST be "copilot-setup-steps"
+# for Copilot to recognize it.
+#
+# This workflow installs all system dependencies, the pinned Rust toolchain,
+# and protoc, then pre-builds tenderdash-proto so that
+# tenderdash-proto-compiler (which downloads Tenderdash sources from the
+# internet during cargo build) runs here — before the network-restricted
+# agent sandbox — and its output is available to subsequent steps.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.92
+          components: clippy, rustfmt
+          override: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config clang cmake libsqlite3-dev
+
+      - name: Install protoc
+        run: |
+          curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v25.2/protoc-25.2-linux-x86_64.zip
+          sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local bin/protoc
+          sudo unzip -o protoc-25.2-linux-x86_64.zip -d /usr/local 'include/*'
+          rm -f protoc-25.2-linux-x86_64.zip
+        env:
+          PROTOC: /usr/local/bin/protoc
+
+      - name: Pre-build tenderdash-proto
+        # Building tenderdash-proto is sufficient to trigger its build.rs,
+        # which downloads Tenderdash sources from the internet.  This must
+        # happen here, before the network-restricted agent sandbox starts.
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: -p tenderdash-proto --locked
+        env:
+          PROTOC: /usr/local/bin/protoc

@@ -30,7 +30,7 @@ use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::wallet::Wallet;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, Screen, ScreenLike};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
@@ -456,16 +456,12 @@ impl ScreenLike for ClaimTokensScreen {
                 ui.heading("2. Public note (optional)");
                 ui.add_space(5.0);
                 ui.horizontal(|ui| {
-                    ui.label("Public note (optional):");
+                    ui.label("Public note (optional):").info_tooltip(
+                        "A note about the transaction that can be seen by the public.",
+                    );
                     ui.add_space(10.0);
                     let mut txt = self.public_note.clone().unwrap_or_default();
-                    if ui
-                        .text_edit_singleline(&mut txt)
-                        .on_hover_text(
-                            "A note about the transaction that can be seen by the public.",
-                        )
-                        .changed()
-                    {
+                    if ui.text_edit_singleline(&mut txt).changed() {
                         self.public_note = Some(txt);
                     }
                 });
@@ -589,11 +585,7 @@ impl ScreenLike for ClaimTokensScreen {
 
                 ui.add_space(10.0);
 
-                let button = egui::Button::new(RichText::new("Claim").color(Color32::WHITE))
-                    .fill(Color32::from_rgb(0, 128, 0))
-                    .corner_radius(3.0);
-
-                if ui.add(button).clicked() {
+                if ComponentStyles::add_primary_button(ui, "Claim").clicked() {
                     if self.distribution_type.is_none() {
                         MessageBanner::set_global(
                             ctx,

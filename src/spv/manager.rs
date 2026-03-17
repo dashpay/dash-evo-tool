@@ -4,7 +4,6 @@ use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
 use arc_swap::ArcSwapOption;
-use dash_sdk::dash_spv::client::interface::DashSpvClientCommand;
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
@@ -836,7 +835,7 @@ impl SpvManager {
         self.spv_client.store(Some(Arc::clone(&client)));
 
         // Subscribe to sync events (broadcast)
-        let sync_rx = client.subscribe_sync_events();
+        let sync_rx = client.subscribe_sync_events().await;
         self.spawn_sync_event_handler(sync_rx);
 
         // Subscribe to wallet events (broadcast from WalletManager)
@@ -847,11 +846,11 @@ impl SpvManager {
         }
 
         // Subscribe to network events (broadcast)
-        let net_rx = client.subscribe_network_events();
+        let net_rx = client.subscribe_network_events().await;
         self.spawn_network_event_handler(net_rx);
 
         // Set up progress handler using watch channel
-        let progress_rx = client.subscribe_progress();
+        let progress_rx = client.subscribe_progress().await;
         self.spawn_progress_watcher(progress_rx);
 
         // Set up request handler with access to shared components
@@ -897,16 +896,10 @@ impl SpvManager {
         client: Arc<SpvClient>,
         stop_token: CancellationToken,
     ) -> Result<(), String> {
-        // Create command channel for DashSpvClient (used for quorum lookups etc.)
-        let (_command_tx, command_rx) =
-            tokio::sync::mpsc::unbounded_channel::<DashSpvClientCommand>();
-
-        // client.run() takes ownership (mut self), so unwrap the Arc.
-        let client = Arc::try_unwrap(client)
-            .map_err(|_| "Cannot unwrap SpvClient Arc: other references still held".to_string())?;
-
+        // client.run() handles start, monitoring loop, and stop internally.
+        // It returns when the cancellation token fires or an error occurs.
         let result = client
-            .run(command_rx, stop_token)
+            .run(stop_token)
             .await
             .map_err(|e| format!("SPV client error: {e}"));
 

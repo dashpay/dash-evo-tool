@@ -1,129 +1,183 @@
+use dash_sdk::dpp::dashcore::secp256k1;
 use dash_sdk::platform::Identifier;
 use thiserror::Error;
 
 /// Comprehensive error types for DashPay operations
-#[derive(Error, Debug, Clone, PartialEq)]
+#[derive(Error, Debug)]
 pub enum DashPayError {
     // Contact Request Errors
-    #[error("Identity not found: {identity_id}")]
+    #[error("This contact could not be found on the network. Please check the ID and try again.")]
     IdentityNotFound { identity_id: Identifier },
 
-    #[error("Username '{username}' could not be resolved via DPNS")]
+    #[error("Username '{username}' was not found. Please check the spelling and try again.")]
     UsernameResolutionFailed { username: String },
 
-    #[error("Key index {key_id} not found in identity {identity_id}")]
+    #[error("A required security key is missing. Please refresh your identity and retry.")]
     KeyNotFound {
         key_id: u32,
         identity_id: Identifier,
     },
 
-    #[error("Key index {key_id} is disabled in identity {identity_id}")]
+    #[error("A required security key has been disabled. Please refresh your identity and retry.")]
     KeyDisabled {
         key_id: u32,
         identity_id: Identifier,
     },
 
-    #[error("Key index {key_id} has unsuitable type {key_type:?} for {operation}")]
+    #[error(
+        "A security key cannot be used for this operation. Please refresh your identity and retry."
+    )]
     UnsuitableKeyType {
         key_id: u32,
         key_type: String,
         operation: String,
     },
 
-    #[error("Missing ENCRYPTION key required for DashPay")]
+    #[error(
+        "Your identity is missing an encryption key required for contacts. Please add a compatible encryption key."
+    )]
     MissingEncryptionKey,
 
-    #[error("Missing DECRYPTION key required for DashPay")]
+    #[error(
+        "Your identity is missing a decryption key required for contacts. Please add a compatible decryption key."
+    )]
     MissingDecryptionKey,
 
-    #[error("ECDH key generation failed: {reason}")]
+    #[error("Could not establish a secure connection with this contact. Please retry.")]
     EcdhFailed { reason: String },
 
-    #[error("Encryption failed: {reason}")]
+    #[error("Could not encrypt the message. Please retry.")]
     EncryptionFailed { reason: String },
 
-    #[error("Decryption failed: {reason}")]
+    #[error("Could not decrypt the message. Please retry.")]
     DecryptionFailed { reason: String },
 
     // Document/Platform Errors
-    #[error("Failed to create contact request document: {reason}")]
+    #[error("Could not send the contact request. Please retry.")]
     DocumentCreationFailed { reason: String },
 
-    #[error("Failed to broadcast state transition: {reason}")]
+    #[error("Could not send this request to the network. Please retry.")]
     BroadcastFailed { reason: String },
 
-    #[error("Document query failed: {reason}")]
+    #[error(
+        "Could not retrieve the requested information. Please check your connection and retry."
+    )]
     QueryFailed { reason: String },
 
-    #[error("Invalid document structure: {reason}")]
+    #[error("The received data has an unexpected format. Please retry or update the application.")]
     InvalidDocument { reason: String },
 
     // Validation Errors
-    #[error("Core height {height} is invalid (current: {current:?}): {reason}")]
+    #[error("The network data could not be verified. Please retry in a few moments.")]
     InvalidCoreHeight {
         height: u32,
         current: Option<u32>,
         reason: String,
     },
 
-    #[error("Account reference {account} is invalid: {reason}")]
+    #[error("The account reference is not valid. Please check the details and retry.")]
     InvalidAccountReference { account: u32, reason: String },
 
-    #[error("Contact request validation failed: {errors:?}")]
+    #[error("The contact request could not be verified. Please check the details and try again.")]
     ValidationFailed { errors: Vec<String> },
 
     // Auto Accept Proof Errors
-    #[error("Invalid QR code format: {reason}")]
+    #[error("The QR code format is not recognized. Please scan a valid contact QR code.")]
     InvalidQrCode { reason: String },
 
-    #[error("QR code expired at {expired_at}, current time: {current_time}")]
+    #[error("This QR code has expired. Please ask for a new one.")]
     QrCodeExpired { expired_at: u64, current_time: u64 },
 
-    #[error("Auto-accept proof verification failed: {reason}")]
+    #[error("The automatic verification could not be completed. Please retry.")]
     ProofVerificationFailed { reason: String },
 
     // Network/SDK Errors
-    #[error("Platform query failed: {reason}")]
+    #[error("Could not reach the network. Please check your connection and retry.")]
     PlatformError { reason: String },
 
-    #[error("Network connection failed: {reason}")]
+    #[error("Network connection failed. Please check your internet connection and retry.")]
     NetworkError { reason: String },
 
-    #[error("SDK operation failed: {reason}")]
-    SdkError { reason: String },
+    #[error("An unexpected error occurred while communicating with the network. Please retry.")]
+    SdkError {
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
 
     // User Input Errors
-    #[error("Invalid username format: {username}")]
+    #[error("The username format is not valid. Usernames must end with '.dash'.")]
     InvalidUsername { username: String },
 
-    #[error("Account label too long: {length} chars (max: {max})")]
+    #[error("The account label is too long. Please use {max} characters or fewer.")]
     AccountLabelTooLong { length: usize, max: usize },
 
-    #[error("Missing required field: {field}")]
+    #[error("A required field is missing. Please fill in all fields and try again.")]
     MissingField { field: String },
 
     // Contact Info Errors
-    #[error("Contact info not found for contact {contact_id}")]
+    #[error("Contact information could not be found. Please refresh and try again.")]
     ContactInfoNotFound { contact_id: Identifier },
 
-    #[error("Contact info decryption failed for contact {contact_id}: {reason}")]
+    #[error("Contact information could not be read. Please refresh and try again.")]
     ContactInfoDecryptionFailed {
         contact_id: Identifier,
         reason: String,
     },
 
     // General Errors
-    #[error("Internal error: {message}")]
+    #[error("An unexpected error occurred. Please retry.")]
     Internal { message: String },
 
-    #[error("Operation not supported: {operation}")]
+    #[error("This operation is not available. Please update the application.")]
     NotSupported { operation: String },
 
-    #[error("Rate limit exceeded for operation: {operation}")]
+    #[error("Too many requests. Please wait a moment and try again.")]
     RateLimited { operation: String },
+
+    /// Failed to build a document query (schema / configuration error).
+    #[error("Could not prepare the data request. Please retry or update the application.")]
+    QueryCreation {
+        /// Description of what query was being built (e.g., "contact requests", "DPNS domain").
+        query_target: &'static str,
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
+
+    /// Failed to parse a cryptographic key (secp256k1).
+    #[error("Could not read a cryptographic key. The data may be corrupted.")]
+    CryptoKeyParsing {
+        #[from]
+        source: secp256k1::Error,
+    },
+
+    /// Failed to resolve a private key from the identity's key store.
+    #[error(
+        "Could not find the required private key in your wallet. Try refreshing your identities."
+    )]
+    PrivateKeyResolution {
+        /// Human-readable key purpose (e.g. "ENCRYPTION", "AUTHENTICATION").
+        key_purpose: String,
+        /// Details about why the lookup failed.
+        reason: String,
+    },
+
+    /// The identity does not have a suitable authentication key for this operation.
+    #[error(
+        "This identity is missing an authentication key required for this operation. Please add an authentication key."
+    )]
+    MissingAuthenticationKey,
+
+    /// A contact request has already been sent to this recipient.
+    #[error("You have already sent a contact request to '{to}'. Please wait for them to respond.")]
+    ContactRequestAlreadySent { to: String },
 }
 
 impl DashPayError {
+    // TODO: `user_message()` is largely redundant now that Display messages are
+    // user-friendly. Consider removing it once the two UI callsites
+    // (contact_requests.rs:617, add_contact_screen.rs:350) are migrated to use
+    // Display directly.
+
     /// Convert to user-friendly error message
     pub fn user_message(&self) -> String {
         match self {
@@ -165,14 +219,13 @@ impl DashPayError {
                 "Too many requests. Please wait a moment before trying again.".to_string()
             }
             DashPayError::Internal { message } => {
-                // Show the actual internal error message
                 message.clone()
             }
             DashPayError::MissingEncryptionKey => {
-                "Your identity is missing an ENCRYPTION key required for DashPay. Please add a DashPay-compatible encryption key.".to_string()
+                "Your identity is missing an encryption key required for contacts. Please add a compatible encryption key.".to_string()
             }
             DashPayError::MissingDecryptionKey => {
-                "Your identity is missing a DECRYPTION key required for DashPay. Please add a DashPay-compatible decryption key.".to_string()
+                "Your identity is missing a decryption key required for contacts. Please add a compatible decryption key.".to_string()
             }
             _ => "An error occurred. Please try again.".to_string(),
         }
@@ -223,9 +276,9 @@ pub trait ToDashPayError<T> {
 }
 
 impl<T> ToDashPayError<T> for Result<T, dash_sdk::Error> {
-    fn to_dashpay_error(self, context: &str) -> DashPayResult<T> {
+    fn to_dashpay_error(self, _context: &str) -> DashPayResult<T> {
         self.map_err(|e| DashPayError::SdkError {
-            reason: format!("{}: {}", context, e),
+            source: Box::new(e),
         })
     }
 }

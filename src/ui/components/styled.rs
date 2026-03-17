@@ -11,6 +11,7 @@ use egui::{
 
 // Re-export commonly used components
 pub use super::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+pub use super::selection_dialog::{SelectionDialog, SelectionStatus};
 
 /// Styled button variants
 #[allow(dead_code)]

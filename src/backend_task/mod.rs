@@ -253,6 +253,10 @@ pub enum BackendTaskSuccessResult {
     ContractNotFound,
     TokenNotFound,
     ProofErrorLogged,
+    /// Contract was saved to the local database despite a proof verification error.
+    /// Sent by `register_data_contract` / `update_data_contract` when the contract was
+    /// successfully fetched from Platform and stored after a `DriveProofError`.
+    ContractSavedAfterProofError,
 
     // Wallet operation results (replacing string messages)
     RefreshedWallet {
@@ -263,7 +267,6 @@ pub enum BackendTaskSuccessResult {
         recovered_count: usize,
         total_amount: u64,
     },
-    MineBlocksSuccess(u64),
 
     // DPNS operation results (replacing string messages)
     ScheduledVotes,
@@ -272,6 +275,12 @@ pub enum BackendTaskSuccessResult {
 
     // Broadcast results
     BroadcastedStateTransition,
+
+    // Mining results (dev mode, Regtest/Devnet only)
+    MineBlocksSuccess(u64),
+
+    // Core wallet list (async fetch of loaded Core wallets)
+    CoreWalletsList(Vec<String>),
 
     // Shielded pool results
     ShieldedInitialized {
@@ -400,7 +409,7 @@ impl AppContext {
     async fn run_wallet_task(
         self: &Arc<Self>,
         task: WalletTask,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             WalletTask::GenerateReceiveAddress { seed_hash } => {
                 self.generate_receive_address(seed_hash).await

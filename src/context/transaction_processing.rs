@@ -1,4 +1,5 @@
 use super::AppContext;
+use crate::backend_task::error::TaskError;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::spv::CoreBackendMode;
 use dash_sdk::Sdk;
@@ -9,22 +10,26 @@ use dash_sdk::dpp::dashcore::{Address, InstantLock, OutPoint, Transaction, TxOut
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::InstantAssetLockProof;
 use dash_sdk::dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dash_sdk::dpp::prelude::{AssetLockProof, CoreBlockHeight};
-use rusqlite::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
 impl AppContext {
     /// Broadcast a raw transaction via Core RPC or SPV depending on backend mode.
-    pub(crate) async fn broadcast_raw_transaction(&self, tx: &Transaction) -> Result<Txid, String> {
+    pub(crate) async fn broadcast_raw_transaction(
+        &self,
+        tx: &Transaction,
+    ) -> Result<Txid, TaskError> {
         match self.core_backend_mode() {
             CoreBackendMode::Rpc => self
                 .core_client
-                .read()
-                .map_err(|e| format!("core client lock poisoned: {}", e))?
+                .read()?
                 .send_raw_transaction(tx)
-                .map_err(|e| e.to_string()),
+                .map_err(TaskError::from),
             CoreBackendMode::Spv => {
-                self.spv_manager.broadcast_transaction(tx).await?;
+                self.spv_manager
+                    .broadcast_transaction(tx)
+                    .await
+                    .map_err(|e| TaskError::SpvBroadcastFailed { detail: e })?;
                 Ok(tx.txid())
             }
         }
@@ -38,7 +43,7 @@ impl AppContext {
     pub(crate) async fn wait_for_asset_lock_proof(
         &self,
         tx_id: Txid,
-    ) -> Result<AssetLockProof, String> {
+    ) -> Result<AssetLockProof, TaskError> {
         use tokio::time::Duration;
 
         let timeout_duration = match self.core_backend_mode() {
@@ -49,9 +54,9 @@ impl AppContext {
         match tokio::time::timeout(timeout_duration, async {
             loop {
                 {
-                    let proofs = self.transactions_waiting_for_finality.lock().unwrap();
+                    let proofs = self.transactions_waiting_for_finality.lock()?;
                     if let Some(Some(proof)) = proofs.get(&tx_id) {
-                        return proof.clone();
+                        return Ok::<_, TaskError>(proof.clone());
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -59,19 +64,21 @@ impl AppContext {
         })
         .await
         {
-            Ok(proof) => {
-                let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                proofs.remove(&tx_id);
+            Ok(Ok(proof)) => {
+                if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
+                    proofs.remove(&tx_id);
+                }
                 Ok(proof)
             }
+            Ok(Err(e)) => {
+                // Lock poisoned — return immediately instead of spinning
+                Err(e)
+            }
             Err(_) => {
-                let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
-                proofs.remove(&tx_id);
-                Err(format!(
-                    "Timeout waiting for asset lock proof after {} seconds. \
-                     The transaction may not have been confirmed by the network.",
-                    timeout_duration.as_secs()
-                ))
+                if let Ok(mut proofs) = self.transactions_waiting_for_finality.lock() {
+                    proofs.remove(&tx_id);
+                }
+                Err(TaskError::ConfirmationTimeout)
             }
         }
     }
@@ -110,43 +117,39 @@ impl AppContext {
         wallet_seed_hash: &WalletSeedHash,
         wallet: &Arc<RwLock<Wallet>>,
         used_utxos: &BTreeMap<OutPoint, (TxOut, Address)>,
-    ) -> std::result::Result<Txid, String> {
+    ) -> Result<Txid, TaskError> {
         let tx_id = asset_lock_transaction.txid();
 
         // Step 1: Register for finality tracking.
         {
-            let mut proofs = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut proofs = self.transactions_waiting_for_finality.lock()?;
             proofs.insert(tx_id, None);
         }
 
         // Step 2: Store the asset lock transaction in the database *before* broadcast.
-        // The SPV finality listener retrieves the transaction from the DB to
-        // process InstantLock/ChainLock events — if the store happened after
-        // broadcast, a fast InstantSend could arrive before the DB row exists.
-        self.db
-            .store_asset_lock_transaction(
-                asset_lock_transaction,
-                amount,
-                None, // No islock yet — SPV will update this
-                wallet_seed_hash,
-                self.network,
-            )
-            .map_err(|e| format!("Failed to store asset lock transaction: {}", e))?;
+        self.db.store_asset_lock_transaction(
+            asset_lock_transaction,
+            amount,
+            None,
+            wallet_seed_hash,
+            self.network,
+        )?;
 
         // Step 3: Broadcast. On failure, clean up DB row and finality tracker.
-        // UTXOs are NOT removed on failure, preserving wallet balance.
         if let Err(e) = self.broadcast_raw_transaction(asset_lock_transaction).await {
             if let Ok(mut proofs) = self.transactions_waiting_for_finality.try_lock() {
                 proofs.remove(&tx_id);
             }
             let _ = self.db.delete_asset_lock_transaction(tx_id.as_byte_array());
-            return Err(format!("Failed to broadcast asset lock transaction: {}", e));
+            return Err(e);
         }
 
         // Step 4: Broadcast succeeded — commit UTXO removal now.
         {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
-            wallet_guard.remove_selected_utxos(used_utxos, &self.db, self.network)?;
+            let mut wallet_guard = wallet.write()?;
+            wallet_guard
+                .remove_selected_utxos(used_utxos, &self.db, self.network)
+                .map_err(|e| TaskError::UtxoUpdateFailed { detail: e })?;
         }
 
         Ok(tx_id)
@@ -157,14 +160,14 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> Result<Vec<(OutPoint, TxOut, Address)>> {
+    ) -> Result<Vec<(OutPoint, TxOut, Address)>, TaskError> {
         // Initialize a vector to collect wallet outpoints
         let mut wallet_outpoints = Vec::new();
 
         // Identify the wallets associated with the transaction
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read()?;
         for wallet_arc in wallets.values() {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write()?;
             for (vout, tx_out) in tx.output.iter().enumerate() {
                 let address = if let Ok(output_addr) =
                     Address::from_script(&tx_out.script_pubkey, self.network)
@@ -257,7 +260,7 @@ impl AppContext {
         tx: &Transaction,
         islock: Option<InstantLock>,
         chain_locked_height: Option<CoreBlockHeight>,
-    ) -> Result<()> {
+    ) -> Result<(), TaskError> {
         // Extract the asset lock payload from the transaction
         let Some(AssetLockPayloadType(payload)) = tx.special_transaction_payload.as_ref() else {
             return Ok(());
@@ -280,7 +283,7 @@ impl AppContext {
         };
 
         {
-            let mut transactions = self.transactions_waiting_for_finality.lock().unwrap();
+            let mut transactions = self.transactions_waiting_for_finality.lock()?;
 
             if let Some(asset_lock_proof) = transactions.get_mut(&tx.txid()) {
                 *asset_lock_proof = proof.clone();
@@ -288,9 +291,9 @@ impl AppContext {
         }
 
         // Identify the wallet associated with the transaction
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read()?;
         for wallet_arc in wallets.values() {
-            let mut wallet = wallet_arc.write().unwrap();
+            let mut wallet = wallet_arc.write()?;
 
             // Check if any of the addresses in the transaction outputs match the wallet's known addresses
             let matches_wallet = payload.credit_outputs.iter().any(|tx_out| {
@@ -318,18 +321,13 @@ impl AppContext {
                     self.network,
                 )?;
 
-                let first = payload.credit_outputs.first().ok_or_else(|| {
-                    rusqlite::Error::InvalidParameterName(
-                        "Asset lock transaction has no credit outputs".to_string(),
-                    )
-                })?;
+                let first = payload
+                    .credit_outputs
+                    .first()
+                    .ok_or(TaskError::AssetLockNoCreditOutputs)?;
 
-                let address =
-                    Address::from_script(&first.script_pubkey, self.network).map_err(|e| {
-                        rusqlite::Error::InvalidParameterName(format!(
-                            "Failed to derive address from asset lock credit output script: {e}"
-                        ))
-                    })?;
+                let address = Address::from_script(&first.script_pubkey, self.network)
+                    .map_err(|e| TaskError::AssetLockAddressDerivationFailed { source: e })?;
 
                 // Add the asset lock to the wallet's unused_asset_locks
                 wallet
@@ -355,7 +353,7 @@ pub(crate) struct DapiTransactionInfo {
 pub(crate) async fn get_transaction_info(
     sdk: &Sdk,
     tx_id: &Txid,
-) -> Result<DapiTransactionInfo, String> {
+) -> Result<DapiTransactionInfo, TaskError> {
     use dash_sdk::dapi_client::{DapiRequestExecutor, IntoInner, RequestSettings};
     use dash_sdk::dapi_grpc::core::v0::GetTransactionRequest;
 
@@ -368,7 +366,9 @@ pub(crate) async fn get_transaction_info(
         )
         .await
         .into_inner()
-        .map_err(|e| format!("DAPI GetTransaction failed: {}", e))?;
+        .map_err(|e| TaskError::PlatformFetchError {
+            source: Box::new(dash_sdk::Error::DapiClientError(e)),
+        })?;
 
     Ok(DapiTransactionInfo {
         is_chain_locked: response.is_chain_locked,

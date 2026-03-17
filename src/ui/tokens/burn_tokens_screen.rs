@@ -8,7 +8,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_chooser_panel;
 use crate::ui::components::{BannerHandle, Component, ComponentResponse, OptionBannerExt};
 use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use crate::ui::tokens::validate_signing_key;
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -22,7 +22,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Context, Ui};
 use eframe::egui::{Frame, Margin};
 use egui::RichText;
 use std::collections::HashSet;
@@ -568,16 +568,12 @@ impl ScreenLike for BurnTokensScreen {
                     ));
                 } else {
                     ui.horizontal(|ui| {
-                        ui.label("Public note (optional):");
+                        ui.label("Public note (optional):").info_tooltip(
+                            "A note about the transaction that can be seen by the public.",
+                        );
                         ui.add_space(10.0);
                         let mut txt = self.public_note.clone().unwrap_or_default();
-                        if ui
-                            .text_edit_singleline(&mut txt)
-                            .on_hover_text(
-                                "A note about the transaction that can be seen by the public.",
-                            )
-                            .changed()
-                        {
+                        if ui.text_edit_singleline(&mut txt).changed() {
                             self.public_note = if !txt.is_empty() { Some(txt) } else { None };
                         }
                     });
@@ -639,12 +635,7 @@ impl ScreenLike for BurnTokensScreen {
                 // Burn button
                 if self.app_context.is_developer_mode() || !button_text.contains("Test") {
                     ui.add_space(10.0);
-                    let button =
-                        egui::Button::new(RichText::new(button_text).color(Color32::WHITE))
-                            .fill(DashColors::ACTION_BUTTON_BLUE)
-                            .corner_radius(3.0);
-
-                    if ui.add(button).clicked() {
+                    if ComponentStyles::add_primary_button(ui, button_text).clicked() {
                         // Create confirmation dialog on button click
                         if self.confirmation_dialog.is_none() {
                             let amount = match self.amount.as_ref() {

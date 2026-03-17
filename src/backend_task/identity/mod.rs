@@ -11,12 +11,13 @@ mod top_up_identity;
 mod transfer;
 mod withdraw_from_identity;
 
-use super::{BackendTaskSuccessResult, FeeResult};
+use super::{BackendTaskSuccessResult, FeeResult, TaskError};
 use crate::app::TaskResult;
 use crate::context::AppContext;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
+use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
@@ -42,10 +43,10 @@ pub struct IdentityInputToLoad {
     pub identity_id_input: String,
     pub identity_type: IdentityType,
     pub alias_input: String,
-    pub voting_private_key_input: String,
-    pub owner_private_key_input: String,
-    pub payout_address_private_key_input: String,
-    pub keys_input: Vec<String>,
+    pub voting_private_key_input: Secret,
+    pub owner_private_key_input: Secret,
+    pub payout_address_private_key_input: Secret,
+    pub keys_input: Vec<Secret>,
     pub derive_keys_from_wallets: bool,
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
 }
@@ -349,14 +350,14 @@ pub enum IdentityTask {
 }
 
 fn verify_key_input(
-    untrimmed_private_key: String,
+    untrimmed_private_key: Secret,
     type_key: &str,
 ) -> Result<Option<[u8; 32]>, String> {
-    let private_key = untrimmed_private_key.trim().to_string();
+    let private_key = untrimmed_private_key.expose_secret().trim();
     match private_key.len() {
         64 => {
             // hex
-            match hex::decode(private_key.as_str()) {
+            match hex::decode(private_key) {
                 Ok(decoded) => Ok(Some(decoded.try_into().unwrap())),
                 Err(_) => Err(format!(
                     "{} key is the size of a hex key but isn't hex",
@@ -366,7 +367,7 @@ fn verify_key_input(
         }
         51 | 52 => {
             // wif
-            match PrivateKey::from_wif(private_key.as_str()) {
+            match PrivateKey::from_wif(private_key) {
                 Ok(key) => Ok(Some(key.inner.secret_bytes())),
                 Err(_) => Err(format!(
                     "{} key is the length of a WIF key but is invalid",
@@ -529,42 +530,42 @@ impl AppContext {
         task: IdentityTask,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            IdentityTask::LoadIdentity(input) => self.load_identity(sdk, input).await,
+            IdentityTask::LoadIdentity(input) => Ok(self.load_identity(sdk, input).await?),
             IdentityTask::WithdrawFromIdentity(qualified_identity, to_address, credits, id) => {
-                self.withdraw_from_identity(qualified_identity, to_address, credits, id)
-                    .await
+                Ok(self
+                    .withdraw_from_identity(qualified_identity, to_address, credits, id)
+                    .await?)
             }
             IdentityTask::AddKeyToIdentity(qualified_identity, public_key_to_add, private_key) => {
                 self.add_key_to_identity(sdk, qualified_identity, public_key_to_add, private_key)
                     .await
             }
             IdentityTask::RegisterIdentity(registration_info) => {
-                self.register_identity(registration_info).await
+                Ok(self.register_identity(registration_info).await?)
             }
-            IdentityTask::RegisterDpnsName(input) => self.register_dpns_name(sdk, input).await,
-            IdentityTask::RefreshIdentity(qualified_identity) => self
-                .refresh_identity(sdk, qualified_identity, sender)
-                .await
-                .map_err(|e| format!("Error refreshing identity: {}", e)),
-            IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => {
-                self.transfer_to_identity(qualified_identity, to_identifier, credits, id)
-                    .await
+            IdentityTask::RegisterDpnsName(input) => {
+                Ok(self.register_dpns_name(sdk, input).await?)
             }
-            IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => {
-                self.load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
-                    .await
+            IdentityTask::RefreshIdentity(qualified_identity) => {
+                self.refresh_identity(sdk, qualified_identity, sender).await
             }
-            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => {
-                self.load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
-                    .await
+            IdentityTask::Transfer(qualified_identity, to_identifier, credits, id) => Ok(self
+                .transfer_to_identity(qualified_identity, to_identifier, credits, id)
+                .await?),
+            IdentityTask::SearchIdentityFromWallet(wallet, identity_index) => Ok(self
+                .load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
+                .await?),
+            IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => Ok(self
+                .load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
+                .await?),
+            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => Ok(self
+                .load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
+                .await?),
+            IdentityTask::TopUpIdentity(top_up_info) => {
+                Ok(self.top_up_identity(top_up_info).await?)
             }
-            IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => {
-                self.load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)
-                    .await
-            }
-            IdentityTask::TopUpIdentity(top_up_info) => self.top_up_identity(top_up_info).await,
             IdentityTask::TopUpIdentityFromPlatformAddresses {
                 identity,
                 inputs,
@@ -587,7 +588,7 @@ impl AppContext {
                     .await
             }
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
-                self.refresh_loaded_identities_dpns_names(sender).await
+                Ok(self.refresh_loaded_identities_dpns_names(sender).await?)
             }
         }
     }
@@ -599,7 +600,7 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         wallet_seed_hash: WalletSeedHash,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
@@ -615,18 +616,18 @@ impl AppContext {
         // Get the wallet for signing - clone it to avoid holding guard across await
         let wallet_clone = {
             let wallet = {
-                let wallets = self.wallets.read().unwrap();
+                let wallets = self.wallets.read()?;
                 wallets
                     .get(&wallet_seed_hash)
                     .cloned()
-                    .ok_or_else(|| "Wallet not found".to_string())?
+                    .ok_or(TaskError::WalletNotFound)?
             };
 
-            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            let wallet_guard = wallet.read()?;
 
             // Ensure wallet is open
             if !wallet_guard.is_open() {
-                return Err("Wallet must be unlocked to sign Platform transactions".to_string());
+                return Err(TaskError::WalletLocked);
             }
 
             wallet_guard.clone()
@@ -640,11 +641,7 @@ impl AppContext {
         // Execute the top-up
         let (address_infos, new_balance) = identity
             .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
-            .await
-            .map_err(|e| {
-                tracing::error!("top_up_from_addresses failed: {}", e);
-                format!("Failed to top up identity from Platform addresses: {}", e)
-            })?;
+            .await?;
 
         tracing::info!(
             "top_up_from_addresses succeeded, new_balance={}",
@@ -664,7 +661,7 @@ impl AppContext {
 
         // Store the updated identity (use update to preserve wallet association)
         self.update_local_qualified_identity(&updated_identity)
-            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+            .map_err(|e| TaskError::Database { source: e })?;
 
         let fee_result = FeeResult::new(estimated_fee, estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
@@ -680,7 +677,7 @@ impl AppContext {
         qualified_identity: QualifiedIdentity,
         outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         key_id: Option<KeyID>,
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
 
@@ -704,13 +701,12 @@ impl AppContext {
                 &qualified_identity,
                 None,
             )
-            .await
-            .map_err(|e| format!("Failed to transfer credits to Platform addresses: {}", e))?;
+            .await?;
 
         // Update destination address balances in any wallets that contain them
         // (using proof-verified data from the SDK response)
         {
-            let wallets = self.wallets.read().unwrap();
+            let wallets = self.wallets.read()?;
             for (seed_hash, wallet_arc) in wallets.iter() {
                 if let Err(e) =
                     self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
@@ -748,7 +744,7 @@ impl AppContext {
 
         // Store the updated identity (use update to preserve wallet association)
         self.update_local_qualified_identity(&updated_identity)
-            .map_err(|e| format!("Failed to store updated identity: {}", e))?;
+            .map_err(|e| TaskError::Database { source: e })?;
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
         Ok(BackendTaskSuccessResult::TransferredCredits(fee_result))

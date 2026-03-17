@@ -4,11 +4,12 @@ use crate::backend_task::mnlist::MnListTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::components::core_p2p_handler::CoreP2PHandler;
 use crate::context::AppContext;
+use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::styled::island_central_panel;
+use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::QuorumType;
@@ -68,7 +69,7 @@ struct InputState {
 #[derive(Default)]
 struct UiState {
     selected_tab: usize,
-    show_popup_for_render_masternode_list_engine: bool,
+    masternode_engine_confirm_dialog: Option<ConfirmationDialog>,
     error: Option<String>,
 }
 
@@ -815,7 +816,7 @@ impl MasternodeListDiffScreen {
         let qr_info = match p2p_handler.get_qr_info(known_block_hashes, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return None;
             }
         };
@@ -932,7 +933,7 @@ impl MasternodeListDiffScreen {
         let list_diff = match p2p_handler.get_dml_diff(base_block_hash, block_hash) {
             Ok(list_diff) => list_diff,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1227,7 +1228,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1259,7 +1260,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1326,7 +1327,7 @@ impl MasternodeListDiffScreen {
         let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
             Ok(p2p_handler) => p2p_handler,
             Err(e) => {
-                self.ui_state.error = Some(e);
+                self.ui_state.error = Some(e.to_string());
                 return;
             }
         };
@@ -1349,7 +1350,7 @@ impl MasternodeListDiffScreen {
             None => match CoreP2PHandler::new(self.app_context.network, None) {
                 Ok(p2p_handler) => p2p_handler,
                 Err(e) => {
-                    self.ui_state.error = Some(e);
+                    self.ui_state.error = Some(e.to_string());
                     return;
                 }
             },
@@ -1528,7 +1529,7 @@ impl MasternodeListDiffScreen {
                     }
                     if ui
                         .button("Clear")
-                        .on_hover_text("Clear all data and reset to initial state.")
+                        .clickable_tooltip("Clear all data and reset to initial state.")
                         .clicked()
                     {
                         self.clear();
@@ -1536,7 +1537,7 @@ impl MasternodeListDiffScreen {
                     }
                     if ui
                         .button("Clear keep base")
-                        .on_hover_text(
+                        .clickable_tooltip(
                             "Clear all data except the oldest MNList diff starting from height 0.",
                         )
                         .clicked()
@@ -2110,8 +2111,14 @@ impl MasternodeListDiffScreen {
                             match index {
                                 7 => {
                                     // Show the popup when "Masternode List Engine" is selected
-                                    self.ui_state.show_popup_for_render_masternode_list_engine =
-                                        true;
+                                    self.ui_state.masternode_engine_confirm_dialog = Some(
+                                        ConfirmationDialog::new(
+                                            "Confirmation",
+                                            "This operation will take about 10 seconds. Are you sure you wish to continue?",
+                                        )
+                                        .confirm_text(Some("Yes"))
+                                        .cancel_text(Some("Cancel")),
+                                    );
                                 }
                                 8 => {
                                     self.load_masternode_list_engine();
@@ -2159,24 +2166,14 @@ impl MasternodeListDiffScreen {
         }
 
         // Render the confirmation popup if needed
-        if self.ui_state.show_popup_for_render_masternode_list_engine {
-            egui::Window::new("Confirmation")
-                .collapsible(false)
-                .resizable(false)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .show(ui.ctx(), |ui| {
-                    ui.label("This operation will take about 10 seconds. Are you sure you wish to continue?");
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Yes").clicked() {
-                            self.save_masternode_list_engine();
-                            self.ui_state.show_popup_for_render_masternode_list_engine = false;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.ui_state.show_popup_for_render_masternode_list_engine = false;
-                        }
-                    });
-                });
+        if let Some(dialog) = self.ui_state.masternode_engine_confirm_dialog.as_mut() {
+            let response = dialog.show(ui);
+            if let Some(result) = response.inner.dialog_response {
+                self.ui_state.masternode_engine_confirm_dialog = None;
+                if result == ConfirmationStatus::Confirmed {
+                    self.save_masternode_list_engine();
+                }
+            }
         }
     }
 
@@ -4110,7 +4107,7 @@ impl MasternodeListDiffScreen {
             let mut p2p_handler = match CoreP2PHandler::new(self.app_context.network, None) {
                 Ok(p2p_handler) => p2p_handler,
                 Err(e) => {
-                    self.ui_state.error = Some(e);
+                    self.ui_state.error = Some(e.to_string());
                     return;
                 }
             };

@@ -10,11 +10,12 @@ use crate::spv::{CoreBackendMode, SpvStatus, SpvStatusSnapshot};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
+use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::{DashColors, Shape, ThemeMode};
+use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
@@ -86,7 +87,7 @@ pub struct NetworkChooserScreen {
     pub testnet_app_context: Option<Arc<AppContext>>,
     pub devnet_app_context: Option<Arc<AppContext>>,
     pub local_app_context: Option<Arc<AppContext>>,
-    pub local_network_dashmate_password: String,
+    dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
     custom_dash_qt_path: Option<PathBuf>,
@@ -120,15 +121,12 @@ impl NetworkChooserScreen {
         current_network: Network,
         overwrite_dash_conf: bool,
     ) -> Self {
-        let local_network_dashmate_password = if let Ok(config) = Config::load() {
-            if let Some(local_config) = config.config_for_network(Network::Regtest) {
-                local_config.core_rpc_password.clone()
-            } else {
-                "".to_string()
-            }
-        } else {
-            "".to_string()
-        };
+        let mut dashmate_password_input = PasswordInput::new().with_hint_text("Core RPC password");
+        if let Ok(config) = Config::load()
+            && let Some(local_config) = config.config_for_network(Network::Regtest)
+        {
+            dashmate_password_input.set_text(local_config.core_rpc_password.clone());
+        }
 
         let current_context = match current_network {
             Network::Dash => mainnet_app_context,
@@ -184,7 +182,7 @@ impl NetworkChooserScreen {
             testnet_app_context: testnet_app_context.cloned(),
             devnet_app_context: devnet_app_context.cloned(),
             local_app_context: local_app_context.cloned(),
-            local_network_dashmate_password,
+            dashmate_password_input,
             current_network,
             recheck_time: None,
             custom_dash_qt_path,
@@ -417,7 +415,9 @@ impl NetworkChooserScreen {
                         });
 
                         if is_spv_connected {
-                            response.response.on_hover_text("Disconnect from SPV first");
+                            response
+                                .response
+                                .disabled_tooltip("Disconnect from SPV first");
                         }
                     });
 
@@ -444,7 +444,7 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.local_network_dashmate_password);
+                    self.dashmate_password_input.show(ui);
 
                     let save_clicked = ui.button("Save").clicked();
 
@@ -452,7 +452,7 @@ impl NetworkChooserScreen {
                     if ui.button("Auto Update").clicked() {
                         match read_dashmate_rpc_password("local_seed") {
                             Ok(password) => {
-                                self.local_network_dashmate_password = password;
+                                self.dashmate_password_input.set_text(password);
                                 auto_update_succeeded = true;
                             }
                             Err(e) => {
@@ -466,8 +466,9 @@ impl NetworkChooserScreen {
                         && let Ok(mut config) = Config::load()
                         && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
                     {
-                        let updated_local_config = local_cfg
-                            .update_core_rpc_password(self.local_network_dashmate_password.clone());
+                        let updated_local_config = local_cfg.update_core_rpc_password(
+                            self.dashmate_password_input.text().to_string(),
+                        );
                         config.update_config_for_network(
                             Network::Regtest,
                             updated_local_config.clone(),
@@ -1028,8 +1029,9 @@ impl NetworkChooserScreen {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if StyledCheckbox::new(&mut self.developer_mode, "Developer mode")
+                    if StyledCheckbox::new(&mut self.developer_mode, "Expert mode")
                         .show(ui)
+                        .clickable_tooltip("Show advanced options for power users and developers")
                         .clicked()
                     {
                         // Always update all contexts first to keep UI in sync
@@ -1635,7 +1637,7 @@ impl NetworkChooserScreen {
         let mut button_response = ui.add_enabled(!is_active, clear_button);
         if is_active {
             button_response =
-                button_response.on_disabled_hover_text("Stop the SPV client before clearing data");
+                button_response.disabled_tooltip("Stop the SPV client before clearing data");
         }
 
         if button_response.clicked() {
@@ -1790,10 +1792,7 @@ impl NetworkChooserScreen {
                 }
             }
             SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
         }
     }
 
@@ -1827,10 +1826,7 @@ impl NetworkChooserScreen {
                 }
             }
             SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
         }
     }
 
@@ -1867,10 +1863,7 @@ impl NetworkChooserScreen {
                 }
             }
             SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
         }
     }
 
@@ -1893,10 +1886,7 @@ impl NetworkChooserScreen {
                 (mn.current_height() as f32 / target as f32).clamp(0.0, 1.0)
             }
             SyncState::Synced => 1.0,
-            SyncState::Initializing
-            | SyncState::WaitingForConnections
-            | SyncState::WaitForEvents
-            | SyncState::Error => 0.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
         }
     }
 

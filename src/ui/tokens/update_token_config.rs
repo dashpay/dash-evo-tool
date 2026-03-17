@@ -18,7 +18,7 @@ use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_t
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
@@ -708,7 +708,7 @@ impl UpdateTokenConfigScreen {
                 let mut txt = self.public_note.clone().unwrap_or_default();
                 if ui
                     .text_edit_singleline(&mut txt)
-                    .on_hover_text("A note about the transaction that can be seen by the public.")
+                    .info_tooltip("A note about the transaction that can be seen by the public.")
                     .changed()
                 {
                     self.public_note = if !txt.is_empty() { Some(txt) } else { None };
@@ -746,16 +746,11 @@ impl UpdateTokenConfigScreen {
             &self.group_action_id,
         );
 
-        let button = egui::Button::new(RichText::new(&button_text).color(Color32::WHITE))
-            .fill(DashColors::ACTION_BUTTON_BLUE)
-            .frame(true)
-            .corner_radius(3.0);
-
         if (self.app_context.is_developer_mode() || !button_text.contains("Test"))
             && self.change_item != TokenConfigurationChangeItem::TokenConfigurationNoChange
         {
             ui.add_space(20.0);
-            if ui.add(button).clicked() {
+            if ComponentStyles::add_primary_button(ui, &button_text).clicked() {
                 let group_info = if let Some(action_id) = self.group_action_id {
                     self.group.as_ref().map(|(pos, _)| {
                         GroupStateTransitionInfoStatus::GroupStateTransitionInfoOtherSigner(

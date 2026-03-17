@@ -4,7 +4,7 @@ pub mod shielded;
 pub mod single_key;
 mod utxos;
 
-use crate::database::Database;
+use crate::database::{Database, WalletError};
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
 use dash_sdk::dpp::identity::signer::Signer;
@@ -217,7 +217,6 @@ impl DerivationPathHelpers for DerivationPath {
 
 use crate::context::AppContext;
 use bitflags::bitflags;
-use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::fee::Credits;
@@ -330,6 +329,8 @@ pub struct Wallet {
     pub total_balance: u64,
     /// DIP-17: Platform address balances and nonces (keyed by Core Address for lookup)
     pub platform_address_info: BTreeMap<Address, PlatformAddressInfo>,
+    /// Dash Core wallet name for multi-wallet RPC calls
+    pub core_wallet_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -640,7 +641,7 @@ impl Wallet {
                 // Attempt to derive the private key using the provided derivation path
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(wallet_ref.seed_bytes()?, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 return Ok(Some(extended_private_key.private_key.secret_bytes()));
             }
         }
@@ -655,7 +656,7 @@ impl Wallet {
     ) -> Result<PrivateKey, String> {
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
         Ok(extended_private_key.to_priv())
     }
 
@@ -670,7 +671,7 @@ impl Wallet {
                 derivation_path
                     .derive_priv_ecdsa_for_master_seed(self.seed_bytes()?, network)
                     .map(|extended_private_key| extended_private_key.to_priv())
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())
             })
             .transpose()
     }
@@ -719,7 +720,7 @@ impl Wallet {
                     let public_key = self
                         .master_bip44_ecdsa_extended_public_key
                         .derive_pub(&secp, &derivation_path_extension)
-                        .map_err(|e| e.to_string())?
+                        .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
                         .to_pub();
                     known_public_key = Some(public_key);
                     break;
@@ -733,28 +734,20 @@ impl Wallet {
                 let public_key = self
                     .master_bip44_ecdsa_extended_public_key
                     .derive_pub(&secp, &derivation_path_extension)
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
                     .to_pub();
                 known_public_key = Some(public_key);
                 if let Some(app_context) = register {
                     let address = Address::p2pkh(&public_key, network);
-                    app_context
-                        .core_client
-                        .read()
-                        .expect("Core client lock was poisoned")
-                        .import_address(
-                            &address,
-                            Some(
-                                format!(
-                                    "Managed by Dash Evo Tool {} {}",
-                                    self.alias.clone().unwrap_or_default(),
-                                    derivation_path
-                                )
-                                .as_str(),
-                            ),
-                            Some(false),
-                        )
-                        .map_err(|e| e.to_string())?;
+                    app_context.try_import_address(
+                        &address,
+                        self.core_wallet_name.as_deref(),
+                        Some(&format!(
+                            "Managed by Dash Evo Tool {} {}",
+                            self.alias.clone().unwrap_or_default(),
+                            derivation_path
+                        )),
+                    );
 
                     self.register_address(
                         address,
@@ -788,7 +781,7 @@ impl Wallet {
         );
         let extended_public_key = derivation_path
             .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
         Ok(extended_public_key.to_pub())
     }
 
@@ -812,7 +805,7 @@ impl Wallet {
             );
             let extended_public_key = derivation_path
                 .derive_pub_ecdsa_for_master_seed(self.seed_bytes()?, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
 
             let public_key = extended_public_key.to_pub();
             public_key_result_map.insert(
@@ -945,10 +938,8 @@ impl Wallet {
             },
         );
 
-        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc
-            && let Ok(client) = app_context.core_client.read()
-        {
-            let _ = client.import_address(&address, None, Some(false));
+        if app_context.core_backend_mode() == crate::spv::CoreBackendMode::Rpc {
+            app_context.try_import_address(&address, self.core_wallet_name.as_deref(), None);
         }
 
         tracing::trace!(
@@ -980,7 +971,7 @@ impl Wallet {
                 let derived = self
                     .master_bip44_ecdsa_extended_public_key
                     .derive_pub(&secp, &child_path)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 let dash_public_key = PublicKey::from_slice(&derived.public_key.serialize())
                     .map_err(|e| e.to_string())?;
                 let derivation_path = DerivationPath::from(vec![
@@ -1018,7 +1009,7 @@ impl Wallet {
                 ]);
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(&seed, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1046,7 +1037,7 @@ impl Wallet {
                 let derivation_path = DerivationPath::from(components);
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(&seed, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1087,7 +1078,7 @@ impl Wallet {
             let derivation_path = DerivationPath::identity_registration_path(network, index);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1110,7 +1101,7 @@ impl Wallet {
             let derivation_path = DerivationPath::identity_invitation_path(network, index);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1136,7 +1127,7 @@ impl Wallet {
                     DerivationPath::identity_top_up_path(network, registration_index, top_up_index);
                 let extended_private_key = derivation_path
                     .derive_priv_ecdsa_for_master_seed(&seed, network)
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1165,7 +1156,7 @@ impl Wallet {
             let derivation_path = DerivationPath::from(components);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1218,7 +1209,7 @@ impl Wallet {
             let derivation_path = DerivationPath::from(components);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1248,7 +1239,7 @@ impl Wallet {
                 DerivationPath::platform_payment_path(network, account, key_class, index);
             let extended_private_key = derivation_path
                 .derive_priv_ecdsa_for_master_seed(&seed, network)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
             let private_key = extended_private_key.to_priv();
 
             // Create a P2PKH address for platform payment
@@ -1477,7 +1468,7 @@ impl Wallet {
             DerivationPath::platform_payment_path(network, account, key_class, next_index);
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(&seed, network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
         let private_key = extended_private_key.to_priv();
         let public_key = private_key.public_key(&secp);
 
@@ -1528,7 +1519,7 @@ impl Wallet {
         let public_key = self
             .master_bip44_ecdsa_extended_public_key
             .derive_pub(&secp, &path_extension)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
             .to_pub();
         Ok(Address::p2pkh(&public_key, network))
     }
@@ -1614,7 +1605,13 @@ impl Wallet {
                     .clone();
                 cache
                     .legacy_signature_hash(i, &script_pubkey, sighash_flag)
-                    .map_err(|e| format!("failed to compute sighash: {}", e))
+                    .map_err(|source| {
+                        WalletError::Sighash {
+                            input_index: i,
+                            source,
+                        }
+                        .to_string()
+                    })
             })
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -1761,7 +1758,13 @@ impl Wallet {
                     .clone();
                 cache
                     .legacy_signature_hash(i, &script_pubkey, sighash_flag)
-                    .map_err(|e| format!("failed to compute sighash: {}", e))
+                    .map_err(|source| {
+                        WalletError::Sighash {
+                            input_index: i,
+                            source,
+                        }
+                        .to_string()
+                    })
             })
             .collect::<Result<Vec<_>, String>>()?;
 
@@ -2342,7 +2345,7 @@ impl WalletAddressProvider {
 
         let extended_private_key = derivation_path
             .derive_priv_ecdsa_for_master_seed(&self.seed, self.network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
 
         let secp = Secp256k1::new();
         let private_key = extended_private_key.to_priv();
@@ -2516,6 +2519,7 @@ mod tests {
             unconfirmed_balance: 0,
             total_balance: 0,
             platform_address_info: BTreeMap::new(),
+            core_wallet_name: None,
         }
     }
 

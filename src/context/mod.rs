@@ -19,6 +19,7 @@ use crate::model::password_info::PasswordInfo;
 use crate::model::proof_log_item::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::platform_wallet_bridge::{PlatformWalletManager, WalletIdMapping};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::spv::{CoreBackendMode, SpvManager};
 use crate::utils::tasks::TaskManager;
@@ -43,6 +44,23 @@ use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 use crate::model::settings::Settings;
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Wrapper that provides a `Debug` impl for types that don't implement it.
+/// Prints the type name instead of the value.
+pub(crate) struct DebugWrapper<T>(pub T);
+
+impl<T> std::fmt::Debug for DebugWrapper<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", std::any::type_name::<T>())
+    }
+}
+
+impl<T> std::ops::Deref for DebugWrapper<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
 
 /// A guard that ensures settings cache invalidation happens atomically
 ///
@@ -71,6 +89,19 @@ pub struct AppContext {
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
+    /// New platform-wallet manager — multi-wallet coordinator.
+    /// Coexists with `wallets` during migration; callers will be incrementally
+    /// switched from the old `wallets` map to this manager.
+    #[allow(dead_code)] // Used during incremental migration to PlatformWallet
+    pub(crate) wallet_manager: Arc<DebugWrapper<PlatformWalletManager>>,
+    /// `PlatformWallet` instances keyed by `WalletSeedHash` for bridge access.
+    /// During migration, callers can look up a `PlatformWallet` by the same
+    /// seed hash they use for the old `wallets` map.
+    pub(crate) platform_wallets:
+        Mutex<BTreeMap<WalletSeedHash, crate::platform_wallet_bridge::PlatformWallet>>,
+    /// Bidirectional mapping between `WalletSeedHash` (old key) and `WalletId` (new key).
+    /// Protected by a std `Mutex` since updates happen infrequently (wallet add/remove).
+    pub(crate) wallet_id_mapping: Mutex<WalletIdMapping>,
     #[allow(dead_code)] // May be used for password validation
     pub(crate) password_info: Option<PasswordInfo>,
     pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
@@ -212,6 +243,21 @@ impl AppContext {
             }
         };
 
+        // Convert dashcore Network to key_wallet Network for PlatformWalletManager
+        let kw_network = match network {
+            Network::Mainnet => dash_sdk::dpp::key_wallet::Network::Mainnet,
+            Network::Testnet => dash_sdk::dpp::key_wallet::Network::Testnet,
+            Network::Devnet => dash_sdk::dpp::key_wallet::Network::Devnet,
+            Network::Regtest => dash_sdk::dpp::key_wallet::Network::Regtest,
+            _ => dash_sdk::dpp::key_wallet::Network::Mainnet,
+        };
+
+        // Create the PlatformWalletManager with the SDK and network
+        let wallet_manager = Arc::new(DebugWrapper(PlatformWalletManager::new(
+            sdk.clone(),
+            kw_network,
+        )));
+
         let wallets: BTreeMap<_, _> = match db.get_wallets(&network) {
             Ok(w) => w,
             Err(e) => {
@@ -303,6 +349,9 @@ impl AppContext {
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
+            wallet_manager,
+            platform_wallets: Mutex::new(BTreeMap::new()),
+            wallet_id_mapping: Mutex::new(WalletIdMapping::new()),
             password_info,
             transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             animate,

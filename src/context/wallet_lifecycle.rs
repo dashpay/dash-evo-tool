@@ -5,12 +5,14 @@ use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
     DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
 };
+use crate::platform_wallet_bridge::PlatformWallet;
 use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::key_wallet::Network as WalletNetwork;
 use dash_sdk::dpp::key_wallet::account::AccountType;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, wallet_info_interface::WalletInfoInterface,
 };
@@ -39,9 +41,41 @@ impl AppContext {
             single_key_wallets.clear();
         }
 
+        // Clear platform wallet bridge state
+        if let Ok(mut pw) = self.platform_wallets.lock() {
+            pw.clear();
+        }
+        if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
+            *mapping = crate::platform_wallet_bridge::WalletIdMapping::new();
+        }
+
         self.has_wallet.store(false, Ordering::Relaxed);
 
         Ok(())
+    }
+
+    /// Get a `PlatformWallet` by the old `WalletSeedHash` key.
+    ///
+    /// Returns `None` if the wallet is not registered with the bridge
+    /// (e.g. the wallet is locked/closed, or hasn't been unlocked yet).
+    #[allow(dead_code)] // Used during incremental migration to PlatformWallet
+    pub(crate) fn get_platform_wallet(&self, seed_hash: &WalletSeedHash) -> Option<PlatformWallet> {
+        self.platform_wallets
+            .lock()
+            .ok()
+            .and_then(|pw| pw.get(seed_hash).cloned())
+    }
+
+    /// Get a `PlatformWallet` by seed hash, or return `TaskError::WalletNotFound`.
+    ///
+    /// Convenience wrapper for backend tasks that need the platform wallet.
+    #[allow(dead_code)] // Used during incremental migration to PlatformWallet
+    pub(crate) fn require_platform_wallet(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<PlatformWallet, TaskError> {
+        self.get_platform_wallet(seed_hash)
+            .ok_or(TaskError::WalletNotFound)
     }
 
     pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
@@ -95,8 +129,64 @@ impl AppContext {
     pub fn handle_wallet_unlocked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
         if let Some((seed_hash, seed_bytes)) = Self::wallet_seed_snapshot(wallet) {
             self.queue_spv_wallet_load(seed_hash, seed_bytes);
+            // Also register with the new PlatformWalletManager (Phase 2 bridge)
+            self.register_with_platform_wallet_manager(seed_hash, seed_bytes);
             // Note: Platform address sync is not done here.
             // Core UTXO refresh is handled at startup in bootstrap_loaded_wallets.
+        }
+    }
+
+    /// Register an open wallet with the `PlatformWalletManager` and populate
+    /// the `platform_wallets` bridge map and `wallet_id_mapping`.
+    ///
+    /// This bridges the old `Wallet` type to the new `PlatformWallet` type
+    /// during migration. If the wallet is already registered (e.g. from a
+    /// previous unlock), this is a no-op.
+    pub(crate) fn register_with_platform_wallet_manager(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        seed_bytes: [u8; 64],
+    ) {
+        // Check if already registered
+        if let Ok(mapping) = self.wallet_id_mapping.lock()
+            && mapping.wallet_id_for_seed(&seed_hash).is_some()
+        {
+            return;
+        }
+
+        let kw_network = self.wallet_network_key();
+        let sdk = self.sdk.load().as_ref().clone();
+        let options = WalletAccountCreationOptions::default();
+
+        // Create a PlatformWallet to discover its WalletId (SHA256 of root pubkey).
+        // This is a lightweight, synchronous operation (no network I/O).
+        match PlatformWallet::from_seed_bytes(sdk, kw_network, seed_bytes, options) {
+            Ok(platform_wallet) => {
+                let wallet_id = platform_wallet.wallet_id();
+
+                // Update the bidirectional mapping
+                if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
+                    mapping.insert(seed_hash, wallet_id);
+                }
+
+                // Store the PlatformWallet keyed by seed_hash for bridge access
+                if let Ok(mut pw) = self.platform_wallets.lock() {
+                    pw.insert(seed_hash, platform_wallet);
+                }
+
+                tracing::info!(
+                    seed = %hex::encode(seed_hash),
+                    wallet_id = %hex::encode(wallet_id),
+                    "Registered wallet with PlatformWallet bridge"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    seed = %hex::encode(seed_hash),
+                    error = %e,
+                    "Failed to create PlatformWallet from seed bytes for bridge"
+                );
+            }
         }
     }
 
@@ -109,6 +199,14 @@ impl AppContext {
             }
         };
         self.queue_spv_wallet_unload(seed_hash);
+
+        // Remove from platform wallet bridge (seed bytes are no longer available)
+        if let Ok(mut pw) = self.platform_wallets.lock() {
+            pw.remove(&seed_hash);
+        }
+        if let Ok(mut mapping) = self.wallet_id_mapping.lock() {
+            mapping.remove_by_seed_hash(&seed_hash);
+        }
     }
 
     fn wallet_seed_snapshot(wallet: &Arc<RwLock<Wallet>>) -> Option<(WalletSeedHash, [u8; 64])> {

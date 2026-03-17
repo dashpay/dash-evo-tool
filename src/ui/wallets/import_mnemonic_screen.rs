@@ -235,7 +235,9 @@ impl ImportMnemonicScreen {
                 ExtendedPrivKey::new_master(self.app_context.network, &seed)
                     .expect("Failed to create master ECDSA extended private key");
             let bip44_root_derivation_path: DerivationPath = match self.app_context.network {
-                Network::Mainnet => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
+                Network::Mainnet => {
+                    DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice())
+                }
                 _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
             };
             let secp = Secp256k1::new();
@@ -323,6 +325,16 @@ impl ImportMnemonicScreen {
             }
 
             self.app_context.bootstrap_wallet_addresses(&wallet_arc);
+
+            // Register with PlatformWallet bridge (always, regardless of backend mode).
+            // Read seed bytes from the already-stored wallet.
+            if let Ok(guard) = wallet_arc.read()
+                && let Ok(seed_bytes) = guard.seed_bytes()
+            {
+                self.app_context
+                    .register_with_platform_wallet_manager(new_wallet_seed_hash, *seed_bytes);
+            }
+
             if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
                 self.app_context.handle_wallet_unlocked(&wallet_arc);
             }

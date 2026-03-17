@@ -11,6 +11,7 @@ pub mod cpu_compatibility;
 pub mod database;
 pub mod logging;
 pub mod model;
+pub mod platform_wallet_bridge;
 pub mod sdk_wrapper;
 pub mod spv;
 pub mod ui;

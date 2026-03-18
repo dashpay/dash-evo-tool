@@ -6,7 +6,7 @@ Weekly smoke test specification for Dash Evo Tool, covering implemented user sto
 
 See [test-prerequisites.md](test-prerequisites.md) for environment setup, `.env` configuration, secrets file, and the bank wallet concept.
 
-All mnemonic and address placeholders (e.g., `${BANK_MNEMONIC}`, `${TC_SND_ADDRESS_0}`) refer to values defined in `~/det-qa-secrets.env`.
+All mnemonic and address placeholders (e.g., `${BANK_MNEMONIC}`, `${TC_SND_ADDRESS_0}`) refer to values defined in `~/.secrets/det-qa-mnemonics.env`.
 
 ---
 
@@ -178,7 +178,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Use Case ID** | WAL-002 |
 | **Test Case ID** | TC-WAL-002-01 |
 | **Short Description** | Import a wallet from a fixed test mnemonic |
-| **Pre-Conditions** | DET running, SPV synced, `${TC_WAL_MNEMONIC}` available from `~/det-qa-secrets.env` |
+| **Pre-Conditions** | DET running, SPV synced, `${TC_WAL_MNEMONIC}` available from `~/.secrets/det-qa-mnemonics.env` |
 | **Test Steps** | 1. Click **"Wallets"** in the left sidebar.<br>2. Click **"Import Wallet"** in the top-right corner.<br>3. Verify the breadcrumb reads **Wallets > Import Wallet** and the heading reads *"Follow these steps to import your wallet."*<br>4. Under **"Select what you want to import"**, choose **"Seed Phrase (HD Wallet)"**.<br>5. Under **"Select the seed phrase length"**, choose the word count matching `${TC_WAL_MNEMONIC}`.<br>6. Enter each word of `${TC_WAL_MNEMONIC}` into the numbered fields (**"1:"**, **"2:"**, ...).<br>7. In the **"Name:"** field, type `Imported Wallet`.<br>8. In the **"Optional Password:"** field, enter `${TC_WAL_PASSWORD}`.<br>9. Click **"Import Wallet"**.<br>10. Wait for sync to complete. |
 | **Test Data** | Mnemonic: `${TC_WAL_MNEMONIC}`, Name: `Imported Wallet`, Password: `${TC_WAL_PASSWORD}` |
 | **Expected Result** | Wallet appears on the **"Wallets"** screen as **Imported Wallet**. Balance syncs (may be `0.0000 DASH` if never funded). |

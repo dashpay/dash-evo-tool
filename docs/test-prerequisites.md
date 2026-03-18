@@ -13,18 +13,24 @@ Shared preconditions for all smoke test scenarios in [test-cases.md](test-cases.
 
 ## Secrets File
 
-Test mnemonics and passwords are stored in `~/det-qa-secrets.env` on the test machine. **This file must never be committed to version control.**
+Test mnemonics and passwords are stored in `~/.secrets/det-qa-mnemonics.env` on the test machine. **This file must never be committed to version control.** Set permissions to `chmod 600`.
 
 ### Required Variables
 
-| Variable | Purpose |
-|---|---|
-| `BANK_MNEMONIC` | Bank wallet seed phrase (24 words recommended) |
-| `BANK_PASSWORD` | Bank wallet encryption password |
-| `TC_WAL_MNEMONIC` | Wallet-management tests (import, rename, lock, remove) |
-| `TC_WAL_PASSWORD` | Password for the wallet-management test wallet |
-| `TC_SND_MNEMONIC` | Send/receive tests |
-| `TC_IDN_MNEMONIC` | Identity, DPNS, DashPay, and token tests |
+| Variable | Words | Purpose |
+|---|---|---|
+| `BANK_MNEMONIC` | 24 | Bank wallet — pre-funded, password-protected |
+| `BANK_PASSWORD` | — | Bank wallet encryption password |
+| `TC_WAL_MNEMONIC` | 24 | Wallet management tests (import, rename, lock, remove) |
+| `TC_WAL_PASSWORD` | — | Password for wallet-management test wallet |
+| `TC_SND_MNEMONIC` | 21 | Send/receive tests |
+| `TC_IDN_MNEMONIC` | 21 | Identity registration and top-up tests |
+| `TC_TOK_MNEMONIC` | 18 | Token operation tests |
+| `TC_DPY_MNEMONIC` | 18 | DashPay profile and contact tests |
+| `TC_DOC_MNEMONIC` | 15 | Contract and document tests |
+| `TC_DEV_MNEMONIC` | 15 | Developer tools tests |
+| `TC_NET_MNEMONIC` | 12 | Network/settings tests |
+| `TC_ALK_MNEMONIC` | 12 | Asset lock tests |
 
 ### Derived Addresses
 
@@ -36,17 +42,24 @@ Each mnemonic deterministically produces the same addresses. After first import,
 | `TC_SND_ADDRESS_0` | Send-test wallet — address at index 0 (pre-fund target) |
 | `TC_IDN_ADDRESS_0` | Identity-test wallet — address at index 0 (pre-fund target) |
 
-### Example `~/det-qa-secrets.env`
+### Example `~/.secrets/det-qa-mnemonics.env`
 
 ```env
-BANK_MNEMONIC="word1 word2 word3 ... word24"
+# DO NOT COMMIT — test wallet mnemonics
+BANK_MNEMONIC="word1 word2 ... word24"
 BANK_PASSWORD="strong-bank-password"
-TC_WAL_MNEMONIC="word1 word2 word3 ... word24"
+TC_WAL_MNEMONIC="word1 word2 ... word24"
 TC_WAL_PASSWORD="waltest1234"
-TC_SND_MNEMONIC="word1 word2 word3 ... word24"
-TC_IDN_MNEMONIC="word1 word2 word3 ... word24"
+TC_SND_MNEMONIC="word1 word2 ... word21"
+TC_IDN_MNEMONIC="word1 word2 ... word21"
+TC_TOK_MNEMONIC="word1 word2 ... word18"
+TC_DPY_MNEMONIC="word1 word2 ... word18"
+TC_DOC_MNEMONIC="word1 word2 ... word15"
+TC_DEV_MNEMONIC="word1 word2 ... word15"
+TC_NET_MNEMONIC="word1 word2 ... word12"
+TC_ALK_MNEMONIC="word1 word2 ... word12"
 
-# Derived addresses (fill in after first import of each wallet)
+# Derived addresses — fill in after first import of each wallet
 BANK_ADDRESS_0=yXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 TC_SND_ADDRESS_0=yXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
 TC_IDN_ADDRESS_0=yXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -109,7 +122,7 @@ The bank wallet is a pre-funded, password-protected testnet wallet. It distribut
 
 - **Minimum balance:** 10 tDASH (recommended: 50+ tDASH for full test suite)
 - **Password:** Must be set during import (value from `${BANK_PASSWORD}`)
-- **Mnemonic:** Stored in `~/det-qa-secrets.env`, never typed in clear text outside DET
+- **Mnemonic:** Stored in `~/.secrets/det-qa-mnemonics.env`, never typed in clear text outside DET
 
 ### Importing the Bank Wallet
 

@@ -15,18 +15,22 @@ type McpClient = RunningService<RoleClient, ()>;
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
-#[command(name = "det-cli", version, about = "CLI client for Dash Evo Tool")]
+#[command(
+    name = "det-cli",
+    version,
+    about = "Command-line interface for Dash Evo Tool",
+    disable_help_subcommand = true
+)]
 struct Cli {
-    /// Force in-process mode (run MCP service locally, no HTTP server needed)
+    /// Force standalone mode (no server connection needed)
     #[arg(long)]
     standalone: bool,
 
-    /// HTTP server address (ignored in standalone mode).
-    /// Derived from MCP_LISTEN if not set.
+    /// Server address (default: http://127.0.0.1:9527/mcp)
     #[arg(long)]
     addr: Option<String>,
 
-    /// Bearer token for HTTP auth (ignored in standalone mode)
+    /// Bearer token for HTTP auth [env: MCP_API_KEY]
     #[arg(long, env = "MCP_API_KEY")]
     bearer: Option<String>,
 
@@ -38,14 +42,6 @@ struct Cli {
 enum Commands {
     /// List available tools from the MCP server
     Tools,
-    /// Call a tool by name with key=value parameters
-    Call {
-        /// Tool name
-        tool: String,
-        /// Parameters as key=value pairs (values parsed as JSON, falling back to string)
-        #[arg(trailing_var_arg = true)]
-        params: Vec<String>,
-    },
     /// Run as MCP stdio server (for Claude Desktop, AI agents, etc.)
     Serve,
     /// Generate shell completion script
@@ -53,6 +49,9 @@ enum Commands {
         /// Shell type
         shell: clap_complete::Shell,
     },
+    /// Call an MCP tool (catch-all for dynamic tool names)
+    #[command(external_subcommand)]
+    Tool(Vec<String>),
 }
 
 /// Resolve the HTTP address from CLI flag, env var, or default.
@@ -82,12 +81,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load .env before clap parses env vars (shell > .env > defaults).
     load_app_env();
 
-    // Intercept bare invocation and --help to append cached tool list.
+    // Intercept --help to show custom help with tool list.
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 && (args[1] == "--help" || args[1] == "-h") {
-        Cli::command().print_help()?;
-        println!();
-        print_cached_tools_section();
+        print_help();
         return Ok(());
     }
 
@@ -128,9 +125,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             print_tools(&tools);
             save_cache(&client, &tools);
         }
-        Commands::Call { tool, params } => {
-            let arguments = parse_params(&params)?;
-            let mut request = CallToolRequestParams::new(tool);
+        Commands::Tool(args) => {
+            let tool_name = args.first().ok_or("tool name required")?;
+            let mcp_name = tool_name.replace('-', "_");
+            let arguments = parse_params(&args[1..])?;
+            let mut request = CallToolRequestParams::new(mcp_name);
             if !arguments.is_empty() {
                 request.arguments = Some(arguments);
             }
@@ -208,7 +207,8 @@ async fn connect_http(
 fn print_tools(tools: &[Tool]) {
     for tool in tools {
         let desc = tool.description.as_deref().unwrap_or("");
-        println!("{:<30} {}", tool.name, desc);
+        let cli_name = tool.name.replace('_', "-");
+        println!("{:<30} {}", cli_name, desc);
 
         if let Some(props) = tool.input_schema.get("properties")
             && let Some(obj) = props.as_object()
@@ -218,7 +218,8 @@ fn print_tools(tools: &[Tool]) {
                     .get("description")
                     .and_then(|d| d.as_str())
                     .unwrap_or("");
-                println!("  {:<26} {}", name, desc);
+                let cli_param = name.replace('_', "-");
+                println!("  {:<26} {}", cli_param, desc);
             }
         }
     }
@@ -250,7 +251,7 @@ fn parse_params(
             .ok_or_else(|| format!("Invalid parameter '{param}': expected key=value format"))?;
         let json_value = serde_json::from_str(value)
             .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
-        map.insert(key.to_string(), json_value);
+        map.insert(key.replace('-', "_"), json_value);
     }
     Ok(map)
 }
@@ -326,10 +327,10 @@ fn install_bash_completion() {
 _det_cli_tools() {{
     local cache="{cache}"
     if [ -f "$cache" ]; then
-        COMPREPLY+=( $(compgen -W "$(jq -r '.tools[].name' "$cache" 2>/dev/null)" -- "${{COMP_WORDS[COMP_CWORD]}}") )
+        COMPREPLY+=( $(compgen -W "$(jq -r '.tools[].name' "$cache" 2>/dev/null | tr '_' '-')" -- "${{COMP_WORDS[COMP_CWORD]}}") )
     fi
 }}
-complete -F _det_cli_tools det-cli call
+complete -F _det_cli_tools det-cli
 "#,
             cache = cache.display()
         )
@@ -340,23 +341,73 @@ complete -F _det_cli_tools det-cli call
     let _ = std::fs::write(&dest, buf);
 }
 
-/// Print cached tools section for --help output.
-fn print_cached_tools_section() {
+/// Print custom help output with integrated tool list.
+fn print_help() {
+    println!("det-cli — Command-line interface for Dash Evo Tool (v{PKG_VERSION})");
+    println!();
+    println!("Usage: det-cli [command] [key=value ...]");
+
+    // Tools section — the main content.
     match load_cache() {
         Some(cache) if cache.version == PKG_VERSION => {
-            println!("\nAvailable tools:");
+            println!();
+            println!("Commands:");
             for tool in &cache.tools {
                 let desc = tool.description.as_deref().unwrap_or("");
-                println!("  {:<28} {}", tool.name, desc);
+                let cli_name = tool.name.replace('_', "-");
+                println!("  {:<30} {}", cli_name, desc);
+
+                if let Some(props) = tool.input_schema.get("properties")
+                    && let Some(obj) = props.as_object()
+                {
+                    for (name, schema) in obj {
+                        let pdesc = schema
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("");
+                        let cli_param = name.replace('_', "-");
+                        println!("    {:<28} {}", cli_param, pdesc);
+                    }
+                }
             }
         }
         Some(_) => {
-            println!("\nTool cache is stale (version mismatch). Run 'det-cli tools' to refresh.");
+            println!();
+            println!("Commands:");
+            println!("  (tool cache is stale — run 'det-cli' to refresh)");
         }
         None => {
-            println!("\nRun 'det-cli' to discover and cache available tools.");
+            println!();
+            println!("Commands:");
+            println!("  (run 'det-cli' once to discover available commands)");
         }
     }
+
+    let help_line = |name: &str, desc: &str| println!("  {name:<30} {desc}");
+
+    println!();
+    println!("Management:");
+    help_line("tools", "Refresh and display available commands");
+    help_line("serve", "Run as MCP stdio server for AI agents");
+    help_line(
+        "completion <shell>",
+        "Generate shell completion (bash, zsh)",
+    );
+    println!();
+    println!("Options:");
+    help_line(
+        "--standalone",
+        "Force standalone mode even when MCP_API_KEY is set",
+    );
+    help_line(
+        "--addr <url>",
+        "Dash Evo Tool GUI address (default: http://127.0.0.1:9527/mcp)",
+    );
+    help_line("-h, --help", "Print help");
+    help_line("-V, --version", "Print version");
+    println!();
+    println!("By default, det-cli runs standalone — no GUI needed. Set MCP_API_KEY to");
+    println!("connect to a running Dash Evo Tool instance instead. See docs/CLI.md.");
 }
 
 // -- Completion --
@@ -373,10 +424,10 @@ fn generate_completion(shell: clap_complete::Shell) {
 _det_cli_tools() {{
     local cache="{cache}"
     if [ -f "$cache" ]; then
-        COMPREPLY+=( $(compgen -W "$(jq -r '.tools[].name' "$cache" 2>/dev/null)" -- "${{COMP_WORDS[COMP_CWORD]}}") )
+        COMPREPLY+=( $(compgen -W "$(jq -r '.tools[].name' "$cache" 2>/dev/null | tr '_' '-')" -- "${{COMP_WORDS[COMP_CWORD]}}") )
     fi
 }}
-complete -F _det_cli_tools det-cli call
+complete -F _det_cli_tools det-cli
 "#,
             cache = cache.display()
         );

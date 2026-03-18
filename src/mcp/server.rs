@@ -343,6 +343,8 @@ impl DashMcpService {
         let ctx = self.ctx().await?;
         let seed_hash = resolve_wallet(&ctx, &params.wallet_id)?;
 
+        wait_for_spv_sync(&ctx).await?;
+
         let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
         let wallet_arc = wallets
             .get(&seed_hash)

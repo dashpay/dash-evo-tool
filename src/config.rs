@@ -1,7 +1,8 @@
 use std::io::{self, Write};
+use std::path::Path;
 use std::str::FromStr;
 
-use crate::app_dir::app_user_data_file_path;
+use crate::app_dir::{app_user_data_file_path, data_file_path};
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dpp::dashcore::Network;
 use serde::Deserialize;
@@ -73,9 +74,9 @@ impl Config {
     ///
     /// Uses atomic write (write to temp file, then rename) to prevent
     /// config corruption if a write fails partway through.
-    pub fn save(&self) -> Result<(), ConfigError> {
+    pub fn save(&self, data_dir: &Path) -> Result<(), ConfigError> {
         let env_file_path =
-            app_user_data_file_path(".env").map_err(|e| ConfigError::SaveError { source: e })?;
+            data_file_path(data_dir, ".env").map_err(|e| ConfigError::SaveError { source: e })?;
 
         // Write to a temporary file in the same directory first, then
         // atomically replace. This prevents corruption if the write fails
@@ -194,10 +195,22 @@ impl Config {
         Ok(())
     }
 
-    /// Loads the configuration for all networks from environment variables and `.env` file.
+    /// Loads the configuration for all networks from environment variables and `.env` file
+    /// located in the default app data directory.
     pub fn load() -> Result<Self, ConfigError> {
-        // Load the .env file if available
         let env_file_path = app_user_data_file_path(".env").expect("should create .env file path");
+        Self::load_from_env_path(env_file_path)
+    }
+
+    /// Loads the configuration for all networks from environment variables and `.env` file
+    /// located in the given data directory.
+    pub fn load_from(data_dir: &Path) -> Result<Self, ConfigError> {
+        let env_file_path =
+            data_file_path(data_dir, ".env").map_err(|e| ConfigError::LoadError(e.to_string()))?;
+        Self::load_from_env_path(env_file_path)
+    }
+
+    fn load_from_env_path(env_file_path: std::path::PathBuf) -> Result<Self, ConfigError> {
         if let Err(err) = dotenvy::from_path_override(env_file_path) {
             tracing::warn!(
                 ?err,

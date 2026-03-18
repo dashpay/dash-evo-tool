@@ -1,6 +1,6 @@
 #[cfg(not(feature = "testing"))]
-use crate::app_dir::app_user_data_file_path;
-use crate::app_dir::{copy_env_file_if_not_exists, create_app_user_data_directory_if_not_exists};
+use crate::app_dir::data_file_path;
+use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
@@ -43,6 +43,7 @@ use derive_more::From;
 use eframe::{App, egui};
 use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
+use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
@@ -186,13 +187,14 @@ impl AppState {
     /// feature-gated `new()` variant instead.
     #[cfg(not(feature = "testing"))]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        create_app_user_data_directory_if_not_exists()?;
-        copy_env_file_if_not_exists();
+        let data_dir = app_user_data_dir_path()?;
+        ensure_data_dir_exists(&data_dir)?;
+        ensure_env_file(&data_dir);
         initialize_logger();
-        let db_file_path = app_user_data_file_path("data.db")?;
+        let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
-        Self::new_inner(ctx, db)
+        Self::new_inner(ctx, db, data_dir)
     }
 
     /// Creates a new `AppState` using an in-memory database for testing.
@@ -201,18 +203,20 @@ impl AppState {
     /// from reading or writing the production database.
     #[cfg(feature = "testing")]
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        create_app_user_data_directory_if_not_exists()?;
-        copy_env_file_if_not_exists();
+        let data_dir = app_user_data_dir_path()?;
+        ensure_data_dir_exists(&data_dir)?;
+        ensure_env_file(&data_dir);
         let db = Arc::new(
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
         );
-        Self::new_inner(ctx, db)
+        Self::new_inner(ctx, db, data_dir)
     }
 
     fn new_inner(
         ctx: egui::Context,
         db: Arc<Database>,
+        data_dir: PathBuf,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let settings = db.get_settings()?.map(Settings::from).unwrap_or_default();
         let password_info = settings.password_info;
@@ -223,6 +227,7 @@ impl AppState {
         let subtasks = Arc::new(TaskManager::new());
         let connection_status = Arc::new(ConnectionStatus::new());
         let mainnet_app_context = AppContext::new(
+            data_dir.clone(),
             Network::Dash,
             db.clone(),
             password_info.clone(),
@@ -232,6 +237,7 @@ impl AppState {
         )
         .ok_or("Failed to create AppContext for mainnet. Check your Dash configuration.")?;
         let testnet_app_context = AppContext::new(
+            data_dir.clone(),
             Network::Testnet,
             db.clone(),
             password_info.clone(),
@@ -240,6 +246,7 @@ impl AppState {
             ctx.clone(),
         );
         let devnet_app_context = AppContext::new(
+            data_dir.clone(),
             Network::Devnet,
             db.clone(),
             password_info.clone(),
@@ -248,6 +255,7 @@ impl AppState {
             ctx.clone(),
         );
         let local_app_context = AppContext::new(
+            data_dir,
             Network::Regtest,
             db.clone(),
             password_info,

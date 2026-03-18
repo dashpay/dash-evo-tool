@@ -2,7 +2,7 @@ use dash_sdk::dpp::dashcore::Network;
 use directories::ProjectDirs;
 #[cfg(target_os = "linux")]
 use directories::UserDirs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use crate::bundled::BundledResource;
@@ -79,10 +79,13 @@ pub fn core_cookie_path(
 
 pub fn create_app_user_data_directory_if_not_exists() -> Result<(), std::io::Error> {
     let app_data_dir = app_user_data_dir_path()?;
-    fs::create_dir_all(&app_data_dir)?;
+    ensure_data_dir_exists(&app_data_dir)
+}
 
-    // Verify directory permissions
-    let metadata = fs::metadata(&app_data_dir)?;
+/// Creates the given data directory if it does not exist and verifies it is a directory.
+pub fn ensure_data_dir_exists(data_dir: &Path) -> Result<(), std::io::Error> {
+    fs::create_dir_all(data_dir)?;
+    let metadata = fs::metadata(data_dir)?;
     if !metadata.is_dir() {
         return Err(std::io::Error::other("Created path is not a directory"));
     }
@@ -90,14 +93,21 @@ pub fn create_app_user_data_directory_if_not_exists() -> Result<(), std::io::Err
 }
 
 pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error> {
+    let app_data_dir = app_user_data_dir_path()?;
+    data_file_path(&app_data_dir, filename)
+}
+
+/// Returns the path to `filename` within the given data directory.
+///
+/// Validates that `filename` is non-empty and contains no path separators.
+pub fn data_file_path(data_dir: &Path, filename: &str) -> Result<PathBuf, std::io::Error> {
     if filename.is_empty() || filename.contains(std::path::is_separator) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "Invalid filename",
         ));
     }
-    let app_data_dir = app_user_data_dir_path()?;
-    Ok(app_data_dir.join(filename))
+    Ok(data_dir.join(filename))
 }
 
 /// If .env file does not exist in the application data directory,
@@ -105,18 +115,25 @@ pub fn app_user_data_file_path(filename: &str) -> Result<PathBuf, std::io::Error
 pub fn copy_env_file_if_not_exists() {
     let app_data_dir =
         app_user_data_dir_path().expect("Failed to determine application data directory");
-    let env_file_in_app_dir = app_data_dir.join(".env");
-    // try to write bundled .env.example file to `env_file_in_app_dir`; it will return false if the file already exists
-    // what we can safely ignore
+    ensure_env_file(&app_data_dir);
+}
+
+/// If .env file does not exist in the given data directory,
+/// copy the bundled `.env.example` file there.
+pub fn ensure_env_file(data_dir: &Path) {
+    let env_file_in_app_dir = data_dir.join(".env");
     BundledResource::DotEnvExample
         .write_to_file(&env_file_in_app_dir, false)
         .expect("Failed to write bundled .env.example file");
 }
 
-/// For a given network, create dash core config file in the application data directory if it does not exist.
+/// For a given network, create dash core config file in the given data directory if it does not exist.
 ///
 /// Returns the path to the config file or an error if it fails.
-pub fn create_dash_core_config_if_not_exists(network: Network) -> Result<PathBuf, io::Error> {
+pub fn create_dash_core_config_if_not_exists(
+    data_dir: &Path,
+    network: Network,
+) -> Result<PathBuf, io::Error> {
     let (resource, filename) = match network {
         Network::Dash => (BundledResource::CoreConfigMainnet, "mainnet.conf"),
         Network::Testnet => (BundledResource::CoreConfigTestnet, "testnet.conf"),
@@ -134,9 +151,7 @@ pub fn create_dash_core_config_if_not_exists(network: Network) -> Result<PathBuf
             ));
         }
     };
-    // Construct the full path to the config file
-    let dir = app_user_data_dir_path().expect("Failed to get app user data directory path");
-    let config_path = dir.join("dash_core_configs").join(filename);
+    let config_path = data_dir.join("dash_core_configs").join(filename);
     resource.write_to_file(&config_path, false)?;
 
     Ok(config_path)

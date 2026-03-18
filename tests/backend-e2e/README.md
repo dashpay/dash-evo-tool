@@ -35,7 +35,6 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 | Variable | Required | Description |
 |---|---|---|
 | `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
-| `DASH_EVO_DATA_DIR` | No (set automatically) | Overridden by the harness to point at a persistent temp directory. Do not set manually. |
 
 ### `.env` file handling
 
@@ -51,10 +50,10 @@ The harness uses two separate `.env` files for different purposes:
    E2E_WALLET_MNEMONIC="word1 word2 word3 ... word12"
    ```
 
-2. **Workdir `.env`** -- the harness sets `DASH_EVO_DATA_DIR` to a persistent
-   temp directory (e.g., `/tmp/dash-evo-e2e-testnet-abc1234/`), then calls
-   `copy_env_file_if_not_exists()` which copies the bundled `.env.example`
-   into the workdir. `AppContext::new()` reads this file for network
+2. **Workdir `.env`** -- the harness passes a persistent temp directory
+   (e.g., `/tmp/dash-evo-e2e-testnet-abc1234/`) as `data_dir` to
+   `AppContext::new()`, and calls `ensure_env_file()` to copy the bundled
+   `.env.example` into the workdir. `AppContext` reads this file for network
    configuration (testnet Platform endpoints, seeds, etc.).
 
 **Precedence**: a shell-exported `E2E_WALLET_MNEMONIC` takes priority over the
@@ -64,9 +63,9 @@ The harness uses two separate `.env` files for different purposes:
 Project root .env  →  dotenvy merges into process env
                       (E2E_WALLET_MNEMONIC, required)
 
-Harness sets DASH_EVO_DATA_DIR → /tmp/dash-evo-e2e-testnet-<hash>/
-    → copy_env_file_if_not_exists() copies .env.example into workdir
-    → AppContext::new() reads workdir/.env for network config
+Harness passes workdir → /tmp/dash-evo-e2e-testnet-<hash>/
+    → ensure_env_file() copies .env.example into workdir
+    → AppContext::new(workdir, ...) reads workdir/.env for network config
 ```
 
 ## Architecture
@@ -94,8 +93,8 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 
 1. Initialize tracing subscriber for structured log output.
 2. Create a persistent workdir under `/tmp/` keyed by `git rev-parse --short HEAD`.
-3. Set `DASH_EVO_DATA_DIR` to the workdir so config and `.env` files land there.
-4. Create a SQLite database and `AppContext` for `Network::Testnet`.
+3. Copy `.env.example` into the workdir via `ensure_env_file()`.
+4. Create a SQLite database and `AppContext` for `Network::Testnet`, passing the workdir as `data_dir`.
 5. Start SPV in light-client mode and wait for peer connections (60s timeout).
 6. Restore the framework wallet from `E2E_WALLET_MNEMONIC` (required).
 7. Register the wallet with `AppContext` (idempotent -- handles "already imported").
@@ -287,9 +286,8 @@ they are processed by SPV.
 ### Serial execution required
 
 The singleton `BackendTestContext` and shared wallet state mean tests must run
-with `--test-threads=1`. The harness sets environment variables during
-initialization (specifically `DASH_EVO_DATA_DIR`), which is only safe in
-single-threaded mode.
+with `--test-threads=1`. The harness shares a single SPV manager and funded
+wallet across all tests, which requires serial execution.
 
 ### Faucet availability
 

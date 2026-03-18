@@ -16,7 +16,7 @@ use crate::framework::funding;
 use crate::framework::task_runner::run_task;
 use crate::framework::wait;
 use bip39::{Language, Mnemonic};
-use dash_evo_tool::app_dir::copy_env_file_if_not_exists;
+use dash_evo_tool::app_dir::ensure_env_file;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::error::TaskError;
@@ -83,14 +83,8 @@ impl BackendTestContext {
         std::fs::create_dir_all(&workdir).expect("Failed to create workdir");
         tracing::info!("E2E workdir: {}", workdir.display());
 
-        // Point the app data dir to our workdir so config/env files live there.
-        // SAFETY: tests run with --test-threads=1, so no concurrent env var access.
-        unsafe {
-            std::env::set_var("DASH_EVO_DATA_DIR", &workdir);
-        }
-
-        // Ensure .env is present
-        copy_env_file_if_not_exists();
+        // Ensure .env is present in the workdir (no env var mutation needed).
+        ensure_env_file(&workdir);
 
         // Create database
         let db_path = workdir.join("data.db");
@@ -103,6 +97,7 @@ impl BackendTestContext {
         let egui_ctx = egui::Context::default();
 
         let app_context = AppContext::new(
+            workdir.clone(),
             Network::Testnet,
             db,
             None, // no password

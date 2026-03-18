@@ -180,7 +180,7 @@ impl AppContext {
                 .map_err(TaskError::from),
             CoreTask::GetBestChainLocks => {
                 // Load configs
-                let config = Config::load()?;
+                let config = Config::load_from(&self.data_dir)?;
 
                 let maybe_mainnet_config = config.config_for_network(Network::Dash);
                 let maybe_testnet_config = config.config_for_network(Network::Testnet);

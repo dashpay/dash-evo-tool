@@ -41,6 +41,7 @@ use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
 use egui::Context;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
@@ -56,6 +57,7 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 
 #[derive(Debug)]
 pub struct AppContext {
+    pub(crate) data_dir: PathBuf,
     pub(crate) network: Network,
     developer_mode: AtomicBool,
     pub(crate) db: Arc<Database>,
@@ -109,6 +111,7 @@ pub struct AppContext {
 
 impl AppContext {
     pub fn new(
+        data_dir: PathBuf,
         network: Network,
         db: Arc<Database>,
         password_info: Option<PasswordInfo>,
@@ -116,7 +119,7 @@ impl AppContext {
         connection_status: Arc<ConnectionStatus>,
         egui_ctx: egui::Context,
     ) -> Option<Arc<Self>> {
-        let config = match Config::load() {
+        let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
             Err(e) => {
                 tracing::error!("Failed to load config: {e}");
@@ -251,8 +254,12 @@ impl AppContext {
             false => AtomicBool::new(true), // Animations are enabled by default
         };
 
-        let spv_manager = match SpvManager::new(network, Arc::clone(&config_lock), subtasks.clone())
-        {
+        let spv_manager = match SpvManager::new(
+            &data_dir,
+            network,
+            Arc::clone(&config_lock),
+            subtasks.clone(),
+        ) {
             Ok(manager) => manager,
             Err(err) => {
                 tracing::error!(?err, ?network, "Failed to initialize SPV manager");
@@ -289,6 +296,7 @@ impl AppContext {
             saved_single_key_hash.filter(|h| single_key_wallets.contains_key(h));
 
         let app_context = AppContext {
+            data_dir,
             network,
             developer_mode: AtomicBool::new(developer_mode_enabled),
             db,

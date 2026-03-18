@@ -30,7 +30,8 @@ fn test_network_config() -> NetworkConfig {
 fn create_test_manager() -> (Arc<SpvManager>, Arc<TaskManager>) {
     let config = Arc::new(RwLock::new(test_network_config()));
     let task_manager = Arc::new(TaskManager::new());
-    let manager = SpvManager::new(Network::Testnet, config, task_manager.clone())
+    let tmp_dir = std::env::temp_dir().join("spv-test");
+    let manager = SpvManager::new(&tmp_dir, Network::Testnet, config, task_manager.clone())
         .expect("SpvManager::new should succeed");
     (manager, task_manager)
 }
@@ -541,7 +542,8 @@ async fn test_live_testnet_sync_and_shutdown() {
     let testnet_config = load_testnet_config_from_env_example();
     let config = Arc::new(RwLock::new(testnet_config));
     let task_manager = Arc::new(TaskManager::new());
-    let manager = SpvManager::new(Network::Testnet, config, task_manager.clone())
+    let tmp_dir = std::env::temp_dir().join("spv-test-live");
+    let manager = SpvManager::new(&tmp_dir, Network::Testnet, config, task_manager.clone())
         .expect("SpvManager::new should succeed");
 
     // Start SPV with no wallets (header-only sync to chain tip)

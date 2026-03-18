@@ -67,4 +67,8 @@ pub enum WalletTask {
         /// If false, fees are paid from extra wallet balance (recipient receives exact amount).
         fee_deduct_from_output: bool,
     },
+    /// Load per-address info from the CoreWallet via the platform-wallet bridge
+    LoadAddressInfo {
+        seed_hash: WalletSeedHash,
+    },
 }

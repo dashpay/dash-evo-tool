@@ -37,6 +37,7 @@ pub use platform_wallet::PlatformWalletManager;
 // ── Sub-wallet types ───────────────────────────────────────────────────
 
 pub use platform_wallet::CoreWallet;
+pub use platform_wallet::CoreAddressInfo;
 pub use platform_wallet::wallet::WalletId;
 
 // ── Supporting types ───────────────────────────────────────────────────

@@ -197,6 +197,8 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         address: String,
     },
+    /// Per-address info loaded from the CoreWallet bridge
+    AddressInfo(Vec<crate::platform_wallet_bridge::CoreAddressInfo>),
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
         seed_hash: WalletSeedHash,
@@ -460,6 +462,11 @@ impl AppContext {
                     fee_deduct_from_output,
                 )
                 .await
+            }
+            WalletTask::LoadAddressInfo { seed_hash } => {
+                let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+                let info = platform_wallet.core().all_address_info().await;
+                Ok(BackendTaskSuccessResult::AddressInfo(info))
             }
         }
     }

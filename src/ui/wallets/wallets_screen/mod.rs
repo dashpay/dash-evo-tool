@@ -7,7 +7,9 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
+use crate::platform_wallet_bridge::CoreAddressInfo;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
 use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
@@ -125,6 +127,8 @@ pub struct WalletsBalancesScreen {
     pending_list_wallet_hash: Option<[u8; 32]>,
     /// Whether the wallet pending list is a single-key wallet
     pending_list_is_single_key: bool,
+    /// Cached per-address info from the CoreWallet bridge (populated asynchronously)
+    cached_address_info: Option<Vec<CoreAddressInfo>>,
 }
 
 impl WalletsBalancesScreen {
@@ -225,6 +229,7 @@ impl WalletsBalancesScreen {
             pending_list_core_wallets: false,
             pending_list_wallet_hash: None,
             pending_list_is_single_key: false,
+            cached_address_info: None,
         }
     }
 
@@ -323,6 +328,7 @@ impl WalletsBalancesScreen {
         self.selected_wallet = wallet;
         self.selected_single_key_wallet = None;
         self.selected_account = None;
+        self.cached_address_info = None;
 
         if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
@@ -343,6 +349,7 @@ impl WalletsBalancesScreen {
         self.selected_wallet = None;
         self.selected_account = None;
         self.platform_sync_info = None;
+        self.cached_address_info = None;
         self.utxo_page = 0;
 
         if let Ok(hash) = wallet.read().map(|g| g.key_hash) {
@@ -1607,8 +1614,28 @@ impl ScreenLike for WalletsBalancesScreen {
             self.pending_platform_balance_refresh.take()
         {
             AppAction::BackendTask(BackendTask::WalletTask(
-                crate::backend_task::wallet::WalletTask::FetchPlatformAddressBalances { seed_hash },
+                WalletTask::FetchPlatformAddressBalances { seed_hash },
             ))
+        } else {
+            AppAction::None
+        };
+
+        // Dispatch LoadAddressInfo when the cache is empty and a wallet is selected
+        let load_address_info_action = if self.cached_address_info.is_none() {
+            self.selected_wallet
+                .as_ref()
+                .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+                .and_then(|seed_hash| {
+                    // Only dispatch if the platform wallet bridge is available
+                    if self.app_context.get_platform_wallet(&seed_hash).is_some() {
+                        Some(AppAction::BackendTask(BackendTask::WalletTask(
+                            WalletTask::LoadAddressInfo { seed_hash },
+                        )))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(AppAction::None)
         } else {
             AppAction::None
         };
@@ -2085,6 +2112,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
         // Combine with pending refresh action
         action |= pending_refresh_action;
+        action |= load_address_info_action;
         action
     }
 
@@ -2145,6 +2173,8 @@ impl ScreenLike for WalletsBalancesScreen {
         match backend_task_success_result {
             crate::ui::BackendTaskSuccessResult::RefreshedWallet { warning } => {
                 self.refreshing = false;
+                // Invalidate cached address info so it's re-fetched from the bridge
+                self.cached_address_info = None;
                 // Refresh the cached platform sync info so the panel shows
                 // updated timestamps and block heights after a wallet sync.
                 let seed_hash = self
@@ -2278,6 +2308,9 @@ impl ScreenLike for WalletsBalancesScreen {
                     MessageType::Success,
                 );
             }
+            crate::ui::BackendTaskSuccessResult::AddressInfo(info) => {
+                self.cached_address_info = Some(info);
+            }
             crate::ui::BackendTaskSuccessResult::Message(msg) => {
                 self.refreshing = false;
                 MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
@@ -2386,6 +2419,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn refresh(&mut self) {
         self.refreshing = false;
+        self.cached_address_info = None;
         self.refresh_on_arrival();
     }
 }

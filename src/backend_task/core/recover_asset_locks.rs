@@ -19,7 +19,7 @@ impl AppContext {
         wallet: Arc<RwLock<Wallet>>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let (known_addresses, seed_hash, already_tracked_txids, core_wallet_name) = {
-            let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
+            let wallet_guard = wallet.read()?;
             let addresses: Vec<Address> = wallet_guard.known_addresses.keys().cloned().collect();
             let tracked: HashSet<_> = wallet_guard
                 .unused_asset_locks
@@ -184,7 +184,7 @@ impl AppContext {
 
             // Add to wallet's in-memory unused_asset_locks
             {
-                let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+                let mut wallet_guard = wallet.write()?;
 
                 let already_exists = wallet_guard
                     .unused_asset_locks
@@ -326,7 +326,7 @@ impl AppContext {
 
                 // Add to wallet
                 {
-                    let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+                    let mut wallet_guard = wallet.write()?;
 
                     let already_exists = wallet_guard
                         .unused_asset_locks
@@ -358,7 +358,7 @@ impl AppContext {
         // (credit address not in known_addresses)
         let mut txids_to_remove = Vec::new();
         let removed_count = {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
+            let mut wallet_guard = wallet.write()?;
             let before_count = wallet_guard.unused_asset_locks.len();
 
             wallet_guard.unused_asset_locks.retain(|(tx, _, _, _, _)| {

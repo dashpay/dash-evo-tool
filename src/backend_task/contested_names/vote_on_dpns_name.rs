@@ -1,5 +1,6 @@
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
@@ -24,28 +25,25 @@ impl AppContext {
         voters: &[QualifiedIdentity],
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
-    ) -> Result<BackendTaskSuccessResult, String> {
-        // Send a refresh task to the frontend
-        // In particular, use this to show the cast is in progress on Scheduled Votes Screen
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         sender
             .send(TaskResult::Refresh)
             .await
-            .map_err(|e| format!("Error voting: {}", e))?;
+            .map_err(|_| TaskError::InternalSendError)?;
 
-        // Fetch DPNS contract and document type information
         let data_contract = self.dpns_contract.as_ref();
         let document_type = data_contract
             .document_type_for_name("domain")
-            .map_err(|_| "DPNS contract missing 'domain' document type".to_string())?;
+            .map_err(|_| TaskError::DataContractNotFound)?;
 
         let Some(contested_index) = document_type.find_contested_index() else {
-            return Err("Error voting: No contested index on dpns domains".to_string());
+            return Err(TaskError::ContractSchemaMismatch {
+                detail: "DPNS domain document type has no contested index",
+            });
         };
 
-        // Hardcoded values for DPNS
         let index_values = [Value::from("dash"), Value::Text(name.to_owned())];
 
-        // Create the vote poll to use in the vote
         let vote_poll = ContestedDocumentResourceVotePoll {
             index_name: contested_index.name.clone(),
             index_values: index_values.to_vec(),
@@ -55,17 +53,14 @@ impl AppContext {
 
         let mut vote_results = vec![];
 
-        // Iterate over the provided voters (QualifiedIdentity)
         for qualified_identity in voters.iter() {
             if let Some((_, public_key)) = &qualified_identity.associated_voter_identity {
-                // Create the resource vote
                 let resource_vote = ResourceVoteV0 {
                     vote_poll: vote_poll.clone().into(),
                     resource_vote_choice: vote_choice,
                 };
                 let vote = Vote::ResourceVote(ResourceVote::V0(resource_vote));
 
-                // Submit the vote to the platform and await a response
                 let result = vote
                     .put_to_platform_and_wait_for_response(
                         qualified_identity.identity.id(),
@@ -76,14 +71,13 @@ impl AppContext {
                     )
                     .await
                     .map(|_| ())
-                    .map_err(|e| format!("Error voting: {}", e));
+                    .map_err(|e| TaskError::from(e).to_string());
 
                 vote_results.push((name.to_owned(), vote_choice, result));
             } else {
-                return Err(format!(
-                    "Error voting: No associated voter identity for qualified identity: {}",
-                    qualified_identity.identity.id().to_string(Encoding::Base58)
-                ));
+                return Err(TaskError::NoVotingIdentity {
+                    identity_id: qualified_identity.identity.id().to_string(Encoding::Base58),
+                });
             }
         }
 

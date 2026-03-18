@@ -25,7 +25,7 @@ use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_ch
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 /// Which DPNS sub-screen is currently showing.
@@ -471,7 +471,7 @@ impl DPNSScreen {
                                         .color(DashColors::text_primary(dark_mode)),
                                 );
                                 if let Some(tooltip) = highlighted {
-                                    label_response.on_hover_text(tooltip);
+                                    label_response.info_tooltip(tooltip);
                                 }
                             });
 

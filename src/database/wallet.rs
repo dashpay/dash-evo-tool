@@ -1266,8 +1266,27 @@ fn check_address_for_network(
 #[derive(thiserror::Error, Debug)]
 /// Error type for wallet operations.
 pub enum WalletError {
-    #[error("Error in address: {0}")]
+    /// Invalid address format.
+    #[error("The wallet address could not be read. Please check the format and try again.")]
     AddressError(#[from] dashcore::address::Error),
+
+    /// HD key derivation failed (BIP-32/BIP-44).
+    #[error(
+        "Could not derive a wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+    )]
+    KeyDerivation {
+        #[from]
+        source: dash_sdk::dpp::key_wallet::bip32::Error,
+    },
+
+    /// Signature hash computation failed during transaction signing.
+    #[error("Could not prepare the transaction for signing. Please retry.")]
+    Sighash {
+        /// Zero-based index of the transaction input that failed.
+        input_index: usize,
+        #[source]
+        source: dash_sdk::dpp::dashcore::sighash::Error,
+    },
 }
 
 impl From<WalletError> for rusqlite::Error {

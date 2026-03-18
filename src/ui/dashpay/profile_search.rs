@@ -1,5 +1,6 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -251,8 +252,9 @@ impl ProfileSearchScreen {
     }
 
     pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        self.loading = false;
+        // Don't touch loading state here — display_message can be called for
+        // unrelated task completions while we're waiting for search results.
+        // Loading state is managed by search_profiles() and display_task_result().
     }
 }
 
@@ -318,10 +320,9 @@ impl ScreenLike for ProfileSearchScreen {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        self.loading = false;
-
         match result {
             BackendTaskSuccessResult::DashPayProfileSearchResults(results) => {
+                self.loading = false;
                 self.search_results.clear();
 
                 // Convert backend results to UI results
@@ -366,8 +367,16 @@ impl ScreenLike for ProfileSearchScreen {
                 // Message display is handled globally by AppState
             }
             _ => {
-                // Ignore other results
+                // Ignore other results — don't touch loading state for
+                // results from unrelated tasks
             }
         }
+    }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // Clear loading state on error so the spinner stops.
+        // Return false to let AppState show the default error banner.
+        self.loading = false;
+        false
     }
 }

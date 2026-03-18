@@ -1,10 +1,12 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
@@ -24,19 +26,17 @@ impl AppContext {
         mut qualified_identity: QualifiedIdentity,
         mut public_key_to_add: QualifiedIdentityPublicKey,
         private_key: [u8; 32],
-    ) -> Result<BackendTaskSuccessResult, String> {
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
         let new_identity_nonce = sdk
             .get_identity_nonce(qualified_identity.identity.id(), true, None)
-            .await
-            .map_err(|e| format!("Fetch nonce error: {}", e))?;
+            .await?;
         let Some(master_key) = qualified_identity.can_sign_with_master_key() else {
-            return Err("Master key not found".to_string());
+            return Err(TaskError::MasterKeyNotFound);
         };
         let master_key_id = master_key.identity_public_key.id();
         let identity = Identity::fetch_by_identifier(sdk, qualified_identity.identity.id())
-            .await
-            .map_err(|e| format!("Fetch nonce error: {}", e))?
-            .ok_or("Identity not found".to_string())?;
+            .await?
+            .ok_or(TaskError::IdentityNotFoundLocally)?;
         qualified_identity.identity = identity;
         qualified_identity.identity.bump_revision();
         public_key_to_add
@@ -64,12 +64,11 @@ impl AppContext {
             sdk.version(),
             None,
         )
-        .map_err(|e| format!("IdentityUpdateTransition error: {}", e))?;
+        .map_err(|e| TaskError::IdentityUpdateTransitionError {
+            source_error: Box::new(SdkError::Protocol(e)),
+        })?;
 
-        let result = state_transition
-            .broadcast_and_wait(sdk, None)
-            .await
-            .map_err(|e| format!("Broadcasting error: {}", e))?;
+        let result = state_transition.broadcast_and_wait(sdk, None).await?;
 
         // Log and handle the proof result
         tracing::info!("AddKeyToIdentity proof result: {}", result);
@@ -122,7 +121,7 @@ impl AppContext {
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         self.update_local_qualified_identity(&qualified_identity)
-            .map(|_| BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
-            .map_err(|e| format!("Database error: {}", e))
+            .map_err(|e| TaskError::Database { source: e })?;
+        Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
     }
 }

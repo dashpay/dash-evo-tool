@@ -25,6 +25,20 @@ use std::sync::atomic::Ordering;
 use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
 
+fn is_unique_constraint_violation(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                extended_code: 2067, // SQLITE_CONSTRAINT_UNIQUE
+                ..
+            },
+            _,
+        )
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportType {
     Mnemonic,
@@ -172,7 +186,7 @@ impl ImportMnemonicScreen {
             .db
             .store_single_key_wallet(&wallet, self.app_context.network)
             .map_err(|e| {
-                if e.to_string().contains("UNIQUE constraint failed") {
+                if is_unique_constraint_violation(&e) {
                     "This key has already been imported.".to_string()
                 } else {
                     e.to_string()

@@ -1,8 +1,7 @@
 //! det-cli -- Command-line client for Dash Evo Tool's MCP server.
 //!
 //! Connects to the MCP server, discovers tools dynamically, and calls them.
-//! Supports HTTP transport (when MCP_API_KEY is configured) and stdio mode
-//! (spawns dash-evo-tool-mcp as a child process).
+//! Mode is selected automatically: HTTP when MCP_API_KEY is set, stdio otherwise.
 
 use std::path::PathBuf;
 
@@ -13,23 +12,21 @@ use rmcp::{RoleClient, ServiceExt};
 
 type McpClient = RunningService<RoleClient, ()>;
 
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser)]
-#[command(
-    name = "det-cli",
-    about = "CLI client for Dash Evo Tool (default: list tools)"
-)]
+#[command(name = "det-cli", version, about = "CLI client for Dash Evo Tool")]
 struct Cli {
-    /// Force stdio mode: spawn dash-evo-tool-mcp as a child process.
-    /// Default when MCP_API_KEY is not configured.
+    /// Force stdio mode (spawn dash-evo-tool-mcp as a child process)
     #[arg(long)]
     standalone: bool,
 
-    /// HTTP server address (HTTP mode only).
-    /// Defaults to http://{MCP_LISTEN}/mcp, or http://127.0.0.1:9527/mcp if MCP_LISTEN is unset.
+    /// HTTP server address (ignored in stdio mode).
+    /// Derived from MCP_LISTEN if not set.
     #[arg(long)]
     addr: Option<String>,
 
-    /// Bearer token for HTTP auth. Reads MCP_API_KEY from env/.env automatically.
+    /// Bearer token for HTTP auth (ignored in stdio mode)
     #[arg(long, env = "MCP_API_KEY")]
     bearer: Option<String>,
 
@@ -37,7 +34,7 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum Commands {
     /// List available tools from the MCP server
     Tools,
@@ -49,8 +46,6 @@ enum Commands {
         #[arg(trailing_var_arg = true)]
         params: Vec<String>,
     },
-    /// Cache tool schemas locally for shell completion
-    Cache,
     /// Generate shell completion script
     Completion {
         /// Shell type
@@ -58,18 +53,39 @@ enum Commands {
     },
 }
 
+/// Resolve the HTTP address from CLI flag, env var, or default.
+fn resolve_addr(addr: Option<String>) -> String {
+    if let Some(a) = addr {
+        return a;
+    }
+    if let Ok(listen) = std::env::var("MCP_LISTEN")
+        && !listen.is_empty()
+    {
+        return format!("http://{listen}/mcp");
+    }
+    "http://127.0.0.1:9527/mcp".to_string()
+}
+
+/// Load the app's .env file. Shell env vars take precedence (dotenvy won't override).
+fn load_app_env() {
+    if let Ok(data_dir) = dash_evo_tool::app_dir::app_user_data_dir_path() {
+        let env_path = data_dir.join(".env");
+        if env_path.exists() {
+            let _ = dotenvy::from_path(&env_path);
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load app's .env before clap reads env vars — won't override vars already set in the shell.
+    // Load .env before clap parses env vars (shell > .env > defaults).
     load_app_env();
 
-    // Intercept --help / -h to append cached tool list to clap's output.
+    // Intercept bare invocation and --help to append cached tool list.
     let args: Vec<String> = std::env::args().collect();
-    if args.len() <= 1
-        || (args.len() == 2 && (args[1] == "--help" || args[1] == "-h" || args[1] == "help"))
-    {
+    if args.len() >= 2 && (args[1] == "--help" || args[1] == "-h") {
         Cli::command().print_help()?;
         println!();
-        print_cached_tools_help();
+        print_cached_tools_section();
         return Ok(());
     }
 
@@ -88,40 +104,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.block_on(run(cli))
 }
 
-/// Load the app's `.env` file into the process environment.
-/// Variables already set in the shell are not overridden.
-fn load_app_env() {
-    if let Ok(data_dir) = dash_evo_tool::app_dir::app_user_data_dir_path() {
-        let env_path = data_dir.join(".env");
-        if env_path.exists() {
-            let _ = dotenvy::from_path(&env_path);
-        }
-    }
-}
-
-/// Print tool list from cache as a help appendix, or a hint to populate the cache.
-fn print_cached_tools_help() {
-    match load_cached_tools() {
-        Ok(tools) if !tools.is_empty() => {
-            println!("\nAvailable tools (cached — run 'det-cli cache' to refresh):");
-            for tool in &tools {
-                let desc = tool.description.as_deref().unwrap_or("");
-                println!("  {:<30} {}", tool.name, desc);
-            }
-        }
-        _ => {
-            println!(
-                "\nRun 'det-cli cache' to populate the tool list, then 'det-cli --help' to see available tools."
-            );
-        }
-    }
-}
-
-/// Determine connection mode and run the requested command.
-///
-/// Uses stdio mode when `--standalone` is set or no bearer token is available.
-/// Uses HTTP mode when a bearer token is configured (via flag, env, or .env).
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // Mode selection: --standalone or no bearer → stdio; bearer present → HTTP.
     let use_stdio = cli.standalone || cli.bearer.is_none();
 
     let client: McpClient = if use_stdio {
@@ -131,10 +115,12 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         connect_http(&addr, cli.bearer.as_deref()).await?
     };
 
-    match cli.command.unwrap_or(Commands::Tools) {
+    let command = cli.command.unwrap_or(Commands::Tools);
+    match command {
         Commands::Tools => {
             let tools = client.peer().list_all_tools().await?;
             print_tools(&tools);
+            save_cache(&client, &tools);
         }
         Commands::Call { tool, params } => {
             let arguments = parse_params(&params)?;
@@ -145,28 +131,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let result = client.peer().call_tool(request).await?;
             print_result(&result);
         }
-        Commands::Cache => {
-            let tools = client.peer().list_all_tools().await?;
-            save_cache(&tools)?;
-            eprintln!("Cached {} tools", tools.len());
-        }
         Commands::Completion { .. } => unreachable!(),
     }
 
     Ok(())
-}
-
-/// Resolve the MCP server URL from the explicit flag, MCP_LISTEN env var, or the default.
-fn resolve_addr(addr: Option<String>) -> String {
-    if let Some(a) = addr {
-        return a;
-    }
-    if let Ok(listen) = std::env::var("MCP_LISTEN")
-        && !listen.is_empty()
-    {
-        return format!("http://{listen}/mcp");
-    }
-    "http://127.0.0.1:9527/mcp".to_string()
 }
 
 async fn connect_standalone() -> Result<McpClient, Box<dyn std::error::Error>> {
@@ -247,6 +215,13 @@ fn parse_params(
 
 // -- Cache --
 
+/// Versioned tool cache stored on disk.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ToolCache {
+    version: String,
+    tools: Vec<Tool>,
+}
+
 fn cache_dir() -> PathBuf {
     directories::ProjectDirs::from("org", "dash", "det-cli")
         .map(|p| p.cache_dir().to_path_buf())
@@ -257,17 +232,47 @@ fn cache_path() -> PathBuf {
     cache_dir().join("tools.json")
 }
 
-fn load_cached_tools() -> Result<Vec<Tool>, Box<dyn std::error::Error>> {
-    let json = std::fs::read_to_string(cache_path())?;
-    Ok(serde_json::from_str(&json)?)
+fn load_cache() -> Option<ToolCache> {
+    let data = std::fs::read_to_string(cache_path()).ok()?;
+    serde_json::from_str(&data).ok()
 }
 
-fn save_cache(tools: &[Tool]) -> Result<(), Box<dyn std::error::Error>> {
+/// Save tools to cache. Extracts server version from the peer info.
+fn save_cache(client: &McpClient, tools: &[Tool]) {
+    let version = client
+        .peer()
+        .peer_info()
+        .map(|info| info.server_info.version.clone())
+        .unwrap_or_else(|| PKG_VERSION.to_string());
+
+    let cache = ToolCache {
+        version,
+        tools: tools.to_vec(),
+    };
+
     let dir = cache_dir();
-    std::fs::create_dir_all(&dir)?;
-    let json = serde_json::to_string_pretty(tools)?;
-    std::fs::write(cache_path(), json)?;
-    Ok(())
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = serde_json::to_string_pretty(&cache).map(|json| std::fs::write(cache_path(), json));
+    }
+}
+
+/// Print cached tools section for --help output.
+fn print_cached_tools_section() {
+    match load_cache() {
+        Some(cache) if cache.version == PKG_VERSION => {
+            println!("\nAvailable tools:");
+            for tool in &cache.tools {
+                let desc = tool.description.as_deref().unwrap_or("");
+                println!("  {:<28} {}", tool.name, desc);
+            }
+        }
+        Some(_) => {
+            println!("\nTool cache is stale (version mismatch). Run 'det-cli tools' to refresh.");
+        }
+        None => {
+            println!("\nRun 'det-cli' to discover and cache available tools.");
+        }
+    }
 }
 
 // -- Completion --
@@ -284,7 +289,7 @@ fn generate_completion(shell: clap_complete::Shell) {
 _det_cli_tools() {{
     local cache="{cache}"
     if [ -f "$cache" ]; then
-        COMPREPLY+=( $(compgen -W "$(jq -r '.[].name' "$cache" 2>/dev/null)" -- "${{COMP_WORDS[COMP_CWORD]}}") )
+        COMPREPLY+=( $(compgen -W "$(jq -r '.tools[].name' "$cache" 2>/dev/null)" -- "${{COMP_WORDS[COMP_CWORD]}}") )
     fi
 }}
 complete -F _det_cli_tools det-cli call

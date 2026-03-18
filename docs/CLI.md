@@ -19,9 +19,6 @@ det-cli list-wallets
 
 # Generate a receive address
 det-cli generate-receive-address wallet-id=savings
-
-# List wallets in Dash Core
-det-cli list-core-wallets
 ```
 
 Run `det-cli --help` to see all available commands with descriptions.
@@ -105,9 +102,6 @@ det-cli list-wallets
 
 # Generate a receive address
 det-cli generate-receive-address wallet-id=savings
-
-# List wallets in Dash Core
-det-cli list-core-wallets
 
 # Use testnet
 det-cli --network testnet list-wallets

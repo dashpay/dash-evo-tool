@@ -1,6 +1,5 @@
 //! MCP service definition and tool implementations.
 
-use crate::backend_task::core::CoreTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -198,24 +197,6 @@ impl DashMcpService {
         match result {
             BackendTaskSuccessResult::GeneratedReceiveAddress { address, .. } => {
                 Ok(CallToolResult::success(vec![Content::text(address)]))
-            }
-            other => Ok(CallToolResult::success(vec![Content::text(format!(
-                "{:?}",
-                other
-            ))])),
-        }
-    }
-
-    #[tool(description = "List wallet names currently loaded in Dash Core")]
-    async fn list_core_wallets(&self) -> Result<CallToolResult, McpError> {
-        let ctx = self.ctx().await?;
-        let task = BackendTask::CoreTask(CoreTask::ListCoreWallets);
-        let result = dispatch_task(&ctx, task).await.map_err(task_error_to_mcp)?;
-        match result {
-            BackendTaskSuccessResult::CoreWalletsList(wallets) => {
-                let json = serde_json::to_string_pretty(&wallets)
-                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             other => Ok(CallToolResult::success(vec![Content::text(format!(
                 "{:?}",

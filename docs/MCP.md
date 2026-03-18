@@ -43,7 +43,6 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 |---|---|---|
 | `list_wallets` | — | List wallets loaded in the app (alias + seed hash) |
 | `generate_receive_address` | `wallet_id` | Generate a new receive address for a wallet. Pass the alias or 64-char hex seed hash. |
-| `list_core_wallets` | — | List wallets loaded in Dash Core |
 
 ## Quick examples
 

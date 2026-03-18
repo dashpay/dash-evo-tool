@@ -106,6 +106,12 @@ det-cli generate-receive-address wallet-id=savings
 # Show active network and available networks
 det-cli network
 
+# Check wallet balance
+det-cli wallet-balances wallet-id=savings
+
+# Send 0.01 DASH (1,000,000 duffs) to an address
+det-cli send-core-funds wallet-id=savings address=yXyz... amount-duffs=1000000
+
 # Run as stdio MCP server for Claude Desktop
 det-cli serve
 ```

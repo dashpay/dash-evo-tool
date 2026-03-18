@@ -44,6 +44,8 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `network` | — | Show active network and available configured networks |
 | `list_wallets` | — | List wallets loaded in the app (alias + seed hash) |
 | `generate_receive_address` | `wallet_id` | Generate a new receive address for a wallet. Pass the alias or 64-char hex seed hash. |
+| `wallet_balances` | `wallet_id` | Show wallet balances (total, confirmed, unconfirmed) in duffs |
+| `send_core_funds` | `wallet_id`, `address`, `amount_duffs` | Send DASH from a wallet to an address (amount in duffs) |
 
 ## Quick examples
 

@@ -1,5 +1,6 @@
 //! MCP service definition and tool implementations.
 
+use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -20,6 +21,16 @@ const SPV_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600
 struct WalletIdParam {
     /// Wallet alias or 64-char hex seed hash
     wallet_id: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct SendFundsParams {
+    /// Wallet alias or 64-char hex seed hash (sender)
+    wallet_id: String,
+    /// Recipient address (Dash address string)
+    address: String,
+    /// Amount to send in duffs (1 DASH = 100,000,000 duffs)
+    amount_duffs: u64,
 }
 
 /// Abstracts how the MCP service obtains its AppContext.
@@ -197,6 +208,35 @@ fn network_display_name(network: dash_sdk::dpp::dashcore::Network) -> &'static s
     }
 }
 
+/// Wait for SPV to reach fully-synced (green) state.
+async fn wait_for_spv_sync(ctx: &AppContext) -> Result<(), McpError> {
+    let deadline = tokio::time::Instant::now() + SPV_WAIT_TIMEOUT;
+    loop {
+        let _ = ctx.connection_status.trigger_refresh(ctx);
+        let state = ctx.connection_status.overall_state();
+        if state == OverallConnectionState::Synced {
+            return Ok(());
+        }
+        if state == OverallConnectionState::Error {
+            return Err(McpError::internal_error(
+                "SPV connection failed. Check your network configuration.".to_string(),
+                None,
+            ));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(McpError::internal_error(
+                format!(
+                    "SPV sync timed out after {} seconds (state: {state:?}). \
+                     Check your network.",
+                    SPV_WAIT_TIMEOUT.as_secs()
+                ),
+                None,
+            ));
+        }
+        tokio::time::sleep(SPV_WAIT_POLL_INTERVAL).await;
+    }
+}
+
 /// Return a comma-separated list of configured network names.
 fn available_network_names(config: &crate::config::Config) -> String {
     let mut names = Vec::new();
@@ -270,32 +310,7 @@ impl DashMcpService {
         let ctx = self.ctx().await?;
         let seed_hash = resolve_wallet(&ctx, &params.wallet_id)?;
 
-        // Wait for SPV to reach "Synced" (green) state so wallets are loaded.
-        let deadline = tokio::time::Instant::now() + SPV_WAIT_TIMEOUT;
-        loop {
-            let _ = ctx.connection_status.trigger_refresh(&ctx);
-            let state = ctx.connection_status.overall_state();
-            if state == OverallConnectionState::Synced {
-                break;
-            }
-            if state == OverallConnectionState::Error {
-                return Err(McpError::internal_error(
-                    "SPV connection failed. Check your network configuration.".to_string(),
-                    None,
-                ));
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(McpError::internal_error(
-                    format!(
-                        "SPV sync timed out after {} seconds (state: {state:?}). \
-                         Check your network.",
-                        SPV_WAIT_TIMEOUT.as_secs()
-                    ),
-                    None,
-                ));
-            }
-            tokio::time::sleep(SPV_WAIT_POLL_INTERVAL).await;
-        }
+        wait_for_spv_sync(&ctx).await?;
 
         // Verify the specific wallet is loaded into SPV's det_wallets map.
         if ctx.spv_manager.wallet_id_for_seed(seed_hash).is_none() {
@@ -310,6 +325,93 @@ impl DashMcpService {
         match result {
             BackendTaskSuccessResult::GeneratedReceiveAddress { address, .. } => {
                 Ok(CallToolResult::success(vec![Content::text(address)]))
+            }
+            other => Ok(CallToolResult::success(vec![Content::text(format!(
+                "{:?}",
+                other
+            ))])),
+        }
+    }
+
+    #[tool(
+        description = "Show wallet balances (total, confirmed, unconfirmed) in duffs. Pass wallet alias or hex seed hash."
+    )]
+    async fn wallet_balances(
+        &self,
+        Parameters(params): Parameters<WalletIdParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx().await?;
+        let seed_hash = resolve_wallet(&ctx, &params.wallet_id)?;
+
+        let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let wallet_arc = wallets
+            .get(&seed_hash)
+            .ok_or_else(|| McpError::invalid_params("Wallet not found".to_string(), None))?;
+        let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
+
+        let json = serde_json::json!({
+            "alias": wallet.alias,
+            "total_duffs": wallet.total_balance_duffs(),
+            "confirmed_duffs": wallet.confirmed_balance_duffs(),
+            "unconfirmed_duffs": wallet.unconfirmed_balance_duffs(),
+        });
+        let text = serde_json::to_string_pretty(&json)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(
+        description = "Send DASH from a wallet to an address. Amount is in duffs (1 DASH = 100,000,000 duffs)."
+    )]
+    async fn send_core_funds(
+        &self,
+        Parameters(params): Parameters<SendFundsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx().await?;
+        let seed_hash = resolve_wallet(&ctx, &params.wallet_id)?;
+
+        wait_for_spv_sync(&ctx).await?;
+
+        let wallet_arc = {
+            let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or_else(|| McpError::invalid_params("Wallet not found".to_string(), None))?
+        };
+
+        let request = WalletPaymentRequest {
+            recipients: vec![PaymentRecipient {
+                address: params.address,
+                amount_duffs: params.amount_duffs,
+            }],
+            subtract_fee_from_amount: false,
+            memo: None,
+            override_fee: None,
+        };
+
+        let task = BackendTask::CoreTask(CoreTask::SendWalletPayment {
+            wallet: wallet_arc,
+            request,
+        });
+
+        let result = dispatch_task(&ctx, task).await.map_err(task_error_to_mcp)?;
+        match result {
+            BackendTaskSuccessResult::WalletPayment {
+                txid,
+                recipients,
+                total_amount,
+            } => {
+                let json = serde_json::json!({
+                    "txid": txid,
+                    "recipients": recipients.iter().map(|(addr, amt)| {
+                        serde_json::json!({"address": addr, "amount_duffs": amt})
+                    }).collect::<Vec<_>>(),
+                    "total_amount_duffs": total_amount,
+                });
+                let text = serde_json::to_string_pretty(&json)
+                    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::success(vec![Content::text(text)]))
             }
             other => Ok(CallToolResult::success(vec![Content::text(format!(
                 "{:?}",

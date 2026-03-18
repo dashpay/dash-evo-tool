@@ -94,18 +94,12 @@ raw-cpuid = "11.5.0"
 
 [features]
 testing = []
-mcp-stdio = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-io"]
-mcp-http = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
-cli = ["dep:rmcp", "rmcp/client", "rmcp/transport-child-process", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
+mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
+cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
-
-[[bin]]
-name = "dash-evo-tool-mcp"
-path = "src/bin/mcp_server.rs"
-required-features = ["mcp-stdio"]
 
 [[bin]]
 name = "det-cli"
@@ -123,7 +117,7 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp-stdio\", \"mcp-http\", \"cli\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\", \"cli\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"

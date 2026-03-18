@@ -1,10 +1,8 @@
 # MCP Server
 
-Dash Evo Tool exposes wallet and core operations via the [Model Context Protocol](https://modelcontextprotocol.io/). Two transport modes are available, each behind its own Cargo feature flag.
+Dash Evo Tool exposes wallet and core operations via the [Model Context Protocol](https://modelcontextprotocol.io/). Two modes are available:
 
-## Transport modes
-
-### HTTP (`mcp-http`)
+## HTTP mode (`mcp` feature)
 
 Embedded in the GUI app. Shares the running app's `AppContext` and follows network switches in real time.
 
@@ -14,22 +12,21 @@ Routes:
 - `GET /health` — unauthenticated liveness check, returns `OK`
 - `POST /mcp` — MCP protocol endpoint, requires `Authorization: Bearer <key>`
 
-### Stdio (`mcp-stdio`)
+Build: `cargo build --features mcp`
 
-Standalone binary `dash-evo-tool-mcp`. No GUI. Communicates via stdin/stdout using the MCP protocol. `AppContext` is initialized lazily on the first tool call, reading the same `.env` and database as the GUI app.
+## Stdio mode (via `det-cli serve`)
 
-## Building
+The `det-cli` binary includes a built-in MCP stdio server. No separate binary needed.
 
 ```bash
-# HTTP transport (GUI app)
-cargo build --features mcp-http
-
-# Stdio transport (standalone binary)
-cargo build --features mcp-stdio
-
-# CLI client (see docs/CLI.md)
-cargo build --features cli
+det-cli serve
 ```
+
+Communicates via stdin/stdout using the MCP protocol. `AppContext` is initialized lazily on the first tool call, reading the same `.env` and database as the GUI app. Configure the network via `MCP_NETWORK` env var.
+
+Build: `cargo build --features cli`
+
+See [CLI.md](CLI.md) for full `det-cli` documentation.
 
 ## Environment variables
 
@@ -59,7 +56,8 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "dash-evo-tool": {
-      "command": "dash-evo-tool-mcp",
+      "command": "det-cli",
+      "args": ["serve"],
       "env": {
         "MCP_NETWORK": "mainnet"
       }
@@ -68,7 +66,7 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-`dash-evo-tool-mcp` must be on `PATH` (or use the full path to the binary).
+`det-cli` must be on `PATH` (or use the full path to the binary).
 
 ### HTTP with curl
 

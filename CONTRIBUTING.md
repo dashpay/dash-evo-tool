@@ -60,6 +60,21 @@ Run the application:
 cargo run
 ```
 
+## Feature flags
+
+| Feature | Description |
+|---|---|
+| `mcp` | MCP HTTP server embedded in the GUI app (see [docs/MCP.md](docs/MCP.md)) |
+| `cli` | `det-cli` command-line client with in-process MCP service (see [docs/CLI.md](docs/CLI.md)) |
+| `testing` | Test-only utilities |
+
+Build with a specific feature:
+
+```shell
+cargo build --features mcp        # GUI app + HTTP MCP server
+cargo build --features cli         # det-cli binary
+```
+
 ## Code quality
 
 Before submitting changes, run the formatter and linter:

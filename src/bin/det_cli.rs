@@ -1,7 +1,7 @@
 //! det-cli -- Command-line client for Dash Evo Tool's MCP server.
 //!
 //! Connects to the MCP server, discovers tools dynamically, and calls them.
-//! Mode is selected automatically: HTTP when MCP_API_KEY is set, stdio otherwise.
+//! Mode is selected automatically: HTTP when MCP_API_KEY is set, in-process otherwise.
 
 use std::path::PathBuf;
 
@@ -17,16 +17,16 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser)]
 #[command(name = "det-cli", version, about = "CLI client for Dash Evo Tool")]
 struct Cli {
-    /// Force stdio mode (spawn dash-evo-tool-mcp as a child process)
+    /// Force in-process mode (run MCP service locally, no HTTP server needed)
     #[arg(long)]
     standalone: bool,
 
-    /// HTTP server address (ignored in stdio mode).
+    /// HTTP server address (ignored in standalone mode).
     /// Derived from MCP_LISTEN if not set.
     #[arg(long)]
     addr: Option<String>,
 
-    /// Bearer token for HTTP auth (ignored in stdio mode)
+    /// Bearer token for HTTP auth (ignored in standalone mode)
     #[arg(long, env = "MCP_API_KEY")]
     bearer: Option<String>,
 
@@ -46,6 +46,8 @@ enum Commands {
         #[arg(trailing_var_arg = true)]
         params: Vec<String>,
     },
+    /// Run as MCP stdio server (for Claude Desktop, AI agents, etc.)
+    Serve,
     /// Generate shell completion script
     Completion {
         /// Shell type
@@ -96,6 +98,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if matches!(cli.command, Some(Commands::Serve)) {
+        return run_stdio_server();
+    }
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -109,7 +115,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let use_stdio = cli.standalone || cli.bearer.is_none();
 
     let client: McpClient = if use_stdio {
-        connect_standalone().await?
+        connect_in_process().await?
     } else {
         let addr = resolve_addr(cli.addr);
         connect_http(&addr, cli.bearer.as_deref()).await?
@@ -131,17 +137,53 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let result = client.peer().call_tool(request).await?;
             print_result(&result);
         }
-        Commands::Completion { .. } => unreachable!(),
+        Commands::Serve | Commands::Completion { .. } => unreachable!(),
     }
 
     Ok(())
 }
 
-async fn connect_standalone() -> Result<McpClient, Box<dyn std::error::Error>> {
-    use rmcp::transport::child_process::TokioChildProcess;
+/// Run as a standalone MCP stdio server (replaces the separate dash-evo-tool-mcp binary).
+fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
+    use dash_evo_tool::logging::initialize_logger;
 
-    let transport = TokioChildProcess::new(tokio::process::Command::new("dash-evo-tool-mcp"))?;
-    let client = ().serve(transport).await?;
+    initialize_logger();
+    tracing::info!(
+        version = dash_evo_tool::VERSION,
+        "Starting Dash Evo Tool MCP server (stdio)"
+    );
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()?;
+
+    runtime
+        .block_on(dash_evo_tool::mcp::start_stdio())
+        .map_err(|e| -> Box<dyn std::error::Error> { e })
+}
+
+async fn connect_in_process() -> Result<McpClient, Box<dyn std::error::Error>> {
+    use dash_evo_tool::mcp::server::DashMcpService;
+
+    // Create two duplex byte channels, cross-connected:
+    // client writes to a, server reads from a; server writes to b, client reads from b.
+    let (client_read, server_write) = tokio::io::duplex(8192);
+    let (server_read, client_write) = tokio::io::duplex(8192);
+
+    // Spawn the MCP service in a background task.
+    // .serve() returns a RunningService — keep it alive with .waiting().
+    let service = DashMcpService::new_lazy();
+    tokio::spawn(async move {
+        match service.serve((server_read, server_write)).await {
+            Ok(running) => {
+                let _ = running.waiting().await;
+            }
+            Err(e) => eprintln!("MCP service error: {e}"),
+        }
+    });
+
+    let client = ().serve((client_read, client_write)).await?;
     Ok(client)
 }
 

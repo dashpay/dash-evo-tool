@@ -21,10 +21,10 @@ struct WalletIdParam {
 #[derive(Clone)]
 enum ContextProvider {
     /// HTTP mode: context provided by the GUI app, follows network switches.
-    #[cfg(feature = "mcp-http")]
+    #[cfg(feature = "mcp")]
     Shared(Arc<arc_swap::ArcSwap<AppContext>>),
-    /// Stdio mode: lazily initialized on first use.
-    #[cfg(feature = "mcp-stdio")]
+    /// Stdio/CLI mode: lazily initialized on first use.
+    #[cfg(feature = "cli")]
     Lazy(Arc<tokio::sync::OnceCell<Arc<AppContext>>>),
 }
 
@@ -46,7 +46,7 @@ impl std::fmt::Debug for DashMcpService {
 
 impl DashMcpService {
     /// For HTTP mode: wrap an existing shared context.
-    #[cfg(feature = "mcp-http")]
+    #[cfg(feature = "mcp")]
     pub fn new_shared(app_context: Arc<arc_swap::ArcSwap<AppContext>>) -> Self {
         Self {
             ctx_provider: ContextProvider::Shared(app_context),
@@ -54,8 +54,8 @@ impl DashMcpService {
         }
     }
 
-    /// For stdio mode: lazy init on first tool call.
-    #[cfg(feature = "mcp-stdio")]
+    /// For stdio/CLI mode: lazy init on first tool call.
+    #[cfg(feature = "cli")]
     pub fn new_lazy() -> Self {
         Self {
             ctx_provider: ContextProvider::Lazy(Arc::new(tokio::sync::OnceCell::new())),
@@ -67,9 +67,9 @@ impl DashMcpService {
     /// In stdio mode, initializes on first call.
     async fn ctx(&self) -> Result<Arc<AppContext>, McpError> {
         match &self.ctx_provider {
-            #[cfg(feature = "mcp-http")]
+            #[cfg(feature = "mcp")]
             ContextProvider::Shared(swap) => Ok(swap.load_full()),
-            #[cfg(feature = "mcp-stdio")]
+            #[cfg(feature = "cli")]
             ContextProvider::Lazy(cell) => cell
                 .get_or_try_init(|| async { init_app_context() })
                 .await
@@ -78,8 +78,8 @@ impl DashMcpService {
     }
 }
 
-/// Initialize an AppContext for the standalone stdio MCP server.
-#[cfg(feature = "mcp-stdio")]
+/// Initialize an AppContext for standalone/CLI mode.
+#[cfg(feature = "cli")]
 fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     use crate::app_dir::{
         app_user_data_dir_path, data_file_path, ensure_data_dir_exists, ensure_env_file,
@@ -205,7 +205,10 @@ impl DashMcpService {
 impl ServerHandler for DashMcpService {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
+            .with_server_info(Implementation::new(
+                env!("CARGO_PKG_NAME").to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+            ))
             .with_instructions(
                 "Dash Evo Tool MCP server. Provides wallet and core operations for the Dash blockchain.".to_string(),
             )

@@ -1,10 +1,10 @@
 //! MCP (Model Context Protocol) server for programmatic access.
 //!
-//! Supports two transports, each behind its own feature flag:
-//! - `mcp-stdio`: standalone binary, stdin/stdout MCP protocol, lazy AppContext init
-//! - `mcp-http`: embedded in GUI app, shares app's AppContext via ArcSwap
+//! Two modes, each behind its own feature flag:
+//! - `mcp`: HTTP server embedded in the GUI app, shares AppContext via ArcSwap
+//! - `cli`: standalone CLI with in-process MCP service + HTTP client mode
 
-#[cfg(feature = "mcp-http")]
+#[cfg(feature = "mcp")]
 pub mod auth;
 pub mod config;
 pub mod dispatch;
@@ -13,7 +13,7 @@ pub mod server;
 pub use config::McpConfig;
 
 /// Start the MCP server over stdin/stdout.
-#[cfg(feature = "mcp-stdio")]
+#[cfg(feature = "cli")]
 pub async fn start_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use rmcp::ServiceExt;
 
@@ -24,7 +24,7 @@ pub async fn start_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync
 }
 
 /// Start the MCP server over HTTP (embedded in GUI app).
-#[cfg(feature = "mcp-http")]
+#[cfg(feature = "mcp")]
 pub async fn start_http_server(
     app_context: std::sync::Arc<arc_swap::ArcSwap<crate::context::AppContext>>,
     config: McpConfig,

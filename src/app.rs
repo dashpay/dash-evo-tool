@@ -106,7 +106,7 @@ pub struct AppState {
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
     /// Shared MCP context -- follows network switches via `ArcSwap`.
-    #[cfg(feature = "mcp-http")]
+    #[cfg(feature = "mcp")]
     pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
 }
 
@@ -605,7 +605,7 @@ impl AppState {
         };
 
         // MCP server (feature-gated, opt-in via MCP_API_KEY env var)
-        #[cfg(feature = "mcp-http")]
+        #[cfg(feature = "mcp")]
         let mcp_app_context = {
             if let Some(mcp_config) = crate::mcp::McpConfig::from_env() {
                 let mcp_ctx = Arc::new(arc_swap::ArcSwap::new(mainnet_app_context.clone()));
@@ -755,7 +755,7 @@ impl AppState {
             connection_banner_handle: None,
             shutdown_receiver: None,
             shutdown_started: None,
-            #[cfg(feature = "mcp-http")]
+            #[cfg(feature = "mcp")]
             mcp_app_context,
         };
 
@@ -919,7 +919,7 @@ impl AppState {
         let app_context = self.current_app_context().clone();
 
         // Update MCP server's context to follow network switch
-        #[cfg(feature = "mcp-http")]
+        #[cfg(feature = "mcp")]
         if let Some(ref mcp_ctx) = self.mcp_app_context {
             mcp_ctx.store(app_context.clone());
             tracing::debug!("MCP context switched to {:?}", network);

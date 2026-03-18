@@ -1,6 +1,6 @@
 //! Bearer token authentication middleware for MCP endpoints.
 //!
-//! Only used in HTTP mode (`mcp-http` feature).
+//! Only used in HTTP mode (`mcp` feature).
 
 use axum::{
     body::Body,

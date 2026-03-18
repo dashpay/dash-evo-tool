@@ -1,14 +1,12 @@
 # det-cli
 
-`det-cli` is the command-line client for Dash Evo Tool's MCP server. Use it to call wallet and core operations from scripts and terminals without opening the GUI.
+`det-cli` is the command-line interface for Dash Evo Tool. It provides both a CLI client for calling MCP tools and a built-in MCP stdio server.
 
 ## Build
 
 ```bash
 cargo build --features cli
 ```
-
-The binary is `det-cli` in the Cargo output directory.
 
 ## Configuration
 
@@ -21,6 +19,14 @@ Config precedence (highest to lowest):
 3. App's `.env` file (loaded from the platform data directory)
 
 ## Connection modes
+
+### In-process (default)
+
+When no `MCP_API_KEY` is configured, `det-cli` runs the MCP service in-process. No running GUI app or separate server required.
+
+```bash
+det-cli tools
+```
 
 ### HTTP
 
@@ -36,21 +42,11 @@ The server address defaults to `http://{MCP_LISTEN}/mcp`, or `http://127.0.0.1:9
 det-cli --addr http://127.0.0.1:9000/mcp tools
 ```
 
-### Stdio (default when no API key)
-
-When no `MCP_API_KEY` is configured, `det-cli` spawns `dash-evo-tool-mcp` as a child process and communicates via stdin/stdout. No running GUI app required.
-
-`dash-evo-tool-mcp` must be built (`cargo build --features mcp-stdio`) and on `PATH`.
-
-Force stdio mode explicitly with `--standalone`:
-
-```bash
-det-cli --standalone tools
-```
+Force in-process mode with `--standalone` even when an API key is present.
 
 ## Usage
 
-Running `det-cli` with no subcommand lists available tools (same as `det-cli tools`).
+Running `det-cli` with no subcommand lists available tools.
 
 ### `tools` — list available tools
 
@@ -69,21 +65,22 @@ det-cli call <tool-name> [key=value ...]
 Parameter values are parsed as JSON first, falling back to plain strings.
 
 ```bash
-# No parameters
 det-cli call list_wallets
-
-# String parameter
 det-cli call generate_receive_address wallet_id=my-wallet
-
-# JSON parameter (boolean)
 det-cli call some_tool enabled=true
 ```
 
 Exit code is non-zero when the tool returns an error.
 
-### `completion <shell>` — generate shell completion
+### `serve` — run as MCP stdio server
 
-Generates a completion script for the given shell. Supported: `bash`, `zsh`, `fish`, `powershell`.
+```bash
+det-cli serve
+```
+
+Runs an MCP server over stdin/stdout for use with Claude Desktop, AI agents, or other MCP clients. See [MCP.md](MCP.md) for Claude Desktop configuration.
+
+### `completion <shell>` — generate shell completion
 
 ```bash
 det-cli completion bash
@@ -94,21 +91,20 @@ det-cli completion zsh
 
 The tool list is cached automatically when you run `det-cli` or `det-cli tools`. The cache includes the server version and is invalidated when the version changes.
 
-`det-cli --help` appends the cached tool list to the standard help output. If the cache is empty or stale, run `det-cli` once to populate it.
+`det-cli --help` appends the cached tool list to the standard help output.
 
 ## Shell completion setup
 
 ### Bash
 
 ```bash
-# Add completion to your shell session
 source <(det-cli completion bash)
 
 # Or add permanently to ~/.bashrc
 echo 'source <(det-cli completion bash)' >> ~/.bashrc
 ```
 
-The bash completion script includes a dynamic completer for tool names in `det-cli call`. It reads from the local cache. Requires `jq` for dynamic tool name completion.
+The bash completion includes dynamic tool name completion for `det-cli call`. Requires `jq`.
 
 ### Zsh
 
@@ -119,16 +115,18 @@ det-cli completion zsh > "${fpath[1]}/_det-cli"
 ## Examples
 
 ```bash
-# List wallets loaded in the app (reads MCP_API_KEY from .env)
+# List wallets (in-process, no server needed)
 det-cli call list_wallets
 
-# Generate a receive address (use alias or hex seed hash)
+# Generate a receive address
 det-cli call generate_receive_address wallet_id=savings
 
 # List wallets in Dash Core
 det-cli call list_core_wallets
 
-# Stdio mode (no GUI required)
-det-cli --standalone call list_wallets
-MCP_NETWORK=testnet det-cli --standalone call list_wallets
+# Use testnet
+MCP_NETWORK=testnet det-cli call list_wallets
+
+# Run as stdio MCP server for Claude Desktop
+det-cli serve
 ```

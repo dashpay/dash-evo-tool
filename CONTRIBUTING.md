@@ -62,18 +62,37 @@ cargo run
 
 ## Feature flags
 
-| Feature | Description |
-|---|---|
-| `mcp` | MCP HTTP server embedded in the GUI app (see [docs/MCP.md](docs/MCP.md)) |
-| `cli` | `det-cli` command-line client with in-process MCP service (see [docs/CLI.md](docs/CLI.md)) |
-| `testing` | Test-only utilities |
+The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional features enable additional capabilities:
 
-Build with a specific feature:
+| Feature | Binary | What it adds |
+|---|---|---|
+| _(none)_ | `dash-evo-tool` | GUI application (default) |
+| `mcp` | `dash-evo-tool` | Embeds an MCP HTTP server in the GUI app. Activated at runtime by setting `MCP_API_KEY`. See [docs/MCP.md](docs/MCP.md). |
+| `cli` | `det-cli` | Standalone CLI binary. Includes an in-process MCP service (no server needed), HTTP client mode, `det-cli serve` stdio server, tool caching, and shell completion. See [docs/CLI.md](docs/CLI.md). |
+| `testing` | — | Test-only utilities (not for production builds) |
+
+Features are independent — enable any combination:
 
 ```shell
-cargo build --features mcp        # GUI app + HTTP MCP server
-cargo build --features cli         # det-cli binary
+cargo build                       # GUI app only
+cargo build --features mcp        # GUI app + embedded HTTP MCP server
+cargo build --features cli        # det-cli binary only
+cargo build --features mcp,cli    # Both binaries
 ```
+
+### Dependencies pulled by each feature
+
+- **`mcp`**: `rmcp` (server + HTTP transport), `axum`, `subtle` (constant-time auth)
+- **`cli`**: `rmcp` (server + client + stdio/HTTP transports), `clap`, `clap_complete`
+- Both features share `rmcp` — no duplicate dependency when combined.
+
+### CI feature usage
+
+| Workflow | Features |
+|---|---|
+| Clippy | `--all-features` (validates all code paths) |
+| Tests | `--all-features` |
+| Release | `--features cli` (packages both `dash-evo-tool` and `det-cli`) |
 
 ## Code quality
 

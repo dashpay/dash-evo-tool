@@ -613,30 +613,8 @@ impl AppContext {
             inputs
         );
 
-        // Validate via platform wallet bridge (establishes the new lookup path)
-        let _platform_wallet = self.require_platform_wallet(&wallet_seed_hash)?;
-
-        // Get the wallet for signing - clone it to avoid holding guard across await.
-        // Still uses the old wallets map for the Signer<PlatformAddress> impl on
-        // crate::model::wallet::Wallet. Will be replaced once PlatformWallet provides signing.
-        let wallet_clone = {
-            let wallet = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&wallet_seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-
-            let wallet_guard = wallet.read()?;
-
-            // Ensure wallet is open
-            if !wallet_guard.is_open() {
-                return Err(TaskError::WalletLocked);
-            }
-
-            wallet_guard.clone()
-        };
+        // Get the platform wallet for signing (PlatformAddressWallet implements Signer<PlatformAddress>)
+        let platform_wallet = self.require_platform_wallet(&wallet_seed_hash)?;
 
         tracing::info!("Wallet loaded and open, calling top_up_from_addresses...");
 
@@ -645,7 +623,7 @@ impl AppContext {
 
         // Execute the top-up
         let (address_infos, new_balance) = identity
-            .top_up_from_addresses(sdk, inputs, &wallet_clone, None)
+            .top_up_from_addresses(sdk, inputs, platform_wallet.platform(), None)
             .await?;
 
         tracing::info!(

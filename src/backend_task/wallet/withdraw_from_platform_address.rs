@@ -17,29 +17,13 @@ impl AppContext {
         core_fee_per_byte: u32,
         fee_payer_index: u16,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
-        use crate::backend_task::error::TaskError;
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::dpp::withdrawal::Pooling;
         use dash_sdk::platform::transition::address_credit_withdrawal::WithdrawAddressFunds;
 
-        // Validate via platform wallet bridge (establishes the new lookup path)
-        let _platform_wallet = self.require_platform_wallet(&seed_hash)?;
-
-        // Clone wallet and SDK before the async operation to avoid holding guards across await.
-        // Still uses the old wallets map for the Signer<PlatformAddress> impl on
-        // crate::model::wallet::Wallet. Will be replaced once PlatformWallet provides signing.
-        let (wallet, sdk) = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            let wallet = wallet_arc.read()?.clone();
-            let sdk = self.sdk.load().as_ref().clone();
-            (wallet, sdk)
-        };
+        // Get the platform wallet for signing (PlatformAddressWallet implements Signer<PlatformAddress>)
+        let platform_wallet = self.require_platform_wallet(&seed_hash)?;
+        let sdk = self.sdk.load().as_ref().clone();
 
         // Deduct fee from the specified input (should be the one with highest balance)
         let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(
@@ -55,7 +39,7 @@ impl AppContext {
                 core_fee_per_byte,
                 Pooling::Never,
                 output_script,
-                &wallet,
+                platform_wallet.platform(),
                 None,
             )
             .await

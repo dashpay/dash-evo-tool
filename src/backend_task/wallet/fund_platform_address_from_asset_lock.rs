@@ -24,13 +24,11 @@ impl AppContext {
         use dash_sdk::dpp::dashcore::OutPoint;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
-        // Validate via platform wallet bridge (establishes the new lookup path)
-        let _platform_wallet = self.require_platform_wallet(&seed_hash)?;
+        // Get the platform wallet for signing (PlatformAddressWallet implements Signer<PlatformAddress>)
+        let platform_wallet = self.require_platform_wallet(&seed_hash)?;
 
-        // Clone wallet and SDK before the async operation to avoid holding guards across await.
-        // Still uses the old wallets map for the Signer<PlatformAddress> impl on
-        // crate::model::wallet::Wallet. Will be replaced once PlatformWallet provides signing.
-        let (wallet, sdk, asset_lock_private_key) = {
+        // Clone wallet (for asset lock private key lookup) and SDK before the async operation
+        let (sdk, asset_lock_private_key) = {
             let wallet_arc = {
                 let wallets = self.wallets.read()?;
                 wallets
@@ -49,7 +47,7 @@ impl AppContext {
                 )?
                 .ok_or(crate::backend_task::error::TaskError::AssetLockAddressNotFound)?;
 
-            (wallet, sdk, private_key)
+            (sdk, private_key)
         };
 
         // Check if we need to convert an old instant lock proof to a chain lock proof
@@ -113,7 +111,7 @@ impl AppContext {
                 asset_lock_proof,
                 asset_lock_private_key,
                 fee_strategy,
-                &wallet,
+                platform_wallet.platform(),
                 None,
             )
             .await

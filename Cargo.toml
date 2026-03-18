@@ -76,6 +76,9 @@ tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
 region = "3.0.2"
+rmcp = { version = "1.2", features = ["server", "macros", "transport-streamable-http-server"], optional = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
+subtle = { version = "2.6", optional = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"
@@ -89,6 +92,7 @@ raw-cpuid = "11.5.0"
 
 [features]
 testing = []
+mcp = ["dep:rmcp", "dep:axum", "dep:subtle"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
@@ -105,7 +109,7 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"

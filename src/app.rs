@@ -105,6 +105,9 @@ pub struct AppState {
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
+    /// Shared MCP context -- follows network switches via `ArcSwap`.
+    #[cfg(feature = "mcp")]
+    pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -601,6 +604,28 @@ impl AppState {
             None
         };
 
+        // MCP server (feature-gated, opt-in via MCP_API_KEY env var)
+        #[cfg(feature = "mcp")]
+        let mcp_app_context = {
+            if let Some(mcp_config) = crate::mcp::McpConfig::from_env() {
+                let mcp_ctx = Arc::new(arc_swap::ArcSwap::new(mainnet_app_context.clone()));
+                let ctx_for_server = mcp_ctx.clone();
+                let cancel = subtasks.cancellation_token.clone();
+                subtasks.spawn_sync("mcp-server", async move {
+                    if let Err(e) =
+                        crate::mcp::start_server(ctx_for_server, mcp_config, cancel).await
+                    {
+                        tracing::error!("MCP server failed: {e}");
+                    }
+                });
+                tracing::debug!("MCP server enabled");
+                Some(mcp_ctx)
+            } else {
+                tracing::debug!("MCP server disabled (MCP_API_KEY not set)");
+                None
+            }
+        };
+
         let mut app_state = Self {
             main_screens: [
                 (
@@ -730,6 +755,8 @@ impl AppState {
             connection_banner_handle: None,
             shutdown_receiver: None,
             shutdown_started: None,
+            #[cfg(feature = "mcp")]
+            mcp_app_context,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
@@ -890,6 +917,13 @@ impl AppState {
 
         self.chosen_network = network;
         let app_context = self.current_app_context().clone();
+
+        // Update MCP server's context to follow network switch
+        #[cfg(feature = "mcp")]
+        if let Some(ref mcp_ctx) = self.mcp_app_context {
+            mcp_ctx.store(app_context.clone());
+            tracing::debug!("MCP context switched to {:?}", network);
+        }
 
         // INTENTIONAL(SEC-004): Clear stale banners from the previous network context.
         // A backend task completing after the switch could set a new banner in the new

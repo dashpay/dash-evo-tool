@@ -147,6 +147,13 @@ async fn run(cli: Cli) -> Result<(), String> {
         }
         Commands::Tool(args) => {
             let tool_name = args.first().ok_or("tool name required".to_string())?;
+
+            if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+                let mcp_name = tool_name.replace('-', "_");
+                print_tool_help(&mcp_name);
+                return Ok(());
+            }
+
             let mcp_name = tool_name.replace('-', "_");
             let arguments = parse_params(&args[1..]).map_err(|e| e.to_string())?;
             let mut request = CallToolRequestParams::new(mcp_name);
@@ -352,6 +359,62 @@ complete -F _det_cli_tools det-cli
 
     let dest = comp_dir.join("det-cli");
     let _ = std::fs::write(&dest, buf);
+}
+
+/// Print help for a single tool, using cached tool metadata.
+fn print_tool_help(mcp_name: &str) {
+    let cli_name = mcp_name.replace('_', "-");
+
+    let tools = load_cache().map(|c| c.tools).unwrap_or_default();
+    let tool = tools.iter().find(|t| *t.name == *mcp_name);
+
+    match tool {
+        Some(tool) => {
+            let desc = tool
+                .description
+                .as_deref()
+                .unwrap_or("No description available");
+            println!("{cli_name} -- {desc}");
+            println!();
+            println!("Usage: det-cli {cli_name} [key=value ...]");
+
+            if let Some(props) = tool.input_schema.get("properties")
+                && let Some(obj) = props.as_object()
+                && !obj.is_empty()
+            {
+                let required: Vec<&str> = tool
+                    .input_schema
+                    .get("required")
+                    .and_then(|r| r.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+
+                println!();
+                println!("Parameters:");
+                for (name, schema) in obj {
+                    let pdesc = schema
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("");
+                    let cli_param = name.replace('_', "-");
+                    let req = if required.contains(&name.as_str()) {
+                        " (required)"
+                    } else {
+                        ""
+                    };
+                    println!("  {:<28} {}{}", cli_param, pdesc, req);
+                }
+            } else {
+                println!();
+                println!("This command takes no parameters.");
+            }
+        }
+        None => {
+            eprintln!(
+                "Unknown tool '{cli_name}'. Run 'det-cli tools' to refresh the command list."
+            );
+        }
+    }
 }
 
 /// Print help output with integrated tool list.

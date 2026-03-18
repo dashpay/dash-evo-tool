@@ -99,12 +99,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_stdio_server();
     }
 
-    // Minimal stderr logging for non-serve paths so tracing::error!() from
-    // AppContext initialization is visible to CLI users.
+    // Minimal stderr logging: show warnings from our code but suppress rmcp
+    // service-level warnings (they duplicate errors we already handle).
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,rmcp=error")),
         )
         .with_writer(std::io::stderr)
         .try_init();
@@ -114,42 +114,66 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
 
-    runtime.block_on(run(cli))
+    if let Err(e) = runtime.block_on(run(cli)) {
+        eprintln!("Error: {e}");
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
-async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+async fn run(cli: Cli) -> Result<(), String> {
     // Mode selection: --standalone or no bearer → stdio; bearer present → HTTP.
     let use_stdio = cli.standalone || cli.bearer.is_none();
 
     let client: McpClient = if use_stdio {
-        connect_in_process().await?
+        connect_in_process().await.map_err(|e| e.to_string())?
     } else {
         let addr = resolve_addr(cli.addr);
-        connect_http(&addr, cli.bearer.as_deref()).await?
+        connect_http(&addr, cli.bearer.as_deref())
+            .await
+            .map_err(|e| e.to_string())?
     };
 
     let command = cli.command.unwrap_or(Commands::Tools);
     match command {
         Commands::Tools => {
-            let tools = client.peer().list_all_tools().await?;
+            let tools = client
+                .peer()
+                .list_all_tools()
+                .await
+                .map_err(format_service_error)?;
             save_cache(&client, &tools);
             print_help(Some(&tools));
         }
         Commands::Tool(args) => {
-            let tool_name = args.first().ok_or("tool name required")?;
+            let tool_name = args.first().ok_or("tool name required".to_string())?;
             let mcp_name = tool_name.replace('-', "_");
-            let arguments = parse_params(&args[1..])?;
+            let arguments = parse_params(&args[1..]).map_err(|e| e.to_string())?;
             let mut request = CallToolRequestParams::new(mcp_name);
             if !arguments.is_empty() {
                 request.arguments = Some(arguments);
             }
-            let result = client.peer().call_tool(request).await?;
+            let result = client
+                .peer()
+                .call_tool(request)
+                .await
+                .map_err(format_service_error)?;
             print_result(&result);
         }
         Commands::Serve | Commands::Completion { .. } => unreachable!(),
     }
 
     Ok(())
+}
+
+/// Format an rmcp ServiceError into a user-friendly string.
+/// Extracts the message from McpError; passes other variants through as-is.
+fn format_service_error(e: rmcp::service::ServiceError) -> String {
+    use rmcp::service::ServiceError;
+    match e {
+        ServiceError::McpError(mcp) => format!("{}  (code {})", mcp.message, mcp.code.0),
+        other => other.to_string(),
+    }
 }
 
 /// Run as a standalone MCP stdio server (replaces the separate dash-evo-tool-mcp binary).

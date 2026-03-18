@@ -151,6 +151,24 @@ fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     })
 }
 
+/// Collect configured network names from a Config.
+fn collect_available(config: &crate::config::Config) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if config.mainnet_config.is_some() {
+        names.push("mainnet");
+    }
+    if config.testnet_config.is_some() {
+        names.push("testnet");
+    }
+    if config.devnet_config.is_some() {
+        names.push("devnet");
+    }
+    if config.local_config.is_some() {
+        names.push("local");
+    }
+    names
+}
+
 /// Human-readable network name for JSON output.
 fn network_display_name(network: dash_sdk::dpp::dashcore::Network) -> &'static str {
     use dash_sdk::dpp::dashcore::Network;
@@ -194,23 +212,9 @@ impl DashMcpService {
         let ctx = self.ctx().await?;
         let active = network_display_name(ctx.network);
 
-        // Load config to determine which networks are available.
         let config = crate::config::Config::load_from(&ctx.data_dir)
             .map_err(|e| McpError::internal_error(format!("config load: {e}"), None))?;
-
-        let mut available = Vec::new();
-        if config.mainnet_config.is_some() {
-            available.push("mainnet");
-        }
-        if config.testnet_config.is_some() {
-            available.push("testnet");
-        }
-        if config.devnet_config.is_some() {
-            available.push("devnet");
-        }
-        if config.local_config.is_some() {
-            available.push("local");
-        }
+        let available = collect_available(&config);
 
         let json = serde_json::json!({
             "active": active,

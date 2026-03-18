@@ -58,7 +58,6 @@ impl AppContext {
     ///
     /// Returns `None` if the wallet is not registered with the bridge
     /// (e.g. the wallet is locked/closed, or hasn't been unlocked yet).
-    #[allow(dead_code)] // Used during incremental migration to PlatformWallet
     pub(crate) fn get_platform_wallet(&self, seed_hash: &WalletSeedHash) -> Option<PlatformWallet> {
         self.platform_wallets
             .lock()
@@ -69,7 +68,6 @@ impl AppContext {
     /// Get a `PlatformWallet` by seed hash, or return `TaskError::WalletNotFound`.
     ///
     /// Convenience wrapper for backend tasks that need the platform wallet.
-    #[allow(dead_code)] // Used during incremental migration to PlatformWallet
     pub(crate) fn require_platform_wallet(
         &self,
         seed_hash: &WalletSeedHash,

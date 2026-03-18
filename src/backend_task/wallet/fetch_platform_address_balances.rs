@@ -19,6 +19,12 @@ impl AppContext {
         tracing::info!("Platform address sync start");
         let start_time = std::time::Instant::now();
 
+        // Validate via platform wallet bridge (establishes the new lookup path).
+        // The platform wallet is not yet used for address derivation — the old
+        // Wallet model's WalletAddressProvider handles that. This will be migrated
+        // once PlatformAddressWallet provides equivalent functionality.
+        let _platform_wallet = self.get_platform_wallet(&seed_hash);
+
         let wallet_arc = {
             let wallets = self.wallets.read()?;
             wallets

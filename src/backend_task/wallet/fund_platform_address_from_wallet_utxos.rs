@@ -22,6 +22,9 @@ impl AppContext {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
+        // Validate via platform wallet bridge (establishes the new lookup path)
+        let _platform_wallet = self.require_platform_wallet(&seed_hash)?;
+
         // When fee_deduct_from_output is false, we need to create a larger asset lock
         // that includes the estimated platform fee, so the recipient receives the exact amount.
         let (asset_lock_amount, allow_take_fee_from_amount) = if fee_deduct_from_output {

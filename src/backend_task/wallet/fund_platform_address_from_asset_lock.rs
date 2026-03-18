@@ -19,18 +19,24 @@ impl AppContext {
         asset_lock_address: Address,
         outputs: BTreeMap<PlatformAddress, Option<Credits>>,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
+        use crate::backend_task::error::TaskError;
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use dash_sdk::dpp::dashcore::OutPoint;
         use dash_sdk::platform::transition::top_up_address::TopUpAddress;
 
-        // Clone wallet and SDK before the async operation to avoid holding guards across await
+        // Validate via platform wallet bridge (establishes the new lookup path)
+        let _platform_wallet = self.require_platform_wallet(&seed_hash)?;
+
+        // Clone wallet and SDK before the async operation to avoid holding guards across await.
+        // Still uses the old wallets map for the Signer<PlatformAddress> impl on
+        // crate::model::wallet::Wallet. Will be replaced once PlatformWallet provides signing.
         let (wallet, sdk, asset_lock_private_key) = {
             let wallet_arc = {
                 let wallets = self.wallets.read()?;
                 wallets
                     .get(&seed_hash)
                     .cloned()
-                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
+                    .ok_or(TaskError::WalletNotFound)?
             };
             let wallet = wallet_arc.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();

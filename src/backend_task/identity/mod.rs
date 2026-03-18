@@ -613,7 +613,12 @@ impl AppContext {
             inputs
         );
 
-        // Get the wallet for signing - clone it to avoid holding guard across await
+        // Validate via platform wallet bridge (establishes the new lookup path)
+        let _platform_wallet = self.require_platform_wallet(&wallet_seed_hash)?;
+
+        // Get the wallet for signing - clone it to avoid holding guard across await.
+        // Still uses the old wallets map for the Signer<PlatformAddress> impl on
+        // crate::model::wallet::Wallet. Will be replaced once PlatformWallet provides signing.
         let wallet_clone = {
             let wallet = {
                 let wallets = self.wallets.read()?;
@@ -704,17 +709,32 @@ impl AppContext {
             .await?;
 
         // Update destination address balances in any wallets that contain them
-        // (using proof-verified data from the SDK response)
+        // (using proof-verified data from the SDK response).
+        // Iterate using the platform_wallets bridge map to collect seed hashes,
+        // then update via the old wallets map (which still owns the address info).
         {
-            let wallets = self.wallets.read()?;
-            for (seed_hash, wallet_arc) in wallets.iter() {
+            let seed_hashes: Vec<WalletSeedHash> = self
+                .platform_wallets
+                .lock()
+                .map(|pw| pw.keys().copied().collect())
+                .unwrap_or_default();
+
+            // Fall back to old wallets map if platform_wallets is empty (e.g. locked wallets)
+            let seed_hashes = if seed_hashes.is_empty() {
+                self.wallets
+                    .read()
+                    .map(|w| w.keys().copied().collect())
+                    .unwrap_or_default()
+            } else {
+                seed_hashes
+            };
+
+            for seed_hash in seed_hashes {
                 if let Err(e) =
-                    self.update_wallet_platform_address_info_from_sdk(*seed_hash, &address_infos)
+                    self.update_wallet_platform_address_info_from_sdk(seed_hash, &address_infos)
                 {
                     tracing::warn!("Failed to update wallet platform address info: {}", e);
                 }
-                // Break early since all wallets share the same network addresses
-                let _ = wallet_arc; // silence unused warning
             }
         }
 

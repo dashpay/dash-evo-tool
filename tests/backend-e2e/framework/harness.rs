@@ -31,11 +31,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Maximum retries for sends that fail with InsufficientFunds.
-const SEND_MAX_RETRIES: u32 = 5;
-/// Delay between send retries (waiting for change to become spendable).
-const SEND_RETRY_DELAY: Duration = Duration::from_secs(10);
-
 /// Shared test context, initialized once across all backend E2E tests.
 ///
 /// Uses `tokio::sync::OnceCell` so initialization runs inside the shared
@@ -215,9 +210,9 @@ impl BackendTestContext {
 
     /// Create a new wallet, fund it from the framework wallet, and wait for balance.
     ///
-    /// Retries the send if it fails with "Insufficient funds" (change output from a
-    /// previous send not yet spendable). Waits for framework wallet change to become
-    /// spendable after each successful send so subsequent calls don't fail.
+    /// Sends `amount_duffs` from the framework wallet in a single attempt,
+    /// then waits for the full amount to become spendable in the test wallet
+    /// and for the framework wallet's change output to settle.
     pub async fn create_funded_test_wallet(
         &self,
         amount_duffs: u64,
@@ -257,7 +252,6 @@ impl BackendTestContext {
                 .to_string()
         };
 
-        // Send funds from framework wallet with retry logic.
         let framework_wallet_arc = {
             let wallets = app_context.wallets().read().expect("wallets lock");
             wallets
@@ -266,85 +260,24 @@ impl BackendTestContext {
                 .clone()
         };
 
-        let mut last_error = String::new();
-        for attempt in 1..=SEND_MAX_RETRIES {
-            if attempt > 1 {
-                tracing::info!(
-                    "Retry {}/{}: waiting for framework wallet UTXOs to become spendable...",
-                    attempt,
-                    SEND_MAX_RETRIES
-                );
-                match wait::wait_for_spendable_balance(
-                    app_context,
-                    self.framework_wallet_hash,
-                    amount_duffs,
-                    SEND_RETRY_DELAY,
-                )
-                .await
-                {
-                    Ok(bal) => tracing::info!("Framework wallet spendable: {} duffs", bal),
-                    Err(_) => {
-                        tracing::debug!("Still no spendable balance, retrying send anyway...");
-                    }
-                }
-            }
+        let request = WalletPaymentRequest {
+            recipients: vec![PaymentRecipient {
+                address: test_address.clone(),
+                amount_duffs,
+            }],
+            subtract_fee_from_amount: false,
+            memo: Some("E2E test funding".to_string()),
+            override_fee: None,
+        };
 
-            let request = WalletPaymentRequest {
-                recipients: vec![PaymentRecipient {
-                    address: test_address.clone(),
-                    amount_duffs,
-                }],
-                subtract_fee_from_amount: false,
-                memo: Some("E2E test funding".to_string()),
-                override_fee: None,
-            };
+        let task = BackendTask::CoreTask(CoreTask::SendWalletPayment {
+            wallet: framework_wallet_arc,
+            request,
+        });
 
-            let task = BackendTask::CoreTask(CoreTask::SendWalletPayment {
-                wallet: framework_wallet_arc.clone(),
-                request,
-            });
-
-            match run_task(app_context, task).await {
-                Ok(_result) => {
-                    tracing::info!(
-                        "Funded test wallet on attempt {}/{}",
-                        attempt,
-                        SEND_MAX_RETRIES
-                    );
-                    last_error.clear();
-                    break;
-                }
-                Err(e) => {
-                    let err_str = e.to_string();
-                    if (err_str.contains("Insufficient")
-                        || err_str.contains("No UTXOs")
-                        || err_str.contains("No spendable funds")
-                        || err_str.contains("spendable"))
-                        && attempt < SEND_MAX_RETRIES
-                    {
-                        tracing::info!(
-                            "Send attempt {}/{} failed ({}), will retry...",
-                            attempt,
-                            SEND_MAX_RETRIES,
-                            err_str
-                        );
-                        last_error = err_str;
-                        tokio::time::sleep(SEND_RETRY_DELAY).await;
-                        continue;
-                    }
-                    panic!(
-                        "Failed to send funds to test wallet after {} attempts: {}",
-                        attempt, e
-                    );
-                }
-            }
-        }
-        if !last_error.is_empty() {
-            panic!(
-                "Failed to send funds to test wallet after {} attempts: {}",
-                SEND_MAX_RETRIES, last_error
-            );
-        }
+        run_task(app_context, task)
+            .await
+            .expect("Failed to send funds to test wallet");
 
         // Wait for test wallet to see the funds
         wait::wait_for_balance(
@@ -356,11 +289,16 @@ impl BackendTestContext {
         .await
         .expect("Test wallet did not receive expected funds");
 
-        // Wait for test wallet funds to become spendable (confirmed/IS-locked)
-        // so callers can immediately build transactions.
-        wait::wait_for_spendable_balance(app_context, seed_hash, 1, Duration::from_secs(120))
-            .await
-            .expect("Test wallet funds did not become spendable");
+        // Wait for the full funded amount to become spendable so callers can
+        // immediately build transactions without racing confirmations/IS locks.
+        wait::wait_for_spendable_balance(
+            app_context,
+            seed_hash,
+            amount_duffs,
+            Duration::from_secs(120),
+        )
+        .await
+        .expect("Test wallet funds did not become spendable");
 
         // Wait for framework wallet change output to become spendable.
         let _ = wait::wait_for_spendable_balance(

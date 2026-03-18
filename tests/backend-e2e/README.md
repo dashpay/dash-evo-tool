@@ -9,15 +9,14 @@ application at runtime.
 ## Running the tests
 
 All tests are marked `#[ignore]` to prevent them from running during normal
-`cargo test`. They require network access, a funded wallet, and serial
-execution.
+`cargo test`. They require network access and a funded wallet.
 
 ```bash
 # Run all backend E2E tests
-cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
+cargo test --test backend-e2e --all-features -- --ignored --nocapture
 
 # Run a single test
-cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1 test_create_identity
+cargo test --test backend-e2e --all-features -- --ignored --nocapture test_create_identity
 ```
 
 **Required flags:**
@@ -28,7 +27,6 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 | `--all-features` | Enables feature-gated dependencies |
 | `--ignored` | Tests are `#[ignore]` by default |
 | `--nocapture` | Shows progress output (SPV sync, balance polling) |
-| `--test-threads=1` | Tests share a singleton context and mutate wallet state; parallel execution will fail |
 
 ### Environment variables
 
@@ -134,10 +132,8 @@ This method:
 1. Generates a fresh random 12-word mnemonic.
 2. Creates and registers the wallet with `AppContext`.
 3. Waits for SPV to pick up the wallet (30s timeout).
-4. Sends `amount_duffs` from the framework wallet via `CoreTask::SendWalletPayment`
-   (with retry logic -- up to 5 attempts if "Insufficient funds" due to
-   unconfirmed change).
-5. Polls until the test wallet balance reaches the expected amount (120s timeout).
+4. Sends `amount_duffs` from the framework wallet via `CoreTask::SendWalletPayment`.
+5. Waits for the full `amount_duffs` to become spendable in the test wallet (120s timeout).
 6. Waits for the framework wallet's change output to become spendable (so the
    next call to `create_funded_test_wallet` can succeed).
 
@@ -266,12 +262,13 @@ includes confirmed/InstantSend-locked UTXOs in its spendable set. This means:
 
 The framework mitigates this with:
 
-- **`wait_for_spendable_balance()`** -- polls `confirmed_balance_duffs()` and
-  triggers `reconcile_spv_wallets()` on each iteration.
-- **Retry logic in `create_funded_test_wallet()`** -- retries sends up to 5 times
-  with 10-second backoff when "Insufficient funds" occurs.
-- **Post-send wait** -- after funding a test wallet, waits for the framework
-  wallet's change output to become spendable before returning.
+- **`wait_for_spendable_balance()`** -- polls `Wallet::spv_confirmed_balance()`
+  (which returns `None` until SPV has synced balance data, avoiding false
+  positives from the `max_balance()` fallback) and triggers
+  `reconcile_spv_wallets()` on each iteration.
+- **Post-send wait** -- after funding a test wallet, `create_funded_test_wallet()`
+  waits for the full funded amount to become spendable, then waits for the
+  framework wallet's change output to settle before returning.
 
 Tests that send funds between wallets should use `wait_for_spendable_balance()`
 before attempting the send, not just `wait_for_balance()`.
@@ -282,12 +279,6 @@ The SPV light client processes InstantSend locks but there may be timing gaps
 between broadcast and lock receipt. The framework does not explicitly wait for
 IS locks -- it polls spendable balance which includes IS-locked UTXOs once
 they are processed by SPV.
-
-### Serial execution required
-
-The singleton `BackendTestContext` and shared wallet state mean tests must run
-with `--test-threads=1`. The harness shares a single SPV manager and funded
-wallet across all tests, which requires serial execution.
 
 ### Faucet availability
 

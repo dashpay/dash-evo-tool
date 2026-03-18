@@ -65,9 +65,9 @@ pub async fn wait_for_spendable_balance(
 
             let balance = {
                 let wallets = app_context.wallets().read().expect("wallets lock");
-                wallets.get(&wallet_hash).map(|wallet_arc| {
+                wallets.get(&wallet_hash).and_then(|wallet_arc| {
                     let wallet = wallet_arc.read().expect("wallet lock");
-                    wallet.confirmed_balance_duffs()
+                    wallet.spv_confirmed_balance()
                 })
             };
             if let Some(b) = balance
@@ -88,7 +88,7 @@ pub async fn wait_for_spendable_balance(
                 .map(|wallet_arc| {
                     let wallet = wallet_arc.read().expect("wallet lock");
                     (
-                        wallet.confirmed_balance_duffs(),
+                        wallet.spv_confirmed_balance().unwrap_or(0),
                         wallet.total_balance_duffs(),
                     )
                 })

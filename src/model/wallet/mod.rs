@@ -689,6 +689,18 @@ impl Wallet {
         }
     }
 
+    /// Returns the SPV-reported confirmed balance, or `None` if SPV hasn't
+    /// synced balance data yet. Unlike `confirmed_balance_duffs()`, this
+    /// never falls back to `max_balance()` — callers that need certainty
+    /// (e.g., test waiters) should use this and retry on `None`.
+    pub fn spv_confirmed_balance(&self) -> Option<u64> {
+        if self.total_balance > 0 || self.confirmed_balance > 0 || self.unconfirmed_balance > 0 {
+            Some(self.confirmed_balance)
+        } else {
+            None
+        }
+    }
+
     pub fn unconfirmed_balance_duffs(&self) -> u64 {
         self.unconfirmed_balance
     }

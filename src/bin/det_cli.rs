@@ -1,7 +1,8 @@
 //! det-cli -- Command-line client for Dash Evo Tool's MCP server.
 //!
 //! Connects to the MCP server, discovers tools dynamically, and calls them.
-//! Supports HTTP transport (default) and standalone mode (spawns child process).
+//! Supports HTTP transport (when MCP_API_KEY is configured) and stdio mode
+//! (spawns dash-evo-tool-mcp as a child process).
 
 use std::path::PathBuf;
 
@@ -13,22 +14,27 @@ use rmcp::{RoleClient, ServiceExt};
 type McpClient = RunningService<RoleClient, ()>;
 
 #[derive(Parser)]
-#[command(name = "det-cli", about = "CLI client for Dash Evo Tool")]
+#[command(
+    name = "det-cli",
+    about = "CLI client for Dash Evo Tool (default: list tools)"
+)]
 struct Cli {
-    /// Spawn dash-evo-tool-mcp as a child process instead of connecting to HTTP server
+    /// Force stdio mode: spawn dash-evo-tool-mcp as a child process.
+    /// Default when MCP_API_KEY is not configured.
     #[arg(long)]
     standalone: bool,
 
-    /// HTTP server address (ignored in standalone mode)
-    #[arg(long, default_value = "http://127.0.0.1:9527/mcp")]
-    addr: String,
+    /// HTTP server address (HTTP mode only).
+    /// Defaults to http://{MCP_LISTEN}/mcp, or http://127.0.0.1:9527/mcp if MCP_LISTEN is unset.
+    #[arg(long)]
+    addr: Option<String>,
 
-    /// Bearer token for HTTP auth (ignored in standalone mode)
-    #[arg(long, env = "DET_CLI_BEARER")]
+    /// Bearer token for HTTP auth. Reads MCP_API_KEY from env/.env automatically.
+    #[arg(long, env = "MCP_API_KEY")]
     bearer: Option<String>,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -53,9 +59,23 @@ enum Commands {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load app's .env before clap reads env vars — won't override vars already set in the shell.
+    load_app_env();
+
+    // Intercept --help / -h to append cached tool list to clap's output.
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() <= 1
+        || (args.len() == 2 && (args[1] == "--help" || args[1] == "-h" || args[1] == "help"))
+    {
+        Cli::command().print_help()?;
+        println!();
+        print_cached_tools_help();
+        return Ok(());
+    }
+
     let cli = Cli::parse();
 
-    if let Commands::Completion { shell } = &cli.command {
+    if let Some(Commands::Completion { shell }) = &cli.command {
         generate_completion(*shell);
         return Ok(());
     }
@@ -68,14 +88,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime.block_on(run(cli))
 }
 
+/// Load the app's `.env` file into the process environment.
+/// Variables already set in the shell are not overridden.
+fn load_app_env() {
+    if let Ok(data_dir) = dash_evo_tool::app_dir::app_user_data_dir_path() {
+        let env_path = data_dir.join(".env");
+        if env_path.exists() {
+            let _ = dotenvy::from_path(&env_path);
+        }
+    }
+}
+
+/// Print tool list from cache as a help appendix, or a hint to populate the cache.
+fn print_cached_tools_help() {
+    match load_cached_tools() {
+        Ok(tools) if !tools.is_empty() => {
+            println!("\nAvailable tools (cached — run 'det-cli cache' to refresh):");
+            for tool in &tools {
+                let desc = tool.description.as_deref().unwrap_or("");
+                println!("  {:<30} {}", tool.name, desc);
+            }
+        }
+        _ => {
+            println!(
+                "\nRun 'det-cli cache' to populate the tool list, then 'det-cli --help' to see available tools."
+            );
+        }
+    }
+}
+
+/// Determine connection mode and run the requested command.
+///
+/// Uses stdio mode when `--standalone` is set or no bearer token is available.
+/// Uses HTTP mode when a bearer token is configured (via flag, env, or .env).
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let client: McpClient = if cli.standalone {
+    let use_stdio = cli.standalone || cli.bearer.is_none();
+
+    let client: McpClient = if use_stdio {
         connect_standalone().await?
     } else {
-        connect_http(&cli.addr, cli.bearer.as_deref()).await?
+        let addr = resolve_addr(cli.addr);
+        connect_http(&addr, cli.bearer.as_deref()).await?
     };
 
-    match cli.command {
+    match cli.command.unwrap_or(Commands::Tools) {
         Commands::Tools => {
             let tools = client.peer().list_all_tools().await?;
             print_tools(&tools);
@@ -98,6 +154,19 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+/// Resolve the MCP server URL from the explicit flag, MCP_LISTEN env var, or the default.
+fn resolve_addr(addr: Option<String>) -> String {
+    if let Some(a) = addr {
+        return a;
+    }
+    if let Ok(listen) = std::env::var("MCP_LISTEN")
+        && !listen.is_empty()
+    {
+        return format!("http://{listen}/mcp");
+    }
+    "http://127.0.0.1:9527/mcp".to_string()
 }
 
 async fn connect_standalone() -> Result<McpClient, Box<dyn std::error::Error>> {
@@ -186,6 +255,11 @@ fn cache_dir() -> PathBuf {
 
 fn cache_path() -> PathBuf {
     cache_dir().join("tools.json")
+}
+
+fn load_cached_tools() -> Result<Vec<Tool>, Box<dyn std::error::Error>> {
+    let json = std::fs::read_to_string(cache_path())?;
+    Ok(serde_json::from_str(&json)?)
 }
 
 fn save_cache(tools: &[Tool]) -> Result<(), Box<dyn std::error::Error>> {

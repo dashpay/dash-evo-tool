@@ -10,32 +10,54 @@ cargo build --features cli
 
 The binary is `det-cli` in the Cargo output directory.
 
+## Configuration
+
+`det-cli` automatically reads the app's `.env` file on startup (the same file used by the GUI). This means no separate setup is needed — if you have already configured `MCP_API_KEY` in the app's `.env`, `det-cli` picks it up automatically.
+
+Shell environment variables take precedence over `.env` values, and CLI flags override everything.
+
+**Config precedence (highest to lowest):**
+
+1. CLI flags (`--bearer`, `--addr`)
+2. Shell environment variables (`MCP_API_KEY`, `MCP_LISTEN`)
+3. App's `.env` file
+
 ## Connection modes
 
-### HTTP (default)
+### HTTP (when MCP_API_KEY is configured)
 
-Connects to a running Dash Evo Tool instance's MCP HTTP server.
+Connects to a running Dash Evo Tool instance's MCP HTTP server. HTTP mode is used automatically when `MCP_API_KEY` is set — either via the app's `.env`, a shell env var, or `--bearer`.
 
-Requires either `--bearer <token>` or the `DET_CLI_BEARER` environment variable.
+The `.env` file is read automatically, so this just works:
 
 ```bash
-export DET_CLI_BEARER=my-secret-key
+# MCP_API_KEY is already set in ~/.config/Dash-Evo-Tool/.env
 det-cli tools
 ```
 
-The default server address is `http://127.0.0.1:9527/mcp`. Override with `--addr`:
+To override the API key for a single invocation:
+
+```bash
+det-cli --bearer my-secret-key tools
+```
+
+The server address defaults to `http://{MCP_LISTEN}/mcp` (from `.env` or env var), falling back to `http://127.0.0.1:9527/mcp`. Override with `--addr`:
 
 ```bash
 det-cli --addr http://127.0.0.1:9000/mcp tools
 ```
 
-### Standalone (`--standalone`)
+### Stdio (default when MCP_API_KEY is not set)
 
-Spawns `dash-evo-tool-mcp` as a child process and connects via stdin/stdout. Does not require a running GUI app. Does not require `--bearer`.
+When no API key is configured, `det-cli` automatically spawns `dash-evo-tool-mcp` as a child process and connects via stdin/stdout. No running GUI app needed. The `--standalone` flag forces this mode explicitly.
 
 `dash-evo-tool-mcp` must be built (`cargo build --features mcp-stdio`) and on `PATH`.
 
 ```bash
+# No MCP_API_KEY configured → stdio mode used automatically
+det-cli tools
+
+# Force stdio mode explicitly
 det-cli --standalone tools
 ```
 
@@ -114,9 +136,7 @@ det-cli completion zsh > "${fpath[1]}/_det-cli"
 ## Examples
 
 ```bash
-export DET_CLI_BEARER=my-secret-key
-
-# List wallets loaded in the app
+# MCP_API_KEY is set in the app's .env — HTTP mode used automatically
 det-cli call list_wallets
 
 # Generate a receive address (use alias or hex seed hash)
@@ -125,7 +145,10 @@ det-cli call generate_receive_address wallet_id=savings
 # List wallets in Dash Core
 det-cli call list_core_wallets
 
-# Same operations without a running GUI (standalone mode)
+# Override API key for one command
+det-cli --bearer my-secret-key call list_wallets
+
+# Stdio mode (no running GUI needed)
 det-cli --standalone call list_wallets
 MCP_NETWORK=testnet det-cli --standalone call list_wallets
 ```

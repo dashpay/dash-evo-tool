@@ -337,19 +337,31 @@ fn install_bash_completion() {
     let mut cmd = Cli::command();
     clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "det-cli", &mut buf);
 
-    // Append dynamic tool name completion from cache.
+    // Append dynamic completion: wraps clap's _det-cli, adds tool names and param names.
     let cache = cache_path();
     buf.extend_from_slice(
         format!(
             r#"
-# Dynamic tool name completion from cache
-_det_cli_tools() {{
+# Wrap clap's completion with dynamic tool/parameter completion from cache
+_det_cli_wrapper() {{
+    _det-cli "$@"
     local cache="{cache}"
-    if [ -f "$cache" ]; then
+    [ -f "$cache" ] || return
+    if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY+=( $(compgen -W "$(jq -r '.tools[].name' "$cache" 2>/dev/null | tr '_' '-')" -- "${{COMP_WORDS[COMP_CWORD]}}") )
+    elif [ "$COMP_CWORD" -ge 2 ]; then
+        local tool_name="${{COMP_WORDS[1]}}"
+        local mcp_name=$(echo "$tool_name" | tr '-' '_')
+        local params=$(jq -r --arg t "$mcp_name" '.tools[] | select(.name == $t) | .inputSchema.properties // {{}} | keys[]' "$cache" 2>/dev/null | tr '_' '-')
+        local cur="${{COMP_WORDS[COMP_CWORD]}}"
+        if [[ "$cur" == *=* ]]; then
+            return
+        fi
+        COMPREPLY+=( $(compgen -S '=' -W "$params" -- "$cur") )
+        compopt -o nospace
     fi
 }}
-complete -F _det_cli_tools det-cli
+complete -F _det_cli_wrapper -o nosort -o bashdefault -o default det-cli
 "#,
             cache = cache.display()
         )
@@ -507,14 +519,26 @@ fn generate_completion(shell: clap_complete::Shell) {
         let cache = cache_path();
         println!(
             r#"
-# Dynamic tool name completion from cache
-_det_cli_tools() {{
+# Wrap clap's completion with dynamic tool/parameter completion from cache
+_det_cli_wrapper() {{
+    _det-cli "$@"
     local cache="{cache}"
-    if [ -f "$cache" ]; then
+    [ -f "$cache" ] || return
+    if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY+=( $(compgen -W "$(jq -r '.tools[].name' "$cache" 2>/dev/null | tr '_' '-')" -- "${{COMP_WORDS[COMP_CWORD]}}") )
+    elif [ "$COMP_CWORD" -ge 2 ]; then
+        local tool_name="${{COMP_WORDS[1]}}"
+        local mcp_name=$(echo "$tool_name" | tr '-' '_')
+        local params=$(jq -r --arg t "$mcp_name" '.tools[] | select(.name == $t) | .inputSchema.properties // {{}} | keys[]' "$cache" 2>/dev/null | tr '_' '-')
+        local cur="${{COMP_WORDS[COMP_CWORD]}}"
+        if [[ "$cur" == *=* ]]; then
+            return
+        fi
+        COMPREPLY+=( $(compgen -S '=' -W "$params" -- "$cur") )
+        compopt -o nospace
     fi
 }}
-complete -F _det_cli_tools det-cli
+complete -F _det_cli_wrapper -o nosort -o bashdefault -o default det-cli
 "#,
             cache = cache.display()
         );

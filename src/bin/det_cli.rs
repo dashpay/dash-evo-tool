@@ -279,7 +279,8 @@ fn load_cache() -> Option<ToolCache> {
     serde_json::from_str(&data).ok()
 }
 
-/// Save tools to cache. Extracts server version from the peer info.
+/// Save tools to cache and install shell completion.
+/// Extracts server version from the peer info.
 fn save_cache(client: &McpClient, tools: &[Tool]) {
     let version = client
         .peer()
@@ -296,6 +297,47 @@ fn save_cache(client: &McpClient, tools: &[Tool]) {
     if std::fs::create_dir_all(&dir).is_ok() {
         let _ = serde_json::to_string_pretty(&cache).map(|json| std::fs::write(cache_path(), json));
     }
+
+    install_bash_completion();
+}
+
+/// Install bash completion to the user-level completions directory.
+/// Writes to `~/.local/share/bash-completion/completions/det-cli` so it is
+/// auto-loaded by bash-completion 2.x on the next shell — no .bashrc editing needed.
+fn install_bash_completion() {
+    let Some(base) = directories::BaseDirs::new() else {
+        return;
+    };
+    let comp_dir = base.data_local_dir().join("bash-completion/completions");
+    if std::fs::create_dir_all(&comp_dir).is_err() {
+        return;
+    }
+
+    let mut buf = Vec::new();
+    let mut cmd = Cli::command();
+    clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "det-cli", &mut buf);
+
+    // Append dynamic tool name completion from cache.
+    let cache = cache_path();
+    buf.extend_from_slice(
+        format!(
+            r#"
+# Dynamic tool name completion from cache
+_det_cli_tools() {{
+    local cache="{cache}"
+    if [ -f "$cache" ]; then
+        COMPREPLY+=( $(compgen -W "$(jq -r '.tools[].name' "$cache" 2>/dev/null)" -- "${{COMP_WORDS[COMP_CWORD]}}") )
+    fi
+}}
+complete -F _det_cli_tools det-cli call
+"#,
+            cache = cache.display()
+        )
+        .as_bytes(),
+    );
+
+    let dest = comp_dir.join("det-cli");
+    let _ = std::fs::write(&dest, buf);
 }
 
 /// Print cached tools section for --help output.

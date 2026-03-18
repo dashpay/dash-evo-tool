@@ -1,6 +1,6 @@
 # det-cli
 
-`det-cli` is the command-line interface for Dash Evo Tool. It provides both a CLI client for calling MCP tools and a built-in MCP stdio server.
+`det-cli` is the command-line interface for Dash Evo Tool. Run wallet and platform commands from the terminal — no GUI needed.
 
 ## Build
 
@@ -8,105 +8,90 @@
 cargo build --features cli
 ```
 
+## Quick start
+
+```bash
+# List available commands
+det-cli
+
+# List wallets
+det-cli list-wallets
+
+# Generate a receive address
+det-cli generate-receive-address wallet-id=savings
+
+# List wallets in Dash Core
+det-cli list-core-wallets
+```
+
+Run `det-cli --help` to see all available commands with descriptions.
+
 ## Configuration
 
-`det-cli` reads the app's `.env` file automatically on startup — the same file used by the GUI. No separate configuration is needed.
+`det-cli` reads the app's `.env` file automatically — the same file used by the GUI. No separate configuration needed.
 
 Config precedence (highest to lowest):
 
-1. CLI flags (`--bearer`, `--addr`)
+1. CLI flags (`--addr`)
 2. Shell environment variables (`MCP_API_KEY`, `MCP_LISTEN`)
 3. App's `.env` file (loaded from the platform data directory)
 
 ## Connection modes
 
-### In-process (default)
+### Standalone (default)
 
-When no `MCP_API_KEY` is configured, `det-cli` runs the MCP service in-process. No running GUI app or separate server required.
+When no `MCP_API_KEY` is set, `det-cli` runs its own backend in-process. No running GUI app or server required.
 
-```bash
-det-cli tools
-```
+### Connected to Dash Evo Tool GUI
 
-### HTTP
+Set `MCP_API_KEY` (in `.env` or shell) to connect to a running Dash Evo Tool instance instead. This shares the app's live state — wallets, network, database.
 
-Used automatically when `MCP_API_KEY` is available (from `.env` or shell). Connects to the running GUI app's MCP HTTP server.
+The GUI address defaults to `http://127.0.0.1:9527/mcp`. Override with `--addr`:
 
 ```bash
-det-cli tools
+det-cli --addr http://127.0.0.1:9000/mcp list-wallets
 ```
 
-The server address defaults to `http://{MCP_LISTEN}/mcp`, or `http://127.0.0.1:9527/mcp` if `MCP_LISTEN` is not set. Override with `--addr`:
-
-```bash
-det-cli --addr http://127.0.0.1:9000/mcp tools
-```
-
-Force in-process mode with `--standalone` even when an API key is present.
+Force standalone mode with `--standalone` even when an API key is present.
 
 ## Usage
 
-Running `det-cli` with no subcommand lists available tools.
-
-### `tools` — list available tools
+Commands use hyphens (`list-wallets`, not `list_wallets`). Parameters are passed as `key=value` pairs:
 
 ```bash
-det-cli tools
+det-cli <command> [key=value ...]
 ```
 
-Prints each tool name, its description, and its parameters.
+Values are parsed as JSON first, falling back to plain strings. Exit code is non-zero on error.
 
-### `call <tool> [key=value ...]` — call a tool
-
-```bash
-det-cli call <tool-name> [key=value ...]
-```
-
-Parameter values are parsed as JSON first, falling back to plain strings.
-
-```bash
-det-cli call list_wallets
-det-cli call generate_receive_address wallet_id=my-wallet
-det-cli call some_tool enabled=true
-```
-
-Exit code is non-zero when the tool returns an error.
-
-### `serve` — run as MCP stdio server
+### `serve` — MCP stdio server
 
 ```bash
 det-cli serve
 ```
 
-Runs an MCP server over stdin/stdout for use with Claude Desktop, AI agents, or other MCP clients. See [MCP.md](MCP.md) for Claude Desktop configuration.
+Runs an MCP server over stdin/stdout for Claude Desktop, AI agents, or other MCP clients. See [MCP.md](MCP.md) for Claude Desktop configuration.
 
-### `completion <shell>` — generate shell completion
+### `tools` — refresh command list
+
+```bash
+det-cli tools
+```
+
+Fetches and displays all available commands. The list is cached automatically.
+
+### `completion <shell>` — shell completion
 
 ```bash
 det-cli completion bash
 det-cli completion zsh
 ```
 
-## Tool cache
+## Shell completion
 
-The tool list is cached automatically when you run `det-cli` or `det-cli tools`. The cache includes the server version and is invalidated when the version changes.
+Bash completion is **installed automatically** on first run to `~/.local/share/bash-completion/completions/det-cli`. It works on the next shell session — no manual setup needed. Requires `jq` for dynamic command name completion.
 
-`det-cli --help` appends the cached tool list to the standard help output.
-
-## Shell completion setup
-
-### Bash
-
-```bash
-source <(det-cli completion bash)
-
-# Or add permanently to ~/.bashrc
-echo 'source <(det-cli completion bash)' >> ~/.bashrc
-```
-
-The bash completion includes dynamic tool name completion for `det-cli call`. Requires `jq`.
-
-### Zsh
+For zsh:
 
 ```bash
 det-cli completion zsh > "${fpath[1]}/_det-cli"
@@ -115,17 +100,17 @@ det-cli completion zsh > "${fpath[1]}/_det-cli"
 ## Examples
 
 ```bash
-# List wallets (in-process, no server needed)
-det-cli call list_wallets
+# List wallets (standalone, no server needed)
+det-cli list-wallets
 
 # Generate a receive address
-det-cli call generate_receive_address wallet_id=savings
+det-cli generate-receive-address wallet-id=savings
 
 # List wallets in Dash Core
-det-cli call list_core_wallets
+det-cli list-core-wallets
 
 # Use testnet
-MCP_NETWORK=testnet det-cli call list_wallets
+MCP_NETWORK=testnet det-cli list-wallets
 
 # Run as stdio MCP server for Claude Desktop
 det-cli serve

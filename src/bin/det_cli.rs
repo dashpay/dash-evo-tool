@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Intercept --help to show custom help with tool list.
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 && (args[1] == "--help" || args[1] == "-h") {
-        print_help();
+        print_help(None);
         return Ok(());
     }
 
@@ -122,8 +122,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Commands::Tools => {
             let tools = client.peer().list_all_tools().await?;
-            print_tools(&tools);
             save_cache(&client, &tools);
+            print_help(Some(&tools));
         }
         Commands::Tool(args) => {
             let tool_name = args.first().ok_or("tool name required")?;
@@ -202,27 +202,6 @@ async fn connect_http(
     let transport = StreamableHttpClientTransport::from_config(config);
     let client = ().serve(transport).await?;
     Ok(client)
-}
-
-fn print_tools(tools: &[Tool]) {
-    for tool in tools {
-        let desc = tool.description.as_deref().unwrap_or("");
-        let cli_name = tool.name.replace('_', "-");
-        println!("{:<30} {}", cli_name, desc);
-
-        if let Some(props) = tool.input_schema.get("properties")
-            && let Some(obj) = props.as_object()
-        {
-            for (name, schema) in obj {
-                let desc = schema
-                    .get("description")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("");
-                let cli_param = name.replace('_', "-");
-                println!("  {:<26} {}", cli_param, desc);
-            }
-        }
-    }
 }
 
 fn print_result(result: &CallToolResult) {
@@ -341,18 +320,32 @@ complete -F _det_cli_tools det-cli
     let _ = std::fs::write(&dest, buf);
 }
 
-/// Print custom help output with integrated tool list.
-fn print_help() {
+/// Print help output with integrated tool list.
+/// When `tools` is `Some`, uses the provided list (live from server).
+/// When `None`, falls back to the disk cache.
+fn print_help(tools: Option<&[Tool]>) {
     println!("det-cli — Command-line interface for Dash Evo Tool (v{PKG_VERSION})");
     println!();
     println!("Usage: det-cli [command] [key=value ...]");
 
     // Tools section — the main content.
-    match load_cache() {
-        Some(cache) if cache.version == PKG_VERSION => {
-            println!();
-            println!("Commands:");
-            for tool in &cache.tools {
+    let cached;
+    let tool_list: Option<&[Tool]> = match tools {
+        Some(t) => Some(t),
+        None => match load_cache() {
+            Some(cache) if cache.version == PKG_VERSION => {
+                cached = cache.tools;
+                Some(&cached)
+            }
+            _ => None,
+        },
+    };
+
+    println!();
+    println!("Commands:");
+    match tool_list {
+        Some(tools) => {
+            for tool in tools {
                 let desc = tool.description.as_deref().unwrap_or("");
                 let cli_name = tool.name.replace('_', "-");
                 println!("  {:<30} {}", cli_name, desc);
@@ -371,14 +364,7 @@ fn print_help() {
                 }
             }
         }
-        Some(_) => {
-            println!();
-            println!("Commands:");
-            println!("  (tool cache is stale — run 'det-cli' to refresh)");
-        }
         None => {
-            println!();
-            println!("Commands:");
             println!("  (run 'det-cli' once to discover available commands)");
         }
     }

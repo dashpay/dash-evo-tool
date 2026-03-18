@@ -99,12 +99,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_stdio_server();
     }
 
-    // Minimal stderr logging: show warnings from our code but suppress rmcp
-    // service-level warnings (they duplicate errors we already handle).
+    // Logging is off by default — set RUST_LOG to enable (e.g. RUST_LOG=debug).
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,rmcp=error")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
         )
         .with_writer(std::io::stderr)
         .try_init();

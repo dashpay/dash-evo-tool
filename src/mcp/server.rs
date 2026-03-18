@@ -13,7 +13,8 @@ use std::sync::Arc;
 
 /// Poll interval for waiting on SPV connection — matches ConnectionStatus throttle.
 const SPV_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-const SPV_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Initial SPV sync (headers, masternodes, filters, blocks) can take several minutes.
+const SPV_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct WalletIdParam {
@@ -286,8 +287,9 @@ impl DashMcpService {
             if tokio::time::Instant::now() >= deadline {
                 return Err(McpError::internal_error(
                     format!(
-                        "SPV did not connect within 60 seconds (state: {state:?}). \
-                         Check your network."
+                        "SPV sync timed out after {} seconds (state: {state:?}). \
+                         Check your network.",
+                        SPV_WAIT_TIMEOUT.as_secs()
                     ),
                     None,
                 ));

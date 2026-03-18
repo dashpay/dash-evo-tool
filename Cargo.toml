@@ -52,7 +52,7 @@ arboard = { version = "3.6.0", default-features = false, features = [
     "windows-sys",
 ] }
 directories = "6.0.0"
-rusqlite = { version = "0.38.0", features = ["functions", "fallible_uint"] }
+rusqlite = { version = "0.38.0", features = ["bundled", "functions", "fallible_uint"] }
 dark-light = "2.0.0"
 image = { version = "0.25.6", default-features = false, features = [
     "png",

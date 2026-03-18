@@ -94,15 +94,32 @@ jobs:
         env:
           PROTOC: /usr/local/bin/protoc
 
-      - name: Windows libsql
-        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
-        run: curl -OL https://www.sqlite.org/2024/sqlite-dll-win-x64-3460100.zip && sudo unzip -o sqlite-dll-win-x64-3460100.zip -d winlibs && sudo chown -R runner:docker winlibs/ && pwd && ls -lah && cd winlibs && x86_64-w64-mingw32-dlltool -d sqlite3.def -l libsqlite3.a && ls -lah && cd .. && sudo cp winlibs/libsqlite3.a /usr/x86_64-w64-mingw32/lib/libsqlite3.a
-
       - name: Build project
         run: |
           cargo build --release --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
-          if [ -f winlibs/sqlite3.dll ]; then cp winlibs/sqlite3.dll dash-evo-tool/sqlite3.dll; fi
+        env:
+          OPENSSL_STATIC: "1"
+
+      - name: Verify Windows binary is self-contained
+        if: ${{ matrix.target == 'x86_64-pc-windows-gnu' }}
+        run: |
+          echo "Checking DLL imports..."
+          IMPORTS=$(x86_64-w64-mingw32-objdump -p dash-evo-tool/dash-evo-tool.exe | grep "DLL Name:" | sort -u)
+          echo "$IMPORTS"
+          # Fail if any null DLL imports (broken import table)
+          if echo "$IMPORTS" | grep -q "(null)"; then
+            echo "::error::Binary has null DLL imports — broken import table detected"
+            exit 1
+          fi
+          # Fail if MinGW runtime DLLs are dynamically linked
+          for dll in libgcc_s_seh-1.dll libwinpthread-1.dll libstdc++-6.dll; do
+            if echo "$IMPORTS" | grep -qi "$dll"; then
+              echo "::error::Binary dynamically links $dll — must be statically linked"
+              exit 1
+            fi
+          done
+          echo "✅ Binary is self-contained — no MinGW runtime or null DLL dependencies"
 
       - name: Package release
         run: |

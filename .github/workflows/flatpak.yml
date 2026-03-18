@@ -98,8 +98,10 @@ jobs:
             echo "::error::Binary not found at $BINARY"
             exit 1
           fi
-          echo "Checking shared library dependencies..."
-          DEPS=$(ldd "$BINARY" 2>&1 || true)
+          echo "Checking shared library dependencies inside Flatpak sandbox..."
+          # Run ldd inside the Flatpak build environment so libraries resolve
+          # against the Flatpak runtime (/usr) and app (/app), not the host.
+          DEPS=$(flatpak build build-dir ldd /app/bin/dash-evo-tool 2>&1 || true)
           echo "$DEPS"
           # Fail on missing libraries (not found = will crash at runtime)
           if echo "$DEPS" | grep -q "not found"; then

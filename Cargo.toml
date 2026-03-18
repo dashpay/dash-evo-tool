@@ -76,7 +76,7 @@ tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
 region = "3.0.2"
-rmcp = { version = "1.2", features = ["server", "macros", "transport-streamable-http-server"], optional = true }
+rmcp = { version = "1.2", features = ["server", "macros"], optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
 subtle = { version = "2.6", optional = true }
 
@@ -92,11 +92,17 @@ raw-cpuid = "11.5.0"
 
 [features]
 testing = []
-mcp = ["dep:rmcp", "dep:axum", "dep:subtle"]
+mcp-stdio = ["dep:rmcp", "rmcp/transport-io"]
+mcp-http = ["dep:rmcp", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
 tokio-shared-rt = "=0.1.0"
+
+[[bin]]
+name = "dash-evo-tool-mcp"
+path = "src/bin/mcp_server.rs"
+required-features = ["mcp-stdio"]
 
 [build-dependencies]
 winres = "0.1"
@@ -109,7 +115,7 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp-stdio\", \"mcp-http\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"

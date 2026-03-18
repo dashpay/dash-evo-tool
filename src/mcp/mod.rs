@@ -1,8 +1,10 @@
-//! MCP (Model Context Protocol) HTTP server for programmatic access.
+//! MCP (Model Context Protocol) server for programmatic access.
 //!
-//! Gated by the `mcp` feature and `MCP_API_KEY` env var. When enabled,
-//! embeds a streamable-HTTP MCP server that exposes backend tasks as tools.
+//! Supports two transports, each behind its own feature flag:
+//! - `mcp-stdio`: standalone binary, stdin/stdout MCP protocol, lazy AppContext init
+//! - `mcp-http`: embedded in GUI app, shares app's AppContext via ArcSwap
 
+#[cfg(feature = "mcp-http")]
 pub mod auth;
 pub mod config;
 pub mod dispatch;
@@ -10,32 +12,37 @@ pub mod server;
 
 pub use config::McpConfig;
 
-use crate::context::AppContext;
-use arc_swap::ArcSwap;
-use auth::ApiKey;
-use axum::{Router, middleware};
-use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
-};
-use server::DashMcpService;
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
+/// Start the MCP server over stdin/stdout.
+#[cfg(feature = "mcp-stdio")]
+pub async fn start_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use rmcp::ServiceExt;
 
-/// Start the MCP HTTP server.
-///
-/// Binds to `config.listen_addr`, serves `/mcp` (authenticated) and
-/// `/health` (unauthenticated). Shuts down gracefully on cancellation.
-pub async fn start_server(
-    app_context: Arc<ArcSwap<AppContext>>,
+    let service = server::DashMcpService::new_lazy();
+    let server = service.serve(rmcp::transport::stdio()).await?;
+    server.waiting().await?;
+    Ok(())
+}
+
+/// Start the MCP server over HTTP (embedded in GUI app).
+#[cfg(feature = "mcp-http")]
+pub async fn start_http_server(
+    app_context: std::sync::Arc<arc_swap::ArcSwap<crate::context::AppContext>>,
     config: McpConfig,
-    cancel: CancellationToken,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use auth::ApiKey;
+    use axum::{Router, middleware};
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    };
+    use server::DashMcpService;
+    use std::sync::Arc;
+
     let api_key = ApiKey(Arc::from(config.api_key.as_str()));
 
-    // MCP service factory -- creates a new service instance per session
     let ctx = app_context.clone();
     let mcp_service = StreamableHttpService::new(
-        move || Ok(DashMcpService::new(ctx.clone())),
+        move || Ok(DashMcpService::new_shared(ctx.clone())),
         LocalSessionManager::default().into(),
         StreamableHttpServerConfig {
             cancellation_token: cancel.clone(),
@@ -43,10 +50,8 @@ pub async fn start_server(
         },
     );
 
-    // Health endpoint (unauthenticated)
     let health = Router::new().route("/health", axum::routing::get(|| async { "OK" }));
 
-    // MCP endpoint (authenticated)
     let mcp = Router::new()
         .nest_service("/mcp", mcp_service)
         .route_layer(middleware::from_fn_with_state(api_key, auth::bearer_auth));

@@ -1,16 +1,15 @@
 //! MCP server configuration from environment variables.
 
-/// Configuration for the MCP HTTP server.
-///
-/// Loaded from environment variables. Returns `None` if `MCP_API_KEY` is
-/// empty or missing -- the server simply won't start.
+/// Configuration for the MCP server.
 pub struct McpConfig {
+    /// API key for HTTP bearer auth. Only used by HTTP mode.
     pub api_key: String,
+    /// Listen address for the HTTP server. Only used by HTTP mode.
     pub listen_addr: String,
 }
 
 impl McpConfig {
-    /// Read config from env. Returns `None` when disabled (no API key).
+    /// Read config for HTTP mode. Returns `None` when disabled (no API key).
     pub fn from_env() -> Option<Self> {
         let api_key = std::env::var("MCP_API_KEY")
             .ok()
@@ -23,5 +22,13 @@ impl McpConfig {
             api_key,
             listen_addr,
         })
+    }
+
+    /// Read the network name for stdio mode. Defaults to "mainnet".
+    pub fn network_from_env() -> String {
+        std::env::var("MCP_NETWORK")
+            .ok()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "mainnet".to_string())
     }
 }

@@ -10,7 +10,7 @@ pub mod context_provider_spv;
 pub mod cpu_compatibility;
 pub mod database;
 pub mod logging;
-#[cfg(feature = "mcp")]
+#[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
 pub mod mcp;
 pub mod model;
 pub mod sdk_wrapper;

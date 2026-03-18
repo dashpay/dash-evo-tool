@@ -3,12 +3,17 @@
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::context::connection_status::OverallConnectionState;
 use crate::mcp::dispatch::{dispatch_task, resolve_wallet, task_error_to_mcp};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{ErrorData as McpError, ServerHandler, schemars, tool, tool_handler, tool_router};
 use std::sync::Arc;
+
+/// Poll interval for waiting on SPV connection — matches ConnectionStatus throttle.
+const SPV_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const SPV_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct WalletIdParam {
@@ -70,7 +75,7 @@ impl DashMcpService {
             ContextProvider::Shared(swap) => Ok(swap.load_full()),
             #[cfg(feature = "cli")]
             ContextProvider::Lazy(cell) => cell
-                .get_or_try_init(|| async { init_app_context() })
+                .get_or_try_init(|| async { init_app_context().await })
                 .await
                 .cloned(),
         }
@@ -79,8 +84,10 @@ impl DashMcpService {
 
 /// Initialize an AppContext for standalone/CLI mode.
 /// Uses the last network selected in the GUI (from database), defaults to mainnet.
+/// Starts the SPV client so wallet operations work, but does not block waiting
+/// for wallets to load — individual tools wait for their specific wallet.
 #[cfg(feature = "cli")]
-fn init_app_context() -> Result<Arc<AppContext>, McpError> {
+async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     use crate::app_dir::{
         app_user_data_dir_path, data_file_path, ensure_data_dir_exists, ensure_env_file,
     };
@@ -134,7 +141,7 @@ fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         ));
     }
 
-    AppContext::new(
+    let app_context = AppContext::new(
         data_dir,
         network,
         db,
@@ -148,7 +155,15 @@ fn init_app_context() -> Result<Arc<AppContext>, McpError> {
             "failed to create AppContext — check logs for details".to_string(),
             None,
         )
-    })
+    })?;
+
+    if let Err(e) = app_context.start_spv() {
+        tracing::warn!("SPV start failed (wallet tools may not work): {e}");
+    } else {
+        tracing::info!("SPV client started, wallets loading in background");
+    }
+
+    Ok(app_context)
 }
 
 /// Collect configured network names from a Config.
@@ -253,6 +268,41 @@ impl DashMcpService {
     ) -> Result<CallToolResult, McpError> {
         let ctx = self.ctx().await?;
         let seed_hash = resolve_wallet(&ctx, &params.wallet_id)?;
+
+        // Wait for SPV to reach "Synced" (green) state so wallets are loaded.
+        let deadline = tokio::time::Instant::now() + SPV_WAIT_TIMEOUT;
+        loop {
+            let _ = ctx.connection_status.trigger_refresh(&ctx);
+            let state = ctx.connection_status.overall_state();
+            if state == OverallConnectionState::Synced {
+                break;
+            }
+            if state == OverallConnectionState::Error {
+                return Err(McpError::internal_error(
+                    "SPV connection failed. Check your network configuration.".to_string(),
+                    None,
+                ));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(McpError::internal_error(
+                    format!(
+                        "SPV did not connect within 60 seconds (state: {state:?}). \
+                         Check your network."
+                    ),
+                    None,
+                ));
+            }
+            tokio::time::sleep(SPV_WAIT_POLL_INTERVAL).await;
+        }
+
+        // Verify the specific wallet is loaded into SPV's det_wallets map.
+        if ctx.spv_manager.wallet_id_for_seed(seed_hash).is_none() {
+            return Err(McpError::internal_error(
+                "Wallet is not loaded into SPV. Please retry in a moment.".to_string(),
+                None,
+            ));
+        }
+
         let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
         let result = dispatch_task(&ctx, task).await.map_err(task_error_to_mcp)?;
         match result {

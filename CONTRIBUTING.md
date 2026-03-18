@@ -73,13 +73,6 @@ The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional
 
 Features are independent — enable any combination.
 
-### CI feature usage
-
-| Workflow | Features |
-|---|---|
-| Clippy | `--all-features` (validates all code paths) |
-| Tests | `--all-features` |
-| Release | `--features cli` (packages both `dash-evo-tool` and `det-cli`) |
 
 ## Code quality
 

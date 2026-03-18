@@ -13,6 +13,7 @@ use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use eframe::egui::Context;
 
+use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::Wallet;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::ui::components::password_input::PasswordInput;
@@ -24,20 +25,6 @@ use std::sync::RwLock;
 use std::sync::atomic::Ordering;
 use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
-
-fn is_unique_constraint_violation(e: &rusqlite::Error) -> bool {
-    matches!(
-        e,
-        rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ffi::ErrorCode::ConstraintViolation,
-                extended_code: 2067, // SQLITE_CONSTRAINT_UNIQUE
-                ..
-            },
-            _,
-        )
-    )
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportType {
@@ -220,7 +207,7 @@ impl ImportMnemonicScreen {
             let password = if self.password_input.is_empty() {
                 None
             } else {
-                Some(self.password_input.text())
+                Some(self.password_input.secret().clone())
             };
 
             // Generate default wallet name if none provided
@@ -240,15 +227,19 @@ impl ImportMnemonicScreen {
                 seed,
                 self.app_context.network,
                 Some(wallet_alias),
-                password,
-            )?;
+                password.as_ref(),
+            )
+            .map_err(|e| e.to_string())?;
 
             wallet.core_wallet_name = self
                 .core_wallets
                 .as_ref()
                 .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
-            let (new_wallet_seed_hash, wallet_arc) = self.app_context.register_wallet(wallet)?;
+            let (new_wallet_seed_hash, wallet_arc) = self
+                .app_context
+                .register_wallet(wallet)
+                .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {

@@ -143,7 +143,7 @@ impl AddNewWalletScreen {
             let password = if self.password_input.is_empty() {
                 None
             } else {
-                Some(self.password_input.text())
+                Some(self.password_input.secret().clone())
             };
 
             // Generate default wallet name if none provided
@@ -163,8 +163,9 @@ impl AddNewWalletScreen {
                 seed,
                 self.app_context.network,
                 Some(wallet_alias),
-                password,
-            )?;
+                password.as_ref(),
+            )
+            .map_err(|e| e.to_string())?;
 
             wallet.core_wallet_name = self
                 .core_wallets
@@ -177,7 +178,10 @@ impl AddNewWalletScreen {
                 self.receive_address = Some(address.clone());
             }
 
-            let (new_wallet_seed_hash, _wallet_arc) = self.app_context.register_wallet(wallet)?;
+            let (new_wallet_seed_hash, _wallet_arc) = self
+                .app_context
+                .register_wallet(wallet)
+                .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {

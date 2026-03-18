@@ -3,7 +3,9 @@ pub mod encryption;
 pub mod single_key;
 mod utxos;
 
+use crate::backend_task::error::TaskError;
 use crate::database::{Database, WalletError};
+use crate::model::secret::Secret;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::address_funds::{AddressWitness, PlatformAddress};
 use dash_sdk::dpp::identity::signer::Signer;
@@ -379,12 +381,13 @@ impl Wallet {
         seed: [u8; 64],
         network: Network,
         alias: Option<String>,
-        password: Option<&str>,
-    ) -> Result<Self, String> {
+        password: Option<&Secret>,
+    ) -> Result<Self, TaskError> {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
-                let (enc, s, n) = ClosedKeyItem::encrypt_seed(&seed, pw)?;
+                let (enc, s, n) = ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret())
+                    .map_err(|e| TaskError::EncryptionError { detail: e })?;
                 (enc, s, n, true)
             }
             _ => (seed.to_vec(), vec![], vec![], false),
@@ -393,19 +396,25 @@ impl Wallet {
         let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
         // Derive master BIP44 extended public key
-        let master_priv = ExtendedPrivKey::new_master(network, &seed)
-            .map_err(|e| format!("Failed to derive master key: {e}"))?;
+        let master_priv = ExtendedPrivKey::new_master(network, &seed).map_err(|e| {
+            TaskError::WalletKeyDerivationFailed {
+                detail: e.to_string(),
+            }
+        })?;
         let bip44_path = Self::bip44_account0_path(network);
         let secp = Secp256k1::new();
-        let account_priv = master_priv
-            .derive_priv(&secp, &bip44_path)
-            .map_err(|e| format!("BIP44 derivation failed: {e}"))?;
+        let account_priv = master_priv.derive_priv(&secp, &bip44_path).map_err(|e| {
+            TaskError::WalletKeyDerivationFailed {
+                detail: e.to_string(),
+            }
+        })?;
         let master_bip44_ecdsa_extended_public_key =
             ExtendedPubKey::from_priv(&secp, &account_priv);
 
         // Derive the first receive address (m/44'/coin'/0'/0/0)
         let (known_addresses, watched_addresses) =
-            Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)?;
+            Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
+                .map_err(|e| TaskError::WalletKeyDerivationFailed { detail: e })?;
 
         Ok(Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {

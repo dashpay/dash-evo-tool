@@ -21,6 +21,21 @@ use dash_sdk::dpp::dashcore::Network;
 use rusqlite::{Connection, Params};
 use std::sync::{Arc, Mutex};
 
+/// Returns `true` when the error is a UNIQUE constraint violation (SQLITE_CONSTRAINT_UNIQUE).
+pub(crate) fn is_unique_constraint_violation(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::ConstraintViolation,
+                extended_code: 2067, // SQLITE_CONSTRAINT_UNIQUE
+                ..
+            },
+            _,
+        )
+    )
+}
+
 /// Error indicating a corrupted data blob in the database.
 ///
 /// Converts into `rusqlite::Error::FromSqlConversionFailure` so it can

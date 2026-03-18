@@ -1339,4 +1339,3 @@ impl ScreenLike for AddNewIdentityScreen {
         action
     }
 }
-

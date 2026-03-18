@@ -26,6 +26,7 @@ use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::{OutPoint, Transaction};
+use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -63,9 +64,9 @@ pub type KeyInput = (
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityKeys {
-    pub master_private_key: Option<(PrivateKey, DerivationPath)>,
-    pub master_private_key_type: KeyType,
-    pub keys_input: Vec<KeyInput>,
+    pub(crate) master_private_key: Option<(PrivateKey, DerivationPath)>,
+    pub(crate) master_private_key_type: KeyType,
+    pub(crate) keys_input: Vec<KeyInput>,
 }
 
 impl IdentityKeys {
@@ -462,6 +463,85 @@ pub fn default_identity_key_specs(
             dashpay_bounds,
         ),
     ]
+}
+
+/// Build an [`IdentityRegistrationInfo`] for a wallet-funded identity.
+///
+/// Derives the master key and additional keys from the wallet at the given
+/// `identity_index`. This is the canonical way to prepare identity
+/// registration data from a wallet — used by both UI screens and tests.
+#[allow(dead_code)] // Used by backend-e2e tests via pub(crate) visibility
+pub(crate) fn build_identity_registration(
+    app_context: &Arc<AppContext>,
+    wallet_arc: &Arc<RwLock<Wallet>>,
+    identity_index: u32,
+    funding_amount: Duffs,
+) -> Result<IdentityRegistrationInfo, TaskError> {
+    let dashpay_contract_id = app_context.dashpay_contract.id();
+    let key_specs = default_identity_key_specs(dashpay_contract_id);
+
+    let mut wallet = wallet_arc.write()?;
+
+    let (master_private_key, master_derivation_path) = wallet
+        .identity_authentication_ecdsa_private_key(
+            app_context,
+            app_context.network,
+            identity_index,
+            0,
+        )
+        .map_err(|e| TaskError::WalletKeyDerivationFailed { detail: e })?;
+
+    let mut keys_input: Vec<KeyInput> = Vec::new();
+    for (i, (key_type, purpose, security_level, contract_bounds)) in
+        key_specs.into_iter().enumerate()
+    {
+        let key_index = (i + 1) as u32;
+        let (private_key, derivation_path) = wallet
+            .identity_authentication_ecdsa_private_key(
+                app_context,
+                app_context.network,
+                identity_index,
+                key_index,
+            )
+            .map_err(|e| TaskError::WalletKeyDerivationFailed { detail: e })?;
+        keys_input.push((
+            (private_key, derivation_path),
+            key_type,
+            purpose,
+            security_level,
+            contract_bounds,
+        ));
+    }
+
+    drop(wallet);
+
+    Ok(IdentityRegistrationInfo {
+        alias_input: String::new(),
+        keys: IdentityKeys::new(
+            Some((master_private_key, master_derivation_path)),
+            KeyType::ECDSA_HASH160,
+            keys_input,
+        ),
+        wallet: wallet_arc.clone(),
+        wallet_identity_index: identity_index,
+        identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(
+            funding_amount,
+            identity_index,
+        ),
+    })
+}
+
+/// Get a receive address string from a wallet.
+#[allow(dead_code)] // Used by backend-e2e tests via pub(crate) visibility
+pub(crate) fn get_receive_address(
+    app_context: &AppContext,
+    wallet_arc: &Arc<RwLock<Wallet>>,
+) -> Result<String, TaskError> {
+    let mut wallet = wallet_arc.write()?;
+    wallet
+        .receive_address(app_context.network, false, Some(app_context))
+        .map(|addr| addr.to_string())
+        .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })
 }
 
 impl AppContext {

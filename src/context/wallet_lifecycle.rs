@@ -1,6 +1,7 @@
 use super::AppContext;
 use super::get_transaction_info;
 use crate::backend_task::error::TaskError;
+use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
     DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
@@ -92,7 +93,7 @@ impl AppContext {
     pub fn register_wallet(
         self: &Arc<Self>,
         wallet: Wallet,
-    ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), String> {
+    ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
         // 1. Persist wallet and known addresses atomically
         let addresses: Vec<_> = wallet
             .known_addresses
@@ -110,10 +111,10 @@ impl AppContext {
         self.db
             .store_wallet_with_addresses(&wallet, &self.network, &addresses)
             .map_err(|e| {
-                if e.to_string().contains("UNIQUE constraint failed") {
-                    "This wallet has already been imported for this network.".to_string()
+                if is_unique_constraint_violation(&e) {
+                    TaskError::WalletAlreadyImported
                 } else {
-                    e.to_string()
+                    TaskError::Database { source: e }
                 }
             })?;
 
@@ -121,10 +122,7 @@ impl AppContext {
 
         // 2. Register in-memory
         let wallet_arc = Arc::new(RwLock::new(wallet));
-        let mut wallets = self
-            .wallets
-            .write()
-            .map_err(|e| format!("Failed to acquire wallets lock: {e}"))?;
+        let mut wallets = self.wallets.write()?;
         wallets.insert(seed_hash, wallet_arc.clone());
         self.has_wallet.store(true, Ordering::Relaxed);
         drop(wallets);

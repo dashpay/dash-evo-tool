@@ -71,14 +71,7 @@ The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional
 | `cli` | `det-cli` | Standalone CLI binary. Includes an in-process MCP service (no server needed), HTTP client mode, `det-cli serve` stdio server, tool caching, and shell completion. See [docs/CLI.md](docs/CLI.md). |
 | `testing` | — | Test-only utilities (not for production builds) |
 
-Features are independent — enable any combination:
-
-```shell
-cargo build                       # GUI app only
-cargo build --features mcp        # GUI app + embedded HTTP MCP server
-cargo build --features cli        # det-cli binary only
-cargo build --features mcp,cli    # Both binaries
-```
+Features are independent — enable any combination.
 
 ### Dependencies pulled by each feature
 

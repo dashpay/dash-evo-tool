@@ -5,6 +5,7 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[allow(dead_code)]
 const FAUCET_BASE_URL: &str = "http://faucet.testnet.networks.dash.org";
 const MIN_BALANCE_DUFFS: u64 = 1_000_000_000; // 10 DASH
 
@@ -57,6 +58,7 @@ fn get_wallet_balance_and_address(
 /// POST to the testnet faucet API with retries.
 ///
 /// Available as a helper for manual use but not called during normal initialization.
+#[allow(dead_code)]
 pub async fn request_faucet_funds(address: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))

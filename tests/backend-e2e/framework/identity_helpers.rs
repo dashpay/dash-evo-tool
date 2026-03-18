@@ -60,11 +60,11 @@ pub fn build_identity_registration(
 
     IdentityRegistrationInfo {
         alias_input: format!("e2e-test-{}", hex::encode(&wallet_seed_hash[..4])),
-        keys: IdentityKeys {
-            master_private_key: Some((master_private_key, master_derivation_path)),
-            master_private_key_type: KeyType::ECDSA_HASH160,
+        keys: IdentityKeys::new(
+            Some((master_private_key, master_derivation_path)),
+            KeyType::ECDSA_HASH160,
             keys_input,
-        },
+        ),
         wallet: wallet_arc.clone(),
         wallet_identity_index: identity_index,
         identity_funding_method: RegisterIdentityFundingMethod::FundWithWallet(

@@ -19,6 +19,7 @@ use bip39::{Language, Mnemonic};
 use dash_evo_tool::app_dir::copy_env_file_if_not_exists;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::context::connection_status::ConnectionStatus;
 use dash_evo_tool::database::test_helpers::create_database_at_path;
@@ -152,9 +153,7 @@ impl BackendTestContext {
             Ok((hash, _)) => {
                 tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
             }
-            // NOTE: string match is fragile; upstream should return typed error.
-            // register_wallet() returns Result<_, String> so no typed variant is available.
-            Err(e) if e.contains("already been imported") => {
+            Err(TaskError::WalletAlreadyImported) => {
                 tracing::info!("Framework wallet already registered (reusing from persistent DB)");
             }
             Err(e) => panic!("Failed to register framework wallet: {}", e),

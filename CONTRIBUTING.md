@@ -73,12 +73,6 @@ The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional
 
 Features are independent — enable any combination.
 
-### Dependencies pulled by each feature
-
-- **`mcp`**: `rmcp` (server + HTTP transport), `axum`, `subtle` (constant-time auth)
-- **`cli`**: `rmcp` (server + client + stdio/HTTP transports), `clap`, `clap_complete`
-- Both features share `rmcp` — no duplicate dependency when combined.
-
 ### CI feature usage
 
 | Workflow | Features |

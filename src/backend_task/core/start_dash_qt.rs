@@ -1,4 +1,4 @@
-use crate::app_dir::{app_user_data_file_path, create_dash_core_config_if_not_exists};
+use crate::app_dir::{create_dash_core_config_if_not_exists, data_file_path};
 use crate::context::AppContext;
 use crate::utils::path::format_path_for_display;
 use dash_sdk::dpp::dashcore::Network;
@@ -31,17 +31,17 @@ impl AppContext {
         let outlog = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
-            .open(app_user_data_file_path("core.log")?)?;
+            .open(data_file_path(&self.data_dir, "core.log")?)?;
 
         let errlog = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
-            .open(app_user_data_file_path("core-err.log")?)?;
+            .open(data_file_path(&self.data_dir, "core-err.log")?)?;
 
         command.stdout(outlog).stderr(errlog); // Suppress output
 
         if overwrite_dash_conf {
-            let config_path = create_dash_core_config_if_not_exists(network)?;
+            let config_path = create_dash_core_config_if_not_exists(&self.data_dir, network)?;
             command.arg(format!("-conf={}", config_path.display()));
         } else if network == Network::Testnet {
             command.arg("-testnet");

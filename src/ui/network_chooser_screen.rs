@@ -122,7 +122,7 @@ impl NetworkChooserScreen {
         overwrite_dash_conf: bool,
     ) -> Self {
         let mut dashmate_password_input = PasswordInput::new().with_hint_text("Core RPC password");
-        if let Ok(config) = Config::load()
+        if let Ok(config) = Config::load_from(&mainnet_app_context.data_dir)
             && let Some(local_config) = config.config_for_network(Network::Regtest)
         {
             dashmate_password_input.set_text(local_config.core_rpc_password.clone());
@@ -463,7 +463,8 @@ impl NetworkChooserScreen {
                     }
 
                     if (save_clicked || auto_update_succeeded)
-                        && let Ok(mut config) = Config::load()
+                        && let Ok(mut config) =
+                            Config::load_from(&self.mainnet_app_context.data_dir)
                         && let Some(local_cfg) = config.config_for_network(Network::Regtest).clone()
                     {
                         let updated_local_config = local_cfg.update_core_rpc_password(
@@ -473,7 +474,7 @@ impl NetworkChooserScreen {
                             Network::Regtest,
                             updated_local_config.clone(),
                         );
-                        if let Err(e) = config.save() {
+                        if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
                             tracing::error!("Failed to save config to .env: {e}");
                         }
 
@@ -1048,9 +1049,9 @@ impl NetworkChooserScreen {
                         }
 
                         // Persist to config file (non-blocking for UI)
-                        if let Ok(mut config) = Config::load() {
+                        if let Ok(mut config) = Config::load_from(&self.mainnet_app_context.data_dir) {
                             config.developer_mode = Some(self.developer_mode);
-                            if let Err(e) = config.save() {
+                            if let Err(e) = config.save(&self.mainnet_app_context.data_dir) {
                                 tracing::error!("Failed to save config: {e}");
                             }
                         }

@@ -103,8 +103,8 @@ det-cli list-wallets
 # Generate a receive address
 det-cli generate-receive-address wallet-id=savings
 
-# Use testnet
-det-cli --network testnet list-wallets
+# Show active network and available networks
+det-cli network
 
 # Run as stdio MCP server for Claude Desktop
 det-cli serve

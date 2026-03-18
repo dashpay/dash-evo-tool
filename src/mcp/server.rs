@@ -24,11 +24,7 @@ enum ContextProvider {
     Shared(Arc<arc_swap::ArcSwap<AppContext>>),
     /// Stdio/CLI mode: lazily initialized on first use.
     #[cfg(feature = "cli")]
-    Lazy {
-        cell: Arc<tokio::sync::OnceCell<Arc<AppContext>>>,
-        /// Optional network override from --network flag.
-        network_override: Option<String>,
-    },
+    Lazy(Arc<tokio::sync::OnceCell<Arc<AppContext>>>),
 }
 
 /// MCP service backed by the app's context.
@@ -58,14 +54,10 @@ impl DashMcpService {
     }
 
     /// For stdio/CLI mode: lazy init on first tool call.
-    /// `network_override` takes precedence over the database default.
     #[cfg(feature = "cli")]
-    pub fn new_lazy(network_override: Option<String>) -> Self {
+    pub fn new_lazy() -> Self {
         Self {
-            ctx_provider: ContextProvider::Lazy {
-                cell: Arc::new(tokio::sync::OnceCell::new()),
-                network_override,
-            },
+            ctx_provider: ContextProvider::Lazy(Arc::new(tokio::sync::OnceCell::new())),
             tool_router: Self::tool_router(),
         }
     }
@@ -77,11 +69,8 @@ impl DashMcpService {
             #[cfg(feature = "mcp")]
             ContextProvider::Shared(swap) => Ok(swap.load_full()),
             #[cfg(feature = "cli")]
-            ContextProvider::Lazy {
-                cell,
-                network_override,
-            } => cell
-                .get_or_try_init(|| async { init_app_context(network_override.as_deref()) })
+            ContextProvider::Lazy(cell) => cell
+                .get_or_try_init(|| async { init_app_context() })
                 .await
                 .cloned(),
         }
@@ -89,9 +78,9 @@ impl DashMcpService {
 }
 
 /// Initialize an AppContext for standalone/CLI mode.
-/// `network_override` from `--network` flag takes precedence over the database default.
+/// Uses the last network selected in the GUI (from database), defaults to mainnet.
 #[cfg(feature = "cli")]
-fn init_app_context(network_override: Option<&str>) -> Result<Arc<AppContext>, McpError> {
+fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     use crate::app_dir::{
         app_user_data_dir_path, data_file_path, ensure_data_dir_exists, ensure_env_file,
     };
@@ -120,16 +109,12 @@ fn init_app_context(network_override: Option<&str>) -> Result<Arc<AppContext>, M
     db.initialize(&db_file_path)
         .map_err(|e| McpError::internal_error(format!("db init: {e}"), None))?;
 
-    // Network: --network flag > database setting > mainnet default.
-    let network = if let Some(name) = network_override {
-        parse_network_name(name)?
-    } else {
-        db.get_settings()
-            .ok()
-            .flatten()
-            .map(|(network, ..)| network)
-            .unwrap_or(Network::Dash)
-    };
+    let network = db
+        .get_settings()
+        .ok()
+        .flatten()
+        .map(|(network, ..)| network)
+        .unwrap_or(Network::Dash);
 
     let subtasks = Arc::new(TaskManager::new());
     let connection_status = Arc::new(ConnectionStatus::new());
@@ -139,17 +124,11 @@ fn init_app_context(network_override: Option<&str>) -> Result<Arc<AppContext>, M
     let config = crate::config::Config::load_from(&data_dir)
         .map_err(|e| McpError::internal_error(format!("config load: {e}"), None))?;
     if config.config_for_network(network).is_none() {
+        let available = available_network_names(&config);
         return Err(McpError::internal_error(
             format!(
                 "no configuration found for network '{network:?}'. \
-                 Check your .env file has {prefix}_dapi_addresses set.",
-                prefix = match network {
-                    Network::Dash => "MAINNET",
-                    Network::Testnet => "TESTNET",
-                    Network::Devnet => "DEVNET",
-                    Network::Regtest => "LOCAL",
-                    _ => "UNKNOWN",
-                }
+                 Available: {available}. Check your .env file.",
             ),
             None,
         ));
@@ -172,24 +151,76 @@ fn init_app_context(network_override: Option<&str>) -> Result<Arc<AppContext>, M
     })
 }
 
-/// Parse a network name string into a `Network` enum.
-#[cfg(feature = "cli")]
-fn parse_network_name(name: &str) -> Result<dash_sdk::dpp::dashcore::Network, McpError> {
+/// Human-readable network name for JSON output.
+fn network_display_name(network: dash_sdk::dpp::dashcore::Network) -> &'static str {
     use dash_sdk::dpp::dashcore::Network;
-    match name {
-        "mainnet" | "dash" => Ok(Network::Dash),
-        "testnet" => Ok(Network::Testnet),
-        "devnet" => Ok(Network::Devnet),
-        "regtest" => Ok(Network::Regtest),
-        other => Err(McpError::internal_error(
-            format!("unknown network: {other}. Use: mainnet, testnet, devnet, regtest"),
-            None,
-        )),
+    match network {
+        Network::Dash => "mainnet",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "local",
+        _ => "unknown",
+    }
+}
+
+/// Return a comma-separated list of configured network names.
+fn available_network_names(config: &crate::config::Config) -> String {
+    let mut names = Vec::new();
+    if config.mainnet_config.is_some() {
+        names.push("mainnet");
+    }
+    if config.testnet_config.is_some() {
+        names.push("testnet");
+    }
+    if config.devnet_config.is_some() {
+        names.push("devnet");
+    }
+    if config.local_config.is_some() {
+        names.push("local");
+    }
+    if names.is_empty() {
+        "none".to_string()
+    } else {
+        names.join(", ")
     }
 }
 
 #[tool_router]
 impl DashMcpService {
+    #[tool(
+        description = "Show the active network and which networks are configured. Returns JSON with 'active' and 'available' fields."
+    )]
+    async fn network(&self) -> Result<CallToolResult, McpError> {
+        let ctx = self.ctx().await?;
+        let active = network_display_name(ctx.network);
+
+        // Load config to determine which networks are available.
+        let config = crate::config::Config::load_from(&ctx.data_dir)
+            .map_err(|e| McpError::internal_error(format!("config load: {e}"), None))?;
+
+        let mut available = Vec::new();
+        if config.mainnet_config.is_some() {
+            available.push("mainnet");
+        }
+        if config.testnet_config.is_some() {
+            available.push("testnet");
+        }
+        if config.devnet_config.is_some() {
+            available.push("devnet");
+        }
+        if config.local_config.is_some() {
+            available.push("local");
+        }
+
+        let json = serde_json::json!({
+            "active": active,
+            "available": available,
+        });
+        let text = serde_json::to_string_pretty(&json)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
     #[tool(description = "List wallet names currently loaded in the application")]
     async fn list_wallets(&self) -> Result<CallToolResult, McpError> {
         let ctx = self.ctx().await?;

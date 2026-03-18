@@ -22,7 +22,7 @@ The `det-cli` binary includes a built-in MCP stdio server. No separate binary ne
 det-cli serve
 ```
 
-Communicates via stdin/stdout using the MCP protocol. `AppContext` is initialized lazily on the first tool call, reading the same `.env` and database as the GUI app. Uses the last network selected in the GUI by default; override with `--network`.
+Communicates via stdin/stdout using the MCP protocol. `AppContext` is initialized lazily on the first tool call, reading the same `.env` and database as the GUI app. Uses the last network selected in the GUI by default. Use the `network` tool to check or change the active network.
 
 Build: `cargo build --features cli`
 
@@ -41,6 +41,7 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 
 | Tool | Parameters | Description |
 |---|---|---|
+| `network` | — | Show active network and available configured networks |
 | `list_wallets` | — | List wallets loaded in the app (alias + seed hash) |
 | `generate_receive_address` | `wallet_id` | Generate a new receive address for a wallet. Pass the alias or 64-char hex seed hash. |
 

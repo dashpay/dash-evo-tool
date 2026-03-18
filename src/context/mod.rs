@@ -57,8 +57,8 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<Settings>>;
 
 #[derive(Debug)]
 pub struct AppContext {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) network: Network,
+    pub data_dir: PathBuf,
+    pub network: Network,
     developer_mode: AtomicBool,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,

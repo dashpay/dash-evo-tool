@@ -13,14 +13,11 @@ pub mod server;
 pub use config::McpConfig;
 
 /// Start the MCP server over stdin/stdout.
-/// `network_override` from `--network` flag takes precedence over the database default.
 #[cfg(feature = "cli")]
-pub async fn start_stdio(
-    network_override: Option<String>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn start_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use rmcp::ServiceExt;
 
-    let service = server::DashMcpService::new_lazy(network_override);
+    let service = server::DashMcpService::new_lazy();
     let server = service.serve(rmcp::transport::stdio()).await?;
     server.waiting().await?;
     Ok(())

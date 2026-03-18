@@ -76,9 +76,11 @@ tempfile = "3.20.0"
 arc-swap = "1"
 urlencoding = "2"
 region = "3.0.2"
-rmcp = { version = "1.2", features = ["server", "macros"], optional = true }
+rmcp = { version = "1.2", optional = true, default-features = false }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"], optional = true }
 subtle = { version = "2.6", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+clap_complete = { version = "4", optional = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 zmq = "0.10.0"
@@ -92,8 +94,9 @@ raw-cpuid = "11.5.0"
 
 [features]
 testing = []
-mcp-stdio = ["dep:rmcp", "rmcp/transport-io"]
-mcp-http = ["dep:rmcp", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
+mcp-stdio = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-io"]
+mcp-http = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
+cli = ["dep:rmcp", "rmcp/client", "rmcp/transport-child-process", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.33.3", features = ["eframe"] }
@@ -103,6 +106,11 @@ tokio-shared-rt = "=0.1.0"
 name = "dash-evo-tool-mcp"
 path = "src/bin/mcp_server.rs"
 required-features = ["mcp-stdio"]
+
+[[bin]]
+name = "det-cli"
+path = "src/bin/det_cli.rs"
+required-features = ["cli"]
 
 [build-dependencies]
 winres = "0.1"
@@ -115,7 +123,7 @@ debug = "line-tables-only"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
-check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp-stdio\", \"mcp-http\"))"]
+check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"mcp-stdio\", \"mcp-http\", \"cli\"))"]
 
 [lints.clippy]
 uninlined_format_args = "allow"

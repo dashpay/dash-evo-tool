@@ -128,7 +128,7 @@ jobs:
           DEPS=$(ldd dash-evo-tool/dash-evo-tool)
           echo "$DEPS"
           # Allowlist: only standard system libraries should appear
-          UNEXPECTED=$(echo "$DEPS" | grep "=>" | grep -v "not found" | awk '{print $1}' | grep -Ev "^(linux-vdso|libm|libc|libdl|librt|libpthread|libgcc_s|libstdc\+\+|ld-linux|libz|libssl|libcrypto)\.so")
+          UNEXPECTED=$(echo "$DEPS" | grep "=>" | grep -v "not found" | awk '{print $1}' | grep -Ev "^(linux-vdso|libm|libc|libdl|librt|libpthread|libgcc_s|libstdc\+\+|ld-linux|libz|libssl|libcrypto)\.so" || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::warning::Unexpected shared dependencies found:"
             echo "$UNEXPECTED"
@@ -279,14 +279,14 @@ jobs:
           DEPS=$(otool -L build/dash-evo-tool)
           echo "$DEPS"
           # Only system libraries (/usr/lib/) and frameworks (/System/Library/) are allowed
-          UNEXPECTED=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep -Ev "^(/usr/lib/|/System/Library/|@rpath/)")
+          UNEXPECTED=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep -Ev "^(/usr/lib/|/System/Library/|@rpath/)" || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::Binary links non-system libraries:"
             echo "$UNEXPECTED"
             exit 1
           fi
           # Warn on @rpath dependencies (acceptable for frameworks but worth noting)
-          RPATH=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep "^@rpath/")
+          RPATH=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep "^@rpath/" || true)
           if [ -n "$RPATH" ]; then
             echo "::warning::Binary has @rpath dependencies (verify these are bundled):"
             echo "$RPATH"
@@ -568,14 +568,14 @@ jobs:
           DEPS=$(otool -L build/dash-evo-tool)
           echo "$DEPS"
           # Only system libraries (/usr/lib/) and frameworks (/System/Library/) are allowed
-          UNEXPECTED=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep -Ev "^(/usr/lib/|/System/Library/|@rpath/)")
+          UNEXPECTED=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep -Ev "^(/usr/lib/|/System/Library/|@rpath/)" || true)
           if [ -n "$UNEXPECTED" ]; then
             echo "::error::Binary links non-system libraries:"
             echo "$UNEXPECTED"
             exit 1
           fi
           # Warn on @rpath dependencies (acceptable for frameworks but worth noting)
-          RPATH=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep "^@rpath/")
+          RPATH=$(echo "$DEPS" | tail -n +2 | awk '{print $1}' | grep "^@rpath/" || true)
           if [ -n "$RPATH" ]; then
             echo "::warning::Binary has @rpath dependencies (verify these are bundled):"
             echo "$RPATH"

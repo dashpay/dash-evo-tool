@@ -134,6 +134,27 @@ fn init_app_context(network_override: Option<&str>) -> Result<Arc<AppContext>, M
     let subtasks = Arc::new(TaskManager::new());
     let connection_status = Arc::new(ConnectionStatus::new());
 
+    // Pre-validate: check that the selected network has a config before attempting
+    // AppContext::new(), which returns an opaque None on failure.
+    let config = crate::config::Config::load_from(&data_dir)
+        .map_err(|e| McpError::internal_error(format!("config load: {e}"), None))?;
+    if config.config_for_network(network).is_none() {
+        return Err(McpError::internal_error(
+            format!(
+                "no configuration found for network '{network:?}'. \
+                 Check your .env file has {prefix}_dapi_addresses set.",
+                prefix = match network {
+                    Network::Dash => "MAINNET",
+                    Network::Testnet => "TESTNET",
+                    Network::Devnet => "DEVNET",
+                    Network::Regtest => "LOCAL",
+                    _ => "UNKNOWN",
+                }
+            ),
+            None,
+        ));
+    }
+
     AppContext::new(
         data_dir,
         network,
@@ -143,7 +164,12 @@ fn init_app_context(network_override: Option<&str>) -> Result<Arc<AppContext>, M
         connection_status,
         egui::Context::default(),
     )
-    .ok_or_else(|| McpError::internal_error("failed to create AppContext".to_string(), None))
+    .ok_or_else(|| {
+        McpError::internal_error(
+            "failed to create AppContext — check logs for details".to_string(),
+            None,
+        )
+    })
 }
 
 /// Parse a network name string into a `Network` enum.

@@ -103,6 +103,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_stdio_server(cli.network);
     }
 
+    // Minimal stderr logging for non-serve paths so tracing::error!() from
+    // AppContext initialization is visible to CLI users.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .try_init();
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

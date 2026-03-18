@@ -250,6 +250,8 @@ pub fn add_left_panel(
                                                     .frame(false);
 
                                                     let added = ui.add(button);
+                                                    // Provide an accessible name for the image-only button
+                                                    added.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, is_selected, *label));
                                                     if added.clicked() {
                                                         action = AppAction::SetMainScreenThenGoToMainScreen(
                                                             *screen_type,
@@ -259,6 +261,7 @@ pub fn add_left_panel(
                                                             egui::CursorIcon::PointingHand,
                                                         );
                                                     }
+                                                    added.on_hover_text(*label);
                                                     // Put the label beneath the icon
                                                     let color = if is_selected {
                                                         DashColors::DASH_BLUE
@@ -271,12 +274,12 @@ pub fn add_left_panel(
                                                 } else {
                                                     // Fallback button if texture not available
                                                     if is_selected {
-                                                        if GradientButton::new(*label, app_context)
+                                                        let response = GradientButton::new(*label, app_context)
                                                             .min_width(60.0)
                                                             .glow()
-                                                            .show(ui)
-                                                            .clicked()
-                                                        {
+                                                            .show(ui);
+                                                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *label));
+                                                        if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
                                                         }
                                                     } else {
@@ -291,7 +294,9 @@ pub fn add_left_panel(
                                                             ))
                                                             .min_size(egui::vec2(60.0, 60.0));
 
-                                                        if ui.add(button).clicked() {
+                                                        let response = ui.add(button);
+                                                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *label));
+                                                        if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
                                                         }
                                                     }

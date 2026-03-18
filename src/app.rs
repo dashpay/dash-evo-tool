@@ -105,6 +105,8 @@ pub struct AppState {
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
+    /// Whether we have already triggered platform-level accessibility activation.
+    accessibility_activated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,6 +268,10 @@ impl AppState {
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
+
+        // Enable AccessKit eagerly so the accessibility tree is populated
+        // every frame, even without VoiceOver running.
+        ctx.enable_accesskit();
 
         // create screens
         let mut identities_screen = IdentitiesScreen::new(&mainnet_app_context);
@@ -730,6 +736,7 @@ impl AppState {
             connection_banner_handle: None,
             shutdown_receiver: None,
             shutdown_started: None,
+            accessibility_activated: false,
         };
 
         // Initialize welcome screen if needed (after mainnet_app_context is owned by the struct)
@@ -1087,6 +1094,13 @@ impl App for AppState {
             self.shutdown_started = Some(std::time::Instant::now());
             ctx.request_repaint();
             return;
+        }
+
+        // On the first frame, trigger platform-level accessibility activation
+        // so tools like Peekaboo can see the AccessKit tree without VoiceOver.
+        // Retries each frame until the window is available.
+        if !self.accessibility_activated {
+            self.accessibility_activated = crate::platform::force_accessibility_activation();
         }
 
         // Apply Dash theme with user preference

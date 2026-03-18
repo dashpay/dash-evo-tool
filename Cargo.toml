@@ -83,6 +83,9 @@ zmq = "0.10.0"
 [target.'cfg(target_os = "windows")'.dependencies]
 zeromq = "0.4.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 native-dialog = "0.9.0"
 raw-cpuid = "11.5.0"

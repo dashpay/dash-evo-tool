@@ -1,14 +1,12 @@
 //! Test: Register a DPNS name for an identity.
 
-use crate::harness::ctx;
-use crate::identity_helpers::build_identity_registration;
-use crate::task_runner::run_task;
-use crate::wait::wait_for_spendable_balance;
+use crate::framework::harness::ctx;
+use crate::framework::identity_helpers::build_identity_registration;
+use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::identity::{IdentityTask, RegisterDpnsNameInput};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use rand::prelude::*;
-use std::time::Duration;
 
 /// Create identity, register a DPNS name, verify by searching.
 #[ignore]
@@ -20,47 +18,13 @@ async fn test_register_dpns_name() {
     // Create funded test wallet (needs enough for identity + DPNS registration)
     let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
 
-    // Wait for test wallet funds to become spendable before identity registration
-    wait_for_spendable_balance(app_context, seed_hash, 1, Duration::from_secs(60))
+    // Register identity on Platform
+    let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
+        build_identity_registration(app_context, &wallet_arc, seed_hash),
+    ));
+    let result = run_task(app_context, task)
         .await
-        .expect("Test wallet funds should become spendable");
-
-    // Register identity (with retry for transient chain sync issues)
-    let mut last_error = String::new();
-    let mut reg_result = None;
-    for attempt in 1..=3 {
-        let task = BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
-            build_identity_registration(app_context, &wallet_arc, seed_hash),
-        ));
-        match run_task(app_context, task).await {
-            Ok(r) => {
-                reg_result = Some(r);
-                break;
-            }
-            Err(e) => {
-                let err_str = e.to_string();
-                if attempt < 3
-                    && (err_str.contains("chain height")
-                        || err_str.contains("Timeout waiting for asset lock"))
-                {
-                    println!(
-                        "  Identity registration attempt {}/3 failed ({}), retrying in 30s...",
-                        attempt, err_str
-                    );
-                    tokio::time::sleep(Duration::from_secs(30)).await;
-                    last_error = err_str;
-                    continue;
-                }
-                panic!("Identity registration should succeed: {}", e);
-            }
-        }
-    }
-    let result = reg_result.unwrap_or_else(|| {
-        panic!(
-            "Identity registration failed after 3 attempts: {}",
-            last_error
-        )
-    });
+        .expect("Identity registration should succeed");
 
     let qualified_identity = match result {
         BackendTaskSuccessResult::RegisteredIdentity(qi, _) => qi,
@@ -70,7 +34,7 @@ async fn test_register_dpns_name() {
     // Generate a unique DPNS name (u64 hex = 16 chars + "e2e" = 19 chars)
     let random_suffix: u64 = rand::rng().random();
     let dpns_name = format!("e2e{:x}", random_suffix);
-    println!("  Registering DPNS name: {}", dpns_name);
+    tracing::info!("Registering DPNS name: {}", dpns_name);
 
     // Register DPNS name (with retry for identity propagation delay)
     let mut last_error = String::new();
@@ -89,11 +53,12 @@ async fn test_register_dpns_name() {
             Err(e) => {
                 let err_str = e.to_string();
                 if attempt < 3 && err_str.contains("not found") {
-                    println!(
-                        "  DPNS registration attempt {}/3 failed ({}), retrying in 30s...",
-                        attempt, err_str
+                    tracing::info!(
+                        "DPNS registration attempt {}/3 failed ({}), retrying in 30s...",
+                        attempt,
+                        err_str
                     );
-                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                     last_error = err_str;
                     continue;
                 }
@@ -106,7 +71,7 @@ async fn test_register_dpns_name() {
 
     match result {
         BackendTaskSuccessResult::RegisteredDpnsName(fee_result) => {
-            println!("  DPNS name registered, fee: {:?}", fee_result);
+            tracing::info!("DPNS name registered, fee: {:?}", fee_result);
         }
         other => panic!("Expected RegisteredDpnsName, got: {:?}", other),
     }
@@ -128,7 +93,7 @@ async fn test_register_dpns_name() {
                 qualified_identity.identity.id(),
                 "Found identity should match registered identity"
             );
-            println!("  DPNS name '{}' verified via search", dpns_name);
+            tracing::info!("DPNS name '{}' verified via search", dpns_name);
         }
         other => panic!("Expected LoadedIdentity from DPNS search, got: {:?}", other),
     }

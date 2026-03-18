@@ -22,9 +22,6 @@ pub fn build_identity_registration(
     wallet_arc: &Arc<RwLock<Wallet>>,
     wallet_seed_hash: WalletSeedHash,
 ) -> IdentityRegistrationInfo {
-    // NOTE: `dashpay_contract` is pub(crate). The other agent is adding
-    // a `dashpay_contract_id()` accessor. If not yet available, use the
-    // well-known testnet DashPay contract ID as a fallback.
     let dashpay_contract_id = app_context.dashpay_contract_id();
     let key_specs = default_identity_key_specs(dashpay_contract_id);
 
@@ -61,8 +58,6 @@ pub fn build_identity_registration(
 
     drop(wallet);
 
-    // NOTE: IdentityKeys fields are pub(crate). The other agent is making them
-    // pub or adding a constructor. If this doesn't compile, that change is needed.
     IdentityRegistrationInfo {
         alias_input: format!("e2e-test-{}", hex::encode(&wallet_seed_hash[..4])),
         keys: IdentityKeys {

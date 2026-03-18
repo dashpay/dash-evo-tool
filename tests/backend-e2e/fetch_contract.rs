@@ -1,7 +1,7 @@
 //! Test: Fetch data contracts from Platform.
 
-use crate::harness::ctx;
-use crate::task_runner::run_task;
+use crate::framework::harness::ctx;
+use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::contract::ContractTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -34,7 +34,7 @@ async fn test_fetch_data_contract() {
                 dashpay_contract_id,
                 "Contract ID should match"
             );
-            println!("  Fetched contract: {:?}", contract.id());
+            tracing::info!("Fetched contract: {:?}", contract.id());
         }
         other => panic!("Expected FetchedContracts, got: {:?}", other),
     }
@@ -53,7 +53,7 @@ async fn test_fetch_data_contract() {
                 contracts[0].is_none(),
                 "Non-existent contract should return None"
             );
-            println!("  Non-existent contract correctly returned None");
+            tracing::info!("Non-existent contract correctly returned None");
         }
         other => panic!("Expected FetchedContracts, got: {:?}", other),
     }
@@ -72,7 +72,7 @@ async fn test_fetch_data_contract() {
                 map.contains_key(&dashpay_contract_id),
                 "Should contain the requested contract"
             );
-            println!("  Fetched contract with descriptions successfully");
+            tracing::info!("Fetched contract with descriptions successfully");
         }
         other => panic!("Expected ContractsWithDescriptions, got: {:?}", other),
     }

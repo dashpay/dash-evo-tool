@@ -34,7 +34,7 @@ cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-thr
 
 | Variable | Required | Description |
 |---|---|---|
-| `E2E_WALLET_MNEMONIC` | No | BIP-39 mnemonic for the framework wallet. If unset, a fresh mnemonic is generated and funded via the testnet faucet. Set this to reuse a pre-funded wallet across runs. Can be set as a shell env var or in the project root `.env` file (see below). |
+| `E2E_WALLET_MNEMONIC` | Yes | BIP-39 mnemonic for the framework wallet. Must be a pre-funded testnet wallet with at least 10 tDASH. Can be set as a shell env var or in the project root `.env` file (see below). If not set, the test fails with an error message and instructions. |
 | `DASH_EVO_DATA_DIR` | No (set automatically) | Overridden by the harness to point at a persistent temp directory. Do not set manually. |
 
 ### `.env` file handling
@@ -44,8 +44,7 @@ The harness uses two separate `.env` files for different purposes:
 1. **Project root `.env`** -- loaded via `dotenvy::dotenv()` at the start of
    initialization. `dotenvy` merges entries from this file into the process
    environment, so `E2E_WALLET_MNEMONIC` can be defined here instead of (or in
-   addition to) a shell export. Optional; if absent, the harness prints a note
-   and continues.
+   addition to) a shell export.
 
    ```bash
    # Example: add to project root .env to persist across sessions
@@ -63,7 +62,7 @@ The harness uses two separate `.env` files for different purposes:
 
 ```
 Project root .env  →  dotenvy merges into process env
-                      (E2E_WALLET_MNEMONIC, if present)
+                      (E2E_WALLET_MNEMONIC, required)
 
 Harness sets DASH_EVO_DATA_DIR → /tmp/dash-evo-e2e-testnet-<hash>/
     → copy_env_file_if_not_exists() copies .env.example into workdir
@@ -93,15 +92,15 @@ ctx().await  -->  OnceCell::get_or_init(BackendTestContext::init)
 
 ### Initialization sequence
 
-1. Create a persistent workdir under `/tmp/` keyed by `git rev-parse --short HEAD`.
-2. Set `DASH_EVO_DATA_DIR` to the workdir so config and `.env` files land there.
-3. Create a SQLite database and `AppContext` for `Network::Testnet`.
-4. Start SPV in light-client mode and wait for peer connections (60s timeout).
-5. Restore (or generate) the framework wallet from `E2E_WALLET_MNEMONIC`.
-6. Register the wallet with `AppContext` (idempotent -- handles "already imported").
-7. Wait for SPV to sync the wallet's UTXOs and funds to become spendable.
-8. Top up from the testnet faucet if balance is below 10 tDASH.
-9. Wait for funds to become spendable (up to 180s).
+1. Initialize tracing subscriber for structured log output.
+2. Create a persistent workdir under `/tmp/` keyed by `git rev-parse --short HEAD`.
+3. Set `DASH_EVO_DATA_DIR` to the workdir so config and `.env` files land there.
+4. Create a SQLite database and `AppContext` for `Network::Testnet`.
+5. Start SPV in light-client mode and wait for peer connections (60s timeout).
+6. Restore the framework wallet from `E2E_WALLET_MNEMONIC` (required).
+7. Register the wallet with `AppContext` (idempotent -- handles "already imported").
+8. Wait for SPV to sync the wallet's UTXOs and funds to become spendable (180s timeout).
+9. Verify balance is above minimum threshold (10 tDASH).
 10. Sweep orphaned test wallets from previous runs back to the framework wallet.
 
 ### Persistent workdir
@@ -125,9 +124,8 @@ rm -rf /tmp/dash-evo-e2e-testnet-*
 ### Framework wallet ("the bank")
 
 A single long-lived wallet created during initialization. It holds testnet DASH
-and serves as the funding source for all per-test wallets. If
-`E2E_WALLET_MNEMONIC` is set, the same wallet is restored on every run. If not,
-a fresh wallet is generated and funded via the testnet faucet.
+and serves as the funding source for all per-test wallets.
+`E2E_WALLET_MNEMONIC` must be set to the mnemonic of a pre-funded wallet.
 
 ### Test wallets
 
@@ -150,9 +148,9 @@ backend tasks.
 ### Funding flow
 
 ```
-Testnet Faucet  --->  Framework Wallet  --->  Test Wallet A
-                                         --->  Test Wallet B
-                                         --->  ...
+Pre-funded Wallet  --->  Framework Wallet  --->  Test Wallet A
+(E2E_WALLET_MNEMONIC)                      --->  Test Wallet B
+                                           --->  ...
 ```
 
 ### Cleanup
@@ -168,12 +166,14 @@ and SPV syncs their balances.
 
 ## Framework modules
 
+Located in `tests/backend-e2e/framework/`:
+
 | Module | Purpose |
 |---|---|
 | `harness` | Singleton `BackendTestContext` with `OnceCell`, initialization logic, `create_funded_test_wallet` |
 | `task_runner` | `run_task()` -- thin wrapper around `AppContext::run_backend_task` with a throwaway channel |
 | `wait` | Polling helpers: `wait_for_balance`, `wait_for_spendable_balance`, `wait_for_wallet_in_spv`, `wait_for_spv_peers` |
-| `funding` | Testnet faucet HTTP client with retries; `ensure_framework_funded` top-up logic |
+| `funding` | Balance verification; testnet faucet HTTP client (available as helper, not used in main flow) |
 | `identity_helpers` | `build_identity_registration` (key derivation), `get_receive_address` |
 | `cleanup` | Best-effort return of test wallet funds to the framework wallet |
 
@@ -204,8 +204,8 @@ mod my_new_test;
 Follow this pattern:
 
 ```rust
-use crate::harness::ctx;
-use crate::task_runner::run_task;
+use crate::framework::harness::ctx;
+use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 
 #[ignore]
@@ -291,11 +291,11 @@ with `--test-threads=1`. The harness sets environment variables during
 initialization (specifically `DASH_EVO_DATA_DIR`), which is only safe in
 single-threaded mode.
 
-### Faucet rate limits
+### Faucet availability
 
-The testnet faucet may rate-limit requests. If the faucet fails and the
-framework wallet has zero balance, initialization panics. Use
-`E2E_WALLET_MNEMONIC` with a pre-funded wallet to avoid faucet dependency.
+The testnet faucet helper (`funding::request_faucet_funds`) is available but not
+called during normal initialization. The framework wallet must be pre-funded.
+Use the faucet helper manually if needed.
 
 ### Network dependency
 

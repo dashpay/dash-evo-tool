@@ -4,9 +4,9 @@
 //! (e.g., a test panicked before cleanup). Wallets persist in the DB,
 //! so AppContext loads them automatically on the next run.
 
-use crate::identity_helpers::get_receive_address;
-use crate::task_runner::run_task;
-use crate::wait;
+use crate::framework::identity_helpers::get_receive_address;
+use crate::framework::task_runner::run_task;
+use crate::framework::wait;
 use dash_evo_tool::backend_task::BackendTask;
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::context::AppContext;
@@ -45,8 +45,8 @@ pub async fn cleanup_test_wallets(
         return;
     }
 
-    println!(
-        "  Sweeping {} orphaned test wallet(s) from previous run...",
+    tracing::info!(
+        "Sweeping {} orphaned test wallet(s) from previous run...",
         wallet_hashes.len()
     );
 
@@ -92,16 +92,12 @@ pub async fn cleanup_test_wallets(
         });
 
         match run_task(app_context, task).await {
-            Ok(_) => println!(
-                "  Cleanup: returned {} duffs from orphaned wallet {:?}",
+            Ok(_) => tracing::info!(
+                "Cleanup: returned {} duffs from orphaned wallet {:?}",
                 balance,
                 &hash[..4]
             ),
-            Err(e) => eprintln!(
-                "  Cleanup warning: failed to sweep wallet {:?}: {}",
-                &hash[..4],
-                e
-            ),
+            Err(e) => tracing::warn!("Cleanup: failed to sweep wallet {:?}: {}", &hash[..4], e),
         }
     }
 }

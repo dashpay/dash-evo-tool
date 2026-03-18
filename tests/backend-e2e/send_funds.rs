@@ -1,9 +1,9 @@
 //! Test: Send and receive Core payments between wallets.
 
-use crate::harness::ctx;
-use crate::identity_helpers::get_receive_address;
-use crate::task_runner::run_task;
-use crate::wait::{wait_for_balance, wait_for_spendable_balance};
+use crate::framework::harness::ctx;
+use crate::framework::identity_helpers::get_receive_address;
+use crate::framework::task_runner::run_task;
+use crate::framework::wait::{wait_for_balance, wait_for_spendable_balance};
 use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
@@ -30,9 +30,10 @@ async fn send_with_retry(
     for attempt in 1..=MAX_RETRIES {
         // On retries, wait for spendable balance
         if attempt > 1 {
-            println!(
-                "  Retry {}/{}: waiting for wallet UTXOs to become spendable...",
-                attempt, MAX_RETRIES
+            tracing::info!(
+                "Retry {}/{}: waiting for wallet UTXOs to become spendable...",
+                attempt,
+                MAX_RETRIES
             );
             let _ = wait_for_spendable_balance(
                 app_context,
@@ -62,12 +63,16 @@ async fn send_with_retry(
             Ok(result) => return result,
             Err(e)
                 if (e.to_string().contains("Insufficient")
-                    || e.to_string().contains("No UTXOs"))
+                    || e.to_string().contains("No UTXOs")
+                    || e.to_string().contains("No spendable funds")
+                    || e.to_string().contains("spendable"))
                     && attempt < MAX_RETRIES =>
             {
-                println!(
-                    "  Send attempt {}/{} failed ({}), will retry...",
-                    attempt, MAX_RETRIES, e
+                tracing::info!(
+                    "Send attempt {}/{} failed ({}), will retry...",
+                    attempt,
+                    MAX_RETRIES,
+                    e
                 );
                 tokio::time::sleep(RETRY_DELAY).await;
                 continue;
@@ -116,7 +121,7 @@ async fn test_send_and_receive_funds() {
         BackendTaskSuccessResult::WalletPayment {
             txid, total_amount, ..
         } => {
-            println!("  A->B payment txid: {}, amount: {}", txid, total_amount);
+            tracing::info!("A->B payment txid: {}, amount: {}", txid, total_amount);
         }
         other => panic!("Expected WalletPayment, got: {:?}", other),
     }
@@ -131,7 +136,7 @@ async fn test_send_and_receive_funds() {
     .await
     .expect("B should receive funds");
 
-    println!("  B balance after receiving: {}", new_b_balance);
+    tracing::info!("B balance after receiving: {}", new_b_balance);
     assert!(
         new_b_balance >= initial_b_balance + send_amount,
         "B should have received funds"
@@ -166,10 +171,10 @@ async fn test_send_and_receive_funds() {
     .await
     .expect("A should receive return funds from B");
 
-    println!(
-        "  A balance after round-trip: {} duffs",
+    tracing::info!(
+        "A balance after round-trip: {} duffs",
         a_balance_after_return
     );
 
-    println!("  Round-trip payment completed successfully");
+    tracing::info!("Round-trip payment completed successfully");
 }

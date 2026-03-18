@@ -7,12 +7,7 @@
 //! cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
 //! ```
 
-mod cleanup;
-mod funding;
-mod harness;
-mod identity_helpers;
-mod task_runner;
-mod wait;
+mod framework;
 
 mod cleanup_only;
 mod fetch_contract;

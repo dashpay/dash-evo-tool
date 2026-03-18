@@ -8,12 +8,12 @@
 //! cargo test --test backend-e2e --all-features -- --ignored --nocapture cleanup_only
 //! ```
 
-use crate::harness::ctx;
+use crate::framework::harness::ctx;
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn cleanup_only() {
     // Initialization performs cleanup_test_wallets() as its final step.
     let _ctx = ctx().await;
-    println!("  Cleanup-only run complete.");
+    tracing::info!("Cleanup-only run complete.");
 }

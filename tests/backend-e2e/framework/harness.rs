@@ -12,9 +12,9 @@
 //! "channel closed" errors in later tests. The shared runtime from
 //! `tokio-shared-rt` keeps everything alive for the entire test binary.
 
-use crate::funding;
-use crate::task_runner::run_task;
-use crate::wait;
+use crate::framework::funding;
+use crate::framework::task_runner::run_task;
+use crate::framework::wait;
 use bip39::{Language, Mnemonic};
 use dash_evo_tool::app_dir::copy_env_file_if_not_exists;
 use dash_evo_tool::backend_task::BackendTask;
@@ -55,9 +55,18 @@ pub struct BackendTestContext {
 
 impl BackendTestContext {
     async fn init() -> Self {
+        // Initialize tracing for test output
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::from_default_env()
+                    .add_directive("backend_e2e=info".parse().unwrap()),
+            )
+            .with_target(false)
+            .try_init();
+
         // Load .env from the project root so E2E_WALLET_MNEMONIC is available.
         if let Err(e) = dotenvy::dotenv() {
-            eprintln!("  Note: .env not loaded ({e}), relying on environment");
+            tracing::debug!(".env not loaded ({e}), relying on environment");
         }
 
         // Persistent workdir keyed by git revision
@@ -71,7 +80,7 @@ impl BackendTestContext {
 
         let workdir = std::env::temp_dir().join(format!("dash-evo-e2e-testnet-{}", git_hash));
         std::fs::create_dir_all(&workdir).expect("Failed to create workdir");
-        println!("  E2E workdir: {}", workdir.display());
+        tracing::info!("E2E workdir: {}", workdir.display());
 
         // Point the app data dir to our workdir so config/env files live there.
         // SAFETY: tests run with --test-threads=1, so no concurrent env var access.
@@ -110,19 +119,22 @@ impl BackendTestContext {
         wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))
             .await
             .expect("SPV failed to connect to any peers within 60s");
-        println!("  SPV connected to peers");
+        tracing::info!("SPV connected to peers");
 
-        // Create or restore framework wallet
-        let mnemonic = match std::env::var("E2E_WALLET_MNEMONIC") {
-            Ok(phrase) => {
-                println!("  Restoring framework wallet from E2E_WALLET_MNEMONIC");
-                Mnemonic::parse_in(Language::English, &phrase).expect("Invalid E2E_WALLET_MNEMONIC")
-            }
-            Err(_) => {
-                println!("  Generating fresh framework wallet mnemonic");
-                Mnemonic::generate_in(Language::English, 12).expect("Mnemonic generation failed")
-            }
-        };
+        // E2E_WALLET_MNEMONIC is required
+        let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC").unwrap_or_else(|_| {
+            panic!(
+                "E2E_WALLET_MNEMONIC is not set.\n\
+                 This environment variable is required for backend E2E tests.\n\
+                 Set it to a BIP-39 mnemonic of a pre-funded testnet wallet.\n\
+                 Example: E2E_WALLET_MNEMONIC=\"word1 word2 word3 ... word12\"\n\
+                 You can also add it to the project root .env file."
+            );
+        });
+
+        tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
+        let mnemonic = Mnemonic::parse_in(Language::English, &mnemonic_phrase)
+            .expect("Invalid E2E_WALLET_MNEMONIC");
 
         let seed = mnemonic.to_seed("");
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
@@ -138,15 +150,12 @@ impl BackendTestContext {
         // Try to register; if the wallet already exists (persistent DB), just look it up.
         match app_context.register_wallet(wallet) {
             Ok((hash, _)) => {
-                println!(
-                    "  Registered framework wallet (seed_hash: {:?})",
-                    &hash[..4]
-                );
+                tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
             }
             // NOTE: string match is fragile; upstream should return typed error.
             // register_wallet() returns Result<_, String> so no typed variant is available.
             Err(e) if e.contains("already been imported") => {
-                println!("  Framework wallet already registered (reusing from persistent DB)");
+                tracing::info!("Framework wallet already registered (reusing from persistent DB)");
             }
             Err(e) => panic!("Failed to register framework wallet: {}", e),
         }
@@ -156,60 +165,19 @@ impl BackendTestContext {
             .await
             .expect("Framework wallet not picked up by SPV");
 
-        // Wait for SPV to sync the wallet's existing UTXOs and make them spendable.
-        println!("  Waiting for SPV to sync framework wallet spendable balance...");
+        // Wait for SPV to sync and funds to become spendable
+        tracing::info!("Waiting for SPV to sync framework wallet spendable balance...");
         match wait::wait_for_spendable_balance(
             &app_context,
             framework_wallet_hash,
             1, // at least 1 duff spendable
-            Duration::from_secs(120),
-        )
-        .await
-        {
-            Ok(balance) => {
-                println!(
-                    "  Framework wallet spendable balance after SPV sync: {} duffs",
-                    balance
-                );
-            }
-            Err(_) => {
-                // Fall back to checking total balance — funds may be unconfirmed from faucet
-                println!("  No spendable balance yet, checking total...");
-                match wait::wait_for_balance(
-                    &app_context,
-                    framework_wallet_hash,
-                    1,
-                    Duration::from_secs(30),
-                )
-                .await
-                {
-                    Ok(balance) => {
-                        println!(
-                            "  Framework wallet total balance: {} duffs (unconfirmed, will wait for confirmation)",
-                            balance
-                        );
-                    }
-                    Err(_) => {
-                        println!("  No existing balance found, will try faucet");
-                    }
-                }
-            }
-        }
-
-        // Top up from faucet if balance is still below threshold
-        funding::ensure_framework_funded(&app_context, framework_wallet_hash).await;
-
-        // Wait for funds to become SPENDABLE (not just visible as unconfirmed).
-        println!("  Waiting for framework wallet funds to become spendable...");
-        match wait::wait_for_spendable_balance(
-            &app_context,
-            framework_wallet_hash,
-            1,
             Duration::from_secs(180),
         )
         .await
         {
-            Ok(balance) => println!("  Framework wallet ready, spendable: {} duffs", balance),
+            Ok(balance) => {
+                tracing::info!("Framework wallet spendable: {} duffs", balance);
+            }
             Err(e) => {
                 let (confirmed, total, address) = {
                     let wallets = app_context.wallets().read().expect("wallets lock");
@@ -236,10 +204,13 @@ impl BackendTestContext {
             }
         }
 
+        // Verify balance is above minimum threshold
+        funding::verify_framework_funded(&app_context, framework_wallet_hash).await;
+
         // Sweep orphaned test wallets from previous runs (e.g., a test panicked
         // before cleanup). Wallets persist in the DB, so AppContext loaded them
         // automatically and SPV synced their balances.
-        crate::cleanup::cleanup_test_wallets(&app_context, framework_wallet_hash).await;
+        crate::framework::cleanup::cleanup_test_wallets(&app_context, framework_wallet_hash).await;
 
         BackendTestContext {
             app_context,
@@ -304,9 +275,10 @@ impl BackendTestContext {
         let mut last_error = String::new();
         for attempt in 1..=SEND_MAX_RETRIES {
             if attempt > 1 {
-                println!(
-                    "  Retry {}/{}: waiting for framework wallet UTXOs to become spendable...",
-                    attempt, SEND_MAX_RETRIES
+                tracing::info!(
+                    "Retry {}/{}: waiting for framework wallet UTXOs to become spendable...",
+                    attempt,
+                    SEND_MAX_RETRIES
                 );
                 match wait::wait_for_spendable_balance(
                     app_context,
@@ -316,9 +288,9 @@ impl BackendTestContext {
                 )
                 .await
                 {
-                    Ok(bal) => println!("  Framework wallet spendable: {} duffs", bal),
+                    Ok(bal) => tracing::info!("Framework wallet spendable: {} duffs", bal),
                     Err(_) => {
-                        println!("  Still no spendable balance, retrying send anyway...");
+                        tracing::debug!("Still no spendable balance, retrying send anyway...");
                     }
                 }
             }
@@ -340,21 +312,27 @@ impl BackendTestContext {
 
             match run_task(app_context, task).await {
                 Ok(_result) => {
-                    println!(
-                        "  Funded test wallet on attempt {}/{}",
-                        attempt, SEND_MAX_RETRIES
+                    tracing::info!(
+                        "Funded test wallet on attempt {}/{}",
+                        attempt,
+                        SEND_MAX_RETRIES
                     );
                     last_error.clear();
                     break;
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    if (err_str.contains("Insufficient") || err_str.contains("No UTXOs"))
+                    if (err_str.contains("Insufficient")
+                        || err_str.contains("No UTXOs")
+                        || err_str.contains("No spendable funds")
+                        || err_str.contains("spendable"))
                         && attempt < SEND_MAX_RETRIES
                     {
-                        println!(
-                            "  Send attempt {}/{} failed ({}), will retry...",
-                            attempt, SEND_MAX_RETRIES, err_str
+                        tracing::info!(
+                            "Send attempt {}/{} failed ({}), will retry...",
+                            attempt,
+                            SEND_MAX_RETRIES,
+                            err_str
                         );
                         last_error = err_str;
                         tokio::time::sleep(SEND_RETRY_DELAY).await;

@@ -1,6 +1,6 @@
 //! Test: SPV sync and wallet creation using shared context.
 
-use crate::harness::ctx;
+use crate::framework::harness::ctx;
 use bip39::{Language, Mnemonic};
 use dash_sdk::dpp::dashcore::Network;
 use std::time::Duration;

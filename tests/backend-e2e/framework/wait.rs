@@ -18,7 +18,7 @@ pub async fn wait_for_balance(
         loop {
             // Trigger reconcile so DET wallet model reflects latest SPV state
             if let Err(e) = app_context.reconcile_spv_wallets().await {
-                eprintln!("  Warning: reconcile_spv_wallets failed: {e}");
+                tracing::warn!("reconcile_spv_wallets failed: {e}");
             }
 
             let balance = {
@@ -60,7 +60,7 @@ pub async fn wait_for_spendable_balance(
         loop {
             // Trigger reconcile so DET wallet model reflects latest SPV state
             if let Err(e) = app_context.reconcile_spv_wallets().await {
-                eprintln!("  Warning: reconcile_spv_wallets failed: {e}");
+                tracing::warn!("reconcile_spv_wallets failed: {e}");
             }
 
             let balance = {

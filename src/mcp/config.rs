@@ -23,12 +23,4 @@ impl McpConfig {
             listen_addr,
         })
     }
-
-    /// Read the network name for stdio mode. Defaults to "mainnet".
-    pub fn network_from_env() -> String {
-        std::env::var("MCP_NETWORK")
-            .ok()
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "mainnet".to_string())
-    }
 }

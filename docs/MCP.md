@@ -22,7 +22,7 @@ The `det-cli` binary includes a built-in MCP stdio server. No separate binary ne
 det-cli serve
 ```
 
-Communicates via stdin/stdout using the MCP protocol. `AppContext` is initialized lazily on the first tool call, reading the same `.env` and database as the GUI app. Configure the network via `MCP_NETWORK` env var.
+Communicates via stdin/stdout using the MCP protocol. `AppContext` is initialized lazily on the first tool call, reading the same `.env` and database as the GUI app. Uses the last network selected in the GUI by default; override with `--network`.
 
 Build: `cargo build --features cli`
 
@@ -34,7 +34,6 @@ See [CLI.md](CLI.md) for full `det-cli` documentation.
 |---|---|---|
 | `MCP_API_KEY` | _(empty — disabled)_ | Enables HTTP server; used as Bearer token secret |
 | `MCP_LISTEN` | `127.0.0.1:9527` | HTTP listen address |
-| `MCP_NETWORK` | `mainnet` | Network for stdio mode: `mainnet`, `testnet`, `devnet`, `regtest` |
 
 Set these in the app's `.env` file (see `.env.example`) or as environment variables before launch.
 
@@ -57,10 +56,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "dash-evo-tool": {
       "command": "det-cli",
-      "args": ["serve"],
-      "env": {
-        "MCP_NETWORK": "mainnet"
-      }
+      "args": ["serve"]
     }
   }
 }

@@ -22,16 +22,20 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
     disable_help_subcommand = true
 )]
 struct Cli {
+    /// Network: mainnet, testnet, devnet, regtest (default: from database)
+    #[arg(short, long)]
+    network: Option<String>,
+
     /// Force standalone mode (no server connection needed)
-    #[arg(long)]
+    #[arg(short, long)]
     standalone: bool,
 
-    /// Server address (default: http://127.0.0.1:9527/mcp)
-    #[arg(long)]
+    /// Dash Evo Tool GUI address [env: MCP_LISTEN]
+    #[arg(short, long)]
     addr: Option<String>,
 
     /// Bearer token for HTTP auth [env: MCP_API_KEY]
-    #[arg(long, env = "MCP_API_KEY")]
+    #[arg(short, long, env = "MCP_API_KEY")]
     bearer: Option<String>,
 
     #[command(subcommand)]
@@ -96,7 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if matches!(cli.command, Some(Commands::Serve)) {
-        return run_stdio_server();
+        return run_stdio_server(cli.network);
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -112,7 +116,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let use_stdio = cli.standalone || cli.bearer.is_none();
 
     let client: McpClient = if use_stdio {
-        connect_in_process().await?
+        connect_in_process(cli.network).await?
     } else {
         let addr = resolve_addr(cli.addr);
         connect_http(&addr, cli.bearer.as_deref()).await?
@@ -143,7 +147,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run as a standalone MCP stdio server (replaces the separate dash-evo-tool-mcp binary).
-fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
+fn run_stdio_server(network: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     use dash_evo_tool::logging::initialize_logger;
 
     initialize_logger();
@@ -158,11 +162,13 @@ fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     runtime
-        .block_on(dash_evo_tool::mcp::start_stdio())
+        .block_on(dash_evo_tool::mcp::start_stdio(network))
         .map_err(|e| -> Box<dyn std::error::Error> { e })
 }
 
-async fn connect_in_process() -> Result<McpClient, Box<dyn std::error::Error>> {
+async fn connect_in_process(
+    network: Option<String>,
+) -> Result<McpClient, Box<dyn std::error::Error>> {
     use dash_evo_tool::mcp::server::DashMcpService;
 
     // Create two duplex byte channels, cross-connected:
@@ -172,7 +178,7 @@ async fn connect_in_process() -> Result<McpClient, Box<dyn std::error::Error>> {
 
     // Spawn the MCP service in a background task.
     // .serve() returns a RunningService — keep it alive with .waiting().
-    let service = DashMcpService::new_lazy();
+    let service = DashMcpService::new_lazy(network);
     tokio::spawn(async move {
         match service.serve((server_read, server_write)).await {
             Ok(running) => {
@@ -382,18 +388,27 @@ fn print_help(tools: Option<&[Tool]>) {
     println!();
     println!("Options:");
     help_line(
-        "--standalone",
+        "-n, --network <name>",
+        "mainnet, testnet, devnet, regtest (default: from database)",
+    );
+    help_line(
+        "-s, --standalone",
         "Force standalone mode even when MCP_API_KEY is set",
     );
     help_line(
-        "--addr <url>",
-        "Dash Evo Tool GUI address (default: http://127.0.0.1:9527/mcp)",
+        "-a, --addr <url>",
+        "Dash Evo Tool GUI address [env: MCP_LISTEN]",
+    );
+    help_line(
+        "-b, --bearer <key>",
+        "Bearer token for HTTP auth [env: MCP_API_KEY]",
     );
     help_line("-h, --help", "Print help");
     help_line("-V, --version", "Print version");
     println!();
-    println!("By default, det-cli runs standalone — no GUI needed. Set MCP_API_KEY to");
-    println!("connect to a running Dash Evo Tool instance instead. See docs/CLI.md.");
+    println!("By default, det-cli runs standalone using the last network from the GUI.");
+    println!("Set MCP_API_KEY to connect to a running Dash Evo Tool instance.");
+    println!("See docs/CLI.md for details.");
 }
 
 // -- Completion --

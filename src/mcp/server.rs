@@ -25,7 +25,11 @@ enum ContextProvider {
     Shared(Arc<arc_swap::ArcSwap<AppContext>>),
     /// Stdio/CLI mode: lazily initialized on first use.
     #[cfg(feature = "cli")]
-    Lazy(Arc<tokio::sync::OnceCell<Arc<AppContext>>>),
+    Lazy {
+        cell: Arc<tokio::sync::OnceCell<Arc<AppContext>>>,
+        /// Optional network override from --network flag.
+        network_override: Option<String>,
+    },
 }
 
 /// MCP service backed by the app's context.
@@ -55,10 +59,14 @@ impl DashMcpService {
     }
 
     /// For stdio/CLI mode: lazy init on first tool call.
+    /// `network_override` takes precedence over the database default.
     #[cfg(feature = "cli")]
-    pub fn new_lazy() -> Self {
+    pub fn new_lazy(network_override: Option<String>) -> Self {
         Self {
-            ctx_provider: ContextProvider::Lazy(Arc::new(tokio::sync::OnceCell::new())),
+            ctx_provider: ContextProvider::Lazy {
+                cell: Arc::new(tokio::sync::OnceCell::new()),
+                network_override,
+            },
             tool_router: Self::tool_router(),
         }
     }
@@ -70,8 +78,11 @@ impl DashMcpService {
             #[cfg(feature = "mcp")]
             ContextProvider::Shared(swap) => Ok(swap.load_full()),
             #[cfg(feature = "cli")]
-            ContextProvider::Lazy(cell) => cell
-                .get_or_try_init(|| async { init_app_context() })
+            ContextProvider::Lazy {
+                cell,
+                network_override,
+            } => cell
+                .get_or_try_init(|| async { init_app_context(network_override.as_deref()) })
                 .await
                 .cloned(),
         }
@@ -79,14 +90,14 @@ impl DashMcpService {
 }
 
 /// Initialize an AppContext for standalone/CLI mode.
+/// `network_override` from `--network` flag takes precedence over the database default.
 #[cfg(feature = "cli")]
-fn init_app_context() -> Result<Arc<AppContext>, McpError> {
+fn init_app_context(network_override: Option<&str>) -> Result<Arc<AppContext>, McpError> {
     use crate::app_dir::{
         app_user_data_dir_path, data_file_path, ensure_data_dir_exists, ensure_env_file,
     };
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::Database;
-    use crate::mcp::config::McpConfig;
     use crate::utils::tasks::TaskManager;
     use dash_sdk::dpp::dashcore::Network;
 
@@ -110,18 +121,15 @@ fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     db.initialize(&db_file_path)
         .map_err(|e| McpError::internal_error(format!("db init: {e}"), None))?;
 
-    let network_str = McpConfig::network_from_env();
-    let network = match network_str.as_str() {
-        "mainnet" | "dash" => Network::Dash,
-        "testnet" => Network::Testnet,
-        "devnet" => Network::Devnet,
-        "regtest" => Network::Regtest,
-        other => {
-            return Err(McpError::internal_error(
-                format!("unknown MCP_NETWORK value: {other}"),
-                None,
-            ));
-        }
+    // Network: --network flag > database setting > mainnet default.
+    let network = if let Some(name) = network_override {
+        parse_network_name(name)?
+    } else {
+        db.get_settings()
+            .ok()
+            .flatten()
+            .map(|(network, ..)| network)
+            .unwrap_or(Network::Dash)
     };
 
     let subtasks = Arc::new(TaskManager::new());
@@ -137,6 +145,22 @@ fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         egui::Context::default(),
     )
     .ok_or_else(|| McpError::internal_error("failed to create AppContext".to_string(), None))
+}
+
+/// Parse a network name string into a `Network` enum.
+#[cfg(feature = "cli")]
+fn parse_network_name(name: &str) -> Result<dash_sdk::dpp::dashcore::Network, McpError> {
+    use dash_sdk::dpp::dashcore::Network;
+    match name {
+        "mainnet" | "dash" => Ok(Network::Dash),
+        "testnet" => Ok(Network::Testnet),
+        "devnet" => Ok(Network::Devnet),
+        "regtest" => Ok(Network::Regtest),
+        other => Err(McpError::internal_error(
+            format!("unknown network: {other}. Use: mainnet, testnet, devnet, regtest"),
+            None,
+        )),
+    }
 }
 
 #[tool_router]

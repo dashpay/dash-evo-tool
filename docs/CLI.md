@@ -110,7 +110,7 @@ det-cli generate-receive-address wallet-id=savings
 det-cli list-core-wallets
 
 # Use testnet
-MCP_NETWORK=testnet det-cli list-wallets
+det-cli --network testnet list-wallets
 
 # Run as stdio MCP server for Claude Desktop
 det-cli serve

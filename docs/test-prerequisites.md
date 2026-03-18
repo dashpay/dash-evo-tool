@@ -8,7 +8,7 @@ Shared preconditions for all smoke test scenarios in [test-cases.md](test-cases.
 |---|---|
 | **Network** | Testnet |
 | **Backend mode** | SPV Client (no Dash Core RPC required) |
-| **Expert mode** | Enabled (required to select SPV backend) |
+| **Developer mode** | Enabled (required to select SPV backend) |
 | **OS** | macOS, Linux, or Windows |
 
 ## Secrets File
@@ -59,28 +59,47 @@ Place the following `.env` file at the DET configuration path:
 | Platform | Path |
 |---|---|
 | **macOS** | `~/Library/Application Support/Dash-Evo-Tool/.env` |
-| **Linux** | `~/.config/dash-evo-tool/.env` |
-| **Windows** | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config\.env` |
+| **Linux** | `~/.config/Dash-Evo-Tool/.env` |
+| **Windows** | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\.env` |
 
 ```env
-# Testnet SPV mode — only DAPI addresses are required
+# Testnet SPV mode — DAPI addresses plus placeholder Core RPC fields
 TESTNET_dapi_addresses=https://34.214.48.68:1443,https://52.12.176.90:1443,https://52.34.144.50:1443,https://44.240.98.102:1443,https://54.201.32.131:1443,https://52.10.229.11:1443,https://52.13.132.146:1443,https://52.40.219.41:1443,https://54.149.33.167:1443,https://35.164.23.245:1443,https://52.33.28.47:1443,https://52.43.13.92:1443,https://52.89.154.48:1443,https://52.24.124.162:1443,https://35.85.21.179:1443,https://54.187.14.232:1443,https://54.68.235.201:1443,https://52.13.250.182:1443
+
+# Core RPC fields are structurally required by NetworkConfig even in SPV mode,
+# but are not actively used at runtime. Supply placeholder values.
+TESTNET_core_host=127.0.0.1
+TESTNET_core_rpc_port=19998
+TESTNET_core_rpc_user=user
+TESTNET_core_rpc_password=password
+TESTNET_insight_api_url=https://insight.testnet.networks.dash.org:3002/insight-api
+# core_zmq_endpoint is optional and can be omitted
 ```
 
-No `core_host`, `core_rpc_port`, `core_rpc_user`, `core_rpc_password`, or `core_zmq_endpoint` settings are needed for SPV mode.
+> **Note:** While Core RPC settings (`core_host`, `core_rpc_port`, `core_rpc_user`, `core_rpc_password`, `insight_api_url`) are not actively used in SPV mode, the `NetworkConfig` struct requires them to be present during deserialization. Use placeholder values as shown above. The `core_zmq_endpoint` field is optional (`Option<String>`) and may be omitted.
 
-## Enabling Expert Mode and SPV Backend
+## Enabling Developer Mode and SPV Backend
 
-SPV backend selection is only visible when Expert mode is enabled.
+SPV backend selection is only visible when Developer Mode is enabled.
+
+### Enable Developer Mode
 
 1. Click **"Settings"** in the left sidebar.
-2. Check the **"Expert mode"** checkbox.
+2. Check the **"Developer mode"** checkbox.
 3. Click **"Save"**.
-4. The **Core backend mode** selector now appears. Select **"SPV Client"**.
-5. Click **"Save"**.
+
+### Select SPV Backend
+
+The backend mode selector is in the **Network Chooser** screen, not in Settings.
+
+1. Open the **Network Chooser** screen (displayed at startup or via the network selector).
+2. Locate the **"Connection Settings"** section.
+3. Open the **"Connection Type"** dropdown (visible only when Developer Mode is enabled).
+4. Select **"SPV"**.
+5. Confirm the selection and connect.
 6. Wait for the connection status indicator (top bar) to turn green, indicating SPV sync is complete.
 
-> **Note:** Expert mode also reveals additional developer UI elements (address tables, refresh controls). This is expected.
+> **Note:** The selected backend mode is stored in the `Settings` struct as `core_backend_mode` and persisted to the local database. Developer Mode also reveals additional UI elements (address tables, refresh controls). This is expected.
 
 ## Bank Wallet
 
@@ -128,7 +147,7 @@ Some tests require a clean DET state with no existing data:
 1. Quit DET completely.
 2. Remove or rename the data directory:
    - **macOS:** `~/Library/Application Support/Dash-Evo-Tool/`
-   - **Linux:** `~/.config/dash-evo-tool/`
+   - **Linux:** `~/.config/Dash-Evo-Tool/`
    - **Windows:** `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\`
 3. Re-create the `.env` file (see [.env Configuration](#env-configuration) above).
 4. Re-launch DET.

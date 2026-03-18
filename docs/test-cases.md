@@ -549,7 +549,7 @@ Perform these steps before running any test cases. If running TC-NET-010-01 (onb
 | **Test Case ID** | TC-DEV-005-01 |
 | **Short Description** | View Platform network status and info |
 | **Pre-Conditions** | DET running on testnet, SPV synced |
-| **Test Steps** | 1. Click **"Tools"** in the left sidebar.<br>2. The default view is **"Platform Info"**.<br>3. Verify epoch info is displayed (epoch number, start time).<br>4. Verify total credits in the system are shown.<br>5. Verify a validator list is visible. |
+| **Test Steps** | 1. Click **"Tools"** in the left sidebar.<br>2. The default view is **"Platform Info"**.<br>3. Confirm epoch info is displayed (epoch number, start time).<br>4. Check that total credits in the system are shown.<br>5. Ensure a validator list is visible. |
 | **Test Data** | N/A |
 | **Expected Result** | **"Platform Info"** screen loads. Epoch, credits, and validators shown with current data. |
 | **Post-Condition** | N/A |

@@ -103,6 +103,8 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/dash-evo-tool${{ matrix.ext }} dash-evo-tool/dash-evo-tool${{ matrix.ext }}
           if [ -f winlibs/sqlite3.dll ]; then cp winlibs/sqlite3.dll dash-evo-tool/sqlite3.dll; fi
+        env:
+          OPENSSL_STATIC: "1"
 
       - name: Package release
         run: |

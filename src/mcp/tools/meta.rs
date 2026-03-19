@@ -17,9 +17,17 @@ pub struct DescribeTool;
 /// Wrapper for serializing an rmcp `Tool` as JSON output.
 ///
 /// We use `serde_json::Value` because rmcp's `Tool` does not implement `JsonSchema`.
+/// The `transform` override emits `"type": "object"` instead of bare `true`,
+/// which some MCP clients (e.g. Claude Code) reject during schema validation.
 #[derive(Serialize, schemars::JsonSchema)]
 pub struct DescribeToolOutput {
+    #[schemars(transform = tool_field_to_object)]
     tool: serde_json::Value,
+}
+
+fn tool_field_to_object(schema: &mut schemars::Schema) {
+    *schema = serde_json::from_value(serde_json::json!({ "type": "object" }))
+        .expect("static schema");
 }
 
 impl ToolBase for DescribeTool {

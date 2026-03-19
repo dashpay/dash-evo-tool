@@ -238,11 +238,17 @@ impl BackendTestContext {
         let (seed_hash, wallet_arc) = app_context
             .register_wallet(wallet)
             .expect("Failed to register test wallet");
+        tracing::trace!(
+            seed_hash = ?&seed_hash[..4],
+            amount_duffs,
+            "create_funded_test_wallet: registered new wallet"
+        );
 
         // Wait for SPV to pick up the wallet
         wait::wait_for_wallet_in_spv(app_context, seed_hash, Duration::from_secs(30))
             .await
             .expect("Test wallet not picked up by SPV");
+        tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: wallet visible in SPV");
 
         // Get test wallet's receive address
         let test_address = {
@@ -251,6 +257,7 @@ impl BackendTestContext {
                 .expect("Failed to get test wallet receive address")
                 .to_string()
         };
+        tracing::trace!(address = %test_address, "create_funded_test_wallet: receive address derived");
 
         let framework_wallet_arc = {
             let wallets = app_context.wallets().read().expect("wallets lock");
@@ -275,11 +282,19 @@ impl BackendTestContext {
             request,
         });
 
+        tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: broadcasting funding tx...");
+        let funding_start = std::time::Instant::now();
         run_task(app_context, task)
             .await
             .expect("Failed to send funds to test wallet");
+        tracing::trace!(
+            seed_hash = ?&seed_hash[..4],
+            elapsed_ms = funding_start.elapsed().as_millis(),
+            "create_funded_test_wallet: funding tx broadcast"
+        );
 
         // Wait for test wallet to see the funds
+        tracing::trace!(seed_hash = ?&seed_hash[..4], min = amount_duffs, "create_funded_test_wallet: waiting for total balance...");
         wait::wait_for_balance(
             app_context,
             seed_hash,
@@ -288,9 +303,15 @@ impl BackendTestContext {
         )
         .await
         .expect("Test wallet did not receive expected funds");
+        tracing::trace!(
+            seed_hash = ?&seed_hash[..4],
+            elapsed_ms = funding_start.elapsed().as_millis(),
+            "create_funded_test_wallet: total balance reached"
+        );
 
         // Wait for the full funded amount to become spendable so callers can
         // immediately build transactions without racing confirmations/IS locks.
+        tracing::trace!(seed_hash = ?&seed_hash[..4], min = amount_duffs, "create_funded_test_wallet: waiting for spendable balance (IS lock)...");
         wait::wait_for_spendable_balance(
             app_context,
             seed_hash,
@@ -299,8 +320,14 @@ impl BackendTestContext {
         )
         .await
         .expect("Test wallet funds did not become spendable");
+        tracing::trace!(
+            seed_hash = ?&seed_hash[..4],
+            elapsed_ms = funding_start.elapsed().as_millis(),
+            "create_funded_test_wallet: funds spendable (IS-locked)"
+        );
 
         // Wait for framework wallet change output to become spendable.
+        tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: waiting for framework change to settle...");
         let _ = wait::wait_for_spendable_balance(
             app_context,
             self.framework_wallet_hash,
@@ -308,6 +335,11 @@ impl BackendTestContext {
             Duration::from_secs(30),
         )
         .await;
+        tracing::info!(
+            seed_hash = ?&seed_hash[..4],
+            total_elapsed_ms = funding_start.elapsed().as_millis(),
+            "create_funded_test_wallet: complete"
+        );
 
         (seed_hash, wallet_arc)
     }

@@ -14,7 +14,9 @@ pub async fn wait_for_balance(
     min_balance: u64,
     wait_timeout: Duration,
 ) -> Result<u64, String> {
+    let start = std::time::Instant::now();
     timeout(wait_timeout, async {
+        let mut poll_count = 0u32;
         loop {
             // Trigger reconcile so DET wallet model reflects latest SPV state
             if let Err(e) = app_context.reconcile_spv_wallets().await {
@@ -28,10 +30,26 @@ pub async fn wait_for_balance(
                     wallet.total_balance_duffs()
                 })
             };
+            poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
             {
+                tracing::trace!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    polls = poll_count,
+                    balance = b,
+                    "wait_for_balance: satisfied"
+                );
                 return b;
+            }
+            if poll_count.is_multiple_of(5) {
+                tracing::trace!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    polls = poll_count,
+                    current = ?balance,
+                    target = min_balance,
+                    "wait_for_balance: polling..."
+                );
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
@@ -56,7 +74,9 @@ pub async fn wait_for_spendable_balance(
     min_balance: u64,
     wait_timeout: Duration,
 ) -> Result<u64, String> {
+    let start = std::time::Instant::now();
     timeout(wait_timeout, async {
+        let mut poll_count = 0u32;
         loop {
             // Trigger reconcile so DET wallet model reflects latest SPV state
             if let Err(e) = app_context.reconcile_spv_wallets().await {
@@ -70,10 +90,26 @@ pub async fn wait_for_spendable_balance(
                     wallet.spv_confirmed_balance()
                 })
             };
+            poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
             {
+                tracing::trace!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    polls = poll_count,
+                    balance = b,
+                    "wait_for_spendable_balance: satisfied"
+                );
                 return b;
+            }
+            if poll_count.is_multiple_of(5) {
+                tracing::trace!(
+                    elapsed_ms = start.elapsed().as_millis(),
+                    polls = poll_count,
+                    current = ?balance,
+                    target = min_balance,
+                    "wait_for_spendable_balance: polling..."
+                );
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }

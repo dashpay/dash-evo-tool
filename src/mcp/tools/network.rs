@@ -8,8 +8,9 @@ use rmcp::schemars;
 use serde::Serialize;
 
 use crate::mcp::error::McpToolError;
+use crate::mcp::resolve;
 use crate::mcp::server::{DashMcpService, collect_available, network_display_name};
-use crate::mcp::tools::EmptyParams;
+use crate::mcp::tools::{EmptyParams, NetworkParams};
 
 // ---------------------------------------------------------------------------
 // NetworkTool
@@ -91,7 +92,7 @@ pub struct ListWalletsOutput {
 }
 
 impl ToolBase for ListWalletsTool {
-    type Parameter = EmptyParams;
+    type Parameter = NetworkParams;
     type Output = ListWalletsOutput;
     type Error = McpToolError;
 
@@ -103,10 +104,6 @@ impl ToolBase for ListWalletsTool {
         Some("List wallet names currently loaded in the application".into())
     }
 
-    fn input_schema() -> Option<std::sync::Arc<rmcp::model::JsonObject>> {
-        None
-    }
-
     fn annotations() -> Option<ToolAnnotations> {
         Some(ToolAnnotations::default().read_only(true).open_world(false))
     }
@@ -115,12 +112,13 @@ impl ToolBase for ListWalletsTool {
 impl AsyncTool<DashMcpService> for ListWalletsTool {
     async fn invoke(
         service: &DashMcpService,
-        _param: EmptyParams,
+        param: NetworkParams,
     ) -> Result<ListWalletsOutput, McpToolError> {
         let ctx = service
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
         let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
         let entries: Vec<WalletEntry> = wallets
             .iter()

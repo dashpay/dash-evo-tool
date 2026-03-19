@@ -26,8 +26,8 @@ pub struct DescribeToolOutput {
 }
 
 fn tool_field_to_object(schema: &mut schemars::Schema) {
-    *schema = serde_json::from_value(serde_json::json!({ "type": "object" }))
-        .expect("static schema");
+    *schema =
+        serde_json::from_value(serde_json::json!({ "type": "object" })).expect("static schema");
 }
 
 impl ToolBase for DescribeTool {

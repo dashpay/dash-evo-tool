@@ -65,6 +65,7 @@ impl AsyncTool<DashMcpService> for GenerateReceiveAddress {
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
@@ -137,6 +138,7 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
@@ -168,6 +170,10 @@ pub struct SendFundsParams {
     pub address: String,
     /// Amount to send in duffs (1 DASH = 100,000,000 duffs)
     pub amount_duffs: u64,
+    /// Expected network (e.g. "mainnet", "testnet"). If provided, the request fails when it
+    /// doesn't match the server's active network.
+    #[serde(default)]
+    pub network: Option<String>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -220,6 +226,7 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;
@@ -318,6 +325,7 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         resolve::ensure_spv_synced(&ctx).await?;

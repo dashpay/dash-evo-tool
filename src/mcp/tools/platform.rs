@@ -26,6 +26,10 @@ pub struct QueryWithdrawalsParams {
     /// Which withdrawals to query: "queued" (default) or "completed"
     #[serde(default = "default_queued")]
     pub status: String,
+    /// Expected network (e.g. "mainnet", "testnet"). If provided, the request fails when it
+    /// doesn't match the server's active network.
+    #[serde(default)]
+    pub network: Option<String>,
 }
 
 fn default_queued() -> String {
@@ -69,6 +73,7 @@ impl AsyncTool<DashMcpService> for QueryWithdrawals {
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, params.network.as_deref())?;
 
         resolve::ensure_spv_synced(&ctx).await?;
 

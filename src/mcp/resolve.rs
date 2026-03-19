@@ -3,6 +3,7 @@
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::mcp::error::McpToolError;
+use crate::mcp::server::network_display_name;
 use crate::model::wallet::WalletSeedHash;
 use std::sync::{Arc, RwLock};
 
@@ -10,6 +11,24 @@ use std::sync::{Arc, RwLock};
 const SPV_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// Initial SPV sync (headers, masternodes, filters, blocks) can take several minutes.
 const SPV_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Verify that the expected network matches the server's active network.
+///
+/// If `expected` is `None`, validation is skipped (backwards compatible).
+pub(crate) fn verify_network(
+    app_context: &AppContext,
+    expected: Option<&str>,
+) -> Result<(), McpToolError> {
+    if let Some(expected) = expected {
+        let actual = network_display_name(app_context.network);
+        if !expected.eq_ignore_ascii_case(actual) {
+            return Err(McpToolError::InvalidParams(format!(
+                "Network mismatch: expected '{expected}' but server is on '{actual}'"
+            )));
+        }
+    }
+    Ok(())
+}
 
 /// Resolve a wallet identifier (alias or 64-char hex seed hash) to a `WalletSeedHash`.
 pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash, McpToolError> {

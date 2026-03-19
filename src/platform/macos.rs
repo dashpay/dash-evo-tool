@@ -18,9 +18,14 @@ pub fn force_accessibility_activation() -> bool {
         if app.is_null() {
             return false;
         }
-        let window: *mut objc2::runtime::AnyObject = msg_send![app, keyWindow];
+        let mut window: *mut objc2::runtime::AnyObject = msg_send![app, keyWindow];
         if window.is_null() {
-            return false;
+            // keyWindow is only set for the focused window; fall back to
+            // mainWindow which is available even when another dialog has focus.
+            window = msg_send![app, mainWindow];
+            if window.is_null() {
+                return false;
+            }
         }
         let view: *mut objc2::runtime::AnyObject = msg_send![window, contentView];
         if view.is_null() {

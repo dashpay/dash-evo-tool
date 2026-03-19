@@ -1101,6 +1101,10 @@ impl App for AppState {
         // Retries each frame until the window is available.
         if !self.accessibility_activated {
             self.accessibility_activated = crate::platform::force_accessibility_activation();
+            if !self.accessibility_activated {
+                // Ensure we get another frame to retry, even if egui would otherwise go idle.
+                ctx.request_repaint();
+            }
         }
 
         // Apply Dash theme with user preference

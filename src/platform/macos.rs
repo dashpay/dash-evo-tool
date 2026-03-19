@@ -11,7 +11,7 @@ use objc2::runtime::AnyClass;
 /// was not yet available (caller should retry on the next frame).
 pub fn force_accessibility_activation() -> bool {
     unsafe {
-        let Some(cls) = AnyClass::get("NSApplication") else {
+        let Some(cls) = AnyClass::get(c"NSApplication") else {
             return false;
         };
         let app: *mut objc2::runtime::AnyObject = msg_send![cls, sharedApplication];

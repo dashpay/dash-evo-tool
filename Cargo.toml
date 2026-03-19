@@ -84,7 +84,7 @@ zmq = "0.10.0"
 zeromq = "0.4.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.5"
+objc2 = "0.6"
 
 [target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
 native-dialog = "0.9.0"

@@ -278,7 +278,7 @@ pub fn add_left_panel(
                                                             .min_width(60.0)
                                                             .glow()
                                                             .show(ui);
-                                                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *label));
+                                                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, is_selected, *label));
                                                         if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
                                                         }
@@ -295,7 +295,7 @@ pub fn add_left_panel(
                                                             .min_size(egui::vec2(60.0, 60.0));
 
                                                         let response = ui.add(button);
-                                                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *label));
+                                                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, is_selected, *label));
                                                         if response.clicked() {
                                                             action = AppAction::SetMainScreen(*screen_type);
                                                         }

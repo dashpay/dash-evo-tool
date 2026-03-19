@@ -647,7 +647,7 @@ mod tests {
         let (network, root_screen, password_info, _, _, _, theme, core_mode, _, _, _, _) =
             settings.unwrap();
         // Default network is "dash" (mainnet)
-        assert_eq!(network, Network::Dash);
+        assert_eq!(network, Network::Mainnet);
         // Default start screen is RootScreenDashPayProfile (20)
         assert_eq!(root_screen, RootScreenType::RootScreenDashPayProfile);
         // No password set initially

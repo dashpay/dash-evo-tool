@@ -384,11 +384,11 @@ mod tests {
         )
         .expect("Should derive xpub for testnet");
         let xpub_mainnet =
-            derive_dashpay_incoming_xpub(&master_seed, Network::Dash, 0, &sender_id, &recipient_id)
+            derive_dashpay_incoming_xpub(&master_seed, Network::Mainnet, 0, &sender_id, &recipient_id)
                 .expect("Should derive xpub for mainnet");
 
         // Keys should be the same but network should differ
         assert_eq!(xpub_testnet.network, Network::Testnet);
-        assert_eq!(xpub_mainnet.network, Network::Dash);
+        assert_eq!(xpub_mainnet.network, Network::Mainnet);
     }
 }

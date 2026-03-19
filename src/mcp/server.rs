@@ -99,7 +99,7 @@ impl DashMcpService {
 /// Starts the SPV client so wallet operations work, but does not block waiting
 /// for wallets to load — individual tools wait for their specific wallet.
 #[cfg(feature = "cli")]
-async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
+pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     use crate::app_dir::{
         app_user_data_dir_path, data_file_path, ensure_data_dir_exists, ensure_env_file,
     };

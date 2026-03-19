@@ -36,8 +36,6 @@ use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::
 use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
-use std::future::Future;
-use std::pin::Pin;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tokens::TokenTask;
@@ -284,94 +282,7 @@ pub enum BackendTaskSuccessResult {
 
 impl BackendTaskSuccessResult {}
 
-type SendBoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-
-/// Assert that a pinned, boxed future is `Send`.
-///
-/// # Safety
-///
-/// The caller must guarantee the future never holds non-Send data across an
-/// `.await` point.  This is used to work around RPITIT-generated opaque types
-/// in the Dash Platform SDK whose Send bound the compiler cannot verify.
-unsafe fn assert_send<T>(
-    fut: Pin<Box<dyn Future<Output = T>>>,
-) -> Pin<Box<dyn Future<Output = T> + Send>> {
-    // SAFETY: caller guarantees the future is Send in practice.
-    unsafe { std::mem::transmute(fut) }
-}
-
 impl AppContext {
-    /// Run backend tasks sequentially, returning a `Send` future suitable for
-    /// `tokio::spawn`.
-    pub fn run_backend_tasks_sequential_send(
-        self: &Arc<Self>,
-        tasks: Vec<BackendTask>,
-        sender: SenderAsync<TaskResult>,
-    ) -> SendBoxFuture<Vec<Result<BackendTaskSuccessResult, TaskError>>> {
-        let this = Arc::clone(self);
-        // SAFETY: see `run_backend_task_send` doc comment.
-        unsafe {
-            assert_send(Box::pin(async move {
-                let mut results = Vec::new();
-                for task in tasks {
-                    match this.run_backend_task(task, sender.clone()).await {
-                        Ok(result) => results.push(Ok(result)),
-                        Err(e) => results.push(Err(e)),
-                    };
-                }
-                results
-            }))
-        }
-    }
-
-    /// Run backend tasks concurrently, returning a `Send` future suitable for
-    /// `tokio::spawn`.
-    pub fn run_backend_tasks_concurrent_send(
-        self: &Arc<Self>,
-        tasks: Vec<BackendTask>,
-        sender: SenderAsync<TaskResult>,
-    ) -> SendBoxFuture<Vec<Result<BackendTaskSuccessResult, TaskError>>> {
-        let this = Arc::clone(self);
-        // SAFETY: see `run_backend_task_send` doc comment.
-        unsafe {
-            assert_send(Box::pin(async move {
-                let futures = tasks
-                    .into_iter()
-                    .map(|task| {
-                        let cloned_self = Arc::clone(&this);
-                        let cloned_sender = sender.clone();
-                        cloned_self.run_backend_task_send(task, cloned_sender)
-                    })
-                    .collect::<Vec<_>>();
-
-                join_all(futures).await
-            }))
-        }
-    }
-
-    /// Run a single backend task, returning a `Send` future suitable for
-    /// `tokio::spawn`.
-    ///
-    /// The future from [`run_backend_task`] is safe to send across threads —
-    /// all non-Send references (`&Sdk`, `&DataContract`) are temporaries
-    /// confined to individual `.await` points.  The compiler cannot prove
-    /// this automatically because upstream SDK traits use RPITIT, which
-    /// produces opaque types that defeat HRTB Send inference.  We pin-box
-    /// the future and transmute the Send bound via [`assert_send`].
-    pub fn run_backend_task_send(
-        self: &Arc<Self>,
-        task: BackendTask,
-        sender: SenderAsync<TaskResult>,
-    ) -> SendBoxFuture<Result<BackendTaskSuccessResult, TaskError>> {
-        let this = Arc::clone(self);
-        // SAFETY: see doc comment above.
-        unsafe {
-            assert_send(Box::pin(async move {
-                this.run_backend_task(task, sender).await
-            }))
-        }
-    }
-
     /// Run backend tasks sequentially
     pub async fn run_backend_tasks_sequential(
         self: &Arc<Self>,

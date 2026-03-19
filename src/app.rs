@@ -836,9 +836,7 @@ impl AppState {
         let sender = self.task_result_sender.clone();
         let app_context = self.current_app_context().clone();
         tokio::spawn(async move {
-            let result = app_context
-                .run_backend_task_send(task, sender.clone())
-                .await;
+            let result = app_context.run_backend_task(task, sender.clone()).await;
             if let Err(e) = sender.send(result.into()).await {
                 tracing::error!("Failed to send task result: {}", e);
             }
@@ -854,12 +852,12 @@ impl AppState {
             let results = match mode {
                 BackendTasksExecutionMode::Sequential => {
                     app_context
-                        .run_backend_tasks_sequential_send(tasks, sender.clone())
+                        .run_backend_tasks_sequential(tasks, sender.clone())
                         .await
                 }
                 BackendTasksExecutionMode::Concurrent => {
                     app_context
-                        .run_backend_tasks_concurrent_send(tasks, sender.clone())
+                        .run_backend_tasks_concurrent(tasks, sender.clone())
                         .await
                 }
             };

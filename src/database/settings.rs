@@ -586,8 +586,7 @@ impl Database {
             // Network::Dash -> Network::Mainnet rename.
             let parsed_network = match network.to_lowercase().as_str() {
                 "dash" => Network::Mainnet,
-                other => Network::from_str(other)
-                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                other => Network::from_str(other).map_err(|_| rusqlite::Error::InvalidQuery)?,
             };
 
             // Convert start_root_screen from int to enum

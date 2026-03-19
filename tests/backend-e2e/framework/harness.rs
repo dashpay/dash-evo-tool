@@ -54,8 +54,10 @@ impl BackendTestContext {
         // Initialize tracing for test output
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
-                tracing_subscriber::EnvFilter::from_default_env()
-                    .add_directive("backend_e2e=info".parse().unwrap()),
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| {
+                        tracing_subscriber::EnvFilter::new("backend_e2e=info")
+                    }),
             )
             .with_target(false)
             .try_init();

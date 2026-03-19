@@ -8,7 +8,10 @@
 pub mod auth;
 pub mod config;
 pub mod dispatch;
+pub mod error;
+pub mod resolve;
 pub mod server;
+pub mod tools;
 
 pub use config::McpConfig;
 

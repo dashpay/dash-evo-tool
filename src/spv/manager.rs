@@ -453,6 +453,14 @@ impl SpvManager {
         Arc::clone(&self.wallet)
     }
 
+    /// Notify the SPV client that wallet addresses have changed, triggering
+    /// a mempool bloom filter rebuild.
+    pub async fn notify_wallet_addresses_changed(&self) {
+        if let Some(client) = self.spv_client.load_full() {
+            client.notify_wallet_addresses_changed().await;
+        }
+    }
+
     pub fn det_wallets_snapshot(&self) -> std::collections::BTreeMap<[u8; 32], WalletId> {
         self.det_wallets
             .read()

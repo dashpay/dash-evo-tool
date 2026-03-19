@@ -264,6 +264,10 @@ impl AppContext {
                             }
                         })?;
 
+                if result.addresses_registered > 0 {
+                    self.spv_manager.notify_wallet_addresses_changed().await;
+                }
+
                 Ok(BackendTaskSuccessResult::Message(format!(
                     "Registered {} DashPay addresses for {} contacts{}",
                     result.addresses_registered,

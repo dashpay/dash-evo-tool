@@ -67,7 +67,15 @@ Values are parsed as JSON first, falling back to plain strings. Exit code is non
 det-cli serve
 ```
 
-Runs an MCP server over stdin/stdout for Claude Desktop, AI agents, or other MCP clients. See [MCP.md](MCP.md) for Claude Desktop configuration.
+Runs an MCP server over stdin/stdout for Claude Desktop, Claude Code, AI agents, or other MCP clients. See [MCP.md](MCP.md) for client configuration.
+
+### `headless` — HTTP MCP server daemon
+
+```bash
+det-cli headless
+```
+
+Runs the HTTP MCP server without a GUI. Requires `MCP_API_KEY` to be set. Useful for server environments or automated pipelines. Requires the `headless` feature: `cargo build --features headless`.
 
 ### `tools` — refresh command list
 
@@ -109,9 +117,24 @@ det-cli network
 # Check wallet balance
 det-cli wallet-balances wallet-id=savings
 
+# Fetch platform address balances (credits and nonces)
+det-cli fetch-platform-address-balances wallet-id=savings
+
+# Query Platform withdrawals currently in queue
+det-cli query-withdrawals
+
+# Query recently completed withdrawals
+det-cli query-withdrawals status=completed
+
+# Get full schema and description for a tool
+det-cli describe-tool name=send_core_funds
+
 # Send 0.01 DASH (1,000,000 duffs) to an address
 det-cli send-core-funds wallet-id=savings address=yXyz... amount-duffs=1000000
 
-# Run as stdio MCP server for Claude Desktop
+# Verify you're on testnet before sending
+det-cli send-core-funds wallet-id=savings address=yXyz... amount-duffs=1000000 network=testnet
+
+# Run as stdio MCP server for Claude Desktop or Claude Code
 det-cli serve
 ```

@@ -15,10 +15,10 @@ cargo build --features cli
 det-cli
 
 # List wallets
-det-cli list-wallets
+det-cli core-wallets-list
 
 # Generate a receive address
-det-cli generate-receive-address wallet-id=savings
+det-cli core-address-create wallet-id=savings
 ```
 
 Run `det-cli --help` to see all available commands with descriptions.
@@ -46,14 +46,14 @@ Set `MCP_API_KEY` (in `.env` or shell) to connect to a running Dash Evo Tool ins
 The GUI address defaults to `http://127.0.0.1:9527/mcp`. Override with `--addr`:
 
 ```bash
-det-cli --addr http://127.0.0.1:9000/mcp list-wallets
+det-cli --addr http://127.0.0.1:9000/mcp core-wallets-list
 ```
 
 Force standalone mode with `--standalone` even when an API key is present.
 
 ## Usage
 
-Commands use hyphens (`list-wallets`, not `list_wallets`). Parameters are passed as `key=value` pairs:
+Commands use hyphens (`core-wallets-list`, not `core_wallets_list`). Parameters are passed as `key=value` pairs:
 
 ```bash
 det-cli <command> [key=value ...]
@@ -106,34 +106,34 @@ det-cli completion zsh > "${fpath[1]}/_det-cli"
 
 ```bash
 # List wallets (standalone, no server needed)
-det-cli list-wallets
+det-cli core-wallets-list
 
 # Generate a receive address
-det-cli generate-receive-address wallet-id=savings
+det-cli core-address-create wallet-id=savings
 
 # Show active network and available networks
-det-cli network
+det-cli network-info
 
 # Check wallet balance
-det-cli wallet-balances wallet-id=savings
+det-cli core-balances-get wallet-id=savings
 
 # Fetch platform address balances (credits and nonces)
-det-cli fetch-platform-address-balances wallet-id=savings
+det-cli platform-addresses-list wallet-id=savings
 
 # Query Platform withdrawals currently in queue
-det-cli query-withdrawals
+det-cli platform-withdrawals-get
 
 # Query recently completed withdrawals
-det-cli query-withdrawals status=completed
+det-cli platform-withdrawals-get status=completed
 
 # Get full schema and description for a tool
-det-cli describe-tool name=send_core_funds
+det-cli tool-describe name=core_funds_send
 
 # Send 0.01 DASH (1,000,000 duffs) to an address
-det-cli send-core-funds wallet-id=savings address=yXyz... amount-duffs=1000000
+det-cli core-funds-send wallet-id=savings address=yXyz... amount-duffs=1000000
 
 # Verify you're on testnet before sending
-det-cli send-core-funds wallet-id=savings address=yXyz... amount-duffs=1000000 network=testnet
+det-cli core-funds-send wallet-id=savings address=yXyz... amount-duffs=1000000 network=testnet
 
 # Run as stdio MCP server for Claude Desktop or Claude Code
 det-cli serve

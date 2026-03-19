@@ -31,7 +31,7 @@ impl ToolBase for NetworkTool {
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "network".into()
+        "network_info".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {
@@ -97,7 +97,7 @@ impl ToolBase for ListWalletsTool {
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "list_wallets".into()
+        "core_wallets_list".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {

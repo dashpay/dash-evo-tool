@@ -48,7 +48,7 @@ impl ToolBase for QueryWithdrawals {
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "query_withdrawals".into()
+        "platform_withdrawals_get".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {

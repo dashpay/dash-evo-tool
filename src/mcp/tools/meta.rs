@@ -36,7 +36,7 @@ impl ToolBase for DescribeTool {
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "describe_tool".into()
+        "tool_describe".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {

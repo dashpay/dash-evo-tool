@@ -34,7 +34,7 @@ impl ToolBase for GenerateReceiveAddress {
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "generate_receive_address".into()
+        "core_address_create".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {
@@ -113,7 +113,7 @@ impl ToolBase for WalletBalancesQuery {
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "wallet_balances".into()
+        "core_balances_get".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {
@@ -195,7 +195,7 @@ impl ToolBase for SendCoreFunds {
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "send_core_funds".into()
+        "core_funds_send".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {
@@ -300,7 +300,7 @@ impl ToolBase for FetchPlatformBalances {
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "fetch_platform_address_balances".into()
+        "platform_addresses_list".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {

@@ -729,7 +729,7 @@ impl AppContext {
 pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
     // TODO: Ideally use sdk.load().version() but this is a free function with no sdk access
     match network {
-        Network::Dash => &PLATFORM_V11,
+        Network::Mainnet => &PLATFORM_V11,
         Network::Testnet => &PLATFORM_V11,
         Network::Devnet => &PLATFORM_V11,
         Network::Regtest => &PLATFORM_V11,

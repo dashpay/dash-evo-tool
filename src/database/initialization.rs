@@ -4,9 +4,9 @@ use rusqlite::{Connection, params};
 use std::fs;
 use std::path::Path;
 
-pub const DEFAULT_DB_VERSION: u16 = 28;
+pub const DEFAULT_DB_VERSION: u16 = 29;
 
-pub const DEFAULT_NETWORK: &str = "dash";
+pub const DEFAULT_NETWORK: &str = "mainnet";
 
 impl Database {
     pub fn initialize(&self, db_file_path: &Path) -> rusqlite::Result<()> {
@@ -51,6 +51,9 @@ impl Database {
 
     fn apply_version_changes(&self, version: u16, tx: &Connection) -> rusqlite::Result<()> {
         match version {
+            29 => {
+                self.rename_network_dash_to_mainnet(tx)?;
+            }
             28 => {
                 self.add_core_wallet_name_column(tx)?;
                 self.init_contacts_tables(tx)?;
@@ -894,6 +897,41 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_asset_lock_transaction_network ON asset_lock_transaction (network)",
             [],
         )?;
+        Ok(())
+    }
+
+    /// Migration 29: rename network value "dash" to "mainnet" in all tables.
+    ///
+    /// Upstream `dashcore` renamed `Network::Dash` to `Network::Mainnet`,
+    /// which changes `Display`/`FromStr` representations from `"dash"` to
+    /// `"mainnet"`.  This migration updates every table that stores the
+    /// network as a string.
+    fn rename_network_dash_to_mainnet(&self, conn: &Connection) -> rusqlite::Result<()> {
+        let tables = [
+            "settings",
+            "wallet",
+            "wallet_addresses",
+            "platform_address_balances",
+            "utxos",
+            "asset_lock_transaction",
+            "identity",
+            "contested_name",
+            "contestant",
+            "contract",
+            "scheduled_votes",
+            "dashpay_profiles",
+            "dashpay_contact_requests",
+            "dashpay_contacts",
+            "wallet_transactions",
+            "single_key_wallet",
+            "token",
+        ];
+        for table in tables {
+            conn.execute(
+                &format!("UPDATE {table} SET network = 'mainnet' WHERE network = 'dash'"),
+                [],
+            )?;
+        }
         Ok(())
     }
 }

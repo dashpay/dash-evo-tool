@@ -377,11 +377,11 @@ impl AppContext {
 
     pub(crate) fn wallet_network_key(&self) -> WalletNetwork {
         match self.network {
-            Network::Dash => WalletNetwork::Dash,
+            Network::Mainnet => WalletNetwork::Mainnet,
             Network::Testnet => WalletNetwork::Testnet,
             Network::Devnet => WalletNetwork::Devnet,
             Network::Regtest => WalletNetwork::Regtest,
-            _ => WalletNetwork::Dash,
+            _ => WalletNetwork::Mainnet,
         }
     }
 

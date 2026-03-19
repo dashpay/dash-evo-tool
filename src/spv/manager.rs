@@ -3,6 +3,7 @@ use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
 use arc_swap::ArcSwapOption;
+use dash_sdk::dash_spv::client::config::MempoolStrategy;
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::network::PeerNetworkManager;
 use dash_sdk::dash_spv::storage::DiskStorageManager;
@@ -1286,7 +1287,8 @@ impl SpvManager {
         let mut config = ClientConfig::new(self.network)
             .with_storage_path(self.data_dir.clone())
             .with_validation_mode(ValidationMode::Full)
-            .with_start_height(start_height);
+            .with_start_height(start_height)
+            .with_mempool_tracking(MempoolStrategy::BloomFilter);
 
         // Configure peer discovery based on network type and user preference.
         // Devnet/Regtest always need explicit peers since they're local networks.
@@ -1333,7 +1335,7 @@ impl SpvManager {
 
         let host = config.core_host.as_str();
         let port = match self.network {
-            Network::Dash => 9999,
+            Network::Mainnet => 9999,
             Network::Testnet => 19999,
             Network::Devnet => 20001,
             Network::Regtest => 19899,
@@ -1355,7 +1357,7 @@ fn build_spv_data_dir(
     fs::create_dir_all(&base).map_err(|e| format!("Failed to create SPV base dir: {e}"))?;
 
     let network_dir = match network {
-        Network::Dash => "mainnet".to_string(),
+        Network::Mainnet => "mainnet".to_string(),
         Network::Testnet => "testnet".to_string(),
         Network::Devnet => {
             let name = config
@@ -1400,7 +1402,7 @@ async fn notify_wallet_after_broadcast(
 ) {
     {
         let mut wm = wallet.write().await;
-        wm.process_mempool_transaction(tx).await;
+        let _ = wm.process_mempool_transaction(tx, false).await;
     }
     if let Some(ch) = reconcile_tx {
         let _ = ch.try_send(());

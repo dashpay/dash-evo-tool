@@ -91,7 +91,7 @@ impl MnListData {
     fn new(app_context: &Arc<AppContext>) -> Self {
         let mut mnlist_diffs = BTreeMap::new();
         let masternode_list_engine = match app_context.network {
-            Network::Dash => {
+            Network::Mainnet => {
                 use std::env;
                 tracing::debug!(
                     "Current working directory: {:?}",
@@ -108,18 +108,18 @@ impl MnListData {
                             MasternodeListEngine::initialize_with_diff_to_height(
                                 diff,
                                 2227096,
-                                Network::Dash,
+                                Network::Mainnet,
                             )
                             .expect("expected to start engine")
                         }
                         Err(e) => {
                             tracing::error!("Failed to read MNListDiff file: {}", e);
-                            MasternodeListEngine::default_for_network(Network::Dash)
+                            MasternodeListEngine::default_for_network(Network::Mainnet)
                         }
                     }
                 } else {
                     tracing::warn!("MNListDiff file not found: {}", file_path);
-                    MasternodeListEngine::default_for_network(Network::Dash)
+                    MasternodeListEngine::default_for_network(Network::Mainnet)
                 }
             }
             Network::Testnet => {
@@ -145,7 +145,7 @@ impl MnListData {
                     }
                 } else {
                     tracing::warn!("MNListDiff file not found: {}", file_path);
-                    MasternodeListEngine::default_for_network(Network::Dash)
+                    MasternodeListEngine::default_for_network(Network::Mainnet)
                 }
             }
             _ => MasternodeListEngine::default_for_network(app_context.network),
@@ -1285,7 +1285,7 @@ impl MasternodeListDiffScreen {
         let max_blocks = 2000;
 
         let loaded_list_height = match self.app_context.network {
-            Network::Dash => 2227096,
+            Network::Mainnet => 2227096,
             Network::Testnet => 1296600,
             _ => 0,
         };

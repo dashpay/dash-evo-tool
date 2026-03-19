@@ -581,9 +581,14 @@ impl Database {
                 _ => None,
             };
 
-            // Convert network from string to enum
-            let parsed_network =
-                Network::from_str(&network).map_err(|_| rusqlite::Error::InvalidQuery)?;
+            // Convert network from string to enum.
+            // Handle legacy "dash" value from databases created before the
+            // Network::Dash -> Network::Mainnet rename.
+            let parsed_network = match network.to_lowercase().as_str() {
+                "dash" => Network::Mainnet,
+                other => Network::from_str(other)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?,
+            };
 
             // Convert start_root_screen from int to enum
             let root_screen_type = RootScreenType::from_int(start_root_screen)
@@ -646,8 +651,8 @@ mod tests {
 
         let (network, root_screen, password_info, _, _, _, theme, core_mode, _, _, _, _) =
             settings.unwrap();
-        // Default network is "dash" (mainnet)
-        assert_eq!(network, Network::Dash);
+        // Default network is mainnet
+        assert_eq!(network, Network::Mainnet);
         // Default start screen is RootScreenDashPayProfile (20)
         assert_eq!(root_screen, RootScreenType::RootScreenDashPayProfile);
         // No password set initially

@@ -2,6 +2,7 @@
 
 pub mod meta;
 pub mod network;
+pub mod platform;
 pub mod wallet;
 
 use rmcp::schemars;

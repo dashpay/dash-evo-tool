@@ -11,6 +11,7 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::mcp::dispatch::dispatch_task;
 use crate::mcp::error::McpToolError;
+use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
 
 // ---------------------------------------------------------------------------
@@ -68,6 +69,8 @@ impl AsyncTool<DashMcpService> for QueryWithdrawals {
             .ctx()
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
+
+        resolve::ensure_spv_synced(&ctx).await?;
 
         let request = match params.status.as_str() {
             "completed" | "complete" => PlatformInfoTaskRequestType::RecentlyCompletedWithdrawals,

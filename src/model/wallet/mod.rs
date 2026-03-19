@@ -3369,7 +3369,10 @@ mod tests {
 
     #[test]
     fn test_networks_address_compatible() {
-        assert!(networks_address_compatible(&Network::Mainnet, &Network::Mainnet));
+        assert!(networks_address_compatible(
+            &Network::Mainnet,
+            &Network::Mainnet
+        ));
         assert!(networks_address_compatible(
             &Network::Testnet,
             &Network::Testnet

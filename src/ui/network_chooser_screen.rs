@@ -2031,8 +2031,10 @@ impl ScreenLike for NetworkChooserScreen {
             self.theme_preference = settings.theme_mode;
         }
 
-        self.backend_modes
-            .insert(Network::Mainnet, self.mainnet_app_context.core_backend_mode());
+        self.backend_modes.insert(
+            Network::Mainnet,
+            self.mainnet_app_context.core_backend_mode(),
+        );
         if let Some(ctx) = &self.testnet_app_context {
             self.backend_modes
                 .insert(Network::Testnet, ctx.core_backend_mode());

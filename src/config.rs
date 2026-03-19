@@ -471,7 +471,10 @@ mod tests {
             local_config: Some(make_network_config("http://127.0.0.1:2443", 20302)),
             developer_mode: Some(true),
         };
-        let main = config.config_for_network(Network::Mainnet).as_ref().unwrap();
+        let main = config
+            .config_for_network(Network::Mainnet)
+            .as_ref()
+            .unwrap();
         assert_eq!(main.core_rpc_port, 9998);
         let test = config
             .config_for_network(Network::Testnet)

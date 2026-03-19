@@ -182,13 +182,8 @@ impl AppContext {
     fn queue_spv_wallet_load(self: &Arc<Self>, seed_hash: WalletSeedHash, seed_bytes: [u8; 64]) {
         let spv = Arc::clone(&self.spv_manager);
         self.subtasks.spawn_sync("spv_wallet_load", async move {
-            match spv.load_wallet_from_seed(seed_hash, seed_bytes).await {
-                Ok(_wallet_id) => {
-                    spv.notify_wallet_addresses_changed().await;
-                }
-                Err(error) => {
-                    tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to load SPV wallet from seed");
-                }
+            if let Err(error) = spv.load_wallet_from_seed(seed_hash, seed_bytes).await {
+                tracing::error!(seed = %hex::encode(seed_hash), %error, "Failed to load SPV wallet from seed");
             }
         });
     }

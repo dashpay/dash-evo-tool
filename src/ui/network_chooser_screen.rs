@@ -516,13 +516,14 @@ impl NetworkChooserScreen {
                 .entry(self.current_network)
                 .or_insert(CoreBackendMode::Rpc);
 
-            let ctx = self.current_app_context();
+            let ctx = self.current_app_context().clone();
             let status = ctx.connection_status();
             let disable_zmq = status.disable_zmq();
             let rpc_online = status.rpc_online();
             let zmq_connected = status.zmq_connected();
             let spv_status = status.spv_status();
             let spv_connected = ConnectionStatus::spv_connected(spv_status);
+            let spv_error_detail = status.spv_last_error();
             let snapshot = if current_backend_mode == CoreBackendMode::Spv {
                 Some(ctx.spv_manager().status().clone())
             } else {
@@ -734,7 +735,15 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        ui.colored_label(color, spv_status.to_string());
+                        let label = if spv_status == SpvStatus::Error {
+                            spv_error_detail
+                                .as_ref()
+                                .map(|e| format!("Error: {e}"))
+                                .unwrap_or_else(|| "Error".to_string())
+                        } else {
+                            spv_status.to_string()
+                        };
+                        ui.colored_label(color, label);
                     });
 
                     ui.horizontal(|ui| {

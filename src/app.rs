@@ -967,11 +967,15 @@ impl AppState {
                     Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
             }
             OverallConnectionState::Error => {
-                self.connection_banner_handle = Some(MessageBanner::set_global(
+                let handle = MessageBanner::set_global(
                     ctx,
-                    "SPV sync error — check connection status for details",
+                    "SPV sync failed. Go to Settings for connection details.",
                     MessageType::Error,
-                ));
+                );
+                if let Some(detail) = connection_status.spv_last_error() {
+                    handle.with_details(detail);
+                }
+                self.connection_banner_handle = Some(handle);
             }
             OverallConnectionState::Synced => {
                 // No banner needed for fully synced state

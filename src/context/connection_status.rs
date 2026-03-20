@@ -161,6 +161,11 @@ impl ConnectionStatus {
         }
     }
 
+    /// Get the last SPV error message, if any.
+    pub fn spv_last_error(&self) -> Option<String> {
+        self.spv_last_error.lock().ok().and_then(|g| g.clone())
+    }
+
     /// Update SPV connected peer count and maintain `spv_no_peers_since` tracking.
     ///
     /// Called from SpvManager's network event handler when peer count changes.
@@ -349,10 +354,7 @@ impl ConnectionStatus {
                     OverallConnectionState::Syncing => "Syncing".into(),
                     OverallConnectionState::Error => {
                         let detail = self
-                            .spv_last_error
-                            .lock()
-                            .ok()
-                            .and_then(|g| g.clone())
+                            .spv_last_error()
                             .unwrap_or_else(|| "unknown error".to_string());
                         format!("SPV sync error: {detail}").into()
                     }

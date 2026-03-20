@@ -192,6 +192,7 @@ impl AppContext {
                     }
 
                     let mut wallet_txs = Vec::new();
+                    let mut raw_fetch_failed = false;
                     for (txid, agg) in tx_aggregates {
                         let raw_tx =
                             match client.get_raw_transaction(&txid, agg.block_hash.as_ref()) {
@@ -202,6 +203,7 @@ impl AppContext {
                                         %txid,
                                         "get_raw_transaction failed, skipping"
                                     );
+                                    raw_fetch_failed = true;
                                     continue;
                                 }
                             };
@@ -219,11 +221,19 @@ impl AppContext {
                         });
                     }
 
-                    tracing::info!(
-                        rpc_transactions = wallet_txs.len(),
-                        "loaded transaction history from Core RPC"
-                    );
-                    Some(wallet_txs)
+                    if raw_fetch_failed {
+                        tracing::warn!(
+                            "one or more get_raw_transaction calls failed; \
+                             preserving existing transaction history"
+                        );
+                        None
+                    } else {
+                        tracing::info!(
+                            rpc_transactions = wallet_txs.len(),
+                            "loaded transaction history from Core RPC"
+                        );
+                        Some(wallet_txs)
+                    }
                 }
                 Err(e) => {
                     tracing::debug!(?e, "list_transactions failed, skipping transaction load");

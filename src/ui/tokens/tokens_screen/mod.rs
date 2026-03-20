@@ -3228,6 +3228,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,
@@ -3541,6 +3542,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,
@@ -3668,6 +3670,7 @@ mod tests {
 
         ensure_test_env();
         let app_context = AppContext::new(
+            crate::app_dir::app_user_data_dir_path().unwrap(),
             Network::Regtest,
             db,
             None,

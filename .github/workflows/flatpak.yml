@@ -90,6 +90,27 @@ jobs:
         run: |
           flatpak-builder --force-clean --repo=flatpak-repo build-dir flatpak/org.dash.DashEvoTool.yml
 
+
+      - name: Verify Flatpak binary dependencies
+        run: |
+          BINARY="build-dir/files/bin/dash-evo-tool"
+          if [ ! -f "$BINARY" ]; then
+            echo "::error::Binary not found at $BINARY"
+            exit 1
+          fi
+          echo "Checking shared library dependencies inside Flatpak sandbox..."
+          # Run ldd inside the Flatpak build environment so libraries resolve
+          # against the Flatpak runtime (/usr) and app (/app), not the host.
+          DEPS=$(flatpak build build-dir ldd /app/bin/dash-evo-tool 2>&1 || true)
+          echo "$DEPS"
+          # Fail on missing libraries (not found = will crash at runtime)
+          if echo "$DEPS" | grep -q "not found"; then
+            echo "::error::Binary has missing shared library dependencies"
+            echo "$DEPS" | grep "not found"
+            exit 1
+          fi
+          echo "✅ Flatpak binary dependencies look clean"
+
       - name: Create Flatpak bundle
         run: |
           flatpak build-bundle flatpak-repo dash-evo-tool-linux-${{ matrix.arch }}.flatpak org.dash.DashEvoTool

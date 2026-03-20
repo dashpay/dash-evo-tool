@@ -4,11 +4,8 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::wallet::Wallet;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
-use crate::model::wallet::{
-    AddressInfo as WalletAddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType,
-    OpenWalletSeed, Wallet, WalletSeed,
-};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
@@ -20,43 +17,13 @@ use crate::ui::identities::funding_common::generate_qr_code_image;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use bip39::{Language, Mnemonic};
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::Address;
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
-use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use eframe::egui::{Context, TextureHandle, TextureOptions};
 use eframe::emath::Align;
 use egui::load::SizedTexture;
 use egui::{ComboBox, Frame, Grid, Layout, Margin, RichText, Stroke, Ui, Vec2};
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
-use tracing::error;
+use std::sync::Arc;
 use zxcvbn::zxcvbn;
-
-// Constants for feature purposes and sub-features
-pub const BIP44_PURPOSE: u32 = 44;
-pub const DASH_COIN_TYPE: u32 = 5;
-pub const DASH_TESTNET_COIN_TYPE: u32 = 1;
-pub const DASH_BIP44_ACCOUNT_0_PATH_MAINNET: [ChildNumber; 3] = [
-    ChildNumber::Hardened {
-        index: BIP44_PURPOSE,
-    },
-    ChildNumber::Hardened {
-        index: DASH_COIN_TYPE,
-    },
-    ChildNumber::Hardened { index: 0 },
-];
-
-pub const DASH_BIP44_ACCOUNT_0_PATH_TESTNET: [ChildNumber; 3] = [
-    ChildNumber::Hardened {
-        index: BIP44_PURPOSE,
-    },
-    ChildNumber::Hardened {
-        index: DASH_TESTNET_COIN_TYPE,
-    },
-    ChildNumber::Hardened { index: 0 },
-];
 
 /// Word count options for BIP39 mnemonic seed phrases
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,90 +131,20 @@ impl AddNewWalletScreen {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
 
-            let (encrypted_seed, salt, nonce, uses_password) = if self.password_input.is_empty() {
-                (seed.to_vec(), vec![], vec![], false)
-            } else {
-                // Encrypt the seed to obtain encrypted_seed, salt, and nonce
-                let (encrypted_seed, salt, nonce) =
-                    ClosedKeyItem::encrypt_seed(&seed, self.password_input.text())?;
-                if self.use_password_for_app {
-                    let (encrypted_message, salt, nonce) =
-                        encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
-                    self.app_context
-                        .update_main_password(&salt, &nonce, &encrypted_message)
-                        .map_err(|e| e.to_string())?;
-                }
-                (encrypted_seed, salt, nonce, true)
-            };
-
-            // Generate master ECDSA extended private key
-            let master_ecdsa_extended_private_key =
-                ExtendedPrivKey::new_master(self.app_context.network, &seed)
-                    .expect("Failed to create master ECDSA extended private key");
-            let bip44_root_derivation_path: DerivationPath = match self.app_context.network {
-                Network::Dash => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
-                _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
-            };
-            let secp = Secp256k1::new();
-            let master_bip44_ecdsa_extended_public_key = master_ecdsa_extended_private_key
-                .derive_priv(&secp, &bip44_root_derivation_path)
-                .map_err(|e| e.to_string())?;
-
-            let master_bip44_ecdsa_extended_public_key =
-                ExtendedPubKey::from_priv(&secp, &master_bip44_ecdsa_extended_public_key);
-
-            // Compute the seed hash
-            let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
-
-            // Generate the first receive address BEFORE creating wallet (no locks needed)
-            let address_path_extension = DerivationPath::from(
-                [
-                    ChildNumber::Normal { index: 0 }, // receive (not change)
-                    ChildNumber::Normal { index: 0 }, // first address
-                ]
-                .as_slice(),
-            );
-            let first_address = master_bip44_ecdsa_extended_public_key
-                .derive_pub(&secp, &address_path_extension)
-                .ok()
-                .map(|pk| Address::p2pkh(&pk.to_pub(), self.app_context.network));
-
-            // Build known_addresses and watched_addresses with the first address
-            let mut known_addresses = std::collections::BTreeMap::new();
-            let mut watched_addresses = std::collections::BTreeMap::new();
-
-            if let Some(ref address) = first_address {
-                let full_derivation_path = DerivationPath::from(match self.app_context.network {
-                    Network::Dash => [
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[0],
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[1],
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[2],
-                        ChildNumber::Normal { index: 0 },
-                        ChildNumber::Normal { index: 0 },
-                    ]
-                    .as_slice(),
-                    _ => [
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[0],
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[1],
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[2],
-                        ChildNumber::Normal { index: 0 },
-                        ChildNumber::Normal { index: 0 },
-                    ]
-                    .as_slice(),
-                });
-                known_addresses.insert(address.clone(), full_derivation_path.clone());
-                watched_addresses.insert(
-                    full_derivation_path,
-                    WalletAddressInfo {
-                        address: address.clone(),
-                        path_type: DerivationPathType::CLEAR_FUNDS,
-                        path_reference: DerivationPathReference::BIP44,
-                    },
-                );
-
-                self.receive_address_string = Some(address.to_string());
-                self.receive_address = Some(address.clone());
+            // Handle app-level password encryption (UI concern, separate from wallet)
+            if !self.password_input.is_empty() && self.use_password_for_app {
+                let (encrypted_message, salt, nonce) =
+                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
+                self.app_context
+                    .update_main_password(&salt, &nonce, &encrypted_message)
+                    .map_err(|e| e.to_string())?;
             }
+
+            let password = if self.password_input.is_empty() {
+                None
+            } else {
+                Some(self.password_input.secret().clone())
+            };
 
             // Generate default wallet name if none provided
             let wallet_alias = if self.alias_input.trim().is_empty() {
@@ -262,94 +159,33 @@ impl AddNewWalletScreen {
                 self.alias_input.clone()
             };
 
-            let wallet = Wallet {
-                wallet_seed: WalletSeed::Open(OpenWalletSeed {
-                    seed,
-                    wallet_info: ClosedKeyItem {
-                        seed_hash,
-                        encrypted_seed,
-                        salt,
-                        nonce,
-                        password_hint: None,
-                    },
-                }),
-                uses_password,
-                master_bip44_ecdsa_extended_public_key,
-                address_balances: Default::default(),
-                address_total_received: Default::default(),
-                known_addresses,
-                watched_addresses,
-                unused_asset_locks: Default::default(),
-                alias: Some(wallet_alias),
-                identities: Default::default(),
-                utxos: Default::default(),
-                transactions: Vec::new(),
-                is_main: true,
-                confirmed_balance: 0,
-                unconfirmed_balance: 0,
-                total_balance: 0,
-                platform_address_info: Default::default(),
-                core_wallet_name: self
-                    .core_wallets
-                    .as_ref()
-                    .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned()),
-            };
+            let mut wallet = Wallet::new_from_seed(
+                seed,
+                self.app_context.network,
+                Some(wallet_alias),
+                password.as_ref(),
+            )
+            .map_err(|e| e.to_string())?;
 
-            self.app_context
-                .db
-                .store_wallet(&wallet, &self.app_context.network)
-                .map_err(|e| e.to_string())?;
+            wallet.core_wallet_name = self
+                .core_wallets
+                .as_ref()
+                .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
-            let new_wallet_seed_hash = wallet.seed_hash();
-            let wallet_arc = Arc::new(RwLock::new(wallet));
-
-            // Acquire a write lock and add the new wallet
-            if let Ok(mut wallets) = self.app_context.wallets.write() {
-                wallets.insert(new_wallet_seed_hash, wallet_arc.clone());
-                self.app_context.has_wallet.store(true, Ordering::Relaxed);
-            } else {
-                error!("Failed to acquire write lock on wallets");
+            // Extract first receive address for display before registering
+            if let Some((address, _)) = wallet.known_addresses.first_key_value() {
+                self.receive_address_string = Some(address.to_string());
+                self.receive_address = Some(address.clone());
             }
+
+            let (new_wallet_seed_hash, _wallet_arc) = self
+                .app_context
+                .register_wallet(wallet)
+                .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
                 *pending = Some(new_wallet_seed_hash);
-            }
-
-            // Save the first address to database
-            if let Some(ref address) = first_address {
-                let full_derivation_path = DerivationPath::from(match self.app_context.network {
-                    Network::Dash => [
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[0],
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[1],
-                        DASH_BIP44_ACCOUNT_0_PATH_MAINNET[2],
-                        ChildNumber::Normal { index: 0 },
-                        ChildNumber::Normal { index: 0 },
-                    ]
-                    .as_slice(),
-                    _ => [
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[0],
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[1],
-                        DASH_BIP44_ACCOUNT_0_PATH_TESTNET[2],
-                        ChildNumber::Normal { index: 0 },
-                        ChildNumber::Normal { index: 0 },
-                    ]
-                    .as_slice(),
-                });
-                let _ = self.app_context.db.add_address_if_not_exists(
-                    &new_wallet_seed_hash,
-                    address,
-                    &self.app_context.network,
-                    &full_derivation_path,
-                    DerivationPathReference::BIP44,
-                    DerivationPathType::CLEAR_FUNDS,
-                    None,
-                );
-            }
-
-            // Load SPV wallet in background
-            if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-                self.app_context.handle_wallet_unlocked(&wallet_arc);
             }
 
             self.created_wallet_seed_hash = Some(new_wallet_seed_hash);

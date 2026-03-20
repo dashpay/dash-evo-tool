@@ -1,5 +1,4 @@
 use super::error::{SpvError, SpvResult};
-use crate::app_dir::app_user_data_dir_path;
 use crate::config::NetworkConfig;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
@@ -25,7 +24,7 @@ use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, W
 use std::fmt;
 use std::fs;
 use std::net::ToSocketAddrs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::SystemTime;
@@ -280,12 +279,13 @@ impl SpvManager {
     // ==================== Public API ====================
 
     pub fn new(
+        app_data_dir: &Path,
         network: Network,
         config: Arc<RwLock<NetworkConfig>>,
         subtasks: Arc<TaskManager>,
     ) -> Result<Arc<Self>, String> {
         let cfg = config.read().map_err(|e| e.to_string())?;
-        let data_dir = build_spv_data_dir(network, &cfg)?;
+        let data_dir = build_spv_data_dir(app_data_dir, network, &cfg)?;
         drop(cfg);
         fs::create_dir_all(&data_dir).map_err(|e| format!("Failed to create SPV data dir: {e}"))?;
 
@@ -1345,8 +1345,12 @@ impl SpvManager {
     }
 }
 
-fn build_spv_data_dir(network: Network, config: &NetworkConfig) -> Result<PathBuf, String> {
-    let mut base = app_user_data_dir_path().map_err(|e| e.to_string())?;
+fn build_spv_data_dir(
+    app_data_dir: &Path,
+    network: Network,
+    config: &NetworkConfig,
+) -> Result<PathBuf, String> {
+    let mut base = app_data_dir.to_path_buf();
     base.push("spv");
     fs::create_dir_all(&base).map_err(|e| format!("Failed to create SPV base dir: {e}"))?;
 

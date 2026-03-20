@@ -55,9 +55,7 @@ impl BackendTestContext {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| {
-                        tracing_subscriber::EnvFilter::new("backend_e2e=info")
-                    }),
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("backend_e2e=info")),
             )
             .with_target(false)
             .try_init();
@@ -195,6 +193,14 @@ impl BackendTestContext {
             }
         }
 
+        // Wait for SPV to fully sync (including masternodes) so MempoolManager
+        // is active and bloom filter is built before any test broadcasts.
+        tracing::info!("Waiting for SPV to complete full sync (masternodes + mempool)...");
+        wait::wait_for_spv_running(&app_context, Duration::from_secs(120))
+            .await
+            .expect("SPV did not reach Running state within 120s");
+        tracing::info!("SPV fully synced — mempool bloom filter active");
+
         // Verify balance is above minimum threshold
         funding::verify_framework_funded(&app_context, framework_wallet_hash).await;
 
@@ -251,6 +257,11 @@ impl BackendTestContext {
             .await
             .expect("Test wallet not picked up by SPV");
         tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: wallet visible in SPV");
+
+        // Allow mempool manager tick (100ms) to detect wallet address change
+        // and rebuild bloom filter before we broadcast.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: waited for bloom filter rebuild tick");
 
         // Get test wallet's receive address
         let test_address = {

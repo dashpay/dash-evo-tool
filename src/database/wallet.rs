@@ -2,7 +2,7 @@ use crate::database::{CorruptedBlobError, Database};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
-    Wallet, WalletSeed, WalletTransaction,
+    TransactionStatus, Wallet, WalletSeed, WalletTransaction,
 };
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
@@ -388,6 +388,7 @@ impl Database {
                 label TEXT,
                 is_ours INTEGER NOT NULL,
                 raw_transaction BLOB NOT NULL,
+                status INTEGER NOT NULL DEFAULT 2,
                 PRIMARY KEY (seed_hash, txid, network),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",
@@ -405,9 +406,10 @@ impl Database {
 
     /// Replace all persisted transactions for a wallet+network with the provided set.
     ///
-    /// Deduplicates by txid — if the same txid appears more than once (e.g. as
-    /// both a mempool entry and a confirmed entry), the confirmed version (with
-    /// a block height) takes priority.
+    /// Uses `INSERT OR REPLACE` so that when upstream returns the same txid
+    /// twice (e.g. as mempool + confirmed), the last-written version wins.
+    /// Callers should sort confirmed entries after unconfirmed to ensure the
+    /// confirmed version takes precedence.
     pub fn replace_wallet_transactions(
         &self,
         seed_hash: &[u8; 32],
@@ -428,25 +430,9 @@ impl Database {
             return Ok(());
         }
 
-        // Deduplicate by txid. With mempool support, upstream may return the
-        // same transaction both as unconfirmed (mempool) and confirmed (block).
-        // Prefer the confirmed version (has height) over unconfirmed.
-        let mut seen: std::collections::HashMap<dash_sdk::dpp::dashcore::Txid, &WalletTransaction> =
-            std::collections::HashMap::with_capacity(transactions.len());
-        for transaction in transactions {
-            seen.entry(transaction.txid)
-                .and_modify(|existing| {
-                    // Replace if the new entry is confirmed and the existing one isn't
-                    if transaction.height.is_some() && existing.height.is_none() {
-                        *existing = transaction;
-                    }
-                })
-                .or_insert(transaction);
-        }
-
         {
             let mut insert_stmt = tx.prepare(
-                "INSERT INTO wallet_transactions (
+                "INSERT OR REPLACE INTO wallet_transactions (
                     seed_hash,
                     txid,
                     network,
@@ -457,11 +443,12 @@ impl Database {
                     fee,
                     label,
                     is_ours,
-                    raw_transaction
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    raw_transaction,
+                    status
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )?;
 
-            for transaction in seen.values() {
+            for transaction in transactions {
                 let tx_bytes = serialize(&transaction.transaction);
                 let block_hash_bytes: Option<Vec<u8>> = transaction
                     .block_hash
@@ -480,6 +467,7 @@ impl Database {
                     transaction.label.as_deref(),
                     transaction.is_ours,
                     tx_bytes,
+                    transaction.status as u8,
                 ])?;
             }
         }
@@ -879,7 +867,7 @@ impl Database {
 
         tracing::trace!("step 7: load wallet transactions for each wallet");
         let mut tx_stmt = conn.prepare(
-            "SELECT seed_hash, txid, timestamp, height, block_hash, net_amount, fee, label, is_ours, raw_transaction
+            "SELECT seed_hash, txid, timestamp, height, block_hash, net_amount, fee, label, is_ours, raw_transaction, status
              FROM wallet_transactions WHERE network = ? ORDER BY timestamp DESC",
         )?;
 
@@ -894,6 +882,7 @@ impl Database {
             let label: Option<String> = row.get(7)?;
             let is_ours: bool = row.get(8)?;
             let raw_transaction: Vec<u8> = row.get(9)?;
+            let status_u8: u8 = row.get(10)?;
 
             let seed_hash_array: [u8; 32] = seed_hash.try_into().map_err(|_| {
                 rusqlite::Error::InvalidParameterName("Seed hash should be 32 bytes".to_string())
@@ -930,6 +919,7 @@ impl Database {
                     fee,
                     label,
                     is_ours,
+                    status: TransactionStatus::from_u8(status_u8),
                 },
             ))
         })?;

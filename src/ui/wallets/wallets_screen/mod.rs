@@ -10,7 +10,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
-use crate::model::wallet::{Wallet, WalletSeedHash, WalletTransaction};
+use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::spv::{CoreBackendMode, SpvStatus};
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -956,12 +956,17 @@ impl WalletsBalancesScreen {
     }
 
     fn format_transaction_status(tx: &WalletTransaction) -> String {
-        if tx.is_confirmed() {
-            tx.height
+        match tx.status {
+            TransactionStatus::Unconfirmed => "Pending".to_string(),
+            TransactionStatus::InstantSendLocked => "⚡ InstantSend".to_string(),
+            TransactionStatus::Confirmed => tx
+                .height
                 .map(|h| format!("Confirmed @{}", h))
-                .unwrap_or_else(|| "Confirmed".to_string())
-        } else {
-            "Pending".to_string()
+                .unwrap_or_else(|| "Confirmed".to_string()),
+            TransactionStatus::ChainLocked => tx
+                .height
+                .map(|h| format!("🔒 ChainLocked @{}", h))
+                .unwrap_or_else(|| "🔒 ChainLocked".to_string()),
         }
     }
 

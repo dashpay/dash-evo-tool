@@ -512,6 +512,62 @@ impl Wallet {
     }
 }
 
+/// Transaction lifecycle status.
+///
+/// Tracks the progression: Unconfirmed → InstantSendLocked → Confirmed → ChainLocked.
+/// Currently only Unconfirmed and Confirmed can be inferred from upstream data;
+/// InstantSendLocked and ChainLocked require upstream changes (rust-dashcore#569).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum TransactionStatus {
+    /// In mempool, no InstantSend lock
+    Unconfirmed = 0,
+    /// InstantSend-locked but not yet mined (requires rust-dashcore#569)
+    InstantSendLocked = 1,
+    /// Mined in a block
+    Confirmed = 2,
+    /// In a chain-locked block (highest finality, requires rust-dashcore#569)
+    ChainLocked = 3,
+}
+
+impl TransactionStatus {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Unconfirmed,
+            1 => Self::InstantSendLocked,
+            2 => Self::Confirmed,
+            3 => Self::ChainLocked,
+            _ => Self::Unconfirmed,
+        }
+    }
+
+    /// Infer status from block height presence.
+    /// This is a best-effort heuristic until upstream provides richer context.
+    pub fn from_height(height: Option<u32>) -> Self {
+        if height.is_some() {
+            Self::Confirmed
+        } else {
+            Self::Unconfirmed
+        }
+    }
+
+    /// User-facing label for UI display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Unconfirmed => "Unconfirmed",
+            Self::InstantSendLocked => "InstantSend",
+            Self::Confirmed => "Confirmed",
+            Self::ChainLocked => "ChainLocked",
+        }
+    }
+}
+
+impl std::fmt::Display for TransactionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WalletTransaction {
     pub txid: Txid,
@@ -523,6 +579,7 @@ pub struct WalletTransaction {
     pub fee: Option<u64>,
     pub label: Option<String>,
     pub is_ours: bool,
+    pub status: TransactionStatus,
 }
 
 impl WalletTransaction {
@@ -3103,6 +3160,7 @@ mod tests {
             fee: Some(226),
             label: None,
             is_ours: true,
+            status: TransactionStatus::Confirmed,
         };
 
         assert!(tx.is_incoming());
@@ -3129,6 +3187,7 @@ mod tests {
             fee: Some(226),
             label: None,
             is_ours: true,
+            status: TransactionStatus::Unconfirmed,
         };
 
         assert!(!tx.is_incoming());
@@ -3155,6 +3214,7 @@ mod tests {
             fee: None,
             label: None,
             is_ours: false,
+            status: TransactionStatus::Unconfirmed,
         };
 
         assert!(!tx.is_incoming());

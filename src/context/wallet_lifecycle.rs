@@ -4,7 +4,7 @@ use crate::backend_task::error::TaskError;
 use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
-    DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
+    DerivationPathType, TransactionStatus, Wallet, WalletSeedHash, WalletTransaction,
 };
 use crate::spv::{AssetLockFinalityEvent, CoreBackendMode, SpvManager};
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -824,16 +824,20 @@ impl AppContext {
                 .map_err(|e| crate::spv::SpvError::WalletError(e.to_string()))?;
             let wallet_transactions: Vec<WalletTransaction> = history
                 .into_iter()
-                .map(|record| WalletTransaction {
-                    txid: record.txid,
-                    transaction: record.transaction.clone(),
-                    timestamp: record.timestamp,
-                    height: record.height,
-                    block_hash: record.block_hash,
-                    net_amount: record.net_amount,
-                    fee: record.fee,
-                    label: record.label.clone(),
-                    is_ours: record.is_ours,
+                .map(|record| {
+                    let status = TransactionStatus::from_height(record.height);
+                    WalletTransaction {
+                        txid: record.txid,
+                        transaction: record.transaction.clone(),
+                        timestamp: record.timestamp,
+                        height: record.height,
+                        block_hash: record.block_hash,
+                        net_amount: record.net_amount,
+                        fee: record.fee,
+                        label: record.label.clone(),
+                        is_ours: record.is_ours,
+                        status,
+                    }
                 })
                 .collect();
 

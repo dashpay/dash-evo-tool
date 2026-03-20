@@ -168,7 +168,7 @@ pub async fn wait_for_spv_running(
     use dash_evo_tool::spv::SpvStatus;
     timeout(wait_timeout, async {
         loop {
-            if app_context.spv_manager().status().status == SpvStatus::Running {
+            if app_context.connection_status().spv_status() == SpvStatus::Running {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(500)).await;

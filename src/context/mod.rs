@@ -271,6 +271,9 @@ impl AppContext {
         let use_local_spv_node = db.get_use_local_spv_node().unwrap_or(false);
         spv_manager.set_use_local_node(use_local_spv_node);
 
+        // Wire up push-based SPV status updates to ConnectionStatus
+        spv_manager.set_connection_status(Arc::clone(&connection_status));
+
         // Load the core backend mode from settings, defaulting to RPC if not set
         let saved_core_backend_mode = db
             .get_settings()

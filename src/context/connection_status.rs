@@ -147,6 +147,29 @@ impl ConnectionStatus {
         self.spv_status.store(status as u8, Ordering::Relaxed);
     }
 
+    /// Set the last SPV error message (push-based from SpvManager event handlers).
+    pub fn set_spv_last_error(&self, error: Option<String>) {
+        if let Ok(mut err) = self.spv_last_error.lock() {
+            *err = error;
+        }
+    }
+
+    /// Update SPV connected peer count and maintain `spv_no_peers_since` tracking.
+    ///
+    /// Called from SpvManager's network event handler when peer count changes.
+    pub fn set_spv_connected_peers(&self, count: u16) {
+        self.spv_connected_peers.store(count, Ordering::Relaxed);
+        let mut since = self
+            .spv_no_peers_since
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if count > 0 || !self.spv_status().is_active() {
+            *since = None;
+        } else if since.is_none() {
+            *since = Some(Instant::now());
+        }
+    }
+
     pub fn backend_mode(&self) -> CoreBackendMode {
         self.backend_mode.load(Ordering::Relaxed).into()
     }
@@ -435,28 +458,9 @@ impl ConnectionStatus {
 
         match backend_mode {
             CoreBackendMode::Spv => {
-                let snapshot = app_context.spv_manager().status();
-                tracing::trace!(
-                    "ConnectionStatus: polled SPV status = {:?}",
-                    snapshot.status
-                );
-                self.set_spv_status(snapshot.status);
-                if let Ok(mut err) = self.spv_last_error.lock() {
-                    *err = snapshot.last_error;
-                }
-                let peers = (snapshot.connected_peers).min(u16::MAX as usize) as u16;
-                self.spv_connected_peers.store(peers, Ordering::Relaxed);
-
-                // Track how long we've been active with zero peers.
-                let mut since = self
-                    .spv_no_peers_since
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-                if peers > 0 || !snapshot.status.is_active() {
-                    *since = None;
-                } else if since.is_none() {
-                    *since = Some(Instant::now());
-                }
+                // SPV status is push-based: SpvManager event handlers call
+                // set_spv_status / set_spv_connected_peers / set_spv_last_error
+                // directly, so no polling is needed here.
             }
             CoreBackendMode::Rpc => {
                 // Update ZMQ status if there's a new event

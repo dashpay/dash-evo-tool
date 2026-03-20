@@ -1,5 +1,6 @@
 use super::error::{SpvError, SpvResult};
 use crate::config::NetworkConfig;
+use crate::context::connection_status::ConnectionStatus;
 use crate::model::wallet::WalletSeedHash;
 use crate::utils::tasks::TaskManager;
 use arc_swap::ArcSwapOption;
@@ -173,6 +174,8 @@ pub struct SpvManager {
     network_manager: Arc<AsyncRwLock<Option<PeerNetworkManager>>>,
     // Number of currently connected SPV peers
     connected_peers: Arc<RwLock<usize>>,
+    // Push SPV status updates to ConnectionStatus (set after construction)
+    connection_status: Mutex<Option<Arc<ConnectionStatus>>>,
 }
 
 /// Requests that can be sent to the SPV runtime thread
@@ -313,6 +316,7 @@ impl SpvManager {
             request_tx: Mutex::new(None),
             network_manager: Arc::new(AsyncRwLock::new(None)),
             connected_peers: Arc::new(RwLock::new(0)),
+            connection_status: Mutex::new(None),
         });
 
         Ok(manager)
@@ -327,6 +331,18 @@ impl SpvManager {
     /// Get whether to use local Dash Core node for SPV sync.
     pub fn use_local_node(&self) -> bool {
         self.use_local_node.load(Ordering::SeqCst)
+    }
+
+    /// Set the ConnectionStatus to receive push-based SPV status updates.
+    /// Must be called before `start()` so event handlers can push updates.
+    pub fn set_connection_status(&self, cs: Arc<ConnectionStatus>) {
+        if let Ok(mut guard) = self.connection_status.lock() {
+            *guard = Some(cs);
+        }
+    }
+
+    fn connection_status_snapshot(&self) -> Option<Arc<ConnectionStatus>> {
+        self.connection_status.lock().ok().and_then(|g| g.clone())
     }
 
     /// Async status method for getting full details including progress.
@@ -423,6 +439,11 @@ impl SpvManager {
                 }
                 if let Err(e) = manager.write_status(SpvStatus::Error) {
                     tracing::error!("Failed to write SPV status: {}", e);
+                }
+                if let Some(cs) = manager.connection_status_snapshot() {
+                    cs.set_spv_status(SpvStatus::Error);
+                    cs.set_spv_last_error(Some(err));
+                    cs.refresh_state();
                 }
             }
 
@@ -866,6 +887,10 @@ impl SpvManager {
         self.spawn_request_handler(request_rx, stop_token.clone());
 
         let _ = self.write_status(SpvStatus::Syncing);
+        if let Some(cs) = self.connection_status_snapshot() {
+            cs.set_spv_status(SpvStatus::Syncing);
+            cs.refresh_state();
+        }
 
         // Run the client — handles start, monitoring, and stop internally
         let result = self.clone().run_client(client, stop_token).await;
@@ -878,6 +903,9 @@ impl SpvManager {
         }
         if let Ok(mut guard) = self.connected_peers.write() {
             *guard = 0;
+        }
+        if let Some(cs) = self.connection_status_snapshot() {
+            cs.set_spv_connected_peers(0);
         }
         {
             // Drop shared storage/request handles so the disk lock is released before restart.
@@ -912,10 +940,19 @@ impl SpvManager {
         match &result {
             Ok(()) => {
                 let _ = self.write_status(SpvStatus::Stopped);
+                if let Some(cs) = self.connection_status_snapshot() {
+                    cs.set_spv_status(SpvStatus::Stopped);
+                    cs.refresh_state();
+                }
             }
             Err(message) => {
                 let _ = self.write_last_error(Some(message.clone()));
                 let _ = self.write_status(SpvStatus::Error);
+                if let Some(cs) = self.connection_status_snapshot() {
+                    cs.set_spv_status(SpvStatus::Error);
+                    cs.set_spv_last_error(Some(message.clone()));
+                    cs.refresh_state();
+                }
             }
         }
         result
@@ -1043,6 +1080,7 @@ impl SpvManager {
         let sync_progress_state = Arc::clone(&self.sync_progress_state);
         let progress_updated_at = Arc::clone(&self.progress_updated_at);
         let cancel = self.subtasks.cancellation_token.clone();
+        let connection_status = self.connection_status_snapshot();
 
         self.subtasks.spawn_sync("spv_progress_watcher", async move {
             loop {
@@ -1070,17 +1108,26 @@ impl SpvManager {
                         }
 
                         // Update status based on progress
+                        let new_status;
                         if let Ok(mut status_guard) = status.write() {
                             if is_synced {
                                 *status_guard = SpvStatus::Running;
+                                new_status = Some(SpvStatus::Running);
                             } else if is_error {
                                 *status_guard = SpvStatus::Error;
+                                new_status = Some(SpvStatus::Error);
                             } else if !matches!(*status_guard, SpvStatus::Stopping | SpvStatus::Stopped | SpvStatus::Error) {
                                 *status_guard = SpvStatus::Syncing;
+                                new_status = Some(SpvStatus::Syncing);
+                            } else {
+                                new_status = None;
                             }
+                        } else {
+                            new_status = None;
                         }
                         // Write last_error outside status lock to maintain
                         // consistent lock ordering (status → release → last_error).
+                        let mut error_msg = None;
                         if is_error
                             && let Ok(mut err_guard) = last_error.write()
                             && err_guard.is_none()
@@ -1089,10 +1136,25 @@ impl SpvManager {
                             // bug dashpay/rust-dashcore#469 (progress channel never
                             // receives SyncState::Error). Once fixed, this will fire.
                             let phase = failed_phase.unwrap_or("unknown phase");
-                            *err_guard = Some(format!(
+                            let msg = format!(
                                 "Sync failed: {} (reported by SPV progress channel)",
                                 phase
-                            ));
+                            );
+                            *err_guard = Some(msg.clone());
+                            error_msg = Some(msg);
+                        }
+
+                        // Push to ConnectionStatus
+                        if let Some(cs) = &connection_status {
+                            if let Some(s) = new_status {
+                                cs.set_spv_status(s);
+                            }
+                            if is_error {
+                                cs.set_spv_last_error(error_msg);
+                            } else {
+                                cs.set_spv_last_error(None);
+                            }
+                            cs.refresh_state();
                         }
                     }
                 }
@@ -1107,6 +1169,7 @@ impl SpvManager {
         let status = Arc::clone(&self.status);
         let last_error = Arc::clone(&self.last_error);
         let cancel = self.subtasks.cancellation_token.clone();
+        let connection_status = self.connection_status_snapshot();
 
         self.subtasks.spawn_sync("spv_sync_event_handler", async move {
             loop {
@@ -1149,6 +1212,11 @@ impl SpvManager {
                                     && let Ok(mut guard) = status.write()
                                 {
                                     *guard = SpvStatus::Running;
+                                    drop(guard);
+                                    if let Some(cs) = &connection_status {
+                                        cs.set_spv_status(SpvStatus::Running);
+                                        cs.refresh_state();
+                                    }
                                 }
 
                                 // Transition to Error when a sync manager reports a
@@ -1168,10 +1236,15 @@ impl SpvManager {
                                     let msg = format!("Sync manager {} failed: {}", manager, &error[..limit]);
                                     if let Ok(mut err_guard) = last_error.write() {
                                         if err_guard.is_none() {
-                                            *err_guard = Some(msg);
+                                            *err_guard = Some(msg.clone());
                                         } else {
                                             tracing::warn!(%manager, error, "SPV last_error already set, ignoring subsequent: {}", msg);
                                         }
+                                    }
+                                    if let Some(cs) = &connection_status {
+                                        cs.set_spv_status(SpvStatus::Error);
+                                        cs.set_spv_last_error(Some(msg));
+                                        cs.refresh_state();
                                     }
                                 }
 
@@ -1239,6 +1312,7 @@ impl SpvManager {
     ) {
         let connected_peers = Arc::clone(&self.connected_peers);
         let cancel = self.subtasks.cancellation_token.clone();
+        let connection_status = self.connection_status_snapshot();
 
         self.subtasks
             .spawn_sync("spv_network_event_handler", async move {
@@ -1250,6 +1324,11 @@ impl SpvManager {
                                 Ok(NetworkEvent::PeersUpdated { connected_count, .. }) => {
                                     if let Ok(mut guard) = connected_peers.write() {
                                         *guard = connected_count;
+                                    }
+                                    if let Some(cs) = &connection_status {
+                                        let peers = connected_count.min(u16::MAX as usize) as u16;
+                                        cs.set_spv_connected_peers(peers);
+                                        cs.refresh_state();
                                     }
                                 }
                                 Ok(_) => {

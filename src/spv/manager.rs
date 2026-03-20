@@ -412,6 +412,15 @@ impl SpvManager {
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
 
+        // Push Starting status to ConnectionStatus immediately so the UI
+        // shows SPV Sync Status as soon as the user clicks "Sync", before
+        // the async progress watcher task starts.
+        if let Some(cs) = self.connection_status_snapshot() {
+            cs.set_spv_status(SpvStatus::Starting);
+            cs.set_spv_last_error(None);
+            cs.refresh_state();
+        }
+
         // Derive stop_token as a child of the global cancellation token so that
         // global shutdown automatically cancels SPV without requiring an explicit
         // SpvManager::stop() call.  SpvManager::stop() can still cancel it early.
@@ -463,10 +472,18 @@ impl SpvManager {
         if let Some(token) = maybe_token {
             tracing::info!("SpvManager::stop(): cancelling stop_token, setting Stopping");
             let _ = self.write_status(SpvStatus::Stopping);
+            if let Some(cs) = self.connection_status_snapshot() {
+                cs.set_spv_status(SpvStatus::Stopping);
+                cs.refresh_state();
+            }
             token.cancel();
         } else {
             tracing::debug!("SpvManager::stop(): no stop_token, setting Stopped immediately");
             let _ = self.write_status(SpvStatus::Stopped);
+            if let Some(cs) = self.connection_status_snapshot() {
+                cs.set_spv_status(SpvStatus::Stopped);
+                cs.refresh_state();
+            }
         }
     }
 

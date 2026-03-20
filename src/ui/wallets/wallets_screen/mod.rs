@@ -2357,6 +2357,11 @@ impl ScreenLike for WalletsBalancesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
+        // Clear the spinner in case a refresh completed while this screen was not
+        // visible (task results are dispatched to the visible screen, so ours would
+        // have been silently discarded).
+        self.refreshing = false;
+
         // Check if there's a pending wallet selection (e.g., from wallet creation/import)
         let pending_seed_hash = self
             .app_context

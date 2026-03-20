@@ -145,6 +145,13 @@ impl ConnectionStatus {
 
     pub fn set_spv_status(&self, status: SpvStatus) {
         self.spv_status.store(status as u8, Ordering::Relaxed);
+        // Clear the "no peers" timer when SPV leaves an active state to avoid
+        // stale peer-degraded warnings in tooltips.
+        if !status.is_active()
+            && let Ok(mut since) = self.spv_no_peers_since.lock()
+        {
+            *since = None;
+        }
     }
 
     /// Set the last SPV error message (push-based from SpvManager event handlers).

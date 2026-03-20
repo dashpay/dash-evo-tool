@@ -145,7 +145,7 @@ impl MnListData {
                     }
                 } else {
                     tracing::warn!("MNListDiff file not found: {}", file_path);
-                    MasternodeListEngine::default_for_network(Network::Mainnet)
+                    MasternodeListEngine::default_for_network(Network::Testnet)
                 }
             }
             _ => MasternodeListEngine::default_for_network(app_context.network),

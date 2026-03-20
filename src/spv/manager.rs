@@ -1145,9 +1145,13 @@ impl SpvManager {
                             if let Some(s) = new_status {
                                 cs.set_spv_status(s);
                             }
-                            if is_error {
-                                cs.set_spv_last_error(error_msg);
-                            } else {
+                            // Only update last_error when we have a new message to set,
+                            // or when syncing successfully (clear stale errors).
+                            // Avoid clearing when is_error && error_msg is None — that
+                            // means last_error was already set by a prior error.
+                            if let Some(msg) = error_msg {
+                                cs.set_spv_last_error(Some(msg));
+                            } else if !is_error {
                                 cs.set_spv_last_error(None);
                             }
                             cs.refresh_state();

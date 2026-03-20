@@ -114,7 +114,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **Backend dispatch**: tools reuse the app's `BackendTask` system via `dispatch::dispatch_task()` — creates a throwaway channel, calls `app_context.run_backend_task()`.
 - **Schema quirk**: `schemars` v1 derives bare `true` for `serde_json::Value` fields — some MCP clients reject this. Use `#[schemars(transform)]` to override.
 - **Error type**: `McpToolError` enum (InvalidParams, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
-- **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples).
+- **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/EXPOSING_BACKEND_TASKS.md` (checklist for adding new MCP tools).
 
 ### Key Dependencies
 

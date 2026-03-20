@@ -74,6 +74,9 @@ The default `cargo build` produces only the `dash-evo-tool` GUI binary. Optional
 
 `mcp` and `cli` are independent of each other. `headless` depends on both `cli` and `mcp` (it enables both automatically).
 
+### Adding MCP tools
+
+To expose a `BackendTask` as a new MCP/CLI tool, follow the step-by-step checklist in [docs/EXPOSING_BACKEND_TASKS.md](docs/EXPOSING_BACKEND_TASKS.md). It covers architecture rules, the standard invocation pattern, registration, and common pitfalls.
 
 ## Code quality
 

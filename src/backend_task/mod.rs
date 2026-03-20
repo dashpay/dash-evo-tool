@@ -107,8 +107,17 @@ pub enum BackendTaskSuccessResult {
     // not-yet-implemented functionality, and DashPay operations that would need their own typed variants.
     /// Progress updates during long-running operations (e.g. batch identity search).
     /// By convention, the app routes `Progress` results to the visible screen's
-    /// `display_task_result` without creating a global banner (unlike `Message`).
-    Progress(String),
+    /// `display_task_result` without creating a global banner at the app level
+    /// (unlike `Message`). Screens may create a banner handle on first receipt
+    /// and update it in-place on subsequent updates to avoid stacking.
+    Progress {
+        /// Human-readable progress message
+        message: String,
+        /// Current step (1-based)
+        current: u32,
+        /// Total steps
+        total: u32,
+    },
     WalletPayment {
         txid: String,
         /// List of (address, amount) pairs for each recipient

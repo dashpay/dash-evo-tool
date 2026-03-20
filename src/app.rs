@@ -1120,7 +1120,7 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
-                        BackendTaskSuccessResult::Progress(_) => {
+                        BackendTaskSuccessResult::Progress { .. } => {
                             // Progress updates only go to the screen — no global banner.
                             // The screen updates its existing banner handle in-place.
                             // TODO: Routes via visible_screen_mut(), so if the user

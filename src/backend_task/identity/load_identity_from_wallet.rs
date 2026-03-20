@@ -279,11 +279,15 @@ impl AppContext {
         for identity_index in 0..=max_identity_index {
             sender
                 .send(TaskResult::Success(Box::new(
-                    BackendTaskSuccessResult::Progress(format!(
-                        "Searching wallet identity index {current} of {last}.",
-                        current = identity_index,
-                        last = max_identity_index,
-                    )),
+                    BackendTaskSuccessResult::Progress {
+                        message: format!(
+                            "Searching wallet identity index {current} of {total}.",
+                            current = identity_index + 1,
+                            total = max_identity_index + 1,
+                        ),
+                        current: identity_index + 1,
+                        total: max_identity_index + 1,
+                    },
                 )))
                 .await
                 .map_err(|_| TaskError::InternalSendError)?;

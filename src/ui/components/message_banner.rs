@@ -506,13 +506,11 @@ impl Component for MessageBanner {
 }
 
 /// Returns the default auto-dismiss duration for a message type.
-/// All banners auto-dismiss: success after 5s, info/warning/error after 9s.
+/// All banners auto-dismiss: success/info after 5s, warning/error after 9s.
 fn default_auto_dismiss(message_type: MessageType) -> Option<Duration> {
     match message_type {
-        MessageType::Success => Some(DEFAULT_AUTO_DISMISS_SHORT),
-        MessageType::Info | MessageType::Warning | MessageType::Error => {
-            Some(DEFAULT_AUTO_DISMISS_LONG)
-        }
+        MessageType::Success | MessageType::Info => Some(DEFAULT_AUTO_DISMISS_SHORT),
+        MessageType::Warning | MessageType::Error => Some(DEFAULT_AUTO_DISMISS_LONG),
     }
 }
 

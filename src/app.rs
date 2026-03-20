@@ -1120,6 +1120,16 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
+                        BackendTaskSuccessResult::Progress { .. } => {
+                            // Progress updates only go to the screen — no global banner.
+                            // The screen updates its existing banner handle in-place.
+                            // TODO: Routes via visible_screen_mut(), so if the user
+                            // navigates away from the originating screen, progress
+                            // updates land on the wrong screen. Adding task-to-screen
+                            // affinity would fix this (same limitation as Message).
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
                             MessageBanner::set_global(

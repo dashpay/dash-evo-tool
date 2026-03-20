@@ -31,7 +31,7 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder:
 };
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::manager::{WalletError, WalletId, WalletManager};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};

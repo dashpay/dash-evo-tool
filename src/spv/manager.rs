@@ -19,9 +19,9 @@ use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::{
     ManagedWalletInfo, transaction_building::AccountTypePreference,
     wallet_info_interface::WalletInfoInterface,
 };
-use dash_sdk::dpp::key_wallet_manager::WalletEvent;
-use dash_sdk::dpp::key_wallet_manager::wallet_interface::WalletInterface;
-use dash_sdk::dpp::key_wallet_manager::wallet_manager::{WalletError, WalletId, WalletManager};
+use dash_sdk::dpp::key_wallet_manager::manager::{
+    WalletError, WalletEvent, WalletId, WalletInterface, WalletManager,
+};
 use std::fmt;
 use std::fs;
 use std::net::ToSocketAddrs;

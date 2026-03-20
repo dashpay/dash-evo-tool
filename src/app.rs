@@ -87,6 +87,8 @@ pub struct AppState {
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     pub theme_preference: ThemeMode,                           // Current theme preference
+    resolved_theme: ThemeMode, // Cached resolved theme (Light/Dark, never System)
+    theme_last_checked: Instant, // Last time we polled the OS for system theme
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
     last_repaint_request: Instant,      // Throttle periodic repaint scheduling to once per second
     pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
@@ -720,6 +722,8 @@ impl AppState {
             core_message_receiver,
             task_result_sender,
             task_result_receiver,
+            resolved_theme: crate::ui::theme::resolve_theme_mode(theme_preference),
+            theme_last_checked: Instant::now(),
             theme_preference,
             last_scheduled_vote_check: Instant::now(),
             last_repaint_request: Instant::now(),
@@ -1089,8 +1093,19 @@ impl App for AppState {
             return;
         }
 
-        // Apply Dash theme with user preference
-        crate::ui::theme::apply_theme(ctx, self.theme_preference);
+        // Throttle OS theme detection to every 2 s to prevent white flash from
+        // transient dark_light::detect() glitches during high-frequency repaints.
+        if self.theme_preference == ThemeMode::System {
+            let now = Instant::now();
+            if now.duration_since(self.theme_last_checked) > Duration::from_secs(2) {
+                self.theme_last_checked = now;
+                let new_resolved = crate::ui::theme::resolve_theme_mode(self.theme_preference);
+                if new_resolved != self.resolved_theme {
+                    self.resolved_theme = new_resolved;
+                }
+            }
+        }
+        crate::ui::theme::apply_theme(ctx, self.resolved_theme);
 
         self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
@@ -1132,6 +1147,9 @@ impl App for AppState {
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             self.theme_preference = new_theme;
+                            self.resolved_theme = crate::ui::theme::resolve_theme_mode(new_theme);
+                            self.theme_last_checked = Instant::now();
+                            crate::ui::theme::apply_theme(ctx, self.resolved_theme);
                             MessageBanner::set_global(
                                 ctx,
                                 "Theme preference updated successfully",

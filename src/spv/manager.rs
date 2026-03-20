@@ -208,6 +208,10 @@ impl SpvManager {
     }
 
     fn write_status(&self, value: SpvStatus) -> SpvResult<()> {
+        // NOTE: spawn_progress_watcher() bypasses this method because it runs in an
+        // async move closure that captures Arc<RwLock<SpvStatus>> directly (no &self).
+        // If you add side-effects here, replicate them in spawn_progress_watcher()
+        // (around line ~1107).
         let mut guard = self
             .status
             .write()
@@ -230,6 +234,10 @@ impl SpvManager {
     }
 
     fn write_last_error(&self, value: Option<String>) -> SpvResult<()> {
+        // TODO: Push to ConnectionStatus here (like write_status does) to eliminate
+        // the scattered `cs.set_spv_last_error()` calls at each callsite.
+        // See: run_client exit (line ~451), sync manager error (line ~950),
+        // progress watcher (line ~1153), sync event handler (line ~1246).
         let mut guard = self
             .last_error
             .write()
@@ -1104,6 +1112,9 @@ impl SpvManager {
                         }
 
                         // Update status based on progress
+                        // NOTE: This bypasses write_status() because &self is unavailable in this
+                        // async move closure. If write_status() gains new side-effects, replicate
+                        // them here. See write_status() for the canonical status-push logic.
                         let new_status;
                         if let Ok(mut status_guard) = status.write() {
                             if is_synced {

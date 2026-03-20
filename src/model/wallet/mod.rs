@@ -592,7 +592,10 @@ impl WalletTransaction {
     }
 
     pub fn is_confirmed(&self) -> bool {
-        self.height.is_some()
+        matches!(
+            self.status,
+            TransactionStatus::Confirmed | TransactionStatus::ChainLocked
+        )
     }
 
     pub fn amount_abs(&self) -> u64 {

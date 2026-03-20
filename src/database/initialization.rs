@@ -910,10 +910,17 @@ impl Database {
     /// Migration 30: add `status` column to `wallet_transactions`.
     /// Default 2 (Confirmed) — all pre-existing rows were confirmed transactions.
     fn add_wallet_transaction_status_column(&self, conn: &Connection) -> rusqlite::Result<()> {
-        conn.execute(
-            "ALTER TABLE wallet_transactions ADD COLUMN status INTEGER NOT NULL DEFAULT 2",
+        let has_status: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('wallet_transactions') WHERE name='status'",
             [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
         )?;
+        if !has_status {
+            conn.execute(
+                "ALTER TABLE wallet_transactions ADD COLUMN status INTEGER NOT NULL DEFAULT 2",
+                [],
+            )?;
+        }
         Ok(())
     }
 

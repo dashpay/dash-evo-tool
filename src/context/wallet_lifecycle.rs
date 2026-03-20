@@ -381,7 +381,13 @@ impl AppContext {
             Network::Testnet => WalletNetwork::Testnet,
             Network::Devnet => WalletNetwork::Devnet,
             Network::Regtest => WalletNetwork::Regtest,
-            _ => WalletNetwork::Mainnet,
+            other => {
+                tracing::debug!(
+                    ?other,
+                    "Unknown Network variant, defaulting to Mainnet wallet key"
+                );
+                WalletNetwork::Mainnet
+            }
         }
     }
 

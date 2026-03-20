@@ -13,37 +13,18 @@ use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
 use eframe::egui::Context;
 
+use crate::database::is_unique_constraint_violation;
+use crate::model::wallet::Wallet;
 use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
-use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::wallets::add_new_wallet_screen::{
-    DASH_BIP44_ACCOUNT_0_PATH_MAINNET, DASH_BIP44_ACCOUNT_0_PATH_TESTNET,
-};
 use bip39::Mnemonic;
-use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
-use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
 use egui::{ComboBox, Grid, RichText, Ui, Vec2};
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
 use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
-
-fn is_unique_constraint_violation(e: &rusqlite::Error) -> bool {
-    matches!(
-        e,
-        rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ffi::ErrorCode::ConstraintViolation,
-                extended_code: 2067, // SQLITE_CONSTRAINT_UNIQUE
-                ..
-            },
-            _,
-        )
-    )
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImportType {
@@ -214,40 +195,20 @@ impl ImportMnemonicScreen {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
 
-            let (encrypted_seed, salt, nonce, uses_password) = if self.password_input.is_empty() {
-                (seed.to_vec(), vec![], vec![], false)
+            // Handle app-level password encryption (UI concern, separate from wallet)
+            if !self.password_input.is_empty() && self.use_password_for_app {
+                let (encrypted_message, salt, nonce) =
+                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
+                self.app_context
+                    .update_main_password(&salt, &nonce, &encrypted_message)
+                    .map_err(|e| e.to_string())?;
+            }
+
+            let password = if self.password_input.is_empty() {
+                None
             } else {
-                // Encrypt the seed to obtain encrypted_seed, salt, and nonce
-                let (encrypted_seed, salt, nonce) =
-                    ClosedKeyItem::encrypt_seed(&seed, self.password_input.text())?;
-                if self.use_password_for_app {
-                    let (encrypted_message, salt, nonce) =
-                        encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
-                    self.app_context
-                        .update_main_password(&salt, &nonce, &encrypted_message)
-                        .map_err(|e| e.to_string())?;
-                }
-                (encrypted_seed, salt, nonce, true)
+                Some(self.password_input.secret().clone())
             };
-
-            // Generate master ECDSA extended private key
-            let master_ecdsa_extended_private_key =
-                ExtendedPrivKey::new_master(self.app_context.network, &seed)
-                    .expect("Failed to create master ECDSA extended private key");
-            let bip44_root_derivation_path: DerivationPath = match self.app_context.network {
-                Network::Dash => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_MAINNET.as_slice()),
-                _ => DerivationPath::from(DASH_BIP44_ACCOUNT_0_PATH_TESTNET.as_slice()),
-            };
-            let secp = Secp256k1::new();
-            let master_bip44_ecdsa_extended_public_key = master_ecdsa_extended_private_key
-                .derive_priv(&secp, &bip44_root_derivation_path)
-                .map_err(|e| e.to_string())?;
-
-            let master_bip44_ecdsa_extended_public_key =
-                ExtendedPubKey::from_priv(&secp, &master_bip44_ecdsa_extended_public_key);
-
-            // Compute the seed hash
-            let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
 
             // Generate default wallet name if none provided
             let wallet_alias = if self.alias_input.trim().is_empty() {
@@ -262,69 +223,27 @@ impl ImportMnemonicScreen {
                 self.alias_input.clone()
             };
 
-            let wallet = Wallet {
-                wallet_seed: WalletSeed::Open(OpenWalletSeed {
-                    seed,
-                    wallet_info: ClosedKeyItem {
-                        seed_hash,
-                        encrypted_seed,
-                        salt,
-                        nonce,
-                        password_hint: None, // Set a password hint if needed
-                    },
-                }),
-                uses_password,
-                master_bip44_ecdsa_extended_public_key,
-                address_balances: Default::default(),
-                address_total_received: Default::default(),
-                known_addresses: Default::default(),
-                watched_addresses: Default::default(),
-                unused_asset_locks: Default::default(),
-                alias: Some(wallet_alias),
-                identities: Default::default(),
-                utxos: Default::default(),
-                transactions: Vec::new(),
-                is_main: true,
-                confirmed_balance: 0,
-                unconfirmed_balance: 0,
-                total_balance: 0,
-                platform_address_info: Default::default(),
-                core_wallet_name: self
-                    .core_wallets
-                    .as_ref()
-                    .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned()),
-            };
+            let mut wallet = Wallet::new_from_seed(
+                seed,
+                self.app_context.network,
+                Some(wallet_alias),
+                password.as_ref(),
+            )
+            .map_err(|e| e.to_string())?;
 
-            self.app_context
-                .db
-                .store_wallet(&wallet, &self.app_context.network)
-                .map_err(|e| {
-                    if is_unique_constraint_violation(&e) {
-                        "This wallet has already been imported for another network. Each wallet can only be imported once per network. If you want to use this wallet on a different network, please switch networks first.".to_string()
-                    } else {
-                        e.to_string()
-                    }
-                })?;
+            wallet.core_wallet_name = self
+                .core_wallets
+                .as_ref()
+                .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
-            let wallet_arc = Arc::new(RwLock::new(wallet));
-            let new_wallet_seed_hash = wallet_arc.read().unwrap().seed_hash();
-
-            // Acquire a write lock and add the new wallet
-            if let Ok(mut wallets) = self.app_context.wallets.write() {
-                wallets.insert(new_wallet_seed_hash, wallet_arc.clone());
-                self.app_context.has_wallet.store(true, Ordering::Relaxed);
-            } else {
-                tracing::error!("Failed to acquire write lock on wallets");
-            }
+            let (new_wallet_seed_hash, wallet_arc) = self
+                .app_context
+                .register_wallet(wallet)
+                .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
             if let Ok(mut pending) = self.app_context.pending_wallet_selection.lock() {
                 *pending = Some(new_wallet_seed_hash);
-            }
-
-            self.app_context.bootstrap_wallet_addresses(&wallet_arc);
-            if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-                self.app_context.handle_wallet_unlocked(&wallet_arc);
             }
 
             // Auto-discover identities derived from this wallet

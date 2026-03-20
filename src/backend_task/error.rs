@@ -595,6 +595,17 @@ pub enum TaskError {
         "This identity does not have a key for signing documents. Please add an authentication key."
     )]
     NoDocumentSigningKey,
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Wallet creation / import errors
+    // ──────────────────────────────────────────────────────────────────────────
+    /// The wallet has already been imported for this network.
+    #[error("This wallet has already been imported for this network.")]
+    WalletAlreadyImported,
+
+    /// Wallet key derivation failed during construction.
+    #[error("Could not create the wallet. Key derivation failed — please try again.")]
+    WalletKeyDerivationFailed { detail: String },
 }
 
 /// Returns `true` when the SDK error indicates an invalid instant asset lock

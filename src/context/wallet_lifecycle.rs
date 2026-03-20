@@ -1,6 +1,7 @@
 use super::AppContext;
 use super::get_transaction_info;
 use crate::backend_task::error::TaskError;
+use crate::database::is_unique_constraint_violation;
 use crate::model::wallet::{
     AddressInfo as WalletAddressInfo, DerivationPathHelpers, DerivationPathReference,
     DerivationPathType, Wallet, WalletSeedHash, WalletTransaction,
@@ -81,6 +82,58 @@ impl AppContext {
             .set_spv_status(self.spv_manager.status().status);
         self.connection_status.refresh_state();
         Ok(())
+    }
+
+    /// Persist a wallet to the database, register it in the in-memory map,
+    /// save its known addresses, and load it into SPV if applicable.
+    ///
+    /// This is the single entry point for adding a wallet to the system.
+    /// UI screens should call this after constructing a [`Wallet`] via
+    /// [`Wallet::new_from_seed()`].
+    pub fn register_wallet(
+        self: &Arc<Self>,
+        wallet: Wallet,
+    ) -> Result<(WalletSeedHash, Arc<RwLock<Wallet>>), TaskError> {
+        // 1. Persist wallet and known addresses atomically
+        let addresses: Vec<_> = wallet
+            .known_addresses
+            .iter()
+            .map(|(address, path)| {
+                (
+                    address,
+                    path,
+                    DerivationPathReference::BIP44,
+                    DerivationPathType::CLEAR_FUNDS,
+                )
+            })
+            .collect();
+
+        self.db
+            .store_wallet_with_addresses(&wallet, &self.network, &addresses)
+            .map_err(|e| {
+                if is_unique_constraint_violation(&e) {
+                    TaskError::WalletAlreadyImported
+                } else {
+                    TaskError::Database { source: e }
+                }
+            })?;
+
+        let seed_hash = wallet.seed_hash();
+
+        // 2. Register in-memory
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+        let mut wallets = self.wallets.write()?;
+        wallets.insert(seed_hash, wallet_arc.clone());
+        self.has_wallet.store(true, Ordering::Relaxed);
+        drop(wallets);
+
+        // 3. Bootstrap any additional addresses and load into SPV
+        self.bootstrap_wallet_addresses(&wallet_arc);
+        if self.core_backend_mode() == CoreBackendMode::Spv {
+            self.handle_wallet_unlocked(&wallet_arc);
+        }
+
+        Ok((seed_hash, wallet_arc))
     }
 
     pub fn bootstrap_wallet_addresses(&self, wallet: &Arc<RwLock<Wallet>>) {

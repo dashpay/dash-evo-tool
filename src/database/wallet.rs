@@ -404,6 +404,10 @@ impl Database {
     }
 
     /// Replace all persisted transactions for a wallet+network with the provided set.
+    ///
+    /// Deduplicates by txid — if the same txid appears more than once (e.g. as
+    /// both a mempool entry and a confirmed entry), the confirmed version (with
+    /// a block height) takes priority.
     pub fn replace_wallet_transactions(
         &self,
         seed_hash: &[u8; 32],
@@ -424,6 +428,22 @@ impl Database {
             return Ok(());
         }
 
+        // Deduplicate by txid. With mempool support, upstream may return the
+        // same transaction both as unconfirmed (mempool) and confirmed (block).
+        // Prefer the confirmed version (has height) over unconfirmed.
+        let mut seen: std::collections::HashMap<dash_sdk::dpp::dashcore::Txid, &WalletTransaction> =
+            std::collections::HashMap::with_capacity(transactions.len());
+        for transaction in transactions {
+            seen.entry(transaction.txid)
+                .and_modify(|existing| {
+                    // Replace if the new entry is confirmed and the existing one isn't
+                    if transaction.height.is_some() && existing.height.is_none() {
+                        *existing = transaction;
+                    }
+                })
+                .or_insert(transaction);
+        }
+
         {
             let mut insert_stmt = tx.prepare(
                 "INSERT INTO wallet_transactions (
@@ -441,7 +461,7 @@ impl Database {
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             )?;
 
-            for transaction in transactions {
+            for transaction in seen.values() {
                 let tx_bytes = serialize(&transaction.transaction);
                 let block_hash_bytes: Option<Vec<u8>> = transaction
                     .block_hash

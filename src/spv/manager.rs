@@ -213,6 +213,12 @@ impl SpvManager {
             .write()
             .map_err(|_| SpvError::LockPoisoned("status".into()))?;
         *guard = value;
+        // Push every status transition to ConnectionStatus so the UI
+        // reflects changes immediately, without waiting for async watchers.
+        if let Some(cs) = self.connection_status_snapshot() {
+            cs.set_spv_status(value);
+            cs.refresh_state();
+        }
         Ok(())
     }
 
@@ -412,15 +418,6 @@ impl SpvManager {
         self.write_progress_updated_at(None)
             .map_err(|e| e.to_string())?;
 
-        // Push Starting status to ConnectionStatus immediately so the UI
-        // shows SPV Sync Status as soon as the user clicks "Sync", before
-        // the async progress watcher task starts.
-        if let Some(cs) = self.connection_status_snapshot() {
-            cs.set_spv_status(SpvStatus::Starting);
-            cs.set_spv_last_error(None);
-            cs.refresh_state();
-        }
-
         // Derive stop_token as a child of the global cancellation token so that
         // global shutdown automatically cancels SPV without requiring an explicit
         // SpvManager::stop() call.  SpvManager::stop() can still cancel it early.
@@ -449,10 +446,9 @@ impl SpvManager {
                 if let Err(e) = manager.write_status(SpvStatus::Error) {
                     tracing::error!("Failed to write SPV status: {}", e);
                 }
+                // Push last_error separately — write_status already pushed the status.
                 if let Some(cs) = manager.connection_status_snapshot() {
-                    cs.set_spv_status(SpvStatus::Error);
                     cs.set_spv_last_error(Some(err));
-                    cs.refresh_state();
                 }
             }
 
@@ -472,18 +468,10 @@ impl SpvManager {
         if let Some(token) = maybe_token {
             tracing::info!("SpvManager::stop(): cancelling stop_token, setting Stopping");
             let _ = self.write_status(SpvStatus::Stopping);
-            if let Some(cs) = self.connection_status_snapshot() {
-                cs.set_spv_status(SpvStatus::Stopping);
-                cs.refresh_state();
-            }
             token.cancel();
         } else {
             tracing::debug!("SpvManager::stop(): no stop_token, setting Stopped immediately");
             let _ = self.write_status(SpvStatus::Stopped);
-            if let Some(cs) = self.connection_status_snapshot() {
-                cs.set_spv_status(SpvStatus::Stopped);
-                cs.refresh_state();
-            }
         }
     }
 
@@ -904,10 +892,6 @@ impl SpvManager {
         self.spawn_request_handler(request_rx, stop_token.clone());
 
         let _ = self.write_status(SpvStatus::Syncing);
-        if let Some(cs) = self.connection_status_snapshot() {
-            cs.set_spv_status(SpvStatus::Syncing);
-            cs.refresh_state();
-        }
 
         // Run the client — handles start, monitoring, and stop internally
         let result = self.clone().run_client(client, stop_token).await;
@@ -957,18 +941,13 @@ impl SpvManager {
         match &result {
             Ok(()) => {
                 let _ = self.write_status(SpvStatus::Stopped);
-                if let Some(cs) = self.connection_status_snapshot() {
-                    cs.set_spv_status(SpvStatus::Stopped);
-                    cs.refresh_state();
-                }
             }
             Err(message) => {
                 let _ = self.write_last_error(Some(message.clone()));
                 let _ = self.write_status(SpvStatus::Error);
+                // Push last_error separately — write_status already pushed the status.
                 if let Some(cs) = self.connection_status_snapshot() {
-                    cs.set_spv_status(SpvStatus::Error);
                     cs.set_spv_last_error(Some(message.clone()));
-                    cs.refresh_state();
                 }
             }
         }

@@ -697,12 +697,6 @@ impl Database {
                         .address_total_received
                         .insert(canonical_address.clone(), total_received);
                 }
-                // Update total received if available.
-                if let Some(total_received) = total_received {
-                    wallet
-                        .address_total_received
-                        .insert(address.clone(), total_received);
-                }
 
                 // Add the address to the `known_addresses` map.
                 wallet

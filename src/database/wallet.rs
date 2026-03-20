@@ -388,7 +388,7 @@ impl Database {
                 label TEXT,
                 is_ours INTEGER NOT NULL,
                 raw_transaction BLOB NOT NULL,
-                status INTEGER NOT NULL DEFAULT 2,
+                status INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (seed_hash, txid, network),
                 FOREIGN KEY (seed_hash) REFERENCES wallet(seed_hash) ON DELETE CASCADE
             )",

@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
-const DEFAULT_AUTO_DISMISS: Duration = Duration::from_secs(9);
+const DEFAULT_AUTO_DISMISS_SHORT: Duration = Duration::from_secs(5);
+const DEFAULT_AUTO_DISMISS_LONG: Duration = Duration::from_secs(9);
 const MAX_BANNERS: usize = 5;
 const BANNER_STATE_ID: &str = "__global_message_banner";
 /// Maximum height for the expanded details section before scrolling.
@@ -505,11 +506,13 @@ impl Component for MessageBanner {
 }
 
 /// Returns the default auto-dismiss duration for a message type.
-/// `Success` and `Info` auto-dismiss; `Error` and `Warning` persist.
+/// All banners auto-dismiss: success after 5s, info/warning/error after 9s.
 fn default_auto_dismiss(message_type: MessageType) -> Option<Duration> {
     match message_type {
-        MessageType::Success | MessageType::Info => Some(DEFAULT_AUTO_DISMISS),
-        MessageType::Error | MessageType::Warning => None,
+        MessageType::Success => Some(DEFAULT_AUTO_DISMISS_SHORT),
+        MessageType::Info | MessageType::Warning | MessageType::Error => {
+            Some(DEFAULT_AUTO_DISMISS_LONG)
+        }
     }
 }
 

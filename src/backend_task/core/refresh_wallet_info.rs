@@ -1,7 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::wallet::{DerivationPathHelpers, Wallet, WalletTransaction};
+use crate::model::wallet::{DerivationPathHelpers, TransactionStatus, Wallet, WalletTransaction};
 use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::json::GetTransactionResultDetailCategory;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -218,6 +218,8 @@ impl AppContext {
                             fee: agg.fee,
                             label: agg.label,
                             is_ours: agg.is_ours,
+                            // RPC only returns confirmed transactions
+                            status: TransactionStatus::from_height(agg.height),
                         });
                     }
 

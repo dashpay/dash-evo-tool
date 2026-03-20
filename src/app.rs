@@ -228,7 +228,7 @@ impl AppState {
         let connection_status = Arc::new(ConnectionStatus::new());
         let mainnet_app_context = AppContext::new(
             data_dir.clone(),
-            Network::Dash,
+            Network::Mainnet,
             db.clone(),
             password_info.clone(),
             subtasks.clone(),
@@ -311,7 +311,7 @@ impl AppState {
             testnet_app_context.as_ref(),
             devnet_app_context.as_ref(),
             local_app_context.as_ref(),
-            Network::Dash,
+            Network::Mainnet,
             overwrite_dash_conf,
         );
 
@@ -323,7 +323,7 @@ impl AppState {
         // Validate that the saved network has an available context.
         // We fail fast instead of silently routing user actions to a different network.
         let chosen_network = match settings.network {
-            Network::Dash => Network::Dash,
+            Network::Mainnet => Network::Mainnet,
             Network::Testnet => {
                 assert!(
                     testnet_app_context.is_some(),
@@ -484,7 +484,7 @@ impl AppState {
             .unwrap_or(false);
         let mainnet_core_zmq_listener = if !mainnet_disable_zmq {
             match CoreZMQListener::spawn_listener(
-                Network::Dash,
+                Network::Mainnet,
                 &mainnet_core_zmq_endpoint,
                 core_message_sender.clone(),
                 Some(mainnet_app_context.sx_zmq_status.clone()),
@@ -787,7 +787,7 @@ impl AppState {
         // Invariant: chosen_network must always have a corresponding context.
         // Fail fast on violations to avoid silently routing operations to mainnet.
         match self.chosen_network {
-            Network::Dash => &self.mainnet_app_context,
+            Network::Mainnet => &self.mainnet_app_context,
             Network::Testnet => self.testnet_app_context.as_ref().unwrap_or_else(|| {
                 panic!(
                     "BUG: chosen network is Testnet but testnet_app_context is missing; refusing silent mainnet fallback"
@@ -812,7 +812,7 @@ impl AppState {
 
     fn context_available_for_network(&self, network: Network) -> bool {
         match network {
-            Network::Dash => true, // Mainnet is always available
+            Network::Mainnet => true, // Mainnet is always available
             Network::Testnet => self.testnet_app_context.is_some(),
             Network::Devnet => self.devnet_app_context.is_some(),
             Network::Regtest => self.local_app_context.is_some(),
@@ -837,8 +837,6 @@ impl AppState {
         let app_context = self.current_app_context().clone();
         tokio::spawn(async move {
             let result = app_context.run_backend_task(task, sender.clone()).await;
-
-            // Send the result back to the main thread
             if let Err(e) = sender.send(result.into()).await {
                 tracing::error!("Failed to send task result: {}", e);
             }
@@ -864,7 +862,6 @@ impl AppState {
                 }
             };
 
-            // Send the results back to the main thread
             for result in results {
                 if let Err(e) = sender.send(result.into()).await {
                     tracing::error!("Failed to send task result: {}", e);
@@ -970,11 +967,15 @@ impl AppState {
                     Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
             }
             OverallConnectionState::Error => {
-                self.connection_banner_handle = Some(MessageBanner::set_global(
+                let handle = MessageBanner::set_global(
                     ctx,
-                    "SPV sync error — check connection status for details",
+                    "SPV sync failed. Go to Settings for connection details.",
                     MessageType::Error,
-                ));
+                );
+                if let Some(detail) = connection_status.spv_last_error() {
+                    handle.with_details(detail);
+                }
+                self.connection_banner_handle = Some(handle);
             }
             OverallConnectionState::Synced => {
                 // No banner needed for fully synced state
@@ -1003,7 +1004,7 @@ impl AppState {
     //     task::spawn_blocking(move || {
     //         while let Ok((tx, islock, network)) = instant_send_receiver.recv() {
     //             let app_context = match network {
-    //                 Network::Dash => &mainnet_app_context,
+    //                 Network::Mainnet => &mainnet_app_context,
     //                 Network::Testnet => {
     //                     if let Some(context) = testnet_app_context.as_ref() {
     //                         context
@@ -1208,7 +1209,7 @@ impl App for AppState {
         // **Poll the instant_send_receiver for any new InstantSend messages**
         while let Ok((message, network)) = self.core_message_receiver.try_recv() {
             let app_context = match network {
-                Network::Dash => &self.mainnet_app_context,
+                Network::Mainnet => &self.mainnet_app_context,
                 Network::Testnet => {
                     if let Some(context) = self.testnet_app_context.as_ref() {
                         context

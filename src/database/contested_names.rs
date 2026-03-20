@@ -18,7 +18,7 @@ use tracing::{error, info};
 impl Database {
     pub fn get_all_contested_names(&self, app_context: &AppContext) -> Result<Vec<ContestedName>> {
         let network = app_context.network.to_string();
-        let contest_duration = if app_context.network == Network::Dash {
+        let contest_duration = if app_context.network == Network::Mainnet {
             Duration::from_secs(60 * 60 * 24 * 14)
         } else {
             Duration::from_secs(60 * 90)
@@ -183,7 +183,7 @@ impl Database {
         app_context: &AppContext,
     ) -> Result<Vec<ContestedName>> {
         let network = app_context.network.to_string();
-        let contest_duration = if app_context.network == Network::Dash {
+        let contest_duration = if app_context.network == Network::Mainnet {
             Duration::from_secs(60 * 60 * 24 * 14)
         } else {
             Duration::from_secs(60 * 90)

@@ -910,7 +910,7 @@ impl Database {
         let tables = [
             "settings",
             "wallet",
-            "wallet_addresses",
+            "identity_token_balances",
             "platform_address_balances",
             "utxos",
             "asset_lock_transaction",

@@ -204,6 +204,9 @@ impl WalletsBalancesScreen {
 
         let account_address_count = address_data.len();
 
+        // INTENTIONAL(CMT-002): Zero-balance filter treats key-only addresses the same as all
+        // others. The old exception (always showing key-only addresses) was removed intentionally
+        // to reduce UI clutter — key-only accounts with no balance carry no actionable information.
         if !self.show_zero_balance_addresses {
             address_data.retain(|data| {
                 if data.account_category == AccountCategory::PlatformPayment {

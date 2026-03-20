@@ -226,6 +226,7 @@ impl AppContext {
                             "one or more get_raw_transaction calls failed; \
                              preserving existing transaction history"
                         );
+                        tx_truncated = false;
                         None
                     } else {
                         tracing::info!(
@@ -374,7 +375,7 @@ impl AppContext {
 
         let warning = if tx_truncated {
             Some(
-                "Transaction history may be incomplete. Only the most recent 200 entries are shown."
+                "Transaction history may be incomplete. The most recent transactions are shown."
                     .to_string(),
             )
         } else {

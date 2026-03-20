@@ -2,7 +2,6 @@ use egui::{
     Button, Color32, CursorIcon, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke,
     Vec2, WidgetText,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Theme mode enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1151,9 +1150,5 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     style.visuals.faint_bg_color = DashColors::background(dark_mode);
 
     ctx.set_style(style);
-
-    static FONTS_INITIALIZED: AtomicBool = AtomicBool::new(false);
-    if !FONTS_INITIALIZED.swap(true, Ordering::Relaxed) {
-        ctx.set_fonts(configure_fonts());
-    }
+    ctx.set_fonts(configure_fonts());
 }

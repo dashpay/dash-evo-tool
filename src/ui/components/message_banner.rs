@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
-const DEFAULT_AUTO_DISMISS: Duration = Duration::from_secs(5);
+const DEFAULT_AUTO_DISMISS: Duration = Duration::from_secs(9);
 const MAX_BANNERS: usize = 5;
 const BANNER_STATE_ID: &str = "__global_message_banner";
 /// Maximum height for the expanded details section before scrolling.
